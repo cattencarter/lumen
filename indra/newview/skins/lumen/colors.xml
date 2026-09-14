@@ -30,13 +30,13 @@
 	 value="0.202 0.444 0.452 1.0" />
 	<color
 	 name="SchemeLightest"
-	 value="0.76 0.58 0.49 1.0" />
+	 value="0.326 0.671 0.683 1.0" />
 	<color
 	 name="SchemeLightest_35"
-	 value="0.76 0.58 0.49 0.35" />
+	 value="0.326 0.671 0.683 0.35" />
 	<color 
 	 name="SchemeDark"
-	 value="0.49 0.33 0.25 1.0" />
+	 value="0.206 0.397 0.404 1.0" />
 	<color
 	 name="EmphasisColor_13"
 	 value="0.119 0.638 0.656 0.13" />

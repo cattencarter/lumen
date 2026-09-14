@@ -295,8 +295,15 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         #<FS:TS> Somehow, we started leaving the - separating the variant from the app name
         # on the beginning of the channel qualifier. This screws up later processing that
         # depends on the channel type. If it's there, we chop it off.
-        if channel_qualifier[0] == '-':
+        # <FS:AICtl> Guard the empty variant. When the channel IS the vendor
+        # base -- ours is plainly "Lumen", with no suffix, because there are no
+        # support volunteers to protect from self-compiled builds the way
+        # "Firestorm-private-Mac" protects theirs -- channel_variant() returns
+        # "" and this indexed [0] of it. Everything below already falls through
+        # to 'private', which is the right answer for such a build.
+        if channel_qualifier and channel_qualifier[0] == '-':
             channel_qualifier = channel_qualifier[1:]
+        # </FS:AICtl>
         if channel_qualifier.startswith('release'):
             channel_type='release'
         elif channel_qualifier.startswith('beta'):

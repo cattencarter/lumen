@@ -3558,7 +3558,15 @@ bool LLAppViewer::initConfiguration()
     //
     // Set the name of the window
     //
-    gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
+    // <FS:AICtl> The window says what this viewer is called; the channel says
+    // what it reports to Second Life. They are not the same job. The channel
+    // stays plain "Lumen" -- no "-private-Mac" suffix, which is Firestorm's
+    // convention for marking self-compiled builds so their support volunteers
+    // can spot one, and we have no volunteers to protect.
+    //gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
+    gWindowTitle = std::string("Lumen Viewer ")
+                 + LLVersionInfo::getInstance()->getShortVersion();
+    // </FS:AICtl>
 #if LL_DEBUG
     gWindowTitle += std::string(" [DEBUG]");
 #endif
