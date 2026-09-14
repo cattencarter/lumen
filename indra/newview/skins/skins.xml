@@ -7,9 +7,13 @@
       <key>folder</key>
       <string>lumen</string>
       <!-- <FS:AICtl> One look, not five. The inherited colour schemes were
-           Firestorm's and had nothing to do with this skin. High Contrast is
-           kept deliberately: it is an accessibility feature, and this viewer
-           exists for people the ordinary interface does not serve. -->
+           Firestorm's, credited to their individual authors, and re-offering
+           them under this skin's name was neither useful nor quite honest.
+           High Contrast was kept for a while as an accessibility feature and
+           has now gone too, on the author's instruction: it was Firestorm's
+           High Contrast, not a Lumen one, and shipping a second scheme nobody
+           designed for this skin is not accessibility. If Lumen needs a high
+           contrast mode it should have one built for it. -->
       <key>themes</key>
       <array>
         <map>
@@ -17,12 +21,6 @@
           <string>Lumen</string>
           <key>folder</key>
           <string/>
-        </map>
-        <map>
-          <key>name</key>
-          <string>High Contrast</string>
-          <key>folder</key>
-          <string>highcontrast</string>
         </map>
       </array>
     </map>
