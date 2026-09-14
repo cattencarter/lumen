@@ -563,6 +563,66 @@ namespace
     }
 
     /**
+     * Which way the avatar is facing, as a compass bearing.
+     *
+     * Second Life's world axes are X east, Y north, Z up, so the bearing is
+     * atan2(east, north) -- not the atan2(y, x) that comes out of habit, which
+     * would put north at 90 degrees and read as a bug for everyone.
+     */
+    F32 headingDegrees()
+    {
+        const LLVector3 at = gAgent.getAtAxis();
+        F32 deg = (F32)(atan2((F64)at.mV[VX], (F64)at.mV[VY]) * RAD_TO_DEG);
+        if (deg < 0.f) deg += 360.f;
+        return deg;
+    }
+
+    /** The bearing in words, because "312 degrees" is not how people talk. */
+    std::string compassPoint(F32 deg)
+    {
+        static const char* const names[] =
+            { "north", "north-east", "east", "south-east",
+              "south", "south-west", "west", "north-west" };
+        return names[((S32)((deg + 22.5f) / 45.f)) % 8];
+    }
+
+    /**
+     * A unit vector for a direction the caller named.
+     *
+     * Two kinds, and the difference matters: "north" is fixed, while "forward"
+     * depends on where the avatar is looking, which is exactly what could not
+     * be answered before -- an assistant asked to move someone forward had no
+     * way to know which way that was. Flattened to the horizontal, so "forward"
+     * while looking at the sky still walks along the ground.
+     */
+    bool directionVector(const std::string& word, LLVector3& out)
+    {
+        const std::string d = lowered(word);
+        LLVector3 v;
+        if (d == "north")           v.setVec(0.f, 1.f, 0.f);
+        else if (d == "south")      v.setVec(0.f, -1.f, 0.f);
+        else if (d == "east")       v.setVec(1.f, 0.f, 0.f);
+        else if (d == "west")       v.setVec(-1.f, 0.f, 0.f);
+        else if (d == "north-east" || d == "northeast") v.setVec(1.f, 1.f, 0.f);
+        else if (d == "north-west" || d == "northwest") v.setVec(-1.f, 1.f, 0.f);
+        else if (d == "south-east" || d == "southeast") v.setVec(1.f, -1.f, 0.f);
+        else if (d == "south-west" || d == "southwest") v.setVec(-1.f, -1.f, 0.f);
+        else if (d == "forward" || d == "ahead")  v = gAgent.getAtAxis();
+        else if (d == "back" || d == "backward" || d == "backwards")
+                                                  v = -gAgent.getAtAxis();
+        else if (d == "left")                     v = gAgent.getLeftAxis();
+        else if (d == "right")                    v = -gAgent.getLeftAxis();
+        else return false;
+
+        v.mV[VZ] = 0.f;
+        if (v.magVecSquared() < 0.0001f) return false;
+        v.normVec();
+        out = v;
+        return true;
+    }
+
+
+    /**
      * Items whose name contains a substring, optionally of one kind.
      *
      * Case-insensitive and substring rather than exact, because the caller is
@@ -1087,6 +1147,8 @@ namespace
             if (action == "sit")           return "sit";
             if (action == "stand")         return "stand";
             if (action == "look_nearby")   return "look_nearby";
+            if (action == "fly")           return "fly";
+            if (action == "turn")          return "turn";
             return "";
         }
         if (group == "viewer")
@@ -1254,14 +1316,22 @@ namespace
 
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
-            { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby" };
+            { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
+              "fly", "turn" };
         LLSD move;
         move["name"] = "movement";
         move["description"] =
             "Move the avatar around. Pick one with `action`:\n"
             "- teleport: to a named region, optionally to a spot in it, or `home: true`.\n"
-            "- walk_to: on foot within the region already occupied, to x and y or to a person by "
-            "name. For short distances in sight; use teleport to cross the grid.\n"
+            "- walk_to: on foot within the region already occupied. Three ways to say where: x and "
+            "y; a person's name; or a `direction` and a `distance` in metres. Directions are "
+            "either fixed (north, south, east, west and the between ones) or relative to the way "
+            "the avatar is facing (forward, back, left, right). For short distances in sight; use "
+            "teleport to cross the grid.\n"
+            "- fly: `enabled: true` to take off, false to land. status reports flying.\n"
+            "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
+            "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
+            "mean something -- status reports facing and heading_degrees.\n"
             "- stop_walking: give up a walk in progress.\n"
             "- sit: on an object by `object_id`, or `ground: true` where the avatar stands. An "
             "object decides whether the avatar may sit and where it ends up.\n"
@@ -1273,7 +1343,7 @@ namespace
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
         LLSD move_props;
-        move_props["action"] = actionProperty(move_actions, 6, "What to do. Required.");
+        move_props["action"] = actionProperty(move_actions, 8, "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
@@ -1282,6 +1352,16 @@ namespace
         LLSD mo;  mo["type"]="string";  mo["description"]="sit: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
         LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look, default 20, at most 96.";
+        LLSD mdir; mdir["type"]="string";
+            mdir["description"]="walk_to / turn: north, south, east, west, north-east, north-west, "
+                                "south-east, south-west, or -- relative to the way the avatar is "
+                                "facing -- forward, back, left, right.";
+        LLSD mdis; mdis["type"]="number";
+            mdis["description"]="walk_to: how far to go in that direction, in metres.";
+        LLSD mfly; mfly["type"]="boolean"; mfly["description"]="fly: true takes off, false lands.";
+        LLSD mhd; mhd["type"]="number"; mhd["description"]="turn: a bearing in degrees, 0 north, 90 east.";
+        move_props["direction"]=mdir; move_props["distance"]=mdis;
+        move_props["enabled"]=mfly; move_props["heading"]=mhd;
         move_props["region"]=mrg; move_props["x"]=mx; move_props["y"]=my; move_props["z"]=mz;
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
@@ -2632,7 +2712,12 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         return result;
     }
 
-    if (method == "walk_to" || method == "stop_walking" || method == "sit" || method == "stand")
+    // Everything that moves the avatar shares the login check, the request_id
+    // replay and the sitting rules, so they share a branch. Adding a verb here
+    // and forgetting this line means the handler is written, compiled, and
+    // never reached -- "Method not found" for code that plainly exists.
+    if (method == "walk_to" || method == "stop_walking" || method == "sit"
+        || method == "stand"  || method == "fly"        || method == "turn")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -2648,6 +2733,107 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["replayed"] = true;
             replay["note"] = "This request_id was already carried out.";
             return replay;
+        }
+
+        if (method == "fly")
+        {
+            const bool want = params.has("enabled") ? params["enabled"].asBoolean() : true;
+            if (gAgent.getFlying() == want)
+            {
+                LLSD result;
+                result["flying"] = want;
+                result["already"] = true;
+                result["note"] = want ? "The avatar was already flying."
+                                      : "The avatar was already on the ground.";
+                return result;
+            }
+            if (want && gAgent.isSitting())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The avatar is sitting. Stand first, then fly.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            gAgent.setFlying(want);
+
+            LL_INFOS("AICtl") << (want ? "fly: taking off" : "fly: landing") << LL_ENDL;
+
+            LLSD result;
+            result["requested"] = want ? "fly" : "land";
+            // A region can forbid flying, and then this silently does nothing.
+            result["confirm_with"] =
+                "Some parcels do not allow flying, and there the request simply has no effect. "
+                "Call status and check flying before telling the user they are in the air.";
+            LLSD summary; summary["action"] = want ? "fly" : "land";
+            recordAction(request_id, fingerprintOf("fly", params), "fly", "ok", result, summary);
+            return result;
+        }
+
+        if (method == "turn")
+        {
+            LLVector3 look;
+            std::string described;
+
+            if (params.has("name") && !params["name"].asString().empty())
+            {
+                LLSD who_error;
+                const LLUUID person = resolvePerson(params, who_error);
+                if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+                LLVector3d where;
+                if (!LLWorld::getInstance()->getAvatar(person, where))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "That person is not close enough to turn towards.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                LLVector3d delta = where - gAgent.getPositionGlobal();
+                look.setVec((F32)delta.mdV[VX], (F32)delta.mdV[VY], 0.f);
+                if (look.magVecSquared() < 0.0001f)
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "They are standing in the same spot; there is nothing to turn towards.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                look.normVec();
+                described = "towards " + params["name"].asString();
+            }
+            else if (params.has("heading"))
+            {
+                F32 deg = (F32)params["heading"].asReal();
+                while (deg < 0.f)    deg += 360.f;
+                while (deg >= 360.f) deg -= 360.f;
+                // Bearing back to world axes: X east, Y north.
+                look.setVec(sinf(deg * DEG_TO_RAD), cosf(deg * DEG_TO_RAD), 0.f);
+                described = llformat("%.0f degrees (%s)", deg, compassPoint(deg).c_str());
+            }
+            else if (params.has("direction"))
+            {
+                if (!directionVector(params["direction"].asString(), look))
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "Not a direction I know. Use north, south, east, west, the "
+                                   "between ones, or forward, back, left, right.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                described = params["direction"].asString();
+            }
+            else
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "Give a direction, a heading in degrees, or a person's name.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            gAgent.resetAxes(look);
+
+            const F32 now = headingDegrees();
+            LLSD result;
+            result["turned_to"] = described;
+            result["heading_degrees"] = (LLSD::Integer)llround(now);
+            result["facing"] = compassPoint(now);
+            LLSD summary; summary["action"] = "turn"; summary["to"] = described;
+            recordAction(request_id, fingerprintOf("turn", params), "turn", "ok", result, summary);
+            return result;
         }
 
         if (method == "stop_walking")
@@ -2777,6 +2963,31 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             target = where;
             described = params["name"].asString();
         }
+        else if (params.has("direction"))
+        {
+            LLVector3 dir;
+            if (!directionVector(params["direction"].asString(), dir))
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "Not a direction I know. Use north, south, east, west, the between "
+                               "ones, or forward, back, left, right.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            F32 metres = params.has("distance") ? (F32)params["distance"].asReal() : 5.f;
+            if (metres <= 0.f) metres = 5.f;
+
+            const LLVector3 here = gAgent.getPositionAgent();
+            LLVector3 local = here + dir * metres;
+            // Clamp inside the region: walking off the edge is a request the
+            // autopilot cannot satisfy, and it would simply stall at the border.
+            if (local.mV[VX] < 1.f)   local.mV[VX] = 1.f;
+            if (local.mV[VX] > 254.f) local.mV[VX] = 254.f;
+            if (local.mV[VY] < 1.f)   local.mV[VY] = 1.f;
+            if (local.mV[VY] > 254.f) local.mV[VY] = 254.f;
+
+            target = region->getPosGlobalFromRegion(local);
+            described = llformat("%.0f m %s", metres, params["direction"].asString().c_str());
+        }
         else if (params.has("x") && params.has("y"))
         {
             F32 x = (F32)params["x"].asReal();
@@ -2791,7 +3002,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         else
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "Give x and y, or the name of a person to walk to.";
+            e["message"] = "Give x and y, a direction and distance, or the name of a person.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -3341,6 +3552,12 @@ LLSD FSAIControl::toolStatus() const
         // confirm" is advice that cannot be followed.
         status["sitting"] = gAgent.isSitting();
         status["flying"]  = gAgent.getFlying();
+        // Without these, "move forward" cannot be answered at all: there is no
+        // way to know which way forward is. Both, because a bearing is exact
+        // and a word is what a person actually says.
+        const F32 heading = headingDegrees();
+        status["heading_degrees"] = (LLSD::Integer)llround(heading);
+        status["facing"] = compassPoint(heading);
         status["walking"] = gAgent.getAutoPilot();
         if (gAgent.getAutoPilot())
         {
