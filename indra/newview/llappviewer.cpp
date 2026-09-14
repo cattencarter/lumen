@@ -5474,11 +5474,16 @@ void LLAppViewer::purgeCacheImmediate()
 
 std::string LLAppViewer::getSecondLifeTitle() const
 {
-#if ADDRESS_SIZE == 64
-    return LLTrans::getString( "APP_NAME" ) + "_x64";
-#else
-    return LLTrans::getString("APP_NAME");
-#endif
+    // <FS:AICtl> No "_x64". It is shown to the user as the heading on the
+    // login screen, where it read "Lumen_x64", and it distinguished a 64-bit
+    // build from a 32-bit one at a time when both existed. Only 64-bit does
+    // now, so it told nobody anything and looked like a filename.
+    //
+    // The name used for DIRECTORIES still carries the suffix -- see
+    // initAppDirs() above. That one is not cosmetic: changing it moves every
+    // existing user's settings and cache somewhere they are not.
+    return LLTrans::getString("APP_NAME") + " Viewer";
+    // </FS:AICtl>
 }
 
 std::string LLAppViewer::getWindowTitle() const
