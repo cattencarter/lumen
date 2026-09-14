@@ -236,6 +236,7 @@ public:
     /** Called from llselectmgr.cpp when an object's properties arrive. */
     static void noteObjectName(const LLUUID& object_id, const std::string& name);
 
+
     /**
      * Do not let the viewer auto-open the next notecard by this name.
      *

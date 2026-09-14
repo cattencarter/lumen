@@ -98,11 +98,20 @@ namespace
     }
 
     /** A JSON-RPC error object, as a complete response body. */
-    std::string rpcError(const LLSD& id, S32 code, const std::string& message)
+    std::string rpcError(const LLSD& id, S32 code, const std::string& message,
+                         const LLSD& data = LLSD())
     {
         LLSD error;
         error["code"] = code;
         error["message"] = message;
+        // JSON-RPC allows a data member on an error, and several tools set one
+        // -- the candidates when a name is ambiguous, most usefully. It used to
+        // be dropped here, so a caller told to "ask which one" was never given
+        // the list to ask about.
+        if (data.isDefined())
+        {
+            error["data"] = data;
+        }
 
         LLSD response;
         response["jsonrpc"] = "2.0";
@@ -1236,8 +1245,9 @@ namespace
             "by default; `replace: true` replaces what is on that spot.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete puts it back, "
             "and only the user emptying their own Trash actually removes anything. Say so that "
-            "way: \"moved to Trash\", not \"deleted\". No-copy items are refused, and anything "
-            "worn must be detached first.\n"
+            "way: \"moved to Trash\", not \"deleted\". A NO-COPY item is the only one they have, "
+            "so that one is refused until you have ASKED THEM and can pass `confirm` with the "
+            "item's exact name. Anything worn must be detached first.\n"
             "- undelete: take an item back out of the Trash.";
         LLSD inv_props;
         inv_props["action"] = actionProperty(inv_actions, 9, "What to do. Required.");
@@ -1253,8 +1263,13 @@ namespace
                                "words to look for inside them, case-insensitive.";
         inv_props["query"]=iq; inv_props["kind"]=ik; inv_props["worn"]=iw;
         inv_props["folder_id"]=ifd; inv_props["item_id"]=sid; inv_props["name"]=snm;
+        LLSD scf; scf["type"]="string";
+            scf["description"]="Only for a NO-COPY item, and only after the user has said yes in "
+                               "so many words: the item's exact name, to confirm. The call is "
+                               "refused without it, and refused again if it does not match. Never "
+                               "send it without asking -- it is the only one they have.";
         inv_props["replace"]=irp; inv_props["text"]=itx; inv_props["limit"]=slim;
-        inv_props["request_id"]=srq;
+        inv_props["request_id"]=srq; inv_props["confirm"]=scf;
         LLSD inv_schema; inv_schema["type"]="object"; inv_schema["properties"]=inv_props;
         LLSD inv_req = LLSD::emptyArray(); inv_req.append("action");
         inv_schema["required"]=inv_req;
@@ -1289,10 +1304,10 @@ namespace
             "notices in each.\n"
             "- give_item: offer one inventory item to one person -- a notecard, a landmark, a "
             "copy of an object. They get an offer they can accept or decline; the viewer is not "
-            "told which, so never say it was received. Only items that can be copied are offered: "
-            "giving away a no-copy item hands over the only one there is, and that is not "
-            "something to do on anyone's behalf. Identify the item with `item_id` from an "
-            "inventory search, or `item` for its name.\n"
+            "told which, so never say it was received. A NO-COPY item is the only one they have "
+            "and does not come back if accepted, so that one is refused until you have ASKED THEM "
+            "and can pass `confirm` with the item's exact name. Identify the item with `item_id` "
+            "from an inventory search, or `item` for its name.\n"
             "- send_group_notice: a notice to everyone in one group, with a `subject`, a "
             "`message`, and optionally `item_id` to attach something from inventory. This goes to "
             "every member and CANNOT be recalled or edited, so read it back to the user and get "
@@ -1318,6 +1333,10 @@ namespace
                                  "matches more than one thing.";
         chat_props["item"]=citem;
         chat_props["group_id"]=cgid; chat_props["group"]=cgn;
+        LLSD ccf; ccf["type"]="string";
+            ccf["description"]="give_item, only for a NO-COPY item, and only after the user has "
+                               "said yes: the item's exact name. Without it the call is refused.";
+        chat_props["confirm"]=ccf;
         chat_props["subject"]=csub; chat_props["item_id"]=citm;
         chat_props["since"]=ssince; chat_props["limit"]=slim; chat_props["request_id"]=srq;
         LLSD chat_schema; chat_schema["type"]="object"; chat_schema["properties"]=chat_props;
@@ -1641,7 +1660,8 @@ std::string FSAIControl::handleRequest(const std::string& body)
     if (result.has("__error"))
     {
         return rpcError(id, static_cast<S32>(result["__error"]["code"].asInteger()),
-                        result["__error"]["message"].asString());
+                        result["__error"]["message"].asString(),
+                        result["__error"].has("data") ? result["__error"]["data"] : LLSD());
     }
 
     LLSD response;
@@ -1732,6 +1752,9 @@ namespace
         gAgent.teleportViaLocation(global);
     }
 }
+
+
+
 
 void FSAIControl::noteObjectName(const LLUUID& object_id, const std::string& name)
 {
@@ -1970,7 +1993,17 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             // A tool that fails reports it as a tool result, not as a protocol
             // error: the model should see what went wrong and be able to try
             // something else, rather than the call collapsing underneath it.
-            text["text"] = inner["__error"]["message"].asString();
+            // A tool error reaches the model as text, so anything structured
+            // has to be in that text or it may as well not exist. This is
+            // where the candidate list for an ambiguous name belongs: being
+            // told to ask which one, without being given the options, is not
+            // an answer anybody can act on.
+            std::string message = inner["__error"]["message"].asString();
+            if (inner["__error"].has("data"))
+            {
+                message += "\n\n" + llsdToJsonString(inner["__error"]["data"]);
+            }
+            text["text"] = message;
             content.append(text);
 
             LLSD result;
@@ -3191,18 +3224,41 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
-        // The author's first safety rule, checked here in the viewer rather
-        // than trusted to the assistant. A no-copy item is the user's only
-        // one: moved to Trash and emptied, it is gone with no recourse, and
-        // emptying the Trash is something they may do without thinking about
-        // what an assistant put there.
+        // A no-copy item is the only one there is. The assistant does not get
+        // to decide on its own -- but the confirmation belongs in the
+        // CONVERSATION, not in the viewer. Someone using Second Life through
+        // ChatGPT precisely because the viewer's interface is in their way
+        // cannot be sent back to that interface to click a dialogue; that
+        // would be the barrier again, at the worst possible moment.
+        //
+        // So the first call always refuses and says what to do: tell the user
+        // what this is and that it cannot be undone, and if they agree, call
+        // again with `confirm` set to the item's exact name.
+        //
+        // Being honest about what this does and does not achieve: it cannot
+        // force a model to ask. What it does is make a single careless call
+        // harmless, require a second deliberate one, and put the item's name
+        // in front of whoever is reading -- and the action log records that
+        // the confirmation was given, so it can be checked afterwards.
         if (!item->getPermissions().allowCopyBy(gAgentID))
         {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "That item is no-copy, so it will not be deleted. If the user really "
-                           "wants it gone they must do it themselves, in the viewer, where they "
-                           "can see what they are throwing away.";
-            LLSD w; w["__error"] = e; return w;
+            const std::string confirm = params.has("confirm")
+                ? params["confirm"].asString() : std::string();
+            if (lowered(confirm) != lowered(item_name))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] =
+                    "\"" + safeUtf8(item_name) + "\" is no-copy: it is the only one the user has. "
+                    "Moving it to the Trash can be undone with undelete, but emptying the Trash "
+                    "afterwards cannot. Do not do this on your own. Tell them what it is, say "
+                    "plainly that it is their only copy, and ask. If they say yes, call again "
+                    "with confirm set to the item's exact name.";
+                e["data"] = LLSD().with("needs_confirmation", true)
+                                  .with("item", safeUtf8(item_name))
+                                  .with("reason", "no-copy");
+                LLSD w; w["__error"] = e; return w;
+            }
+            LL_INFOS("AICtl") << "delete_item: no-copy, confirmed for " << id << LL_ENDL;
         }
 
         if (get_is_item_worn(id))
@@ -3235,6 +3291,13 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         summary["item_id"] = id;
         summary["name"] = item_name;
         summary["to"] = "Trash";
+        if (!item->getPermissions().allowCopyBy(gAgentID))
+        {
+            // Worth recording separately. This is the only kind of delete the
+            // user was asked about, and read_actions is where they check.
+            summary["no_copy"] = true;
+            summary["confirmed"] = true;
+        }
         recordAction(request_id, fingerprintOf("delete_item", params),
                      "delete_item", "ok", result, summary);
         return result;
@@ -3321,22 +3384,6 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
 
-        // Giving a no-copy item is the one operation here that destroys
-        // something: it leaves this inventory and does not come back, and
-        // there is no Trash to fetch it out of. The project's rule is to
-        // verify copyable before anything destructive, and this is the
-        // clearest case of it. isInventoryGiveAcceptable() does NOT check
-        // copy -- only transfer -- so this has to.
-        if (!item->getPermissions().allowCopyBy(gAgentID))
-        {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "That item is no-copy: giving it away hands over the only one there "
-                           "is, permanently, with no way back. If the user really means to, they "
-                           "must do it themselves in the viewer where they can see what they are "
-                           "parting with.";
-            LLSD w; w["__error"] = e; return w;
-        }
-
         if (get_is_item_worn(item_id))
         {
             LLSD e; e["code"] = -32000;
@@ -3379,6 +3426,33 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             LLAvatarNameCache::get(to, &av) ? av.getUserName() : to.asString();
         const std::string item_name = item->getName();
 
+        // Giving away a no-copy item is the most final thing this endpoint can
+        // do: it leaves this inventory and there is no Trash to fetch it from.
+        // isInventoryGiveAcceptable() checks transfer, not copy, so the
+        // distinction has to be made here -- and, as with delete, the asking
+        // belongs in the conversation and not in the viewer.
+        if (!item->getPermissions().allowCopyBy(gAgentID))
+        {
+            const std::string confirm = params.has("confirm")
+                ? params["confirm"].asString() : std::string();
+            if (lowered(confirm) != lowered(item_name))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] =
+                    "\"" + safeUtf8(item_name) + "\" is no-copy: it is the only one the user has, "
+                    "and if " + to_name + " accepts it, it is gone from their inventory for good. "
+                    "There is no undo and no Trash. Do not do this on your own. Tell them what it "
+                    "is, who it would go to, and that they cannot get it back, and ask. If they "
+                    "say yes, call again with confirm set to the item's exact name.";
+                e["data"] = LLSD().with("needs_confirmation", true)
+                                  .with("item", safeUtf8(item_name))
+                                  .with("to", to_name)
+                                  .with("reason", "no-copy");
+                LLSD w; w["__error"] = e; return w;
+            }
+            LL_INFOS("AICtl") << "give_item: no-copy, confirmed for " << item_id << LL_ENDL;
+        }
+
         if (!LLGiveInventory::doGiveInventoryItem(to, item))
         {
             LLSD e; e["code"] = -32000;
@@ -3407,6 +3481,11 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         summary["name"] = to_name;
         summary["item"] = safeUtf8(item_name);
         summary["kind"] = kindOf(item->getType());
+        if (!item->getPermissions().allowCopyBy(gAgentID))
+        {
+            summary["no_copy"] = true;
+            summary["confirmed"] = true;
+        }
         recordAction(request_id, print, "give_item", "ok", result, summary);
         return result;
     }
