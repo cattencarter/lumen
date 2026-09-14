@@ -33,6 +33,7 @@
 #include "llappearancemgr.h"
 #include "llavatarnamecache.h"
 #include "llcallingcard.h"
+#include "llgiveinventory.h"
 #include "llinventoryfunctions.h"
 #include "llinventorymodel.h"
 #include "llfilesystem.h"
@@ -1137,6 +1138,7 @@ namespace
             if (action == "find_person")   return "find_person";
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
+            if (action == "give_item")     return "give_item";
             return "";
         }
         if (group == "movement")
@@ -1262,7 +1264,7 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "find_person",
-              "list_groups", "send_group_notice" };
+              "list_groups", "send_group_notice", "give_item" };
         LLSD chat;
         chat["name"] = "chat";
         chat["description"] =
@@ -1285,12 +1287,18 @@ namespace
             "friends and the avatars nearby -- the viewer cannot search all of Second Life.\n"
             "- list_groups: the groups the user belongs to, and whether they are allowed to send "
             "notices in each.\n"
+            "- give_item: offer one inventory item to one person -- a notecard, a landmark, a "
+            "copy of an object. They get an offer they can accept or decline; the viewer is not "
+            "told which, so never say it was received. Only items that can be copied are offered: "
+            "giving away a no-copy item hands over the only one there is, and that is not "
+            "something to do on anyone's behalf. Identify the item with `item_id` from an "
+            "inventory search, or `item` for its name.\n"
             "- send_group_notice: a notice to everyone in one group, with a `subject`, a "
             "`message`, and optionally `item_id` to attach something from inventory. This goes to "
             "every member and CANNOT be recalled or edited, so read it back to the user and get "
             "their agreement before sending. Pass a request_id.";
         LLSD chat_props;
-        chat_props["action"] = actionProperty(chat_actions, 7, "What to do. Required.");
+        chat_props["action"] = actionProperty(chat_actions, 8, "What to do. Required.");
         LLSD cmsg; cmsg["type"]="string"; cmsg["description"]="say / send_im: the message.";
         LLSD cch;  cch["type"]="integer";
             cch["description"]="say: 0 (default) is ordinary local chat; above 0 talks to objects.";
@@ -1305,6 +1313,10 @@ namespace
         LLSD citm; citm["type"]="string";
             citm["description"]="send_group_notice: an inventory item id to attach. Optional. The "
                                 "item must be copyable and transferable, or members cannot take it.";
+        LLSD citem; citem["type"]="string";
+            citem["description"]="give_item: the item's name, if you have no id. Refused when it "
+                                 "matches more than one thing.";
+        chat_props["item"]=citem;
         chat_props["group_id"]=cgid; chat_props["group"]=cgn;
         chat_props["subject"]=csub; chat_props["item_id"]=citm;
         chat_props["since"]=ssince; chat_props["limit"]=slim; chat_props["request_id"]=srq;
@@ -3258,6 +3270,144 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         result["note"] = "can_send_notices is whether the user may post a notice to that group. "
                          "accepts_notices is only whether they receive them; it says nothing "
                          "about what they may send.";
+        return result;
+    }
+
+    if (method == "give_item")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD who_error;
+        const LLUUID to = resolvePerson(params, who_error);
+        if (to.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+        if (to == gAgentID)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "You cannot give something to yourself; it is already yours.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The item is addressed by item_id or by `item`, not by `name` --
+        // `name` already means the recipient everywhere else in this tool, and
+        // one word meaning two things is how the wrong thing gets given away.
+        LLSD lookup = LLSD::emptyMap();
+        if (params.has("item_id")) lookup["item_id"] = params["item_id"];
+        if (params.has("item"))    lookup["name"]    = params["item"];
+        LLSD item_error;
+        const LLUUID item_id = resolveItem(lookup, item_error);
+        if (item_id.isNull())
+        {
+            if (item_error.has("message")
+                && item_error["message"].asString().find("either item_id or name") != std::string::npos)
+            {
+                item_error["message"] = "Give item_id, or item (the item's name), to say what to give.";
+            }
+            LLSD w; w["__error"] = item_error; return w;
+        }
+
+        LLViewerInventoryItem* item = gInventory.getItem(item_id);
+        if (!item)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "That item is no longer in inventory.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Giving a no-copy item is the one operation here that destroys
+        // something: it leaves this inventory and does not come back, and
+        // there is no Trash to fetch it out of. The project's rule is to
+        // verify copyable before anything destructive, and this is the
+        // clearest case of it. isInventoryGiveAcceptable() does NOT check
+        // copy -- only transfer -- so this has to.
+        if (!item->getPermissions().allowCopyBy(gAgentID))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That item is no-copy: giving it away hands over the only one there "
+                           "is, permanently, with no way back. If the user really means to, they "
+                           "must do it themselves in the viewer where they can see what they are "
+                           "parting with.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (get_is_item_worn(item_id))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That item is being worn. Detach it first.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (!LLGiveInventory::isInventoryGiveAcceptable(item))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That item cannot be given away -- most likely it is no-transfer, "
+                           "which the creator decided and the viewer cannot override.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string print = fingerprintOf("give_item", params);
+
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id already offered that item; nothing was offered again.";
+            return replay;
+        }
+        // The same item to the same person twice in a minute is a retry. Two
+        // identical offers arriving is confusing rather than harmful, but it
+        // is still not what was asked for.
+        if (recallRecent(print, 60.0, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "That same item was offered to that same person moments ago, so this "
+                             "was treated as a retry and NOT offered again.";
+            return replay;
+        }
+
+        LLAvatarName av;
+        const std::string to_name =
+            LLAvatarNameCache::get(to, &av) ? av.getUserName() : to.asString();
+        const std::string item_name = item->getName();
+
+        if (!LLGiveInventory::doGiveInventoryItem(to, item))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Second Life refused the offer.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LL_INFOS("AICtl") << "give_item: offered " << item_id << " to " << to << LL_ENDL;
+
+        LLSD result;
+        result["offered_to"] = to;
+        result["name"] = to_name;
+        result["item_id"] = item_id;
+        result["item"] = safeUtf8(item_name);
+        result["kind"] = kindOf(item->getType());
+        // An offer is not a delivery. They see a dialogue and choose, and the
+        // viewer is never told what they chose.
+        result["delivery_confirmed"] = false;
+        result["confirm_with"] =
+            "This is an offer, not a delivery. They get a dialogue and can accept or decline, and "
+            "the viewer is not told which. Say it was offered, never that they received it. If "
+            "they say something about it, that will appear in read_messages.";
+
+        LLSD summary;
+        summary["to"] = to;
+        summary["name"] = to_name;
+        summary["item"] = safeUtf8(item_name);
+        summary["kind"] = kindOf(item->getType());
+        recordAction(request_id, print, "give_item", "ok", result, summary);
         return result;
     }
 
