@@ -14575,7 +14575,7 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>FSAIControlEnabled</key>
     <map>
       <key>Comment</key>
-      <string>Allow an AI assistant on this computer to control the viewer through a local endpoint. Off by default. Bound to 127.0.0.1 only, and any request a browser sends is refused. A token is not required; see FSAIControlToken.</string>
+      <string>Allow an AI assistant on this computer to control the viewer through a local endpoint. Off by default. Bound to 127.0.0.1 only, and any request a browser sends is refused.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
@@ -14593,17 +14593,6 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>U32</string>
       <key>Value</key>
       <integer>8787</integer>
-  </map>
-  <key>FSAIControlToken</key>
-    <map>
-      <key>Comment</key>
-      <string>Optional shared secret for the AI control endpoint. Normally empty: the endpoint is on loopback only and refuses anything a browser sends, and a secret stored on this computer cannot defend against software already running as you. Set one if you want an extra check.</string>
-      <key>Persist</key>
-      <integer>1</integer>
-      <key>Type</key>
-      <string>String</string>
-      <key>Value</key>
-      <string />
   </map>
   <!-- </FS:AICtl> -->
   <key>FSUseStandaloneGroupFloater</key>

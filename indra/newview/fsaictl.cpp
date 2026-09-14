@@ -174,31 +174,9 @@ namespace
                     return;
                 }
 
-                std::string authorization =
-                    context[CONTEXT_REQUEST][CONTEXT_HEADERS]["authorization"].asString();
-
-                // Fall back to ?token=... in the URL. Some hosts let you paste a
-                // connector URL but give you nowhere to put a header, and a
-                // local endpoint nobody can authenticate to is useless. The
-                // header is preferred; this only applies when none was sent.
-                if (authorization.empty())
-                {
-                    const std::string query =
-                        context[CONTEXT_REQUEST][CONTEXT_QUERY_STRING].asString();
-                    const std::string key("token=");
-                    std::string::size_type at = query.find(key);
-                    if (at != std::string::npos)
-                    {
-                        at += key.size();
-                        std::string::size_type end = query.find('&', at);
-                        authorization = query.substr(at, end == std::string::npos
-                                                         ? std::string::npos : end - at);
-                    }
-                }
-
                 const std::string body = input.asString();
                 const std::string reply =
-                    FSAIControl::instance().handleRequest(body, authorization);
+                    FSAIControl::instance().handleRequest(body);
 
                 if (reply.empty())
                 {
@@ -1407,9 +1385,6 @@ bool FSAIControl::startInternal()
     // A token is optional. Everything here is on loopback, and a token cannot
     // defend against software already running as this user — it would only be
     // a step for the user to complete for no protection they did not have. Set
-    // FSAIControlToken if you want one anyway; when it is empty the endpoint
-    // relies on the origin check below instead.
-    mToken = gSavedSettings.getString("FSAIControlToken");
 
     mPort = static_cast<U16>(gSavedSettings.getU32("FSAIControlPort"));
 
@@ -1499,48 +1474,9 @@ bool FSAIControl::tick(const LLSD&)
     return false;
 }
 
-bool FSAIControl::authorized(const std::string& authorization) const
+
+std::string FSAIControl::handleRequest(const std::string& body)
 {
-    // No token configured: any local caller is welcome. What is refused is
-    // browser traffic, and that is handled by fromBrowser() before this runs.
-    if (mToken.empty())
-    {
-        return true;
-    }
-
-    // Accept "Bearer <token>" and a bare token, because connectors differ in
-    // which they send.
-    std::string presented = authorization;
-    const std::string bearer("Bearer ");
-    if (presented.compare(0, bearer.size(), bearer) == 0)
-    {
-        presented = presented.substr(bearer.size());
-    }
-
-    if (presented.size() != mToken.size())
-    {
-        return false;
-    }
-
-    // Compare every byte regardless of where the first difference is, so the
-    // time taken does not reveal how much of the token was correct.
-    unsigned char difference = 0;
-    for (size_t i = 0; i < mToken.size(); ++i)
-    {
-        difference |= static_cast<unsigned char>(presented[i] ^ mToken[i]);
-    }
-    return difference == 0;
-}
-
-std::string FSAIControl::handleRequest(const std::string& body,
-                                       const std::string& authorization)
-{
-    if (!authorized(authorization))
-    {
-        // No detail: a caller that cannot authenticate learns only that it
-        // cannot.
-        return rpcError(LLSD(), -32001, "Unauthorized");
-    }
 
     boost::json::value parsed;
     try

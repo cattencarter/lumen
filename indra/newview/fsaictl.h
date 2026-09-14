@@ -83,15 +83,14 @@ public:
     /**
      * Answer one JSON-RPC request.
      *
-     * `authorization` is the request's Authorization header, verbatim. It is
-     * checked here rather than in the node so that the check cannot be
-     * bypassed by adding a second entry point later.
+     * There is no credential to check. The endpoint is bound to loopback and
+     * the node refuses anything carrying a browser's `Origin` or
+     * `Sec-Fetch-Site` before this is reached; see Decisions 4 for why a token
+     * was removed rather than made optional.
      */
-    std::string handleRequest(const std::string& body, const std::string& authorization);
+    std::string handleRequest(const std::string& body);
 
 private:
-    /** Constant-time-ish comparison, so a wrong token leaks nothing by timing. */
-    bool authorized(const std::string& authorization) const;
 
     LLSD dispatch(const std::string& method, const LLSD& params);
     LLSD toolStatus() const;
@@ -274,7 +273,6 @@ private:
 
     bool        mRunning;
     U16         mPort;
-    std::string mToken;
 
     bool        mSubscribed;
     Stream      mMessages;   //< IM, group chat and ad-hoc, from one signal
