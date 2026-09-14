@@ -33,6 +33,7 @@
 #include "llappearancemgr.h"
 #include "llavatarnamecache.h"
 #include "llcallingcard.h"
+#include "llparcel.h"
 #include "llgiveinventory.h"
 #include "llinventoryfunctions.h"
 #include "llinventorymodel.h"
@@ -45,6 +46,7 @@
 #include "llviewermessage.h"
 #include "llselectmgr.h"
 #include "llviewerobjectlist.h"
+#include "lllandmark.h"
 #include "llworld.h"
 #include "llworldmap.h"
 #include "llworldmapmessage.h"
@@ -57,6 +59,7 @@
 #include "llhttpnode.h"
 #include "llimview.h"
 #include "llnotificationmanager.h"
+#include "llnotifications.h"
 #include "lliohttpserver.h"
 #include "llpreviewnotecard.h"
 #include "llpumpio.h"
@@ -66,6 +69,7 @@
 #include "lltimer.h"
 #include "lluuid.h"
 #include "llviewercontrol.h"
+#include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
 #include "llversioninfo.h"
 
@@ -1223,6 +1227,7 @@ namespace
             if (action == "search_notecards") return "search_notecards";
             if (action == "delete")          return "delete_item";
             if (action == "undelete")        return "undelete_item";
+            if (action == "wear_outfit")     return "wear_outfit";
             return "";
         }
         if (group == "chat")
@@ -1235,6 +1240,8 @@ namespace
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
             if (action == "give_item")     return "give_item";
+            if (action == "list_friends")  return "list_friends";
+            if (action == "send_group_message") return "send_group_message";
             return "";
         }
         if (group == "movement")
@@ -1247,12 +1254,15 @@ namespace
             if (action == "look_nearby")   return "look_nearby";
             if (action == "fly")           return "fly";
             if (action == "turn")          return "turn";
+            if (action == "where_am_i")    return "where_am_i";
             return "";
         }
         if (group == "viewer")
         {
             if (action == "status")       return "status";
             if (action == "read_actions") return "read_actions";
+            if (action == "read_dialogues") return "read_dialogues";
+            if (action == "answer_dialogue") return "answer_dialogue";
             return "";
         }
         return "";
@@ -1276,6 +1286,62 @@ namespace
         prop["enum"] = values;
         prop["description"] = description;
         return prop;
+    }
+
+    /**
+     * The boxes Second Life is currently showing the user.
+     *
+     * This is the one place the interface genuinely blocks rather than merely
+     * inconveniences: an inventory offer, a teleport invitation, a request for
+     * script permissions, all of them sit there until somebody finds and
+     * clicks them. Someone who uses this viewer through an assistant *because*
+     * the interface is in their way cannot do that -- so the assistant has to
+     * be able to read the box and answer it.
+     */
+    LLSD pendingDialogues(size_t limit)
+    {
+        LLSD out = LLSD::emptyArray();
+        LLNotificationChannelPtr visible = LLNotifications::instance().getChannel("Visible");
+        if (!visible)
+        {
+            return out;
+        }
+
+        visible->forEachNotification(
+            [&out, limit](LLNotificationPtr n)
+            {
+                if (!n || n->isCancelled() || n->isRespondedTo()) return;
+                if ((size_t)out.size() >= limit) return;
+
+                LLSD one;
+                one["id"] = n->getID();
+                one["kind"] = n->getName();
+                one["text"] = safeUtf8(n->getMessage());
+
+                // The buttons, so the assistant can say what the choices are
+                // instead of guessing at "yes" and "no".
+                LLSD choices = LLSD::emptyArray();
+                LLNotificationFormPtr form = n->getForm();
+                if (form)
+                {
+                    LLSD elements;
+                    form->getElements(elements);
+                    for (LLSD::array_const_iterator it = elements.beginArray();
+                         it != elements.endArray(); ++it)
+                    {
+                        const LLSD& e = *it;
+                        if (e["type"].asString() != "button") continue;
+                        LLSD choice;
+                        choice["name"] = e["name"].asString();
+                        choice["label"] = safeUtf8(e.has("text") ? e["text"].asString()
+                                                                 : e["name"].asString());
+                        choices.append(choice);
+                    }
+                }
+                one["choices"] = choices;
+                out.append(one);
+            });
+        return out;
     }
 
     LLSD toolDescriptors()
@@ -1305,7 +1371,7 @@ namespace
         // ---- inventory ----------------------------------------------------
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
-              "search_notecards", "wear", "detach", "delete", "undelete" };
+              "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -1335,9 +1401,11 @@ namespace
             "way: \"moved to Trash\", not \"deleted\". A NO-COPY item is the only one they have, "
             "so that one is refused until you have ASKED THEM and can pass `confirm` with the "
             "item's exact name. Anything worn must be detached first.\n"
-            "- undelete: take an item back out of the Trash.";
+            "- undelete: take an item back out of the Trash.\n"
+            "- wear_outfit: put on a whole saved outfit by name, which is how people actually "
+            "think about getting dressed. `add: true` keeps what is already worn.";
         LLSD inv_props;
-        inv_props["action"] = actionProperty(inv_actions, 9, "What to do. Required.");
+        inv_props["action"] = actionProperty(inv_actions, 10, "What to do. Required.");
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
         LLSD ik; ik["type"]="string";
             ik["description"]="search: restrict to one kind -- clothing, bodypart, object, "
@@ -1355,6 +1423,10 @@ namespace
                                "words to look for inside them, case-insensitive.";
         inv_props["query"]=iq; inv_props["kind"]=ik; inv_props["worn"]=iw;
         inv_props["creator"]=icr;
+        LLSD iadd; iadd["type"]="boolean";
+            iadd["description"]="wear_outfit: true adds it to what is already worn instead of "
+                                "replacing.";
+        inv_props["add"]=iadd;
         inv_props["folder_id"]=ifd; inv_props["item_id"]=sid; inv_props["name"]=snm;
         LLSD scf; scf["type"]="string";
             scf["description"]="Only for a NO-COPY item, and only after the user has said yes in "
@@ -1372,7 +1444,8 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "find_person",
-              "list_groups", "send_group_notice", "give_item" };
+              "list_groups", "send_group_notice", "give_item", "list_friends",
+              "send_group_message" };
         LLSD chat;
         chat["name"] = "chat";
         chat["description"] =
@@ -1391,6 +1464,11 @@ namespace
             "- send_im: a private message to one person. This reaches a real person and cannot be "
             "taken back. The viewer is NOT told whether it arrived, so never tell the user it was "
             "received; a reply is the only evidence.\n"
+            "- list_friends: the user's friends and which of them are online. The answer to "
+            "\"is anyone about?\", which nothing else could give.\n"
+            "- send_group_message: say something in a group's chat, where every member online in "
+            "that conversation sees it. Different from send_group_notice, which goes to everyone "
+            "in the group whether they are there or not.\n"
             "- find_person: look someone up by name to get their avatar id. Searches the user's "
             "friends and the avatars nearby -- the viewer cannot search all of Second Life.\n"
             "- list_groups: the groups the user belongs to, and whether they are allowed to send "
@@ -1406,7 +1484,7 @@ namespace
             "every member and CANNOT be recalled or edited, so read it back to the user and get "
             "their agreement before sending. Pass a request_id.";
         LLSD chat_props;
-        chat_props["action"] = actionProperty(chat_actions, 8, "What to do. Required.");
+        chat_props["action"] = actionProperty(chat_actions, 10, "What to do. Required.");
         LLSD cmsg; cmsg["type"]="string"; cmsg["description"]="say / send_im: the message.";
         LLSD cch;  cch["type"]="integer";
             cch["description"]="say: 0 (default) is ordinary local chat; above 0 talks to objects.";
@@ -1441,12 +1519,13 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
-              "fly", "turn" };
+              "fly", "turn", "where_am_i" };
         LLSD move;
         move["name"] = "movement";
         move["description"] =
             "Move the avatar around. Pick one with `action`:\n"
-            "- teleport: to a named region, optionally to a spot in it, or `home: true`.\n"
+            "- teleport: to a named region, optionally to a spot in it, to a `landmark` from "
+            "inventory by name, or `home: true`.\n"
             "- walk_to: on foot within the region already occupied. Three ways to say where: x and "
             "y; a person's name; or a `direction` and a `distance` in metres. Directions are "
             "either fixed (north, south, east, west and the between ones) or relative to the way "
@@ -1460,6 +1539,10 @@ namespace
             "- sit: on an object by `object_id`, or `ground: true` where the avatar stands. An "
             "object decides whether the avatar may sit and where it ends up.\n"
             "- stand: get up.\n"
+            "- where_am_i: the parcel underfoot -- its name, who owns it, and what it allows. "
+            "Check this when something did not work: flying, running scripts and taking damage "
+            "are all things a parcel can forbid, and that is usually the reason rather than a "
+            "fault.\n"
             "- look_nearby: people and objects around the avatar, with distances. Objects are "
             "named only once the region answers, so a first call may show \"(unnamed)\" and a "
             "second a moment later will not.\n"
@@ -1467,7 +1550,7 @@ namespace
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
         LLSD move_props;
-        move_props["action"] = actionProperty(move_actions, 8, "What to do. Required.");
+        move_props["action"] = actionProperty(move_actions, 9, "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
@@ -1483,6 +1566,9 @@ namespace
         LLSD mdis; mdis["type"]="number";
             mdis["description"]="walk_to: how far to go in that direction, in metres.";
         LLSD mfly; mfly["type"]="boolean"; mfly["description"]="fly: true takes off, false lands.";
+        LLSD mlm; mlm["type"]="string";
+            mlm["description"]="teleport: the name of a landmark in inventory, instead of a region.";
+        move_props["landmark"]=mlm;
         LLSD mhd; mhd["type"]="number"; mhd["description"]="turn: a bearing in degrees, 0 north, 90 east.";
         move_props["direction"]=mdir; move_props["distance"]=mdis;
         move_props["enabled"]=mfly; move_props["heading"]=mhd;
@@ -1496,7 +1582,8 @@ namespace
         tools.append(move);
 
         // ---- viewer ---------------------------------------------------------
-        static const char* const view_actions[] = { "status", "read_actions" };
+        static const char* const view_actions[] =
+            { "status", "read_actions", "read_dialogues", "answer_dialogue" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -1506,9 +1593,20 @@ namespace
             "again to confirm anything that takes time.\n"
             "- read_actions: which tools you used, when, and whether each worked. Shows that "
             "something was said and how long it was, never the words. Use it to tell the user what "
-            "you did, and to check whether something you are unsure about already happened.";
+            "you did, and to check whether something you are unsure about already happened.\n"
+            "- read_dialogues: the boxes Second Life is showing the user right now -- an inventory "
+            "offer, a teleport invitation, a request from a script. Each comes with its `id`, what "
+            "it says, and the `choices` available. Check this whenever something seems stuck, and "
+            "read the text out rather than summarising it: these ask for real permissions.\n"
+            "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
+            "the user what they want first.** These grant permission to take things, move the "
+            "avatar, or run scripts on it. Never choose for them.";
         LLSD view_props;
-        view_props["action"] = actionProperty(view_actions, 2, "What to do. Required.");
+        view_props["action"] = actionProperty(view_actions, 4, "What to do. Required.");
+        LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
+        LLSD vch;  vch["type"]="string";
+            vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
+        view_props["id"]=vdid; view_props["choice"]=vch;
         view_props["limit"] = slim;
         LLSD view_schema; view_schema["type"]="object"; view_schema["properties"]=view_props;
         LLSD view_req = LLSD::emptyArray(); view_req.append("action");
@@ -2787,6 +2885,42 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         return result;
     }
 
+    if (method == "where_am_i")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLViewerRegion* region = gAgent.getRegion();
+        LLParcel* parcel = LLViewerParcelMgr::getInstance()->getAgentParcel();
+
+        LLSD result;
+        if (region) result["region"] = region->getName();
+        const LLVector3 pos = gAgent.getPositionAgent();
+        LLSD p; p.append(pos.mV[VX]); p.append(pos.mV[VY]); p.append(pos.mV[VZ]);
+        result["position"] = p;
+
+        if (!parcel)
+        {
+            result["note"] = "The parcel underfoot is not known yet. Try again in a moment.";
+            return result;
+        }
+
+        result["parcel"] = safeUtf8(parcel->getName());
+        LLSD allows;
+        // These are the usual reason something "did not work": a parcel can
+        // forbid it, and that is not a fault to go hunting for.
+        allows["flying"] = parcel->getAllowFly();
+        allows["other_peoples_scripts"] = parcel->getAllowOtherScripts();
+        allows["damage"] = parcel->getAllowDamage();
+        result["parcel_allows"] = allows;
+        result["note"] = "If something did not work here, check parcel_allows first -- flying and "
+                         "scripts are commonly switched off on a parcel, and that is the reason "
+                         "rather than a fault.";
+        return result;
+    }
+
     if (method == "look_nearby")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -3206,6 +3340,103 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         summary["action"] = "walk_to";
         summary["destination"] = described;
         recordAction(request_id, fingerprintOf("walk_to", params), "walk_to", "ok", result, summary);
+        return result;
+    }
+
+    if (method == "wear_outfit")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string want = params.has("name") ? params["name"].asString() : std::string();
+        if (want.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give the outfit's name. search_inventory will not list outfits -- "
+                           "they are folders -- so use list_folder on \"My Outfits\" to see them.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Only under My Outfits. A folder called "Beach" somewhere in general
+        // inventory is not an outfit, and wearing its contents would be a
+        // surprise rather than an answer.
+        const LLUUID outfits = gInventory.findCategoryUUIDForType(LLFolderType::FT_MY_OUTFITS);
+        LLInventoryModel::cat_array_t* cats = NULL;
+        LLInventoryModel::item_array_t* items = NULL;
+        gInventory.getDirectDescendentsOf(outfits, cats, items);
+
+        LLUUID found;
+        LLSD candidates = LLSD::emptyArray();
+        if (cats)
+        {
+            const std::string needle = lowered(want);
+            for (size_t i = 0; i < cats->size(); ++i)
+            {
+                const std::string name = lowered((*cats)[i]->getName());
+                if (name == needle) { found = (*cats)[i]->getUUID(); break; }
+                if (name.find(needle) != std::string::npos)
+                {
+                    LLSD one;
+                    one["folder_id"] = (*cats)[i]->getUUID();
+                    one["name"] = safeUtf8((*cats)[i]->getName());
+                    candidates.append(one);
+                }
+            }
+        }
+        if (found.isNull() && candidates.size() == 1)
+        {
+            found = candidates[0]["folder_id"].asUUID();
+        }
+        if (found.isNull())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = candidates.size() == 0
+                ? "No outfit by that name. list_folder on \"My Outfits\" shows what there is."
+                : "More than one outfit matches. Ask which, then use its exact name.";
+            if (candidates.size() > 0) e["data"] = candidates;
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLViewerInventoryCategory* cat = gInventory.getCategory(found);
+        const std::string outfit_name = cat ? cat->getName() : want;
+        const bool add = params.has("add") && params["add"].asBoolean();
+
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id already put that outfit on.";
+            return replay;
+        }
+
+        LLAppearanceMgr::instance().wearInventoryCategory(cat, false, add);
+
+        LL_INFOS("AICtl") << "wear_outfit: " << outfit_name << (add ? " (added)" : " (replacing)")
+                          << LL_ENDL;
+
+        LLSD result;
+        result["outfit"] = safeUtf8(outfit_name);
+        result["added"] = add;
+        result["confirm_with"] =
+            "Getting dressed takes several seconds and happens item by item. Call search_inventory "
+            "with worn: true after a moment to see what is actually on, rather than saying it is "
+            "done.";
+        LLSD summary;
+        summary["action"] = "wear_outfit";
+        summary["outfit"] = safeUtf8(outfit_name);
+        summary["added"] = add;
+        recordAction(request_id, fingerprintOf("wear_outfit", params),
+                     "wear_outfit", "ok", result, summary);
         return result;
     }
 
@@ -3759,6 +3990,129 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         return result;
     }
 
+    if (method == "list_friends")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLAvatarTracker::buddy_map_t buddies;
+        LLAvatarTracker::instance().copyBuddyList(buddies);
+
+        LLSD online = LLSD::emptyArray();
+        LLSD offline = LLSD::emptyArray();
+        S32 unnamed = 0, asked = 0;
+        for (LLAvatarTracker::buddy_map_t::const_iterator it = buddies.begin();
+             it != buddies.end(); ++it)
+        {
+            LLSD who;
+            who["agent_id"] = it->first;
+            LLAvatarName av;
+            if (LLAvatarNameCache::get(it->first, &av))
+            {
+                who["name"] = av.getUserName();
+                if (av.getDisplayName() != av.getUserName())
+                {
+                    who["display_name"] = av.getDisplayName();
+                }
+            }
+            else
+            {
+                ++unnamed;
+                if (asked < 32)
+                {
+                    ++asked;
+                    LLAvatarNameCache::get(it->first, [](const LLUUID&, const LLAvatarName&){});
+                }
+                who["name"] = "(not known yet)";
+            }
+            if (LLAvatarTracker::instance().isBuddyOnline(it->first)) online.append(who);
+            else                                                      offline.append(who);
+        }
+
+        LLSD result;
+        result["online"] = online;
+        result["offline_count"] = (LLSD::Integer)offline.size();
+        result["offline"] = offline;
+        result["total"] = (LLSD::Integer)buddies.size();
+        if (unnamed > 0)
+        {
+            result["names_not_yet_known"] = unnamed;
+            result["note"] = "Some names have not arrived yet and have been asked for; call again "
+                             "in a moment to see them. Online status is correct either way.";
+        }
+        return result;
+    }
+
+    if (method == "send_group_message")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string message = params["message"].asString();
+        if (message.empty())
+        {
+            LLSD e; e["code"] = -32602; e["message"] = "message is required.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD group_error;
+        const LLUUID group_id = resolveGroup(params, group_error);
+        if (group_id.isNull()) { LLSD w; w["__error"] = group_error; return w; }
+
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string print = fingerprintOf("send_group_message", params);
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already sent; nothing was sent again.";
+            return replay;
+        }
+        // Shorter than the notice window: group chat is a conversation, and
+        // people do repeat themselves in one. Long enough to catch a retry.
+        if (recallRecent(print, 20.0, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "The same line went to that group moments ago, so this was treated "
+                             "as a retry and not sent twice.";
+            return replay;
+        }
+
+        LLGroupData data;
+        const std::string group_name =
+            gAgent.getGroupData(group_id, data) ? data.mName : group_id.asString();
+
+        // A group session's id IS the group id (Findings 1), so this cannot be
+        // confused with a one-to-one conversation.
+        const LLUUID session_id =
+            gIMMgr->addSession(group_name, IM_SESSION_GROUP_START, group_id);
+        LLIMModel::sendMessage(message, session_id, group_id, IM_SESSION_GROUP_START);
+
+        LL_INFOS("AICtl") << "send_group_message: " << message.size()
+                          << " characters to " << group_name << LL_ENDL;
+
+        LLSD result;
+        result["group"] = group_name;
+        result["group_id"] = group_id;
+        result["characters"] = (LLSD::Integer)message.size();
+        result["delivery_confirmed"] = false;
+        result["confirm_with"] =
+            "Handed to Second Life. Only members who have that conversation open will see it, and "
+            "the viewer is not told who did. It will appear in read_messages as our own copy "
+            "whether or not anyone read it.";
+        LLSD summary;
+        summary["group"] = group_name;
+        summary["characters"] = (LLSD::Integer)message.size();
+        recordAction(request_id, print, "send_group_message", "ok", result, summary);
+        return result;
+    }
+
     if (method == "find_person")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -3807,12 +4161,44 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
         else
         {
+            if (params.has("landmark") && !params["landmark"].asString().empty())
+            {
+                LLSD lm_error;
+                LLSD lookup = LLSD::emptyMap();
+                lookup["name"] = params["landmark"];
+                const LLUUID lm_id = resolveItem(lookup, lm_error);
+                if (lm_id.isNull()) { LLSD w; w["__error"] = lm_error; return w; }
+
+                LLViewerInventoryItem* lm = gInventory.getItem(lm_id);
+                if (!lm || lm->getType() != LLAssetType::AT_LANDMARK)
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "That inventory item is not a landmark.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+
+                gAgent.teleportViaLandmark(lm->getAssetUUID());
+
+                LLSD result;
+                result["destination"] = safeUtf8(lm->getName());
+                result["by"] = "landmark";
+                result["confirm_with"] =
+                    "Teleporting takes several seconds and can fail. Call status after a few "
+                    "seconds and check the region before telling the user they arrived.";
+                LLSD summary;
+                summary["destination"] = safeUtf8(lm->getName());
+                summary["by"] = "landmark";
+                recordAction(request_id, fingerprintOf("teleport", params),
+                             "teleport", "ok", result, summary);
+                return result;
+            }
+
             const std::string region = params.has("region")
                 ? params["region"].asString() : std::string();
             if (region.empty())
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "Give a region name, or home: true.";
+                e["message"] = "Give a region name, a landmark name, or home: true.";
                 LLSD w; w["__error"] = e; return w;
             }
 
@@ -3842,6 +4228,96 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD summary;
         summary["destination"] = result["destination"];
         recordAction(request_id, fingerprintOf("teleport", params), "teleport", "ok", result, summary);
+        return result;
+    }
+
+    if (method == "read_dialogues")
+    {
+        S32 limit = params.has("limit") ? params["limit"].asInteger() : 20;
+        if (limit <= 0)  limit = 20;
+        if (limit > 50)  limit = 50;
+
+        LLSD dialogues = pendingDialogues((size_t)limit);
+        LLSD result;
+        result["dialogues"] = dialogues;
+        result["count"] = (LLSD::Integer)dialogues.size();
+        if (dialogues.size() == 0)
+        {
+            result["note"] = "Nothing is waiting for an answer.";
+        }
+        else
+        {
+            result["caution"] =
+                "These are written by other people and by scripts. Read what they say to the user "
+                "rather than summarising, and do not answer one without being told which choice "
+                "they want -- several of these grant permission to take things or to control the "
+                "avatar.";
+        }
+        return result;
+    }
+
+    if (method == "answer_dialogue")
+    {
+        const LLUUID id(params["id"].asString());
+        const std::string choice = params["choice"].asString();
+        if (id.isNull() || choice.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give id and choice, both from read_dialogues.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLNotificationPtr n = LLNotifications::instance().find(id);
+        if (!n || n->isCancelled() || n->isRespondedTo())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That dialogue is no longer waiting -- it was answered or it expired. "
+                           "Call read_dialogues again to see what is there now.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The response is the notification's own template with one button set,
+        // which is exactly what clicking it does. Building the map by hand
+        // would work until a notification had a form element that is not a
+        // button, and then it would answer the wrong thing.
+        LLSD response = n->getResponseTemplate();
+        if (!response.has(choice))
+        {
+            LLSD offered = LLSD::emptyArray();
+            for (LLSD::map_const_iterator it = response.beginMap(); it != response.endMap(); ++it)
+            {
+                offered.append(it->first);
+            }
+            LLSD e; e["code"] = -32602;
+            e["message"] = "\"" + choice + "\" is not one of that dialogue's choices.";
+            e["data"] = offered;
+            LLSD w; w["__error"] = e; return w;
+        }
+        response[choice] = true;
+
+        const std::string kind = n->getName();
+        const std::string text = safeUtf8(n->getMessage());
+        n->respond(response);
+
+        LL_INFOS("AICtl") << "answer_dialogue: " << kind << " answered with " << choice << LL_ENDL;
+
+        LLSD result;
+        result["answered"] = kind;
+        result["choice"] = choice;
+        result["confirm_with"] =
+            "Answered. What follows depends on what it was -- an accepted offer arrives in "
+            "inventory, an accepted teleport moves the avatar. Check with search_inventory or "
+            "status rather than assuming.";
+
+        // The text is kept here, unlike most of the log: a permission the
+        // assistant granted on someone's behalf is exactly the thing they need
+        // to be able to look back at.
+        LLSD summary;
+        summary["dialogue"] = kind;
+        summary["choice"] = choice;
+        summary["said"] = text.size() > 200 ? text.substr(0, 200) + "..." : text;
+        recordAction(std::string(), fingerprintOf("answer_dialogue", params),
+                     "answer_dialogue", "ok", result, summary);
         return result;
     }
 
