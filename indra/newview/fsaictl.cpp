@@ -652,7 +652,23 @@ namespace
          * that genuinely need the true total.
          */
         NameAndKind(const std::string& needle, LLAssetType::EType kind, size_t cap = 0)
-            : mNeedle(lowered(needle)), mKind(kind), mCap(cap), mFound(0) {}
+            : mNeedle(lowered(needle)), mKind(kind), mCap(cap), mFound(0), mUnknownCreators(0) {}
+
+        /**
+         * Also require a particular creator.
+         *
+         * By id is exact and always complete. By name can only match creators
+         * the viewer already has a name for -- an inventory this size has
+         * creators it has never heard of -- so it counts what it could not
+         * check rather than quietly reporting fewer results.
+         */
+        void requireCreator(const LLUUID& id, const std::string& name)
+        {
+            mCreatorId = id;
+            mCreatorNeedle = lowered(name);
+        }
+
+        size_t unknownCreators() const { return mUnknownCreators; }
 
         bool operator()(LLInventoryCategory*, LLInventoryItem* item) override
         {
@@ -669,6 +685,32 @@ namespace
             {
                 return false;
             }
+
+            if (mCreatorId.notNull() || !mCreatorNeedle.empty())
+            {
+                const LLUUID creator = item->getPermissions().getCreator();
+                if (mCreatorId.notNull())
+                {
+                    if (creator != mCreatorId) return false;
+                }
+                else
+                {
+                    LLAvatarName av;
+                    // Cached only. Asking here would fire a request per item
+                    // while walking the tree, on the frame loop.
+                    if (!LLAvatarNameCache::get(creator, &av))
+                    {
+                        ++mUnknownCreators;
+                        return false;
+                    }
+                    if (lowered(av.getUserName()).find(mCreatorNeedle) == std::string::npos
+                        && lowered(av.getDisplayName()).find(mCreatorNeedle) == std::string::npos)
+                    {
+                        return false;
+                    }
+                }
+            }
+
             ++mFound;
             return true;
         }
@@ -683,6 +725,9 @@ namespace
         LLAssetType::EType mKind;
         size_t             mCap;
         size_t             mFound;
+        LLUUID             mCreatorId;
+        std::string        mCreatorNeedle;
+        mutable size_t     mUnknownCreators;
     };
 
     /**
@@ -718,6 +763,30 @@ namespace
         return path;
     }
 
+    /**
+     * A creator's name if it is already known, and a request for it if not.
+     *
+     * Names are not held for everyone who ever made something -- an inventory
+     * of 65,000 items has creators the viewer has never heard of. The id is
+     * always exact; the name arrives for the next call, which is the same
+     * shape look_nearby uses for object names.
+     */
+    std::string creatorName(const LLUUID& id, S32& asked)
+    {
+        if (id.isNull()) return std::string();
+        LLAvatarName av;
+        if (LLAvatarNameCache::get(id, &av))
+        {
+            return av.getUserName();
+        }
+        if (asked < 32)   // a budget, so one search cannot ask for hundreds
+        {
+            ++asked;
+            LLAvatarNameCache::get(id, [](const LLUUID&, const LLAvatarName&){});
+        }
+        return std::string();
+    }
+
     LLSD itemToLLSD(const LLViewerInventoryItem* item)
     {
         LLSD out;
@@ -725,6 +794,24 @@ namespace
         out["name"] = safeUtf8(item->getName());
         out["kind"] = kindOf(item->getType());
         out["worn"] = get_is_item_worn(item->getUUID());
+
+        // Who made it. Already on the item -- the permissions carry it -- and
+        // without it an assistant asked "which of these did so-and-so make"
+        // has nothing to go on but the name, and may fall back to reading the
+        // viewer's own window off the screen. Which is the thing this project
+        // exists to stop anyone having to do.
+        const LLUUID creator = item->getPermissions().getCreator();
+        if (creator.notNull())
+        {
+            out["creator"] = creator;
+            LLAvatarName av;
+            if (LLAvatarNameCache::get(creator, &av))
+            {
+                out["creator_name"] = av.getUserName();
+            }
+            // Not cached: the id is still exact, and creatorName() below asks
+            // for it so the next call has a name to show.
+        }
         // So the assistant can tell, before it tries, what it is allowed to
         // throw away. delete_item refuses anything that is not copyable, and
         // finding that out by being refused is a worse experience than knowing.
@@ -1256,12 +1343,18 @@ namespace
             ik["description"]="search: restrict to one kind -- clothing, bodypart, object, "
                               "notecard, landmark, animation, gesture, texture, sound, script.";
         LLSD iw; iw["type"]="boolean"; iw["description"]="search: true returns only what is worn.";
+        LLSD icr; icr["type"]="string";
+            icr["description"]="search: only items made by this person. An avatar id is exact and "
+                               "complete -- get one from find_person. A name also works but can "
+                               "only match creators the viewer already has a name for, and the "
+                               "result says how many it could not check.";
         LLSD ifd; ifd["type"]="string"; ifd["description"]="list_folder: the folder's id.";
         LLSD irp; irp["type"]="boolean"; irp["description"]="wear: replace what is already on that spot.";
         LLSD itx; itx["type"]="string";
             itx["description"]="create_notecard: the text to put in it. search_notecards: the "
                                "words to look for inside them, case-insensitive.";
         inv_props["query"]=iq; inv_props["kind"]=ik; inv_props["worn"]=iw;
+        inv_props["creator"]=icr;
         inv_props["folder_id"]=ifd; inv_props["item_id"]=sid; inv_props["name"]=snm;
         LLSD scf; scf["type"]="string";
             scf["description"]="Only for a NO-COPY item, and only after the user has said yes in "
@@ -2129,6 +2222,20 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // walking the whole tree.
         NameAndKind match(query, kindFromWord(kind), worn_only ? 0 : (size_t)limit + 1);
 
+        // Who made it. An id is exact; a name can only match creators the
+        // viewer already has a name for, and it says how many it could not
+        // check rather than silently returning fewer.
+        LLUUID creator_id;
+        std::string creator_name;
+        if (params.has("creator"))
+        {
+            const std::string who = params["creator"].asString();
+            const LLUUID maybe(who);
+            if (maybe.notNull())  creator_id = maybe;
+            else                  creator_name = who;
+            match.requireCreator(creator_id, creator_name);
+        }
+
         if (worn_only)
         {
             // Everything worn is linked from the Current Outfit Folder, so ask
@@ -2160,15 +2267,36 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         LLSD found = LLSD::emptyArray();
+        S32 asked = 0;
         for (size_t i = 0; i < items.size() && (S32)i < limit; ++i)
         {
-            found.append(itemToLLSD(items[i]));
+            LLSD one = itemToLLSD(items[i]);
+            // Ask for any creator name this page is missing, so a second call
+            // can show it -- the same shape look_nearby uses for objects.
+            if (one.has("creator") && !one.has("creator_name"))
+            {
+                const std::string nm = creatorName(one["creator"].asUUID(), asked);
+                if (!nm.empty()) one["creator_name"] = nm;
+            }
+            found.append(one);
         }
 
         LLSD result;
         result["items"] = found;
         result["returned"] = (LLSD::Integer)found.size();
         result["truncated"] = (S32)items.size() > limit;
+        if (!creator_name.empty() && match.unknownCreators() > 0)
+        {
+            result["creators_not_yet_known"] = (LLSD::Integer)match.unknownCreators();
+            // Its own key. `note` already belongs to the truncation message,
+            // and two different cautions sharing one field means the caller
+            // sees whichever happened to be written last.
+            result["creator_note"] = "Some items were skipped because the viewer does not yet have a name "
+                             "for who made them, so they could not be checked against \"" +
+                             creator_name + "\". Their names have been requested: searching again "
+                             "in a moment will cover more. For an exact, complete answer, use "
+                             "find_person to get the creator's id and pass that as creator.";
+        }
         if (!worn_only && match.capped())
         {
             // Be honest: the search stopped early, so this is a floor and not
