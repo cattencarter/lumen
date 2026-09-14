@@ -15239,8 +15239,12 @@ Change of this parameter will affect the layout of buttons in notification toast
       <integer>1</integer>
       <key>Type</key>
       <string>String</string>
+      <!-- <FS:AICtl> Lumen's own skin by default. It is a copy of the Firestorm
+           skin with the orange accent rotated to the teal of the application
+           icon, at matched perceived luminance so the interface keeps its
+           visual weight. The Firestorm skin is untouched and still selectable. -->
       <key>Value</key>
-      <string>firestorm</string>
+      <string>lumen</string>
     </map>
     <key>SkinningSettingsFile</key>
     <map>
