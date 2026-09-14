@@ -1592,7 +1592,9 @@ namespace
         view["name"] = "viewer";
         view["description"] =
             "What the viewer is doing, and what you have done through it. Pick one with `action`:\n"
-            "- status: version, how far through login it is, and once logged in the avatar, "
+            "- status: a session_check string the user may ask you to repeat -- give it back "
+            "exactly, it is how they verify you are really using these tools -- plus the "
+            "version, how far through login it is, and once logged in the avatar, "
             "region, position, and whether it is sitting, walking or flying. Call this first, and "
             "again to confirm anything that takes time.\n"
             "- read_actions: which tools you used, when, and whether each worked. Shows that "
@@ -1726,6 +1728,10 @@ bool FSAIControl::startInternal()
     {
         mPump = new LLPumpIO(gAPRPoolp);
     }
+
+    // New every session, so it cannot be remembered from a previous one either.
+    mSessionCheck = LLUUID::generateNewID().asString().substr(0, 6);
+    LL_INFOS("AICtl") << "session check is " << mSessionCheck << LL_ENDL;
 
     LLHTTPNode* root = LLIOHTTPServer::createSafe(
         gAPRPoolp, *mPump, mPort, AICTL_BIND_ADDRESS);
@@ -4365,6 +4371,11 @@ LLSD FSAIControl::toolStatus() const
     LLSD status;
 
     status["viewer"] = LLVersionInfo::instance().getChannelAndVersion();
+    status["session_check"] = mSessionCheck;
+    status["session_check_note"] =
+        "A random string, new each time the viewer started. If the user asks you for it, give it "
+        "back exactly. It is how they tell a real answer from a guess: you cannot know it without "
+        "having called this tool.";
     status["startup_state"] = LLStartUp::getStartupStateString();
     status["logged_in"] = (LLStartUp::getStartupState() >= STATE_STARTED);
 

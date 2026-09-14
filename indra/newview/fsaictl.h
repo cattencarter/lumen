@@ -272,6 +272,19 @@ private:
     void onInstantMessage(const LLSD& data);
     void onNearbyChat(const LLSD& data);
 
+    /**
+     * A short random string, new every time the endpoint starts.
+     *
+     * There to settle one question a person cannot otherwise answer: did the
+     * assistant actually call the tools, or is it telling me what it expects
+     * to be true? An assistant that has called `status` can say this back. One
+     * that is guessing cannot, because there is nothing to guess from -- it
+     * did not exist until this session began.
+     *
+     * Prompted by an assistant confidently naming the wrong skirt.
+     */
+    std::string mSessionCheck;
+
     bool        mRunning;
     U16         mPort;
 
