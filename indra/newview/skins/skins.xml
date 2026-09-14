@@ -6,40 +6,23 @@
       <string>Lumen</string>
       <key>folder</key>
       <string>lumen</string>
+      <!-- <FS:AICtl> One look, not five. The inherited colour schemes were
+           Firestorm's and had nothing to do with this skin. High Contrast is
+           kept deliberately: it is an accessibility feature, and this viewer
+           exists for people the ordinary interface does not serve. -->
       <key>themes</key>
       <array>
         <map>
           <key>name</key>
-          <string>Grey</string>
+          <string>Lumen</string>
           <key>folder</key>
           <string/>
         </map>
         <map>
           <key>name</key>
-          <string>Dark</string>
-          <key>folder</key>
-          <string>dark</string>
-        </map>
-        <!-- Thea Brianna's blue theme -->
-        <map>
-          <key>name</key>
-          <string>Blue</string>
-          <key>folder</key>
-          <string>blue</string>
-        </map>
-        <!-- Ansariel Hiller's high contrast theme -->
-        <map>
-          <key>name</key>
           <string>High Contrast</string>
           <key>folder</key>
           <string>highcontrast</string>
-        </map>
-        <!-- David Rowe's purple theme from CtrlAltStudio Viewer -->
-        <map>
-          <key>name</key>
-          <string>CtrlAltStudio</string>
-          <key>folder</key>
-          <string>ctrlaltstudio</string>
         </map>
       </array>
     </map>
