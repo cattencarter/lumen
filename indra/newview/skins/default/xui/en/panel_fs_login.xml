@@ -252,6 +252,7 @@
           label="Log In"
           layout="topleft"
           name="connect_btn"
+          text_color="White"
           width="90" />
       <check_box
           control_name="FSRememberUsername"
@@ -330,7 +331,7 @@
           name="mode_combo"
           width="110">
            <combo_box.item
-            label="Firestorm"
+            label="Lumen"
             name="Firestorm"
             value="settings_firestorm.xml" />
            <combo_box.item
