@@ -204,12 +204,36 @@ namespace
             }
         }
 
-        // A GET is useful for "is it up?" without a token, and says nothing
-        // about the session beyond that something is listening.
+        /**
+         * GET means two different things depending on who is asking.
+         *
+         * An MCP Streamable HTTP client opens a GET to listen for messages the
+         * server starts by itself. This server never starts one -- everything
+         * it says is a reply -- and the specification's answer for that is 405,
+         * not a document the client did not ask for and cannot parse. A client
+         * announces itself by accepting text/event-stream.
+         *
+         * Anything else gets the health document, which is how a person or a
+         * script asks "is it up?" without speaking any protocol at all.
+         */
         void get(ResponsePtr response, const LLSD& context) const override
         {
+            const std::string accept =
+                context[CONTEXT_REQUEST][CONTEXT_HEADERS]["accept"].asString();
+            if (accept.find("text/event-stream") != std::string::npos)
+            {
+                LLSD headers = jsonHeaders();
+                headers["Allow"] = "POST";
+                response->extendedResult(HTTP_METHOD_NOT_ALLOWED,
+                    rpcError(LLSD(), -32601,
+                             "This endpoint answers requests; it does not open server-initiated "
+                             "streams. Send JSON-RPC by POST."),
+                    headers);
+                return;
+            }
+
             LLSD health;
-            health["service"] = "firestorm-ai-control";
+            health["service"] = "lumen";
             health["ok"] = true;
             response->extendedResult(HTTP_OK, llsdToJsonString(health), jsonHeaders());
         }
@@ -1793,7 +1817,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         capabilities["tools"] = LLSD::emptyMap();
 
         LLSD info;
-        info["name"] = "firestorm-ai-control";
+        info["name"] = "lumen";
         info["version"] = LLVersionInfo::instance().getVersion();
 
         LLSD result;
