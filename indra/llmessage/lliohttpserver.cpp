@@ -993,6 +993,45 @@ LLHTTPNode& LLIOHTTPServer::create(
     return factory->getRootNode();
 }
 
+// <FS:AICtl>
+// static
+LLHTTPNode* LLIOHTTPServer::createSafe(
+    apr_pool_t* pool, LLPumpIO& pump, U16 port, const char* bind_address)
+{
+    // create() above passes no hostname, so LLSocket::create falls back to its
+    // APR_ANYADDR default and the server answers on every interface. That is
+    // wrong for anything that should only be reachable from this machine, and
+    // there is no way to correct it from outside this file because
+    // LLHTTPResponseFactory is declared here rather than in the header.
+    LLSocket::ptr_t socket = LLSocket::create(
+        pool,
+        LLSocket::STREAM_TCP,
+        port,
+        bind_address);
+    if (!socket)
+    {
+        // Deliberately not LL_ERRS. A busy port is an ordinary condition for
+        // an optional feature, and taking the whole viewer down over it would
+        // lose whatever the person was doing.
+        LL_WARNS() << "Unable to bind HTTP server socket to "
+                   << (bind_address ? bind_address : "(null)") << ":" << port
+                   << LL_ENDL;
+        return NULL;
+    }
+
+    LLHTTPResponseFactory* factory = new LLHTTPResponseFactory;
+    std::shared_ptr<LLChainIOFactory> factory_ptr(factory);
+
+    LLIOServerSocket* server = new LLIOServerSocket(pool, socket, factory_ptr);
+
+    LLPumpIO::chain_t chain;
+    chain.push_back(LLIOPipe::ptr_t(server));
+    pump.addChain(chain, NEVER_CHAIN_EXPIRY_SECS);
+
+    return &factory->getRootNode();
+}
+// </FS:AICtl>
+
 // static
 void LLIOHTTPServer::setTimingCallback(timing_callback_t callback,
                                        void* data)

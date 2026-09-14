@@ -298,6 +298,7 @@ using namespace LL;
 
 #include "aoengine.h"
 #include "fsradar.h"
+#include "fsaictl.h"        // <FS:AICtl>
 #include "fsassetblacklist.h"
 #include "bugsplatattributes.h"
 
@@ -1440,6 +1441,14 @@ bool LLAppViewer::init()
     // Create IO Pump to use for HTTP Requests.
     gServicePump = new LLPumpIO(gAPRPoolp);
 
+    // <FS:AICtl> The local control endpoint. Here because it needs the service
+    // pump, which has just been created, and the settings, which are already
+    // loaded. It does nothing unless the user has enabled it and set a token,
+    // and it reports rather than throws when the port is unavailable, so this
+    // call cannot prevent the viewer from starting.
+    FSAIControl::instance().start();
+    // </FS:AICtl>
+
     // Note: this is where gLocalSpeakerMgr and gActiveSpeakerMgr used to be instantiated.
 
     LLVoiceChannel::initClass();
@@ -1995,6 +2004,11 @@ void LLAppViewer::flushLFSIO()
 
 bool LLAppViewer::cleanup()
 {
+    // <FS:AICtl> Refuse further requests before anything it might
+    // touch is torn down. The pump owns the socket itself.
+    FSAIControl::instance().stop();
+    // </FS:AICtl>
+
 #if LL_VELOPACK
     // Apply any pending Velopack update before shutdown
     if (velopack_is_update_pending())

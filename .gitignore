@@ -130,3 +130,7 @@ firestorm.code-workspace
 .github/release.yaml
 
 checks.json
+
+# <FS:AICtl> autobuild's virtualenv. Local to each machine; its scripts hardcode
+# absolute paths, so it cannot be shared or moved -- rebuild it in place instead.
+.venv/

@@ -1,0 +1,72 @@
+<!doctype html>
+<!--
+  The start screen.
+
+  Deliberately local and deliberately plain. The page it replaces was fetched
+  from phoenixviewer.com on every launch, which put Firestorm's branding and
+  their server in front of this viewer's users. This one ships with the viewer,
+  loads instantly, works offline, and says nothing that is not true.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lumen</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: #101018;
+    color: #e8e8ef;
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 2rem;
+    box-sizing: border-box;
+  }
+  .mark {
+    width: 190px;
+    height: 190px;
+    margin-bottom: 1.6rem;
+    /* If the logo file is absent the page still reads correctly. */
+    background: no-repeat center / contain url("lumen_logo.png");
+  }
+  h1 {
+    margin: 0;
+    font-size: 2.5rem;
+    font-weight: 300;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  p.sub {
+    margin: 0.6rem 0 0;
+    font-size: 0.95rem;
+    color: #9aa0b4;
+    letter-spacing: 0.03em;
+  }
+  p.note {
+    margin-top: 2.4rem;
+    font-size: 0.8rem;
+    color: #5f6478;
+    max-width: 30rem;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark" role="img" aria-label="Lumen"></div>
+    <h1>Lumen</h1>
+    <p class="sub">An AI assisted Second Life Viewer</p>
+    <p class="note">
+      Built on Firestorm. Sign in below to begin.
+    </p>
+  </div>
+</body>
+</html>

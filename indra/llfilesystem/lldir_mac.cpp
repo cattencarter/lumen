@@ -64,7 +64,14 @@ LLDir_Mac::LLDir_Mac()
 {
     mDirDelimiter = "/";
 
-    const std::string     secondLifeString = "Firestorm";
+    // <FS:AICtl> The name of the folder under Application Support, hardcoded
+    // here rather than taken from APP_NAME. Changing APP_NAME alone renames
+    // the log file and leaves this build writing into the installed
+    // Firestorm's settings, cache and chat logs, which is exactly what a
+    // separate viewer must not do.
+    //const std::string     secondLifeString = "Firestorm";
+    const std::string     secondLifeString = "Lumen";
+    // </FS:AICtl>
 
     std::string executablepathstr = getSystemExecutableFolder();
 

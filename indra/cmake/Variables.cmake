@@ -171,7 +171,24 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "")
   set(CMAKE_XCODE_ATTRIBUTE_DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING YES)
   set(CMAKE_XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION NO)
-  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS Build Arch" FORCE)
+  # <FS:AICtl> arm64 by default on macOS, not universal.
+  # The Intel slice doubled the wall clock of every build and bought exactly one
+  # supported configuration. Lumen is useless without a host application to drive
+  # it, and the ChatGPT desktop app is arm64-only (checked 2026-09-14 against the
+  # shipped binary of 26.908.40834: `lipo -archs` reports arm64 alone). Claude
+  # Desktop is universal, so an Intel user could reach Lumen through Claude and
+  # nothing else. That did not justify doubling every build; the source is public,
+  # so anyone who needs Intel can build it.
+  #
+  # NOTE the FORCE below: passing -DCMAKE_OSX_ARCHITECTURES on the command line
+  # does NOT work, because this overwrites it. Override this instead:
+  #   autobuild configure -c ReleaseOS -- -DLUMEN_OSX_ARCH="arm64;x86_64"
+  if(NOT DEFINED LUMEN_OSX_ARCH)
+    set(LUMEN_OSX_ARCH "arm64")
+  endif()
+  set(CMAKE_OSX_ARCHITECTURES "${LUMEN_OSX_ARCH}" CACHE STRING "macOS Build Arch" FORCE)
+  message(STATUS "Lumen: building for ${CMAKE_OSX_ARCHITECTURES}")
+  # </FS:AICtl>
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 # Default deploy grid

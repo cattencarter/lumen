@@ -29,6 +29,8 @@
 // file include
 #define LLSELECTMGR_CPP
 #include "llselectmgr.h"
+
+#include "fsaictl.h"   // <FS:AICtl>
 #include "llmaterialmgr.h"
 
 // library includes
@@ -6433,6 +6435,12 @@ void LLSelectMgr::processObjectPropertiesFamily(LLMessageSystem* msg, void** use
 
     std::string desc;
     msg->getStringFast(_PREHASH_ObjectData, _PREHASH_Description, desc);
+
+    // <FS:AICtl> Remember the name for the assistant endpoint's look_nearby.
+    // These replies are the only place an object's name is ever given to the
+    // viewer, and every existing consumer hands it straight to a floater.
+    FSAIControl::noteObjectName(id, name);
+    // </FS:AICtl>
 
     // the reporter widget askes the server for info about picked objects
     if (request_flags & COMPLAINT_REPORT_REQUEST )

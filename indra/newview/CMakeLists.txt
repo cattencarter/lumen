@@ -102,6 +102,7 @@ set(viewer_SOURCE_FILES
     floatermedialists.cpp
     fsareasearch.cpp
     fsareasearchmenu.cpp
+    fsaictl.cpp
     fsassetblacklist.cpp
     fsavatarrenderpersistence.cpp
     fsavatarsearchmenu.cpp
@@ -961,6 +962,7 @@ set(viewer_HEADER_FILES
     floatermedialists.h
     fsareasearch.h
     fsareasearchmenu.h
+    fsaictl.h
     fsassetblacklist.h
     fsavatarrenderpersistence.h
     fsavatarsearchmenu.h
@@ -1904,6 +1906,7 @@ if (DARWIN)
   set(viewer_RESOURCE_FILES
     firestorm_icon.icns
     Info-Firestorm.plist
+    lumen_icon.icns
     Firestorm.xib
     # CMake doesn't seem to support Xcode language variants well just yet
     English.lproj/InfoPlist.strings
@@ -2808,16 +2811,20 @@ if (DARWIN)
   # magically known to CMake -- it's that these names are referenced in the
   # Info-SecondLife.plist file in the configure_file() directive below.
   #set(product "${VIEWER_CHANNEL}")
-  set(product "Firestorm")
-  set(MACOSX_EXECUTABLE_NAME "Firestorm")
-  set(MACOSX_BUNDLE_INFO_STRING "Firestorm Viewer")
-  set(MACOSX_BUNDLE_ICON_FILE "firestorm_icon.icns")
-  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.firestormviewer.firestorm")
+  set(product "Lumen")   # <FS:AICtl> names Lumen.app and its executable
+  # <FS:AICtl> This viewer identifies as itself, not as Firestorm. The bundle
+  # name is what macOS shows in the title bar and the menu bar, and the
+  # identifier is how the system tells two applications apart, so leaving
+  # either alone makes a derivative masquerade as the viewer it came from.
+  set(MACOSX_EXECUTABLE_NAME "Lumen")   # <FS:AICtl>
+  set(MACOSX_BUNDLE_INFO_STRING "Lumen Viewer")
+  set(MACOSX_BUNDLE_ICON_FILE "lumen_icon.icns")   # <FS:AICtl> our own mark, not Firestorm's phoenix
+  set(MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.cattencarter.lumen")   # <FS:AICtl>
   set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
-  set(MACOSX_BUNDLE_BUNDLE_NAME "Firestorm")
+  set(MACOSX_BUNDLE_BUNDLE_NAME "Lumen")
   set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
-  set(MACOSX_BUNDLE_COPYRIGHT "Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")
+  set(MACOSX_BUNDLE_COPYRIGHT "Based on Firestorm, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")
   set(MACOSX_BUNDLE_NSMAIN_NIB_FILE "Firestorm.nib")
   set(MACOSX_BUNDLE_NSPRINCIPAL_CLASS "LLApplication")
 

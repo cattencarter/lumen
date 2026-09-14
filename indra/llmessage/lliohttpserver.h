@@ -44,6 +44,12 @@ public:
      *   Returns the root node of the new server.  Add LLHTTPNode instances
      *   to this root.
      *
+     *   NOTE: this overload binds to every interface (APR_ANYADDR) and calls
+     *   LL_ERRS if the socket cannot be opened, which terminates the process.
+     *   Prefer createSafe() for anything that should be reachable only from
+     *   this machine, or that must not take the viewer down when a port is
+     *   already in use.
+     *
      *   Nodes that return NULL for getProtocolHandler(), will use the
      *   default handler that interprets HTTP on the wire and converts
      *   it into calls to get(), put(), post(), del() with appropriate
@@ -52,6 +58,24 @@ public:
      *   To have nodes that implement some other wire protocol (XML-RPC
      *   for example), use the helper templates below.
      */
+
+    // <FS:AICtl> A server that binds where it is told and survives failure.
+    static LLHTTPNode* createSafe(apr_pool_t* pool, LLPumpIO& pump, U16 port,
+                                  const char* bind_address);
+    /**< Same as create(), with two differences that matter for a server
+     *   embedded in the viewer rather than in a test harness.
+     *
+     *   It binds to `bind_address` instead of every interface. Pass
+     *   "127.0.0.1" for an endpoint that must not be reachable from the
+     *   network.
+     *
+     *   It returns NULL when the socket cannot be opened, rather than calling
+     *   LL_ERRS and terminating. A port already in use is an ordinary
+     *   condition for an optional feature and must not end the session.
+     *
+     *   Returns the root node, owned by the pump as in create(), or NULL.
+     */
+    // </FS:AICtl>
 
     static void createPipe(LLPumpIO::chain_t& chain,
             const LLHTTPNode& root, const LLSD& ctx);

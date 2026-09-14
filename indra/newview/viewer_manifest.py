@@ -47,6 +47,15 @@ sys.dont_write_bytecode = True # <FS:Ansariel> Prevents creating __pycache__ dir
 
 from fs_viewer_manifest import FSViewerManifest #<FS:ND/> Manifest extensions for Firestorm
 
+# <FS:AICtl> The bundle and executable name, set by `set(product ...)` in
+# indra/newview/CMakeLists.txt. It appears in several unrelated places in this
+# file and EVERY one must agree with CMake, or packaging fails late in a build
+# that otherwise succeeded. Two were missed the first time -- the app was found
+# but `strip` still looked for Contents/MacOS/Firestorm. Defined once here so
+# there is only one place left to get wrong; change it with CMakeLists.txt.
+PRODUCT = "Lumen"
+# </FS:AICtl>
+
 viewer_dir = os.path.dirname(__file__)
 # Add indra/lib/python to our path so we don't have to muck with PYTHONPATH.
 # Put it FIRST because some of our build hosts have an ancient install of
@@ -229,6 +238,15 @@ class ViewerManifest(LLManifest,FSViewerManifest):
                     with self.prefix(src="*/html", dst="*/html"):
                         #self.path("*/*/*/*.js") # <FS:Ansariel> Copied outside packaging and from packages directory already
                         self.path("*/*/*.html")
+                        # <FS:AICtl> Images beside those pages. Only .html was
+                        # copied, so the start page shipped without its logo and
+                        # rendered a broken image with no error anywhere.
+                        self.path("*/*/*.png")
+                        # Only .png: viewer_manifest treats a pattern that
+                        # matches nothing as a fatal error, so do not add .jpg
+                        # or .svg here speculatively -- add them when a file
+                        # that needs them actually exists.
+                        # </FS:AICtl>
 
             #build_data.json.  Standard with exception handling is fine.  If we can't open a new file for writing, we have worse problems
             #platform is computed above with other arg parsing
@@ -1458,7 +1476,10 @@ class Darwin_x86_64_Manifest(ViewerManifest):
         # copy over the build result (this is a no-op if run within the xcode
         # script)
         #self.path(os.path.join(self.args['configuration'], self.channel() + ".app"), dst="")
-        self.path(os.path.join(self.args['configuration'], "Firestorm.app"), dst="")
+        # <FS:AICtl> Was hardcoded "Firestorm.app"; the bundle CMake produces
+        # is named by `set(product ...)`. See PRODUCT at the top of this file.
+        self.path(os.path.join(self.args['configuration'], PRODUCT + ".app"), dst="")
+        # </FS:AICtl>
 
         pkgdir = os.path.join(self.args['build'], os.pardir, 'packages')
         relpkgdir = os.path.join(pkgdir, "lib", "release")
@@ -1470,7 +1491,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
 
         with self.prefix(src="", dst="Contents"):  # everything goes in Contents
             with self.prefix(dst="MacOS"):
-                executable = self.dst_path_of("Firestorm") # locate the executable within the bundle.
+                executable = self.dst_path_of(PRODUCT) # locate the executable within the bundle.  # <FS:AICtl>
 
             bugsplat_db = self.args.get('bugsplat')
             print(f"debug: bugsplat_db={bugsplat_db}")
@@ -1514,7 +1535,12 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                         self.path(libfile)
 
             with self.prefix(dst="MacOS"):
-                executable = self.dst_path_of(CHANNEL_VENDOR_BASE)
+                # <FS:AICtl> Was CHANNEL_VENDOR_BASE ("Firestorm"). That constant
+                # is right for the CHANNEL name (Firestorm-private-Mac) but wrong
+                # for the executable, which CMake names from set(product ...).
+                # This reassignment shadowed the fix above and broke `strip`.
+                executable = self.dst_path_of(PRODUCT)
+                # </FS:AICtl>
                 if self.args.get('bugsplat'):
                     # According to Apple Technical Note TN2206:
                     # https://developer.apple.com/library/archive/technotes/tn2206/_index.html#//apple_ref/doc/uid/DTS40007919-CH1-TNTAG207
@@ -1588,9 +1614,13 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                 with self.prefix(src=pkgdir,dst=""):
                     self.path("ca-bundle.crt")
 
+                # <FS:AICtl> Ship our own mark rather than Firestorm's phoenix.
+                # It sits beside their icon in every channel folder, so the
+                # existing per-channel lookup finds it unchanged.
                 icon_path = self.icon_path()
                 with self.prefix(src=icon_path) :
-                    self.path("firestorm_icon.icns")
+                    self.path("lumen_icon.icns")
+                # </FS:AICtl>
 
                 # Translations
                 self.path("English.lproj/language.txt")
@@ -1738,7 +1768,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
         if ("package" in self.args['actions'] or 
             "unpacked" in self.args['actions']):
             self.run_command_shell('strip -S %(viewer_binary)r' %
-                            { 'viewer_binary' : self.dst_path_of('Contents/MacOS/Firestorm')})
+                            { 'viewer_binary' : self.dst_path_of('Contents/MacOS/' + PRODUCT)})  # <FS:AICtl>
 # </FS:Ansariel> construct method VMP trampoline crazy VMP launcher juggling shamelessly replaced with old version
 
     def package_finish(self):

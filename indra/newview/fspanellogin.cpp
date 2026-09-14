@@ -878,6 +878,35 @@ void FSPanelLogin::loadLoginPage()
 {
     if (!sInstance) return;
 
+    // <FS:AICtl> Our own start screen, shipped with the viewer.
+    //
+    // What this replaces was fetched from phoenixviewer.com on every launch:
+    // Firestorm's blog, Linden news, the blogger network and the destination
+    // guide. That put their branding and their server in front of this
+    // viewer's users, which a derivative should not do, and it made the start
+    // screen depend on someone else's site being up. The local page loads
+    // instantly and works offline.
+    //
+    // Set LumenUseStockLoginPage to get the old behaviour back.
+    if (!gSavedSettings.getBOOL("LumenUseStockLoginPage"))
+    {
+        LLMediaCtrl* web_browser = sInstance->getChild<LLMediaCtrl>("login_html");
+        if (web_browser)
+        {
+            // A bare filesystem path is not a URL: CEF reads "/Users/..." as a
+            // host named "users" and reports ERR_NAME_NOT_RESOLVED. The scheme
+            // has to be explicit.
+            std::string page = gDirUtilp->findSkinnedFilename("html", "lumen/login.html");
+            if (!page.empty())
+            {
+                web_browser->navigateTo("file://" + page, HTTP_CONTENT_TEXT_HTML);
+                return;
+            }
+            LL_WARNS("AppInit") << "Lumen start page not found; using the stock one." << LL_ENDL;
+        }
+    }
+    // </FS:AICtl>
+
     LLURI login_page = LLURI(LLGridManager::getInstance()->getLoginPage());
     LLSD params(login_page.queryMap());
 

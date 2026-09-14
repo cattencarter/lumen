@@ -32,7 +32,13 @@
 class LLUUID;
 
 // <FS:Ansariel> Centralize definition of application name
-const std::string APP_NAME = "Firestorm";
+// <FS:AICtl> Renamed so this viewer keeps its own settings, cache and chat
+// logs instead of sharing the installed Firestorm's. APP_NAME chooses the
+// directory under Application Support, so leaving it alone would have this
+// build writing into someone's everyday viewer.
+//const std::string APP_NAME = "Firestorm";
+const std::string APP_NAME = "Lumen";
+// </FS:AICtl>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;
 static constexpr S32 REGION_WIDTH_UNITS = 256;
