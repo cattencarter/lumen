@@ -235,23 +235,119 @@ namespace
     }
 
     /**
-     * What to show for a tool that just ran.
+     * What to show for a tool that just ran, in words rather than in ours.
      *
-     * The grouped tools mean the name alone is nearly useless -- four calls in
-     * a row all reading "inventory" say nothing about whether the assistant
-     * searched, wore, detached or deleted. The action is the informative half.
+     * "inventory.search" is the name of a function. Someone watching their
+     * avatar get dressed is not debugging a program, and a line of dotted
+     * identifiers reads as something having gone wrong even when everything is
+     * fine. The names still exist in `read_actions` for anyone who wants them.
+     *
+     * An unrecognised action falls back to the raw name deliberately: showing
+     * something honest and ugly beats showing nothing, and it is a standing
+     * reminder that a new action needs a line here.
      */
+    std::string humanAction(const std::string& group, const std::string& action)
+    {
+        if (group == "inventory")
+        {
+            if (action == "search")           return "Searching your inventory";
+            if (action == "list_folder")      return "Looking in a folder";
+            if (action == "read_notecard")    return "Reading a notecard";
+            if (action == "create_notecard")  return "Writing a notecard";
+            if (action == "wear")             return "Putting something on";
+            if (action == "detach")           return "Taking something off";
+            if (action == "wear_outfit")      return "Changing outfit";
+            if (action == "search_notecards") return "Reading through your notecards";
+            if (action == "delete")           return "Moving something to the trash";
+            if (action == "undelete")         return "Getting something back from the trash";
+        }
+        else if (group == "chat")
+        {
+            if (action == "read_chat")          return "Reading local chat";
+            if (action == "read_messages")      return "Reading your messages";
+            if (action == "say")                return "Speaking in local chat";
+            if (action == "send_im")            return "Sending a message";
+            if (action == "find_person")        return "Looking someone up";
+            if (action == "list_groups")        return "Checking your groups";
+            if (action == "list_friends")       return "Checking who your friends are";
+            if (action == "send_group_notice")  return "Posting a group notice";
+            if (action == "send_group_message") return "Writing to a group";
+            if (action == "give_item")          return "Giving someone an item";
+        }
+        else if (group == "movement")
+        {
+            if (action == "teleport")      return "Teleporting";
+            if (action == "walk_to")       return "Walking";
+            if (action == "stop_walking")  return "Stopping";
+            if (action == "sit")           return "Sitting down";
+            if (action == "stand")         return "Standing up";
+            if (action == "fly")           return "Flying";
+            if (action == "turn")          return "Turning";
+            if (action == "look_nearby")   return "Looking around";
+            if (action == "where_am_i")    return "Checking where you are";
+        }
+        else if (group == "viewer")
+        {
+            if (action == "status")          return "Checking the viewer";
+            if (action == "read_actions")    return "Reviewing what it has done";
+            if (action == "read_dialogues")  return "Checking for waiting dialogue boxes";
+            if (action == "answer_dialogue") return "Answering a dialogue box";
+        }
+
+        return action.empty() ? group : (group + "." + action);
+    }
+
+    /**
+     * A few words of context, where there are some worth having.
+     *
+     * Only short identifying fields: a name, a person, a place. **Never the
+     * body of a message or a notecard** -- the action log deliberately records
+     * that a message was sent without recording what it said, and a line in
+     * this window should not quietly undo that for anyone reading over a
+     * shoulder.
+     */
+    std::string actionDetail(const LLSD& args)
+    {
+        if (!args.isMap())
+        {
+            return std::string();
+        }
+
+        static const char* FIELDS[] = {
+            "name", "query", "text", "item_name", "folder",
+            "person", "person_name", "region", "group", "outfit"
+        };
+
+        for (const char* f : FIELDS)
+        {
+            // "text" is a search term on the inventory actions; it is the
+            // message body on say/send_im, so it is only read when nothing
+            // else matched and it is short enough to be a search.
+            if (!args.has(f))
+            {
+                continue;
+            }
+            std::string v = args[f].asString();
+            if (v.empty() || v.size() > 48)
+            {
+                continue;
+            }
+            // Keep it to one line whatever arrives.
+            const size_t nl = v.find_first_of("\r\n");
+            if (nl != std::string::npos)
+            {
+                continue;
+            }
+            return " \xe2\x80\x9c" + v + "\xe2\x80\x9d";
+        }
+        return std::string();
+    }
+
     std::string toolLabel(const std::string& name, const LLSD& args)
     {
-        if (args.isMap() && args.has("action"))
-        {
-            const std::string action = args["action"].asString();
-            if (!action.empty())
-            {
-                return name + "." + action;
-            }
-        }
-        return name;
+        const std::string action = (args.isMap() && args.has("action"))
+                                 ? args["action"].asString() : std::string();
+        return humanAction(name, action) + actionDetail(args);
     }
 
     /**
@@ -260,9 +356,7 @@ namespace
      * The two spell it differently, and neither total is the conversation's
      * size: **every call resends the whole history**, so the input counts
      * across a turn's tool round trips genuinely add up rather than
-     * double-counting. That is what the bill does too, which is the point of
-     * showing it -- a turn that took six tool calls costs far more than one
-     * that took none, and nothing on screen said so.
+     * double-counting. That is what the bill does too.
      */
     void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out)
     {
@@ -282,24 +376,28 @@ namespace
         in  += u["input_tokens"].asInteger();
         out += u["output_tokens"].asInteger();
 
-        // Prompt caching is not used, but these are billed input if it ever is,
-        // and counting them only when present costs nothing now.
+        // Prompt caching is not used yet, but these are billed input if it
+        // ever is, and counting them only when present costs nothing now.
         if (u.has("cache_read_input_tokens"))     in += u["cache_read_input_tokens"].asInteger();
         if (u.has("cache_creation_input_tokens")) in += u["cache_creation_input_tokens"].asInteger();
     }
 
-    /** 12345 -> "12,345"; a five-figure token count is unreadable otherwise. */
-    std::string grouped(S32 n)
+    /** 25732 -> "25.7k". Full precision on a five-figure count is just noise. */
+    std::string compact(S32 n)
     {
-        std::string digits = llformat("%d", n < 0 ? 0 : n);
-        std::string out;
-        S32 count = 0;
-        for (S32 i = (S32)digits.size() - 1; i >= 0; --i)
+        if (n < 0) n = 0;
+        if (n < 10000)
         {
-            out += digits[i];
-            if (++count % 3 == 0 && i > 0) out += ',';
+            std::string digits = llformat("%d", n);
+            std::string out; S32 c = 0;
+            for (S32 i = (S32)digits.size() - 1; i >= 0; --i)
+            {
+                out += digits[i];
+                if (++c % 3 == 0 && i > 0) out += ',';
+            }
+            return std::string(out.rbegin(), out.rend());
         }
-        return std::string(out.rbegin(), out.rend());
+        return llformat("%.1fk", n / 1000.0);
     }
 
     std::string systemPrompt()
@@ -527,16 +625,17 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
     if (!mTranscript || text.empty()) return;
 
     const std::string body = plainText(text);
+    mToolLineOpen = false;
 
     if (mSpokeThisTurn)
     {
         // Already introduced this turn. A second "Lumen:" made one answer --
         // narrate, act, report -- look like two separate replies.
-        mTranscript->appendText("\n" + body, true);
+        mTranscript->appendText(body, true);
         return;
     }
 
-    mTranscript->appendText("\nLumen: " + body, true);
+    mTranscript->appendText("Lumen: " + body, true);
     mSpokeThisTurn = true;
 }
 
@@ -546,8 +645,18 @@ void FSAIChatFloater::sayTool(const std::string& label, bool failed)
 
     // Indented and dimmed: this is a record of what happened, not part of the
     // conversation, and it should be skimmable without competing with it.
-    mTranscript->appendText("      " + label + (failed ? "   (failed)" : ""),
-                            true, dimStyle());
+    const std::string text = label + (failed ? " (didn\'t work)" : "");
+
+    if (mToolLineOpen)
+    {
+        // Appended to the line already there rather than starting another:
+        // prepend_newline false is what keeps it inline.
+        mTranscript->appendText(" \xc2\xb7 " + text, false, dimStyle());
+        return;
+    }
+
+    mTranscript->appendText("   " + text, true, dimStyle());
+    mToolLineOpen = true;
 }
 
 void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
@@ -562,7 +671,7 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
         // Calls were made and neither provider reported a token count. Almost
         // certainly means the field names moved, and printing nothing would
         // hide that forever behind a line that merely looks absent. Say it.
-        mTranscript->appendText("      (no token count returned)", true, dimStyle());
+        mTranscript->appendText("   (no token count returned)", true, dimStyle());
         return;
     }
 
@@ -571,7 +680,7 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
 
     // A blank line first: at the same indent as the tool lines and with no
     // gap above, this read as one more tool rather than as the turn's footer.
-    std::string line = "\n      " + grouped(in) + " in \xc2\xb7 " + grouped(out) + " out";
+    std::string line = "   " + compact(in) + " in \xc2\xb7 " + compact(out) + " out";
     if (calls > 1)
     {
         // "model calls", not "calls": these are round trips to the provider and
@@ -581,7 +690,7 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
     }
     if (mSessionIn + mSessionOut > in + out)
     {
-        line += "   (window " + grouped(mSessionIn) + " \xc2\xb7 " + grouped(mSessionOut) + ")";
+        line += "  \xc2\xb7  " + compact(mSessionIn + mSessionOut) + " this window";
     }
 
     mTranscript->appendText(line, true, dimStyle());
@@ -685,6 +794,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     // Across the whole turn, however many provider calls it takes.
     S32 turn_in = 0, turn_out = 0, calls = 0;
     mSpokeThisTurn = false;
+    mToolLineOpen  = false;
 
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)

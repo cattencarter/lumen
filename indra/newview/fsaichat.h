@@ -89,6 +89,11 @@ private:
     // separate replies when they are one answer.
     bool mSpokeThisTurn = false;
 
+    // Whether the current line is the running list of things being done, so
+    // the next one can be added to it instead of starting a new line. Four
+    // tools used to mean four lines in a window that is mostly transcript.
+    bool mToolLineOpen = false;
+
     // Tokens this window has spent since it opened. Not persisted: it answers
     // "what is this costing me right now", which is the question someone
     // actually asks, and a lifetime total would need a currency and a price
