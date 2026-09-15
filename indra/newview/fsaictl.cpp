@@ -656,7 +656,27 @@ namespace
          * that genuinely need the true total.
          */
         NameAndKind(const std::string& needle, LLAssetType::EType kind, size_t cap = 0)
-            : mNeedle(lowered(needle)), mKind(kind), mCap(cap), mFound(0), mUnknownCreators(0) {}
+            : mNeedle(lowered(needle)), mKind(kind), mCap(cap), mFound(0), mUnknownCreators(0)
+        {
+            // Split the query into words, because matching it as one run of
+            // characters was quietly wrong.
+            //
+            // "una skirt" did not match "UNA. Prya Skirt Larax Black": both
+            // words are there, they are simply not adjacent, and
+            // `name.find("una skirt")` says no. The failure was invisible --
+            // fewer results, never an error -- so it read as "the item is not
+            // in my inventory" rather than "the query was matched literally".
+            // Second Life item names are full of punctuation, brand prefixes
+            // and body-fit suffixes, so almost nothing is adjacent.
+            //
+            // Every word must appear somewhere in the name, in any order.
+            std::istringstream ss(mNeedle);
+            std::string word;
+            while (ss >> word)
+            {
+                mWords.push_back(word);
+            }
+        }
 
         /**
          * Also require a particular creator.
@@ -684,10 +704,16 @@ namespace
             {
                 return false;
             }
-            if (!mNeedle.empty()
-                && lowered(item->getName()).find(mNeedle) == std::string::npos)
+            if (!mWords.empty())
             {
-                return false;
+                const std::string name = lowered(item->getName());
+                for (const std::string& w : mWords)
+                {
+                    if (name.find(w) == std::string::npos)
+                    {
+                        return false;
+                    }
+                }
             }
 
             if (mCreatorId.notNull() || !mCreatorNeedle.empty())
@@ -726,6 +752,7 @@ namespace
 
     private:
         std::string        mNeedle;
+        std::vector<std::string> mWords;
         LLAssetType::EType mKind;
         size_t             mCap;
         size_t             mFound;
