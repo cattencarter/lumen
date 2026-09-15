@@ -195,10 +195,52 @@ S32 FSAIIndex::score(const std::string& lname,
         }
     }
 
-    // Among otherwise equal names the shorter one is the thing itself rather
-    // than the box, the fatpack or the unpacker. Capped so it can never
-    // outweigh a real match.
+    // Among otherwise equal names the shorter one is usually the thing itself.
+    // Capped so it can never outweigh a real match.
     s += (S32)std::max<size_t>(0, 200 - std::min<size_t>(200, lname.size()));
+
+    // Things that are not the garment, however well the name matches.
+    //
+    // "una skirt" put "UNA. Prya Skirt Larax DEMO" above "UNA. Prya Skirt
+    // LaraX Teal" -- the two names are the same length, so the shorter-name
+    // rule could not separate them and the winner was whichever came first in
+    // inventory. A demo is the one item nobody means when they say "wear my
+    // skirt": it is the trial copy, usually with a watermark or a timer.
+    //
+    // Penalised rather than hidden, and only when the query does not ask for
+    // it -- "wear the demo" must still work -- and only on a word boundary, so
+    // a product genuinely called something ending in those letters is safe.
+    static const struct { const char* word; S32 cost; } NOT_THE_THING[] = {
+        { "demo",     3000 },
+        { "unpacker", 2500 },
+        { "unpack",   2500 },
+        { "box",      1500 },   // the packaging, not the contents
+        { "boxed",    1500 },
+        { "resizer",  1500 },
+        { "resize",   1200 },
+    };
+
+    for (const auto& n : NOT_THE_THING)
+    {
+        const std::string w(n.word);
+
+        // Asked for explicitly? Then it is the thing.
+        if (whole.find(w) != std::string::npos)
+        {
+            continue;
+        }
+
+        size_t at = lname.find(w);
+        while (at != std::string::npos)
+        {
+            if (isWordEdge(lname, at, w.size()))
+            {
+                s -= n.cost;
+                break;
+            }
+            at = lname.find(w, at + 1);
+        }
+    }
 
     return s;
 }
