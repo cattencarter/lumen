@@ -30,47 +30,35 @@
      bg_readonly_color="TextBgReadOnlyColor"
      text_readonly_color="TextFgReadOnlyColor" />
 
-    <text
-     type="string"
-     follows="left|bottom"
-     height="16"
-     layout="topleft"
-     left="10"
-     top_pad="4"
-     width="420"
-     name="status">
-        Not configured
-    </text>
+    <!-- Action bar. What used to sit here was a static line naming the
+         provider and model, which told you the same thing for ever; that now
+         goes at the top of the transcript once, where it reads as a fact about
+         this conversation. The status text here is only for what is happening
+         right now, so it is empty when nothing is. -->
 
-    <line_editor
-     follows="left|right|bottom"
-     height="22"
-     layout="topleft"
-     left="10"
-     top_pad="2"
-     width="280"
-     name="input"
-     commit_on_focus_lost="false"
+    <button follows="left|bottom" layout="topleft"
+     left="10" top="390" width="56" height="20"
+     label="Clear" name="clear_btn" tool_tip="Start a new conversation" />
+
+    <button follows="left|bottom" layout="topleft"
+     left="70" top="390" width="66" height="20"
+     label="Memory" name="memory_btn" tool_tip="What the assistant knows about you" />
+
+    <button follows="left|bottom" layout="topleft"
+     left="140" top="390" width="70" height="20"
+     label="Settings" name="settings_btn" tool_tip="Keys, provider and model" />
+
+    <text type="string" follows="right|bottom" layout="topleft"
+     left="216" top="392" width="214" height="16"
+     halign="right" name="status" />
+
+    <line_editor follows="left|right|bottom" layout="topleft"
+     left="10" top="416" width="358" height="22"
+     name="input" commit_on_focus_lost="false"
      label="Ask for something..." />
 
-    <button
-     follows="right|bottom"
-     height="22"
-     layout="topleft"
-     left_pad="6"
-     top_delta="0"
-     width="60"
-     label="Send"
-     name="send_btn" />
-
-    <button
-     follows="right|bottom"
-     height="22"
-     layout="topleft"
-     left_pad="6"
-     top_delta="0"
-     width="68"
-     label="Clear"
-     name="clear_btn" />
+    <button follows="right|bottom" layout="topleft"
+     left="372" top="416" width="58" height="22"
+     label="Send" name="send_btn" />
 
 </floater>

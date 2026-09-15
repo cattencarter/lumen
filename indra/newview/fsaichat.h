@@ -92,12 +92,7 @@ private:
     // Whether the current line is the running list of things being done, so
     // the next one can be added to it instead of starting a new line. Four
     // tools used to mean four lines in a window that is mostly transcript.
-    bool mToolLineOpen = false;
 
-    // The last word written on that line, so an immediate repeat can be left
-    // out. A model often searches twice in a row and "Searching . Searching"
-    // tells the reader nothing the first one did not.
-    std::string mLastTool;
 
     // Tokens this window has spent since it opened. Not persisted: it answers
     // "what is this costing me right now", which is the question someone
@@ -119,7 +114,11 @@ private:
     // that ran, and a note from the viewer itself.
     void sayUser(const std::string& text);
     void sayAssistant(const std::string& text);
-    void sayTool(const std::string& label, bool failed);
+    /** The action bar: what is happening right now, or nothing when idle. */
+    void setActivity(const std::string& what);
+
+    /** Names the provider and model once, at the top of a new conversation. */
+    void sayHeader();
     void sayNote(const std::string& text);
 
     /** What the turn just cost, and what the window has cost so far. */

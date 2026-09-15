@@ -36,6 +36,9 @@
 
 #include "llbutton.h"
 #include "llcoros.h"
+#include "llfloaterpreference.h"
+#include "llfloaterreg.h"
+#include "lltabcontainer.h"
 #include "llcorehttputil.h"
 #include "lllineeditor.h"
 #include "llsdjson.h"
@@ -235,65 +238,63 @@ namespace
     }
 
     /**
-     * One word for what a tool just did.
+     * What to show in the action bar while a tool runs.
      *
-     * "inventory.search" is the name of a function, and someone watching their
-     * avatar get dressed is not debugging a program. But a friendly sentence is
-     * no better: these share a line in a floater four hundred pixels wide, and
-     * four of "Searching your inventory" wraps to four lines, which is the
-     * clutter it was meant to remove. One word each, no arguments -- the reply
-     * underneath says what was actually found or worn. The function names stay
-     * in `read_actions` for anyone who wants them.
+     * These are read one at a time in a bar with room for them, not crammed
+     * onto a shared line, so they can be a short phrase rather than a single
+     * word -- and they are transient, which is why they are no longer also
+     * written into the transcript. "inventory.search" was the name of a
+     * function; "Searching inventory" is what is happening.
      *
      * An unrecognised action falls back to its raw name deliberately: honest
-     * and ugly beats absent, and it is a standing reminder to add a word here.
+     * and ugly beats silent, and it is a standing reminder to add a phrase.
      */
     std::string humanAction(const std::string& group, const std::string& action)
     {
         if (group == "inventory")
         {
-            if (action == "search")           return "Searching";
-            if (action == "list_folder")      return "Browsing";
-            if (action == "read_notecard")    return "Reading";
-            if (action == "create_notecard")  return "Writing";
-            if (action == "wear")             return "Wearing";
-            if (action == "detach")           return "Removing";
-            if (action == "wear_outfit")      return "Dressing";
-            if (action == "search_notecards") return "Reading notecards";
-            if (action == "delete")           return "Trashing";
-            if (action == "undelete")         return "Restoring";
+            if (action == "search")           return "Searching inventory";
+            if (action == "list_folder")      return "Opening a folder";
+            if (action == "read_notecard")    return "Reading a notecard";
+            if (action == "create_notecard")  return "Writing a notecard";
+            if (action == "wear")             return "Getting dressed";
+            if (action == "detach")           return "Taking something off";
+            if (action == "wear_outfit")      return "Changing outfit";
+            if (action == "search_notecards") return "Reading your notecards";
+            if (action == "delete")           return "Moving to trash";
+            if (action == "undelete")         return "Restoring from trash";
         }
         else if (group == "chat")
         {
             if (action == "read_chat")          return "Reading chat";
             if (action == "read_messages")      return "Reading messages";
-            if (action == "say")                return "Saying";
-            if (action == "send_im")            return "Messaging";
-            if (action == "find_person")        return "Finding";
-            if (action == "list_groups")        return "Groups";
-            if (action == "list_friends")       return "Friends";
-            if (action == "send_group_notice")  return "Posting";
-            if (action == "send_group_message") return "Messaging";
-            if (action == "give_item")          return "Giving";
+            if (action == "say")                return "Speaking";
+            if (action == "send_im")            return "Sending a message";
+            if (action == "find_person")        return "Looking someone up";
+            if (action == "list_groups")        return "Checking groups";
+            if (action == "list_friends")       return "Checking friends";
+            if (action == "send_group_notice")  return "Posting a notice";
+            if (action == "send_group_message") return "Writing to a group";
+            if (action == "give_item")          return "Giving an item";
         }
         else if (group == "movement")
         {
             if (action == "teleport")      return "Teleporting";
-            if (action == "walk_to")       return "Walking";
+            if (action == "walk_to")       return "Moving avatar";
             if (action == "stop_walking")  return "Stopping";
-            if (action == "sit")           return "Sitting";
-            if (action == "stand")         return "Standing";
+            if (action == "sit")           return "Sitting down";
+            if (action == "stand")         return "Standing up";
             if (action == "fly")           return "Flying";
             if (action == "turn")          return "Turning";
-            if (action == "look_nearby")   return "Looking";
-            if (action == "where_am_i")    return "Locating";
+            if (action == "look_nearby")   return "Looking around";
+            if (action == "where_am_i")    return "Checking location";
         }
         else if (group == "viewer")
         {
-            if (action == "status")          return "Checking";
-            if (action == "read_actions")    return "History";
-            if (action == "read_dialogues")  return "Dialogues";
-            if (action == "answer_dialogue") return "Answering";
+            if (action == "status")          return "Checking the viewer";
+            if (action == "read_actions")    return "Reviewing history";
+            if (action == "read_dialogues")  return "Checking dialogues";
+            if (action == "answer_dialogue") return "Answering a dialogue";
         }
 
         return action.empty() ? group : (group + "." + action);
@@ -533,6 +534,31 @@ bool FSAIChatFloater::postBuild()
     {
         clear->setCommitCallback([this](LLUICtrl*, const LLSD&) { onClear(); });
     }
+    if (LLButton* mem = findChild<LLButton>("memory_btn"))
+    {
+        mem->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            LLFloaterReg::showInstance("ai_memory");
+        });
+    }
+    if (LLButton* set = findChild<LLButton>("settings_btn"))
+    {
+        set->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            // Straight to the AI tab rather than the front of Preferences:
+            // sending someone off to hunt for it is the barrier this project
+            // exists to remove, in miniature.
+            LLFloaterPreference* prefs =
+                dynamic_cast<LLFloaterPreference*>(LLFloaterReg::showInstance("preferences"));
+            if (!prefs) return;
+            LLTabContainer* tabs = prefs->findChild<LLTabContainer>("pref core");
+            LLPanel* ai = prefs->findChild<LLPanel>("ai");
+            if (tabs && ai)
+            {
+                tabs->selectTabPanel(ai);
+            }
+        });
+    }
 
     mMessages = LLSD::emptyArray();
     setBusy(false);
@@ -548,6 +574,13 @@ void FSAIChatFloater::onOpen(const LLSD& key)
     {
         sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
                 "Put one in Preferences > AI, then come back.");
+    }
+
+    // Only when the conversation has not started: reopening the window should
+    // not stamp the header in again halfway down.
+    if (mTranscript && mTranscript->getText().empty())
+    {
+        sayHeader();
     }
 
     if (mInput)
@@ -581,8 +614,6 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
     if (!mTranscript || text.empty()) return;
 
     const std::string body = plainText(text);
-    mToolLineOpen = false;
-    mLastTool.clear();
 
     if (mSpokeThisTurn)
     {
@@ -596,30 +627,31 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
     mSpokeThisTurn = true;
 }
 
-void FSAIChatFloater::sayTool(const std::string& label, bool failed)
+void FSAIChatFloater::setActivity(const std::string& what)
+{
+    // Deliberately not also written into the transcript. This is transient --
+    // what is happening now, not what was said -- and having it in both places
+    // was the clutter this replaces. The reply names what it actually did, and
+    // read_actions keeps the permanent record.
+    if (mStatus)
+    {
+        mStatus->setText(what);
+    }
+}
+
+void FSAIChatFloater::sayHeader()
 {
     if (!mTranscript) return;
 
-    // Indented and dimmed: this is a record of what happened, not part of the
-    // conversation, and it should be skimmable without competing with it.
-    const std::string text = label + (failed ? " (didn\'t work)" : "");
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    const std::string model = gSavedSettings.getString(
+        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
 
-    if (mToolLineOpen && text == mLastTool)
-    {
-        return;
-    }
-    mLastTool = text;
-
-    if (mToolLineOpen)
-    {
-        // Appended to the line already there rather than starting another:
-        // prepend_newline false is what keeps it inline.
-        mTranscript->appendText(" \xc2\xb7 " + text, false, dimStyle());
-        return;
-    }
-
-    mTranscript->appendText("   " + text, true, dimStyle());
-    mToolLineOpen = true;
+    // Once, at the top, so it reads as a fact about this conversation rather
+    // than a label sitting there saying the same thing for ever. Someone
+    // should be able to see which model answered without opening Preferences.
+    mTranscript->appendText(FSAIKeys::displayName(provider) + " \xc2\xb7 " + model,
+                            true, dimStyle());
 }
 
 void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
@@ -672,15 +704,8 @@ void FSAIChatFloater::setBusy(bool busy, const std::string& note)
     if (mSendBtn) mSendBtn->setEnabled(!busy);
     if (mInput)   mInput->setEnabled(!busy);
 
-    if (mStatus)
-    {
-        const std::string provider = gSavedSettings.getString("LumenAIProvider");
-        mStatus->setText(busy
-            ? (note.empty() ? std::string("Working...") : note)
-            : FSAIKeys::displayName(provider) + ", "
-              + gSavedSettings.getString(provider == FSAIKeys::OPENAI
-                                         ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
-    }
+    // Empty when idle. The bar reports what is happening, and nothing is.
+    setActivity(busy ? (note.empty() ? std::string("Working") : note) : std::string());
 }
 
 void FSAIChatFloater::onClear()
@@ -692,6 +717,7 @@ void FSAIChatFloater::onClear()
         mTranscript->clear();
     }
     setBusy(false);
+    sayHeader();
 }
 
 void FSAIChatFloater::onSend()
@@ -757,8 +783,6 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     // Across the whole turn, however many provider calls it takes.
     S32 turn_in = 0, turn_out = 0, calls = 0;
     mSpokeThisTurn = false;
-    mToolLineOpen  = false;
-    mLastTool.clear();
 
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)
@@ -864,12 +888,15 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     const LLSD args =
                         jsonParse((*it)["function"]["arguments"].asString(), ok);
 
+                    // Before the call, not after: the bar says what is being
+                    // done, and a label that appears once the work is finished
+                    // is a report, not an indicator.
+                    setActivity(toolLabel(name, args));
+
                     bool is_error = false;
                     const std::string result = ok
                         ? callTool(name, args, call_id, is_error)
                         : std::string("Could not read the arguments for this call.");
-
-                    sayTool(toolLabel(name, args), is_error);
 
                     LLSD tr;
                     tr["role"]         = "tool";
@@ -909,11 +936,11 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     const std::string call_id = (*it)["id"].asString();
                     const std::string name    = (*it)["name"].asString();
 
+                    setActivity(toolLabel(name, (*it)["input"]));
+
                     bool is_error = false;
                     const std::string result =
                         callTool(name, (*it)["input"], call_id, is_error);
-
-                    sayTool(toolLabel(name, (*it)["input"]), is_error);
 
                     LLSD tr;
                     tr["type"]        = "tool_result";
