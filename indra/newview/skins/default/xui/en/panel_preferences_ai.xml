@@ -10,154 +10,105 @@
  label="AI"
  name="ai">
 
-    <text
-     type="string"
-     follows="left|top"
-     height="16"
-     layout="topleft"
-     left="30"
-     top="14"
-     width="480"
-     font="SansSerifBold">
+    <!-- Positions are explicit rather than stacked padding: this panel cannot
+         grow past 480, because the preferences tab container fixes its size,
+         and a panel that overflows simply loses its last controls with no
+         error anywhere. -->
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="14" width="480" height="16" font="SansSerifBold">
         AI provider keys
     </text>
 
-    <text
-     type="string"
-     follows="left|top"
-     height="46"
-     layout="topleft"
-     left="30"
-     top_pad="6"
-     width="480"
-     word_wrap="true">
-        Lumen uses these to talk to an AI provider on your behalf. You only need a key for a provider you actually want to use, and you can change or remove one at any time.
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="34" width="480" height="26" word_wrap="true">
+        You only need a key for the provider you want to use. Get one from that provider's own website.
     </text>
 
-    <!-- Anthropic -->
-
-    <text
-     type="string"
-     follows="left|top"
-     height="16"
-     layout="topleft"
-     left="30"
-     top_pad="14"
-     width="480"
-     font="SansSerifBold">
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="68" width="480" height="14" font="SansSerifBold">
         Anthropic
     </text>
 
-    <line_editor
-     follows="left|top"
-     height="22"
-     layout="topleft"
-     left="30"
-     top_pad="4"
-     width="400"
-     name="key_anthropic"
-     is_password="true"
-     select_on_focus="true"
-     commit_on_focus_lost="false"
+    <line_editor follows="left|top" layout="topleft"
+     left="30" top="86" width="330" height="22"
+     name="key_anthropic" is_password="true"
+     select_on_focus="true" commit_on_focus_lost="false"
      max_length_bytes="400" />
 
-    <button
-     follows="left|top"
-     height="22"
-     layout="topleft"
-     left_pad="8"
-     top_delta="0"
-     width="72"
-     label="Clear"
-     name="clear_anthropic" />
+    <button follows="left|top" layout="topleft"
+     left="368" top="86" width="70" height="22"
+     label="Clear" name="clear_anthropic" />
 
-    <text
-     type="string"
-     follows="left|top"
-     height="30"
-     layout="topleft"
-     left="30"
-     top_pad="4"
-     width="480"
-     word_wrap="true"
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="112" width="480" height="26" word_wrap="true"
      name="status_anthropic">
         No key saved.
     </text>
 
-    <!-- OpenAI -->
-
-    <text
-     type="string"
-     follows="left|top"
-     height="16"
-     layout="topleft"
-     left="30"
-     top_pad="12"
-     width="480"
-     font="SansSerifBold">
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="144" width="480" height="14" font="SansSerifBold">
         OpenAI
     </text>
 
-    <line_editor
-     follows="left|top"
-     height="22"
-     layout="topleft"
-     left="30"
-     top_pad="4"
-     width="400"
-     name="key_openai"
-     is_password="true"
-     select_on_focus="true"
-     commit_on_focus_lost="false"
+    <line_editor follows="left|top" layout="topleft"
+     left="30" top="162" width="330" height="22"
+     name="key_openai" is_password="true"
+     select_on_focus="true" commit_on_focus_lost="false"
      max_length_bytes="400" />
 
-    <button
-     follows="left|top"
-     height="22"
-     layout="topleft"
-     left_pad="8"
-     top_delta="0"
-     width="72"
-     label="Clear"
-     name="clear_openai" />
+    <button follows="left|top" layout="topleft"
+     left="368" top="162" width="70" height="22"
+     label="Clear" name="clear_openai" />
 
-    <text
-     type="string"
-     follows="left|top"
-     height="30"
-     layout="topleft"
-     left="30"
-     top_pad="4"
-     width="480"
-     word_wrap="true"
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="188" width="480" height="26" word_wrap="true"
      name="status_openai">
         No key saved.
     </text>
 
-    <!-- Where these are kept, said plainly rather than left to assume. -->
-
-    <text
-     type="string"
-     follows="left|top"
-     height="76"
-     layout="topleft"
-     left="30"
-     top_pad="20"
-     width="480"
-     word_wrap="true">
-        A key is stored the same way Lumen stores your Second Life password: scrambled and tied to this computer, so it will not work if the file is copied elsewhere, and it is never written into settings.xml where it could end up attached to a bug report. That is not strong encryption. Anyone with access to this computer and the will to look could recover it, so treat a key here as you would a saved password.
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="222" width="480" height="14" font="SansSerifBold">
+        Which one to use
     </text>
 
-    <text
-     type="string"
-     follows="left|top"
-     height="30"
-     layout="topleft"
-     left="30"
-     top_pad="4"
-     width="480"
-     word_wrap="true">
-        Keys are shown only as the first and last few characters once saved. To replace one, type the new key over it. Nothing is written until you click OK.
+    <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
+     left="30" top="240" width="180" height="22" name="provider">
+        <combo_box.item label="Anthropic" name="anthropic" value="anthropic" />
+        <combo_box.item label="OpenAI"    name="openai"    value="openai" />
+    </combo_box>
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="272" width="120" height="16">
+        Anthropic model
+    </text>
+
+    <line_editor control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
+     left="156" top="268" width="220" height="22"
+     name="model_anthropic" commit_on_focus_lost="true" />
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="302" width="120" height="16">
+        OpenAI model
+    </text>
+
+    <line_editor control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
+     left="156" top="298" width="220" height="22"
+     name="model_openai" commit_on_focus_lost="true" />
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="326" width="480" height="16" word_wrap="true">
+        Model names are typed, not picked from a list: they change far more often than Lumen does.
+    </text>
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="352" width="480" height="58" word_wrap="true">
+        A key is stored the way Lumen stores your Second Life password: scrambled and tied to this computer, so it will not work if copied elsewhere and never sits in settings.xml where it could be attached to a bug report. That is not strong encryption. Treat a key here as you would a saved password.
+    </text>
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="416" width="480" height="30" word_wrap="true">
+        Saved keys are shown only as their first and last few characters. To replace one, type the new key over it. Nothing is written until you click OK.
     </text>
 
 </panel>

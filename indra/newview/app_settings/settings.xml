@@ -14583,6 +14583,39 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
+  <key>LumenAIProvider</key>
+    <map>
+      <key>Comment</key>
+      <string>Which AI provider the in-viewer assistant talks to: anthropic or openai.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>anthropic</string>
+  </map>
+  <key>LumenAIAnthropicModel</key>
+    <map>
+      <key>Comment</key>
+      <string>Anthropic model for the in-viewer assistant. Editable: model names change faster than viewer releases.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>claude-sonnet-5</string>
+  </map>
+  <key>LumenAIOpenAIModel</key>
+    <map>
+      <key>Comment</key>
+      <string>OpenAI model for the in-viewer assistant. Editable: model names change faster than viewer releases.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>gpt-4o</string>
+  </map>
   <key>FSAIControlPort</key>
     <map>
       <key>Comment</key>

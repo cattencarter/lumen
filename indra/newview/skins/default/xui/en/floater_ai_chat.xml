@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater
+ legacy_header_height="18"
+ can_minimize="true"
+ can_close="true"
+ can_resize="true"
+ height="460"
+ min_height="280"
+ min_width="360"
+ layout="topleft"
+ name="floater_ai_chat"
+ help_topic="floater_ai_chat"
+ save_rect="true"
+ single_instance="true"
+ title="Assistant"
+ width="440">
+
+    <text_editor
+     follows="all"
+     height="360"
+     layout="topleft"
+     left="10"
+     top="24"
+     width="420"
+     name="transcript"
+     max_length="262144"
+     enabled="false"
+     word_wrap="true"
+     track_end="true"
+     bg_readonly_color="TextBgReadOnlyColor"
+     text_readonly_color="TextFgReadOnlyColor" />
+
+    <text
+     type="string"
+     follows="left|bottom"
+     height="16"
+     layout="topleft"
+     left="10"
+     top_pad="4"
+     width="420"
+     name="status">
+        Not configured
+    </text>
+
+    <line_editor
+     follows="left|right|bottom"
+     height="22"
+     layout="topleft"
+     left="10"
+     top_pad="2"
+     width="280"
+     name="input"
+     commit_on_focus_lost="false"
+     label="Ask for something..." />
+
+    <button
+     follows="right|bottom"
+     height="22"
+     layout="topleft"
+     left_pad="6"
+     top_delta="0"
+     width="60"
+     label="Send"
+     name="send_btn" />
+
+    <button
+     follows="right|bottom"
+     height="22"
+     layout="topleft"
+     left_pad="6"
+     top_delta="0"
+     width="68"
+     label="Clear"
+     name="clear_btn" />
+
+</floater>

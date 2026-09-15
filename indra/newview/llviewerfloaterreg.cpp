@@ -122,6 +122,7 @@
 #include "fsfloaterperformance.h"
 #include "llfloaterperms.h"
 #include "llfloaterpostprocess.h"
+#include "fsaichat.h" // <FS:AICtl>
 #include "llfloaterpreference.h"
 #include "llfloaterpreferencesgraphicsadvanced.h"
 #include "llfloaterpreferenceviewadvanced.h"
@@ -545,6 +546,9 @@ void LLViewerFloaterReg::registerFloaters()
     LLFloaterReg::add("perms_default", "floater_perms_default.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPermsDefault>);
     LLFloaterReg::add("places", "floater_places.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterSidePanelContainer>);
     LLFloaterReg::add("preferences", "floater_preferences.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreference>);
+    // <FS:AICtl> the in-viewer assistant
+    LLFloaterReg::add("ai_chat", "floater_ai_chat.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAIChatFloater>);
+    // </FS:AICtl>
     // LLFloaterReg::add("prefs_graphics_advanced", "floater_preferences_graphics_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceGraphicsAdvanced>);
     LLFloaterReg::add("prefs_view_advanced", "floater_preferences_view_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceViewAdvanced>);
     LLFloaterReg::add("prefs_proxy", "floater_preferences_proxy.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceProxy>);

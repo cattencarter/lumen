@@ -102,6 +102,7 @@ set(viewer_SOURCE_FILES
     floatermedialists.cpp
     fsareasearch.cpp
     fsareasearchmenu.cpp
+    fsaichat.cpp
     fsaictl.cpp
     fsaikeys.cpp
     fsassetblacklist.cpp
@@ -963,6 +964,7 @@ set(viewer_HEADER_FILES
     floatermedialists.h
     fsareasearch.h
     fsareasearchmenu.h
+    fsaichat.h
     fsaictl.h
     fsaikeys.h
     fsassetblacklist.h
