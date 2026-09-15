@@ -103,6 +103,7 @@ set(viewer_SOURCE_FILES
     fsareasearch.cpp
     fsareasearchmenu.cpp
     fsaichat.cpp
+    fsaiindex.cpp
     fsaimemory.cpp
     fsaictl.cpp
     fsaikeys.cpp
@@ -966,6 +967,7 @@ set(viewer_HEADER_FILES
     fsareasearch.h
     fsareasearchmenu.h
     fsaichat.h
+    fsaiindex.h
     fsaimemory.h
     fsaictl.h
     fsaikeys.h

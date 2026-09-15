@@ -28,6 +28,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "fsaictl.h"
+#include "fsaiindex.h"
 
 #include "llagent.h"
 #include "llappearancemgr.h"
@@ -2351,6 +2352,10 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
         const bool worn_only = params.has("worn") && params["worn"].asBoolean();
 
+        // How many matched altogether, which the old capped walk could not know
+        // without walking twice. 0 means "not measured" (the worn-only path).
+        size_t ranked_total = 0;
+
         LLInventoryModel::cat_array_t cats;
         LLInventoryModel::item_array_t items;
         // One past the limit, so "there are more" is still answerable without
@@ -2397,8 +2402,30 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
         else
         {
-            // include_trash false: things in the trash are not things the user has.
-            gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, match);
+            // Ranked, not first-found. The walk this replaces stopped as soon
+            // as it had `limit` matches (Findings 21), so with 65,621 items it
+            // returned whichever hundred sat earliest in the tree rather than
+            // the hundred anyone wanted -- "wear my black skirt" was a lottery.
+            // FSAIIndex scores every match and only then cuts. See Findings 60.
+            size_t total = 0;
+            const std::vector<FSAIIndex::Hit> hits =
+                FSAIIndex::instance().search(query, kindFromWord(kind), creator_id,
+                                             (size_t)limit, total);
+            for (const FSAIIndex::Hit& h : hits)
+            {
+                if (LLViewerInventoryItem* item = gInventory.getItem(h.id))
+                {
+                    // The creator-by-name case still filters here: the index
+                    // holds ids, and resolving a name needs the viewer's name
+                    // cache, which is not always warm.
+                    if (!creator_name.empty() && !match(NULL, item))
+                    {
+                        continue;
+                    }
+                    items.push_back(item);
+                }
+            }
+            ranked_total = total;
         }
 
         LLSD found = LLSD::emptyArray();
@@ -2419,7 +2446,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD result;
         result["items"] = found;
         result["returned"] = (LLSD::Integer)found.size();
-        result["truncated"] = (S32)items.size() > limit;
+        result["truncated"] = worn_only ? ((S32)items.size() > limit)
+                                        : ((S32)ranked_total > (S32)found.size());
         if (!creator_name.empty() && match.unknownCreators() > 0)
         {
             result["creators_not_yet_known"] = (LLSD::Integer)match.unknownCreators();
@@ -2432,14 +2460,21 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                              "in a moment will cover more. For an exact, complete answer, use "
                              "find_person to get the creator's id and pass that as creator.";
         }
-        if (!worn_only && match.capped())
+        if (!worn_only)
         {
-            // Be honest: the search stopped early, so this is a floor and not
-            // a count. Claiming an exact total here would be inventing one.
-            result["matched_at_least"] = (LLSD::Integer)items.size();
-            result["note"] = "More matched than were returned; the search stopped early rather "
-                             "than walking the whole inventory. Narrow the query rather than "
-                             "raising the limit.";
+            // An exact count now, not a floor. The index looks at every item
+            // before choosing, so it knows how many matched -- where the old
+            // capped walk could only say "at least this many" because it had
+            // stopped early on purpose (Findings 21, 60).
+            result["matched"] = (LLSD::Integer)ranked_total;
+            if ((S32)ranked_total > (S32)found.size())
+            {
+                result["note"] = "Showing the best " + llformat("%d", (S32)found.size()) +
+                                 " of " + llformat("%d", (S32)ranked_total) + " matches, "
+                                 "ranked by how well the name fits. These are the closest ones, "
+                                 "not merely the first found, so raising the limit is rarely what "
+                                 "you want; a more specific query is.";
+            }
         }
         else
         {

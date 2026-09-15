@@ -1,0 +1,271 @@
+/**
+ * @file fsaiindex.cpp
+ * @brief A searchable picture of the inventory, so the best match wins.
+ *
+ * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
+ * Lumen Viewer Source Code
+ * Copyright (C) 2026, Catten Carter
+ * Based on the Phoenix Firestorm Viewer, Copyright (C) 2026,
+ * The Phoenix Firestorm Project, Inc.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation;
+ * version 2.1 of the License only.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * http://www.firestormviewer.org
+ * $/LicenseInfo$
+ */
+
+#include "llviewerprecompiledheaders.h"
+
+#include "fsaiindex.h"
+
+#include "llinventorymodel.h"
+#include "llinventoryobserver.h"
+#include "llinventoryfunctions.h"
+#include "lltimer.h"
+#include "llviewerinventory.h"
+
+#include <algorithm>
+#include <sstream>
+
+namespace
+{
+    std::string lowered(const std::string& in)
+    {
+        std::string out(in);
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return out;
+    }
+
+    std::vector<std::string> wordsOf(const std::string& s)
+    {
+        std::vector<std::string> out;
+        std::istringstream ss(s);
+        std::string w;
+        while (ss >> w)
+        {
+            out.push_back(w);
+        }
+        return out;
+    }
+
+    bool isWordEdge(const std::string& s, size_t pos, size_t len)
+    {
+        const bool left  = (pos == 0) || !isalnum((unsigned char)s[pos - 1]);
+        const size_t end = pos + len;
+        const bool right = (end >= s.size()) || !isalnum((unsigned char)s[end]);
+        return left && right;
+    }
+
+    /** Everything, including the trash: an item there is still findable. */
+    class EverythingFunctor : public LLInventoryCollectFunctor
+    {
+    public:
+        bool operator()(LLInventoryCategory*, LLInventoryItem* item) override
+        {
+            return item != nullptr;
+        }
+    };
+}
+
+/**
+ * Marks the index stale when inventory changes.
+ *
+ * Stale rather than rebuilt: wearing one item fires a change, and rebuilding
+ * 65,621 entries on each would be worse than the problem being solved. The cost
+ * is paid once, on the next search that actually needs it.
+ */
+class FSAIIndex::Watcher : public LLInventoryObserver
+{
+public:
+    void changed(U32 mask) override
+    {
+        // LABEL, ADD, REMOVE and STRUCTURE all alter what a search should find.
+        // The rest (calling cards, sort order, UI rebuilds) do not.
+        if (mask & (LLInventoryObserver::LABEL | LLInventoryObserver::ADD
+                    | LLInventoryObserver::REMOVE | LLInventoryObserver::STRUCTURE))
+        {
+            FSAIIndex::instance().invalidate();
+        }
+    }
+};
+
+FSAIIndex::FSAIIndex()
+{
+    mWatcher = new Watcher();
+    gInventory.addObserver(mWatcher);
+}
+
+FSAIIndex::~FSAIIndex()
+{
+    if (mWatcher)
+    {
+        gInventory.removeObserver(mWatcher);
+        delete mWatcher;
+        mWatcher = nullptr;
+    }
+}
+
+void FSAIIndex::build()
+{
+    LLTimer timer;
+
+    mEntries.clear();
+
+    LLInventoryModel::cat_array_t  cats;
+    LLInventoryModel::item_array_t items;
+    EverythingFunctor everything;
+
+    // No cap: this is the one walk that is supposed to see all of it.
+    gInventory.collectDescendentsIf(LLUUID::null, cats, items, true, everything);
+
+    mEntries.reserve(items.size());
+    for (const auto& it : items)
+    {
+        if (!it)
+        {
+            continue;
+        }
+        Entry e;
+        e.id      = it->getUUID();
+        e.lname   = lowered(it->getName());
+        e.type    = it->getType();
+        e.creator = it->getPermissions().getCreator();
+        mEntries.push_back(std::move(e));
+    }
+
+    mBuilt = true;
+
+    LL_INFOS("FSAIIndex") << "Indexed " << mEntries.size() << " items in "
+                          << (S32)(timer.getElapsedTimeF32() * 1000.f) << " ms" << LL_ENDL;
+}
+
+size_t FSAIIndex::size()
+{
+    if (!mBuilt)
+    {
+        build();
+    }
+    return mEntries.size();
+}
+
+S32 FSAIIndex::score(const std::string& lname,
+                     const std::vector<std::string>& words,
+                     const std::string& whole)
+{
+    S32 s = 0;
+
+    if (lname == whole)
+    {
+        s += 10000;                     // the exact thing asked for
+    }
+    else if (lname.rfind(whole, 0) == 0)
+    {
+        s += 4000;                      // "tapi skirt" -> "Tapi Skirt - Maitreya"
+    }
+    else if (lname.find(whole) != std::string::npos)
+    {
+        s += 2000;                      // the words together, somewhere inside
+    }
+
+    for (const std::string& w : words)
+    {
+        const size_t at = lname.find(w);
+        if (at == std::string::npos)
+        {
+            continue;                   // cannot happen: matching ran first
+        }
+        s += isWordEdge(lname, at, w.size()) ? 400 : 120;
+
+        if (at == 0)
+        {
+            s += 200;                   // a word the name opens with
+        }
+    }
+
+    // Among otherwise equal names the shorter one is the thing itself rather
+    // than the box, the fatpack or the unpacker. Capped so it can never
+    // outweigh a real match.
+    s += (S32)std::max<size_t>(0, 200 - std::min<size_t>(200, lname.size()));
+
+    return s;
+}
+
+std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
+                                              LLAssetType::EType kind,
+                                              const LLUUID&      creator_id,
+                                              size_t             limit,
+                                              size_t&            total_matches)
+{
+    if (!mBuilt)
+    {
+        build();
+    }
+
+    total_matches = 0;
+
+    const std::string whole = lowered(query);
+    const std::vector<std::string> words = wordsOf(whole);
+
+    std::vector<Hit> hits;
+    hits.reserve(std::min<size_t>(limit * 4, 512));
+
+    for (const Entry& e : mEntries)
+    {
+        if (kind != LLAssetType::AT_NONE && e.type != kind)
+        {
+            continue;
+        }
+        if (creator_id.notNull() && e.creator != creator_id)
+        {
+            continue;
+        }
+
+        // Every word, anywhere, in any order. Findings 59: matching the query
+        // as one run of characters missed almost everything, because Second
+        // Life names are brand, punctuation, product and body fit.
+        bool all = true;
+        for (const std::string& w : words)
+        {
+            if (e.lname.find(w) == std::string::npos)
+            {
+                all = false;
+                break;
+            }
+        }
+        if (!all)
+        {
+            continue;
+        }
+
+        ++total_matches;
+
+        Hit h;
+        h.id    = e.id;
+        h.score = score(e.lname, words, whole);
+        hits.push_back(h);
+    }
+
+    // Best first, and only then cut. This is the whole difference: the walk
+    // this replaces cut first and never saw the rest.
+    std::sort(hits.begin(), hits.end(),
+              [](const Hit& a, const Hit& b) { return a.score > b.score; });
+
+    if (hits.size() > limit)
+    {
+        hits.resize(limit);
+    }
+    return hits;
+}
