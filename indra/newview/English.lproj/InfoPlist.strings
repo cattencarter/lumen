@@ -1,6 +1,12 @@
 /* Localized versions of Info.plist keys */
 
-CFBundleName = "Firestorm";
+/* <FS:AICtl> These OVERRIDE Info.plist at runtime, and CFBundleName here is
+   what macOS puts in the menu bar -- not the CFBundleName in Info.plist. That
+   is why the application menu went on saying Firestorm long after every other
+   name had been changed. The credit to Firestorm stays, because the LGPL and
+   Decisions 5 both require it; what changes is the claim to BE Firestorm. */
 
-CFBundleShortVersionString = "Firestorm version %%VERSION%%";
-CFBundleGetInfoString = "Firestorm version %%VERSION%%, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.";
+CFBundleName = "Lumen";
+
+CFBundleShortVersionString = "Lumen version %%VERSION%%";
+CFBundleGetInfoString = "Lumen version %%VERSION%%, based on Firestorm, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.";
