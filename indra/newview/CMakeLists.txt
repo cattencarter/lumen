@@ -104,6 +104,7 @@ set(viewer_SOURCE_FILES
     fsareasearchmenu.cpp
     fsaichat.cpp
     fsaiindex.cpp
+    fsainotecache.cpp
     fsaimemory.cpp
     fsaictl.cpp
     fsaikeys.cpp
@@ -968,6 +969,7 @@ set(viewer_HEADER_FILES
     fsareasearchmenu.h
     fsaichat.h
     fsaiindex.h
+    fsainotecache.h
     fsaimemory.h
     fsaictl.h
     fsaikeys.h
@@ -2619,6 +2621,12 @@ endif (WINDOWS)
 # modern version.
 
 target_link_libraries(${VIEWER_BINARY_NAME}
+        # <FS:AICtl> SQLite, for the notecard cache. No new autobuild package:
+        # macOS ships libsqlite3 in the SDK and Linux has it everywhere.
+        # Windows will need the amalgamation (one sqlite3.c) and is untested
+        # regardless -- see CLAUDE.md, Open questions.
+        $<$<NOT:$<BOOL:${WINDOWS}>>:sqlite3>
+        # </FS:AICtl>
         llaudio
         llcharacter
         llimage

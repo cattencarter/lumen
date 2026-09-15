@@ -29,6 +29,7 @@
 
 #include "fsaictl.h"
 #include "fsaiindex.h"
+#include "fsainotecache.h"
 
 #include "llagent.h"
 #include "llappearancemgr.h"
@@ -2073,6 +2074,24 @@ bool FSAIControl::startNotecardFetch(LLViewerInventoryItem* item)
         return false;   // already fetched, fetching, or known to have failed
     }
 
+    // Already read in an earlier session? Then there is nothing to fetch.
+    // This is the whole point of the cache: a full notecard search was 3,691
+    // asset fetches and about 74 seconds, repeated in full every time because
+    // nothing survived the session.
+    {
+        std::string cached;
+        if (FSAINoteCache::instance().get(item->getUUID(), item->getAssetUUID(), cached))
+        {
+            LLSD done;
+            done["status"]     = "ready";
+            done["text"]       = cached;
+            done["characters"] = (LLSD::Integer)cached.size();
+            done["from_cache"] = true;
+            mNotecards[key] = done;
+            return false;
+        }
+    }
+
     if (item->getAssetUUID().isNull())
     {
         // An empty notecard has no asset at all. That is a finished answer,
@@ -2171,6 +2190,19 @@ void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType ty
     }
 
     FSAIControl::instance().mNotecards[item_id->asString()] = entry;
+
+    // Keep it, so the next session does not pay for this fetch again. Only on
+    // success: caching a failure would turn a transient server problem into a
+    // permanently empty notecard.
+    if (entry["status"].asString() == "ready")
+    {
+        const LLUUID id(item_id->asString());
+        if (LLViewerInventoryItem* item = gInventory.getItem(id))
+        {
+            FSAINoteCache::instance().put(id, item->getAssetUUID(),
+                                          item->getName(), entry["text"].asString());
+        }
+    }
 }
 
 LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
