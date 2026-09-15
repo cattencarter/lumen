@@ -315,7 +315,7 @@ namespace
      * across a turn's tool round trips genuinely add up rather than
      * double-counting. That is what the bill does too.
      */
-    void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out)
+    void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out, S32& cached)
     {
         if (!reply.has("usage") || !reply["usage"].isMap())
         {
@@ -333,10 +333,18 @@ namespace
         in  += u["input_tokens"].asInteger();
         out += u["output_tokens"].asInteger();
 
-        // Prompt caching is not used yet, but these are billed input if it
-        // ever is, and counting them only when present costs nothing now.
-        if (u.has("cache_read_input_tokens"))     in += u["cache_read_input_tokens"].asInteger();
-        if (u.has("cache_creation_input_tokens")) in += u["cache_creation_input_tokens"].asInteger();
+        // Cached reads are still input and still billed, at a fraction of the
+        // rate. Counted into the total so the figure stays honest, and tracked
+        // separately so the saving is visible rather than merely claimed.
+        if (u.has("cache_read_input_tokens"))
+        {
+            const S32 c = u["cache_read_input_tokens"].asInteger();
+            in += c; cached += c;
+        }
+        if (u.has("cache_creation_input_tokens"))
+        {
+            in += u["cache_creation_input_tokens"].asInteger();
+        }
     }
 
     /** 25732 -> "25.7k". Full precision on a five-figure count is just noise. */
@@ -629,7 +637,7 @@ void FSAIChatFloater::sayHeader()
                             true, dimStyle());
 }
 
-void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
+void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 calls)
 {
     if (calls == 0)
     {
@@ -651,7 +659,15 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
 
     // The turn is over, so the bar has nothing left to report but what it
     // cost. It stays there until the next question replaces it.
-    std::string line = compact(in) + " in \xc2\xb7 " + compact(out) + " out";
+    std::string line = compact(in) + " in";
+    if (cached > 0)
+    {
+        // Named so the saving is visible. These were billed at a fraction of
+        // the normal rate rather than not at all, so they stay inside the
+        // total rather than being quietly deducted from it.
+        line += " (" + compact(cached) + " cached)";
+    }
+    line += " \xc2\xb7 " + compact(out) + " out";
     if (calls > 1)
     {
         // "model calls": round trips to the provider, which is where the cost
@@ -753,7 +769,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     setBusy(true, "Thinking...");
 
     // Across the whole turn, however many provider calls it takes.
-    S32 turn_in = 0, turn_out = 0, calls = 0;
+    S32 turn_in = 0, turn_out = 0, turn_cached = 0, calls = 0;
     mSpokeThisTurn = false;
 
     // The user's message, in whichever dialect we are speaking.
@@ -802,9 +818,25 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
             body["model"]      = model;
             body["max_tokens"] = 4096;
-            body["system"]     = fullSystemPrompt();
             body["messages"]   = mMessages;
             body["tools"]      = anthropicTools();
+
+            // The tools and the system prompt are ~3,600 tokens and are
+            // byte-identical on every call. A question needing five tool round
+            // trips was therefore paying for them five times -- measured at 39%
+            // of one real turn. Marking the system block cacheable covers
+            // everything before it too (tools, then system, then messages), so
+            // every call after the first in a five-minute window reads them
+            // back at a fraction of the price instead of resending them.
+            LLSD sys_block;
+            sys_block["type"] = "text";
+            sys_block["text"] = fullSystemPrompt();
+            sys_block["cache_control"] = LLSD::emptyMap();
+            sys_block["cache_control"]["type"] = "ephemeral";
+
+            LLSD system_blocks = LLSD::emptyArray();
+            system_blocks.append(sys_block);
+            body["system"] = system_blocks;
         }
 
         std::string error;
@@ -817,12 +849,12 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
             setBusy(false);
-            sayUsage(turn_in, turn_out, calls);
+            sayUsage(turn_in, turn_out, turn_cached, calls);
             return;
         }
 
         ++calls;
-        addUsage(reply, is_openai, turn_in, turn_out);
+        addUsage(reply, is_openai, turn_in, turn_out, turn_cached);
 
         // ---- what came back, and whether it wants to use a tool ----
 
@@ -944,7 +976,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                 sayAssistant(assistant_text);
             }
             setBusy(false);
-            sayUsage(turn_in, turn_out, calls);
+            sayUsage(turn_in, turn_out, turn_cached, calls);
             return;
         }
 
@@ -955,5 +987,5 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                + " rounds of tool calls without finishing. Ask me again, more "
                  "specifically, rather than letting this run up a bill.");
     setBusy(false);
-    sayUsage(turn_in, turn_out, calls);
+    sayUsage(turn_in, turn_out, turn_cached, calls);
 }

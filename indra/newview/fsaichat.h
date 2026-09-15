@@ -122,7 +122,7 @@ private:
     void sayNote(const std::string& text);
 
     /** What the turn just cost, and what the window has cost so far. */
-    void sayUsage(S32 in, S32 out, S32 calls);
+    void sayUsage(S32 in, S32 out, S32 cached, S32 calls);
     void setBusy(bool busy, const std::string& note = std::string());
 };
 
