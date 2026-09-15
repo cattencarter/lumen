@@ -235,119 +235,75 @@ namespace
     }
 
     /**
-     * What to show for a tool that just ran, in words rather than in ours.
+     * One word for what a tool just did.
      *
-     * "inventory.search" is the name of a function. Someone watching their
-     * avatar get dressed is not debugging a program, and a line of dotted
-     * identifiers reads as something having gone wrong even when everything is
-     * fine. The names still exist in `read_actions` for anyone who wants them.
+     * "inventory.search" is the name of a function, and someone watching their
+     * avatar get dressed is not debugging a program. But a friendly sentence is
+     * no better: these share a line in a floater four hundred pixels wide, and
+     * four of "Searching your inventory" wraps to four lines, which is the
+     * clutter it was meant to remove. One word each, no arguments -- the reply
+     * underneath says what was actually found or worn. The function names stay
+     * in `read_actions` for anyone who wants them.
      *
-     * An unrecognised action falls back to the raw name deliberately: showing
-     * something honest and ugly beats showing nothing, and it is a standing
-     * reminder that a new action needs a line here.
+     * An unrecognised action falls back to its raw name deliberately: honest
+     * and ugly beats absent, and it is a standing reminder to add a word here.
      */
     std::string humanAction(const std::string& group, const std::string& action)
     {
         if (group == "inventory")
         {
-            if (action == "search")           return "Searching your inventory";
-            if (action == "list_folder")      return "Looking in a folder";
-            if (action == "read_notecard")    return "Reading a notecard";
-            if (action == "create_notecard")  return "Writing a notecard";
-            if (action == "wear")             return "Putting something on";
-            if (action == "detach")           return "Taking something off";
-            if (action == "wear_outfit")      return "Changing outfit";
-            if (action == "search_notecards") return "Reading through your notecards";
-            if (action == "delete")           return "Moving something to the trash";
-            if (action == "undelete")         return "Getting something back from the trash";
+            if (action == "search")           return "Searching";
+            if (action == "list_folder")      return "Browsing";
+            if (action == "read_notecard")    return "Reading";
+            if (action == "create_notecard")  return "Writing";
+            if (action == "wear")             return "Wearing";
+            if (action == "detach")           return "Removing";
+            if (action == "wear_outfit")      return "Dressing";
+            if (action == "search_notecards") return "Reading notecards";
+            if (action == "delete")           return "Trashing";
+            if (action == "undelete")         return "Restoring";
         }
         else if (group == "chat")
         {
-            if (action == "read_chat")          return "Reading local chat";
-            if (action == "read_messages")      return "Reading your messages";
-            if (action == "say")                return "Speaking in local chat";
-            if (action == "send_im")            return "Sending a message";
-            if (action == "find_person")        return "Looking someone up";
-            if (action == "list_groups")        return "Checking your groups";
-            if (action == "list_friends")       return "Checking who your friends are";
-            if (action == "send_group_notice")  return "Posting a group notice";
-            if (action == "send_group_message") return "Writing to a group";
-            if (action == "give_item")          return "Giving someone an item";
+            if (action == "read_chat")          return "Reading chat";
+            if (action == "read_messages")      return "Reading messages";
+            if (action == "say")                return "Saying";
+            if (action == "send_im")            return "Messaging";
+            if (action == "find_person")        return "Finding";
+            if (action == "list_groups")        return "Groups";
+            if (action == "list_friends")       return "Friends";
+            if (action == "send_group_notice")  return "Posting";
+            if (action == "send_group_message") return "Messaging";
+            if (action == "give_item")          return "Giving";
         }
         else if (group == "movement")
         {
             if (action == "teleport")      return "Teleporting";
             if (action == "walk_to")       return "Walking";
             if (action == "stop_walking")  return "Stopping";
-            if (action == "sit")           return "Sitting down";
-            if (action == "stand")         return "Standing up";
+            if (action == "sit")           return "Sitting";
+            if (action == "stand")         return "Standing";
             if (action == "fly")           return "Flying";
             if (action == "turn")          return "Turning";
-            if (action == "look_nearby")   return "Looking around";
-            if (action == "where_am_i")    return "Checking where you are";
+            if (action == "look_nearby")   return "Looking";
+            if (action == "where_am_i")    return "Locating";
         }
         else if (group == "viewer")
         {
-            if (action == "status")          return "Checking the viewer";
-            if (action == "read_actions")    return "Reviewing what it has done";
-            if (action == "read_dialogues")  return "Checking for waiting dialogue boxes";
-            if (action == "answer_dialogue") return "Answering a dialogue box";
+            if (action == "status")          return "Checking";
+            if (action == "read_actions")    return "History";
+            if (action == "read_dialogues")  return "Dialogues";
+            if (action == "answer_dialogue") return "Answering";
         }
 
         return action.empty() ? group : (group + "." + action);
-    }
-
-    /**
-     * A few words of context, where there are some worth having.
-     *
-     * Only short identifying fields: a name, a person, a place. **Never the
-     * body of a message or a notecard** -- the action log deliberately records
-     * that a message was sent without recording what it said, and a line in
-     * this window should not quietly undo that for anyone reading over a
-     * shoulder.
-     */
-    std::string actionDetail(const LLSD& args)
-    {
-        if (!args.isMap())
-        {
-            return std::string();
-        }
-
-        static const char* FIELDS[] = {
-            "name", "query", "text", "item_name", "folder",
-            "person", "person_name", "region", "group", "outfit"
-        };
-
-        for (const char* f : FIELDS)
-        {
-            // "text" is a search term on the inventory actions; it is the
-            // message body on say/send_im, so it is only read when nothing
-            // else matched and it is short enough to be a search.
-            if (!args.has(f))
-            {
-                continue;
-            }
-            std::string v = args[f].asString();
-            if (v.empty() || v.size() > 48)
-            {
-                continue;
-            }
-            // Keep it to one line whatever arrives.
-            const size_t nl = v.find_first_of("\r\n");
-            if (nl != std::string::npos)
-            {
-                continue;
-            }
-            return " \xe2\x80\x9c" + v + "\xe2\x80\x9d";
-        }
-        return std::string();
     }
 
     std::string toolLabel(const std::string& name, const LLSD& args)
     {
         const std::string action = (args.isMap() && args.has("action"))
                                  ? args["action"].asString() : std::string();
-        return humanAction(name, action) + actionDetail(args);
+        return humanAction(name, action);
     }
 
     /**
@@ -626,6 +582,7 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
 
     const std::string body = plainText(text);
     mToolLineOpen = false;
+    mLastTool.clear();
 
     if (mSpokeThisTurn)
     {
@@ -646,6 +603,12 @@ void FSAIChatFloater::sayTool(const std::string& label, bool failed)
     // Indented and dimmed: this is a record of what happened, not part of the
     // conversation, and it should be skimmable without competing with it.
     const std::string text = label + (failed ? " (didn\'t work)" : "");
+
+    if (mToolLineOpen && text == mLastTool)
+    {
+        return;
+    }
+    mLastTool = text;
 
     if (mToolLineOpen)
     {
@@ -795,6 +758,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     S32 turn_in = 0, turn_out = 0, calls = 0;
     mSpokeThisTurn = false;
     mToolLineOpen  = false;
+    mLastTool.clear();
 
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)

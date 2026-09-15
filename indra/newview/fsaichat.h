@@ -94,6 +94,11 @@ private:
     // tools used to mean four lines in a window that is mostly transcript.
     bool mToolLineOpen = false;
 
+    // The last word written on that line, so an immediate repeat can be left
+    // out. A model often searches twice in a row and "Searching . Searching"
+    // tells the reader nothing the first one did not.
+    std::string mLastTool;
+
     // Tokens this window has spent since it opened. Not persisted: it answers
     // "what is this costing me right now", which is the question someone
     // actually asks, and a lifetime total would need a currency and a price
