@@ -177,6 +177,13 @@
          help_topic="preferences_advanced1_tab"
          name="advanced1" />
         <panel
+         class="panel_preference_ai"
+         filename="panel_preferences_ai.xml"
+         label="AI"
+         layout="topleft"
+         help_topic="preferences_advanced1_tab"
+         name="ai" />
+        <panel
          class="panel_preference"
          filename="panel_preferences_UI.xml"
          label="User Interface"

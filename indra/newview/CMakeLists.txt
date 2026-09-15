@@ -103,6 +103,7 @@ set(viewer_SOURCE_FILES
     fsareasearch.cpp
     fsareasearchmenu.cpp
     fsaictl.cpp
+    fsaikeys.cpp
     fsassetblacklist.cpp
     fsavatarrenderpersistence.cpp
     fsavatarsearchmenu.cpp
@@ -963,6 +964,7 @@ set(viewer_HEADER_FILES
     fsareasearch.h
     fsareasearchmenu.h
     fsaictl.h
+    fsaikeys.h
     fsassetblacklist.h
     fsavatarrenderpersistence.h
     fsavatarsearchmenu.h
