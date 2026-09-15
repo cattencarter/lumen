@@ -142,7 +142,8 @@ void FSAIIndex::build()
         e.id      = it->getUUID();
         e.lname   = lowered(it->getName());
         e.type    = it->getType();
-        e.creator = it->getPermissions().getCreator();
+        e.creator  = it->getPermissions().getCreator();
+        e.acquired = it->getCreationDate();
         mEntries.push_back(std::move(e));
     }
 
@@ -249,7 +250,8 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
                                               LLAssetType::EType kind,
                                               const LLUUID&      creator_id,
                                               size_t             limit,
-                                              size_t&            total_matches)
+                                              size_t&            total_matches,
+                                              Order              order)
 {
     if (!mBuilt)
     {
@@ -295,15 +297,34 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
         ++total_matches;
 
         Hit h;
-        h.id    = e.id;
-        h.score = score(e.lname, words, whole);
+        h.id       = e.id;
+        h.score    = score(e.lname, words, whole);
+        h.acquired = e.acquired;
         hits.push_back(h);
     }
 
     // Best first, and only then cut. This is the whole difference: the walk
     // this replaces cut first and never saw the rest.
-    std::sort(hits.begin(), hits.end(),
-              [](const Hit& a, const Hit& b) { return a.score > b.score; });
+    // Sorting by date still ranks first, so "the newest UNA skirt" means the
+    // newest of the things that actually matched rather than the newest item
+    // that happens to contain the letters.
+    if (order == BY_NEWEST)
+    {
+        std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b)
+                  { return a.acquired != b.acquired ? a.acquired > b.acquired
+                                                    : a.score > b.score; });
+    }
+    else if (order == BY_OLDEST)
+    {
+        std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b)
+                  { return a.acquired != b.acquired ? a.acquired < b.acquired
+                                                    : a.score > b.score; });
+    }
+    else
+    {
+        std::sort(hits.begin(), hits.end(),
+                  [](const Hit& a, const Hit& b) { return a.score > b.score; });
+    }
 
     if (hits.size() > limit)
     {

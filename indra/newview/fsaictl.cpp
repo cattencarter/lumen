@@ -848,6 +848,21 @@ namespace
         // throw away. delete_item refuses anything that is not copyable, and
         // finding that out by being refused is a worse experience than knowing.
         out["copyable"] = item->getPermissions().allowCopyBy(gAgentID);
+
+        // When it arrived. The viewer has always known this -- it is the
+        // "Acquired" line in Item Properties -- and not returning it meant the
+        // assistant told the author it had "no way to check acquisition dates"
+        // while the viewer was displaying one. Seconds since the epoch, UTC,
+        // plus a readable form so neither the model nor a person has to do
+        // arithmetic to answer "the newest one".
+        const time_t acquired = item->getCreationDate();
+        if (acquired > 0)
+        {
+            out["acquired_epoch"] = (LLSD::Integer)acquired;
+            // ISO8601, which sorts as text, compares without a locale and
+            // reads the same to a person and to a model.
+            out["acquired"] = LLDate((F64)acquired).asString();
+        }
         // Which folder it is in. A fatpack's contents are only distinguishable
         // by where they sit -- five skirts called "Skirt" differ by the body
         // folder above them, and without this the caller cannot tell them apart.
@@ -1466,6 +1481,12 @@ namespace
                                "refused without it, and refused again if it does not match. Never "
                                "send it without asking -- it is the only one they have.";
         inv_props["replace"]=irp; inv_props["text"]=itx; inv_props["limit"]=slim;
+                LLSD sort_p; sort_p["type"]="string";
+        sort_p["description"] =
+            "How to order results for `search`: \"best\" (default) ranks by how well the name "
+            "fits; \"newest\" and \"oldest\" order by when the item was acquired. Every result "
+            "carries `acquired` as well, so \"the newest one\" never needs guessing.";
+        inv_props["sort"] = sort_p;
         inv_props["request_id"]=srq; inv_props["confirm"]=scf;
         LLSD inv_schema; inv_schema["type"]="object"; inv_schema["properties"]=inv_props;
         LLSD inv_req = LLSD::emptyArray(); inv_req.append("action");
@@ -2407,10 +2428,20 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             // returned whichever hundred sat earliest in the tree rather than
             // the hundred anyone wanted -- "wear my black skirt" was a lottery.
             // FSAIIndex scores every match and only then cuts. See Findings 60.
+            // "the newest UNA one" is a question the viewer could always
+            // answer -- Item Properties has always shown an Acquired date --
+            // and the assistant said it had no way to check, because we never
+            // returned it. Now it is on every item, and sortable.
+            FSAIIndex::Order order = FSAIIndex::BY_BEST;
+            const std::string sort = params.has("sort") ? lowered(params["sort"].asString())
+                                                        : std::string();
+            if (sort == "newest") order = FSAIIndex::BY_NEWEST;
+            else if (sort == "oldest") order = FSAIIndex::BY_OLDEST;
+
             size_t total = 0;
             const std::vector<FSAIIndex::Hit> hits =
                 FSAIIndex::instance().search(query, kindFromWord(kind), creator_id,
-                                             (size_t)limit, total);
+                                             (size_t)limit, total, order);
             for (const FSAIIndex::Hit& h : hits)
             {
                 if (LLViewerInventoryItem* item = gInventory.getItem(h.id))

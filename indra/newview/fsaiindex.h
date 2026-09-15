@@ -68,6 +68,7 @@ public:
     {
         LLUUID id;
         S32    score = 0;
+        time_t acquired = 0;
     };
 
     /**
@@ -78,11 +79,19 @@ public:
      * `total_matches` reports how many matched altogether, which the old path
      * could not know without walking twice.
      */
+    enum Order
+    {
+        BY_BEST,    // how well the name fits -- the default
+        BY_NEWEST,  // most recently acquired first
+        BY_OLDEST
+    };
+
     std::vector<Hit> search(const std::string& query,
                             LLAssetType::EType  kind,
                             const LLUUID&       creator_id,
                             size_t              limit,
-                            size_t&             total_matches);
+                            size_t&             total_matches,
+                            Order               order = BY_BEST);
 
     /** Drop the index; it rebuilds on the next search. */
     void invalidate() { mBuilt = false; }
@@ -97,6 +106,7 @@ private:
         std::string        lname;     // lowercased once, which is the whole point
         LLAssetType::EType type = LLAssetType::AT_NONE;
         LLUUID             creator;
+        time_t             acquired = 0;
     };
 
     std::vector<Entry> mEntries;
