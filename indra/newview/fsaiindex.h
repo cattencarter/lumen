@@ -69,6 +69,7 @@ public:
         LLUUID id;
         S32    score = 0;
         time_t acquired = 0;
+        S32    copies   = 1;   // how many items share this exact name
     };
 
     /**

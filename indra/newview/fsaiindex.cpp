@@ -37,6 +37,7 @@
 #include "llviewerinventory.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <sstream>
 
 namespace
@@ -202,6 +203,13 @@ S32 FSAIIndex::score(const std::string& lname,
 
     // Things that are not the garment, however well the name matches.
     //
+    // Twice now this list was short by one and the wrong item was worn: the
+    // demo, then "Tapi Skirt HUD (wear me)", which took all eight top places
+    // for "tapi skirt" because it is *shorter* than "Tapi Skirt - Maitreya
+    // LaraX" and the length rule therefore preferred it. The pattern is that
+    // an accessory is named after the garment and is usually the tidier name,
+    // so plain name matching ranks it above the thing itself, every time.
+    //
     // "una skirt" put "UNA. Prya Skirt Larax DEMO" above "UNA. Prya Skirt
     // LaraX Teal" -- the two names are the same length, so the shorter-name
     // rule could not separate them and the winner was whichever came first in
@@ -213,6 +221,9 @@ S32 FSAIIndex::score(const std::string& lname,
     // a product genuinely called something ending in those letters is safe.
     static const struct { const char* word; S32 cost; } NOT_THE_THING[] = {
         { "demo",     3000 },
+        { "hud",      3000 },   // the fitting interface, not the garment
+        { "wear me",  2500 },   // and neither is the thing that says so
+        { "add me",   2500 },
         { "unpacker", 2500 },
         { "unpack",   2500 },
         { "box",      1500 },   // the packaging, not the contents
@@ -265,6 +276,7 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
 
     std::vector<Hit> hits;
     hits.reserve(std::min<size_t>(limit * 4, 512));
+    std::unordered_map<std::string, size_t> seen;
 
     for (const Entry& e : mEntries)
     {
@@ -296,10 +308,45 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
 
         ++total_matches;
 
+        const S32 sc = score(e.lname, words, whole);
+
+        // Collapse items sharing a name as we go, rather than afterwards.
+        //
+        // Six copies of "Tapi Skirt - Legacy (all)" took six of the eight
+        // places a search returns, and the LaraX fit the author was actually
+        // wearing never appeared. Duplicates are truthful and useless -- the
+        // same garment unpacked twice -- and each one costs a slot that could
+        // have shown a different body fit.
+        //
+        // Done here because the obvious version (group the hits afterwards)
+        // needs a name lookup per hit, and with 1,658 matches over 72,431
+        // entries that is a quadratic walk on the frame loop. One hash lookup
+        // per match instead.
+        auto found = seen.find(e.lname);
+        if (found != seen.end())
+        {
+            Hit& existing = hits[found->second];
+            ++existing.copies;
+            if (sc > existing.score)
+            {
+                existing.id       = e.id;
+                existing.score    = sc;
+                existing.acquired = e.acquired;
+            }
+            else if (e.acquired > existing.acquired)
+            {
+                // Same name and no better match: keep the newest, so "wear my
+                // X" reaches for the copy most recently acquired.
+                existing.acquired = e.acquired;
+            }
+            continue;
+        }
+
         Hit h;
         h.id       = e.id;
-        h.score    = score(e.lname, words, whole);
+        h.score    = sc;
         h.acquired = e.acquired;
+        seen[e.lname] = hits.size();
         hits.push_back(h);
     }
 

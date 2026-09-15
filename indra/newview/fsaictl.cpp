@@ -2376,6 +2376,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // How many matched altogether, which the old capped walk could not know
         // without walking twice. 0 means "not measured" (the worn-only path).
         size_t ranked_total = 0;
+        std::map<LLUUID, S32> duplicate_counts;
 
         LLInventoryModel::cat_array_t cats;
         LLInventoryModel::item_array_t items;
@@ -2446,6 +2447,12 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 if (LLViewerInventoryItem* item = gInventory.getItem(h.id))
                 {
+                    if (h.copies > 1)
+                    {
+                        // Recorded so the caller knows the collapse happened
+                        // and is not left wondering where the other five went.
+                        duplicate_counts[item->getUUID()] = h.copies;
+                    }
                     // The creator-by-name case still filters here: the index
                     // holds ids, and resolving a name needs the viewer's name
                     // cache, which is not always warm.
@@ -2464,6 +2471,14 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         for (size_t i = 0; i < items.size() && (S32)i < limit; ++i)
         {
             LLSD one = itemToLLSD(items[i]);
+            {
+                std::map<LLUUID, S32>::const_iterator dc =
+                    duplicate_counts.find(items[i]->getUUID());
+                if (dc != duplicate_counts.end())
+                {
+                    one["copies"] = (LLSD::Integer)dc->second;
+                }
+            }
             // Ask for any creator name this page is missing, so a second call
             // can show it -- the same shape look_nearby uses for objects.
             if (one.has("creator") && !one.has("creator_name"))
