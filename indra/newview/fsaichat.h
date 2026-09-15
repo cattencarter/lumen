@@ -84,6 +84,13 @@ private:
 
     bool mBusy = false;
 
+    // Tokens this window has spent since it opened. Not persisted: it answers
+    // "what is this costing me right now", which is the question someone
+    // actually asks, and a lifetime total would need a currency and a price
+    // list that both change without telling us.
+    S32 mSessionIn  = 0;
+    S32 mSessionOut = 0;
+
     void onSend();
     void onClear();
 
@@ -99,6 +106,9 @@ private:
     void sayAssistant(const std::string& text);
     void sayTool(const std::string& label, bool failed);
     void sayNote(const std::string& text);
+
+    /** What the turn just cost, and what the window has cost so far. */
+    void sayUsage(S32 in, S32 out, S32 calls);
     void setBusy(bool busy, const std::string& note = std::string());
 };
 

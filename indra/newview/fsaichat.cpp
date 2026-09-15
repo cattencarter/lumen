@@ -254,6 +254,54 @@ namespace
         return name;
     }
 
+    /**
+     * Add one call's token usage to a running total.
+     *
+     * The two spell it differently, and neither total is the conversation's
+     * size: **every call resends the whole history**, so the input counts
+     * across a turn's tool round trips genuinely add up rather than
+     * double-counting. That is what the bill does too, which is the point of
+     * showing it -- a turn that took six tool calls costs far more than one
+     * that took none, and nothing on screen said so.
+     */
+    void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out)
+    {
+        if (!reply.has("usage") || !reply["usage"].isMap())
+        {
+            return;
+        }
+        const LLSD u = reply["usage"];
+
+        if (is_openai)
+        {
+            in  += u["prompt_tokens"].asInteger();
+            out += u["completion_tokens"].asInteger();
+            return;
+        }
+
+        in  += u["input_tokens"].asInteger();
+        out += u["output_tokens"].asInteger();
+
+        // Prompt caching is not used, but these are billed input if it ever is,
+        // and counting them only when present costs nothing now.
+        if (u.has("cache_read_input_tokens"))     in += u["cache_read_input_tokens"].asInteger();
+        if (u.has("cache_creation_input_tokens")) in += u["cache_creation_input_tokens"].asInteger();
+    }
+
+    /** 12345 -> "12,345"; a five-figure token count is unreadable otherwise. */
+    std::string grouped(S32 n)
+    {
+        std::string digits = llformat("%d", n < 0 ? 0 : n);
+        std::string out;
+        S32 count = 0;
+        for (S32 i = (S32)digits.size() - 1; i >= 0; --i)
+        {
+            out += digits[i];
+            if (++count % 3 == 0 && i > 0) out += ',';
+        }
+        return std::string(out.rbegin(), out.rend());
+    }
+
     std::string systemPrompt()
     {
         return
@@ -490,6 +538,40 @@ void FSAIChatFloater::sayTool(const std::string& label, bool failed)
                             true, dimStyle());
 }
 
+void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
+{
+    if (!mTranscript || calls == 0)
+    {
+        return;
+    }
+
+    if (in == 0 && out == 0)
+    {
+        // Calls were made and neither provider reported a token count. Almost
+        // certainly means the field names moved, and printing nothing would
+        // hide that forever behind a line that merely looks absent. Say it.
+        mTranscript->appendText("      (no token count returned)", true, dimStyle());
+        return;
+    }
+
+    mSessionIn  += in;
+    mSessionOut += out;
+
+    std::string line = "      " + grouped(in) + " in / " + grouped(out) + " out";
+    if (calls > 1)
+    {
+        // Worth naming: a turn is several calls when tools are used, and that
+        // is where the cost goes.
+        line += " over " + llformat("%d", calls) + " calls";
+    }
+    if (mSessionIn + mSessionOut > in + out)
+    {
+        line += "   (window total " + grouped(mSessionIn) + " / " + grouped(mSessionOut) + ")";
+    }
+
+    mTranscript->appendText(line, true, dimStyle());
+}
+
 void FSAIChatFloater::sayNote(const std::string& text)
 {
     if (!mTranscript) return;
@@ -585,6 +667,9 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
     setBusy(true, "Thinking...");
 
+    // Across the whole turn, however many provider calls it takes.
+    S32 turn_in = 0, turn_out = 0, calls = 0;
+
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)
     {
@@ -643,9 +728,15 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         if (!error.empty())
         {
             sayNote("The " + FSAIKeys::displayName(provider) + " request failed -- " + error);
+            // Report what the turn spent before it failed: earlier calls in
+            // this turn were billed even though the turn produced nothing.
+            sayUsage(turn_in, turn_out, calls);
             setBusy(false);
             return;
         }
+
+        ++calls;
+        addUsage(reply, is_openai, turn_in, turn_out);
 
         // ---- what came back, and whether it wants to use a tool ----
 
@@ -764,6 +855,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             {
                 sayAssistant(assistant_text);
             }
+            sayUsage(turn_in, turn_out, calls);
             setBusy(false);
             return;
         }
@@ -774,5 +866,6 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     sayNote("I stopped after " + llformat("%d", MAX_TOOL_TURNS)
                + " rounds of tool calls without finishing. Ask me again, more "
                  "specifically, rather than letting this run up a bill.");
+    sayUsage(turn_in, turn_out, calls);
     setBusy(false);
 }
