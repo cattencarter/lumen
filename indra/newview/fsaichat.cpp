@@ -534,31 +534,6 @@ bool FSAIChatFloater::postBuild()
     {
         clear->setCommitCallback([this](LLUICtrl*, const LLSD&) { onClear(); });
     }
-    if (LLButton* mem = findChild<LLButton>("memory_btn"))
-    {
-        mem->setCommitCallback([](LLUICtrl*, const LLSD&)
-        {
-            LLFloaterReg::showInstance("ai_memory");
-        });
-    }
-    if (LLButton* set = findChild<LLButton>("settings_btn"))
-    {
-        set->setCommitCallback([](LLUICtrl*, const LLSD&)
-        {
-            // Straight to the AI tab rather than the front of Preferences:
-            // sending someone off to hunt for it is the barrier this project
-            // exists to remove, in miniature.
-            LLFloaterPreference* prefs =
-                dynamic_cast<LLFloaterPreference*>(LLFloaterReg::showInstance("preferences"));
-            if (!prefs) return;
-            LLTabContainer* tabs = prefs->findChild<LLTabContainer>("pref core");
-            LLPanel* ai = prefs->findChild<LLPanel>("ai");
-            if (tabs && ai)
-            {
-                tabs->selectTabPanel(ai);
-            }
-        });
-    }
 
     mMessages = LLSD::emptyArray();
     setBusy(false);
@@ -656,39 +631,36 @@ void FSAIChatFloater::sayHeader()
 
 void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
 {
-    if (!mTranscript || calls == 0)
+    if (calls == 0)
     {
+        setActivity(std::string());
         return;
     }
 
     if (in == 0 && out == 0)
     {
-        // Calls were made and neither provider reported a token count. Almost
-        // certainly means the field names moved, and printing nothing would
-        // hide that forever behind a line that merely looks absent. Say it.
-        mTranscript->appendText("   (no token count returned)", true, dimStyle());
+        // Calls were made and neither provider reported a count. Almost
+        // certainly the field names have moved, and showing nothing would hide
+        // that behind a bar that merely looks idle.
+        setActivity("no token count returned");
         return;
     }
 
     mSessionIn  += in;
     mSessionOut += out;
 
-    // A blank line first: at the same indent as the tool lines and with no
-    // gap above, this read as one more tool rather than as the turn's footer.
-    std::string line = "   " + compact(in) + " in \xc2\xb7 " + compact(out) + " out";
+    // The turn is over, so the bar has nothing left to report but what it
+    // cost. It stays there until the next question replaces it.
+    std::string line = compact(in) + " in \xc2\xb7 " + compact(out) + " out";
     if (calls > 1)
     {
-        // "model calls", not "calls": these are round trips to the provider and
-        // there is always one more of them than there are tool lines above, so
-        // the bare word invited counting the lines and finding a discrepancy.
+        // "model calls": round trips to the provider, which is where the cost
+        // goes when a question needs several tools.
         line += " \xc2\xb7 " + llformat("%d", calls) + " model calls";
     }
-    if (mSessionIn + mSessionOut > in + out)
-    {
-        line += "  \xc2\xb7  " + compact(mSessionIn + mSessionOut) + " this window";
-    }
+    line += "  \xc2\xb7  " + compact(mSessionIn + mSessionOut) + " this window";
 
-    mTranscript->appendText(line, true, dimStyle());
+    setActivity(line);
 }
 
 void FSAIChatFloater::sayNote(const std::string& text)
@@ -844,8 +816,8 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             sayNote("The " + FSAIKeys::displayName(provider) + " request failed -- " + error);
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
-            sayUsage(turn_in, turn_out, calls);
             setBusy(false);
+            sayUsage(turn_in, turn_out, calls);
             return;
         }
 
@@ -971,8 +943,8 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             {
                 sayAssistant(assistant_text);
             }
-            sayUsage(turn_in, turn_out, calls);
             setBusy(false);
+            sayUsage(turn_in, turn_out, calls);
             return;
         }
 
@@ -982,6 +954,6 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     sayNote("I stopped after " + llformat("%d", MAX_TOOL_TURNS)
                + " rounds of tool calls without finishing. Ask me again, more "
                  "specifically, rather than letting this run up a bill.");
-    sayUsage(turn_in, turn_out, calls);
     setBusy(false);
+    sayUsage(turn_in, turn_out, calls);
 }
