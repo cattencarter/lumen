@@ -14,9 +14,9 @@
         <customObject id="-3" userLabel="Application"/>
         <menu title="Main Menu" systemMenu="main" id="29" userLabel="Main Menu">
             <items>
-                <menuItem title="Firestorm" id="56">
+                <menuItem title="Lumen" id="56">
                     <modifierMask key="keyEquivalentModifierMask"/>
-                    <menu key="submenu" title="Firestorm" systemMenu="apple" id="57">
+                    <menu key="submenu" title="Lumen" systemMenu="apple" id="57">
                         <items>
                             <menuItem title="About Lumen" id="58">
                                 <modifierMask key="keyEquivalentModifierMask"/>

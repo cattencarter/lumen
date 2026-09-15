@@ -41,6 +41,7 @@
 #include "llsdutil.h"
 #include "lltextbox.h"
 #include "lltexteditor.h"
+#include "lluicolortable.h"
 #include "llviewercontrol.h"
 
 #include <boost/json.hpp>
@@ -180,12 +181,88 @@ namespace
         return text;
     }
 
+    /**
+     * Flatten the Markdown a model reaches for by habit.
+     *
+     * The transcript is an LLTextEditor, which renders none of it, so `**bold**`
+     * arrives as four visible asterisks and a blockquote as a stray `>`. The
+     * system prompt asks for plain text; this is the belt to that braces,
+     * because asking a model for a format is a request, not a guarantee.
+     */
+    std::string plainText(const std::string& in)
+    {
+        std::string out;
+        out.reserve(in.size());
+
+        bool at_line_start = true;
+        for (size_t i = 0; i < in.size(); ++i)
+        {
+            const char c = in[i];
+
+            if (at_line_start)
+            {
+                // "> " quote markers and "#" headings lose their marker and
+                // keep their words.
+                if (c == '>' )
+                {
+                    if (i + 1 < in.size() && in[i + 1] == ' ') ++i;
+                    out += "    ";
+                    continue;
+                }
+                if (c == '#')
+                {
+                    while (i < in.size() && in[i] == '#') ++i;
+                    if (i < in.size() && in[i] == ' ') ++i;
+                    --i;
+                    continue;
+                }
+            }
+
+            // Emphasis markers, only when doubled: a lone asterisk is a
+            // bullet or a multiplication sign and should survive.
+            if ((c == '*' || c == '_') && i + 1 < in.size() && in[i + 1] == c)
+            {
+                ++i;
+                at_line_start = false;
+                continue;
+            }
+
+            out += c;
+            at_line_start = (c == '\n');
+        }
+        return out;
+    }
+
+    /**
+     * What to show for a tool that just ran.
+     *
+     * The grouped tools mean the name alone is nearly useless -- four calls in
+     * a row all reading "inventory" say nothing about whether the assistant
+     * searched, wore, detached or deleted. The action is the informative half.
+     */
+    std::string toolLabel(const std::string& name, const LLSD& args)
+    {
+        if (args.isMap() && args.has("action"))
+        {
+            const std::string action = args["action"].asString();
+            if (!action.empty())
+            {
+                return name + "." + action;
+            }
+        }
+        return name;
+    }
+
     std::string systemPrompt()
     {
         return
             "You are inside Lumen, a Second Life viewer, and you act for the person using it. "
             "They may find the viewer's own interface difficult, so they are asking you instead. "
             "Be brief and concrete, and say what you did in plain words.\n\n"
+
+            "Write plain text. The window you are writing into shows exactly the characters you "
+            "send and renders no formatting at all, so asterisks for bold, # headings and > quotes "
+            "arrive as visible punctuation and make you harder to read, not easier.\n\n"
 
             "USE THE TOOLS. Never answer from memory or from earlier in this conversation about "
             "anything in the world or in their inventory -- what they are wearing, what they own, "
@@ -347,8 +424,8 @@ void FSAIChatFloater::onOpen(const LLSD& key)
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     if (!FSAIKeys::has(provider))
     {
-        say("Lumen", "There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
-                     "Put one in Preferences > AI, then come back.");
+        sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
+                "Put one in Preferences > AI, then come back.");
     }
 
     if (mInput)
@@ -357,13 +434,46 @@ void FSAIChatFloater::onOpen(const LLSD& key)
     }
 }
 
-void FSAIChatFloater::say(const std::string& who, const std::string& text)
+namespace
 {
-    if (!mTranscript)
+    LLStyle::Params dimStyle()
     {
-        return;
+        LLStyle::Params p;
+        p.color = LLUIColorTable::instance().getColor("TextFgTentativeColor");
+        return p;
     }
-    mTranscript->appendText(who + ": " + text, true);
+}
+
+void FSAIChatFloater::sayUser(const std::string& text)
+{
+    if (!mTranscript) return;
+
+    // A blank line before each of the user's turns. Without it the whole
+    // exchange runs together as one wall and there is nothing to scan back
+    // through to find where a question started.
+    mTranscript->appendText("\nYou: " + text, true);
+}
+
+void FSAIChatFloater::sayAssistant(const std::string& text)
+{
+    if (!mTranscript) return;
+    mTranscript->appendText("\nLumen: " + plainText(text), true);
+}
+
+void FSAIChatFloater::sayTool(const std::string& label, bool failed)
+{
+    if (!mTranscript) return;
+
+    // Indented and dimmed: this is a record of what happened, not part of the
+    // conversation, and it should be skimmable without competing with it.
+    mTranscript->appendText("      \xc2\xb7 " + label + (failed ? "  (failed)" : ""),
+                            true, dimStyle());
+}
+
+void FSAIChatFloater::sayNote(const std::string& text)
+{
+    if (!mTranscript) return;
+    mTranscript->appendText("\n" + text, true, dimStyle());
 }
 
 void FSAIChatFloater::setBusy(bool busy, const std::string& note)
@@ -409,7 +519,7 @@ void FSAIChatFloater::onSend()
     }
 
     mInput->setText(LLStringUtil::null);
-    say("You", text);
+    sayUser(text);
 
     // The floater may be closed while this is in flight, so the coroutine
     // holds a handle and checks it rather than capturing `this` raw.
@@ -431,8 +541,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     const std::string key = FSAIKeys::get(provider);
     if (key.empty())
     {
-        say("Lumen", "No " + FSAIKeys::displayName(provider)
-                   + " key is saved. Preferences > AI.");
+        sayNote("No " + FSAIKeys::displayName(provider) + " key is saved. Preferences > AI.");
         setBusy(false);
         return;
     }
@@ -444,8 +553,8 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     {
         if (!mHistoryProvider.empty())
         {
-            say("Lumen", "Switched to " + FSAIKeys::displayName(provider)
-                       + ", so this is a new conversation.");
+            sayNote("Switched to " + FSAIKeys::displayName(provider)
+                  + ", so this is a new conversation.");
         }
         mMessages = LLSD::emptyArray();
         mHistoryProvider = provider;
@@ -513,8 +622,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
         if (!error.empty())
         {
-            say("Lumen", "The " + FSAIKeys::displayName(provider)
-                       + " request failed -- " + error);
+            sayNote("The " + FSAIKeys::displayName(provider) + " request failed -- " + error);
             setBusy(false);
             return;
         }
@@ -540,7 +648,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
                 if (!assistant_text.empty())
                 {
-                    say("Lumen", assistant_text);
+                    sayAssistant(assistant_text);
                 }
 
                 for (LLSD::array_const_iterator it = message["tool_calls"].beginArray();
@@ -560,7 +668,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                         ? callTool(name, args, call_id, is_error)
                         : std::string("Could not read the arguments for this call.");
 
-                    say("  \xc2\xb7", name + (is_error ? " (failed)" : ""));
+                    sayTool(toolLabel(name, args), is_error);
 
                     LLSD tr;
                     tr["role"]         = "tool";
@@ -600,7 +708,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     const std::string result =
                         callTool(name, (*it)["input"], call_id, is_error);
 
-                    say("  \xc2\xb7", name + (is_error ? " (failed)" : ""));
+                    sayTool(toolLabel(name, (*it)["input"]), is_error);
 
                     LLSD tr;
                     tr["type"]        = "tool_result";
@@ -616,7 +724,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
             if (!assistant_text.empty())
             {
-                say("Lumen", assistant_text);
+                sayAssistant(assistant_text);
             }
 
             if (wants_tools)
@@ -634,7 +742,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             }
             else if (!assistant_text.empty())
             {
-                say("Lumen", assistant_text);
+                sayAssistant(assistant_text);
             }
             setBusy(false);
             return;
@@ -643,7 +751,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         setBusy(true, "Working...");
     }
 
-    say("Lumen", "I stopped after " + llformat("%d", MAX_TOOL_TURNS)
+    sayNote("I stopped after " + llformat("%d", MAX_TOOL_TURNS)
                + " rounds of tool calls without finishing. Ask me again, more "
                  "specifically, rather than letting this run up a bill.");
     setBusy(false);

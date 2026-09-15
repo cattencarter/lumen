@@ -92,7 +92,13 @@ private:
     // and seconds on the frame loop is a viewer that has stopped drawing.
     void runTurn(const std::string& user_text);
 
-    void say(const std::string& who, const std::string& text);
+    // One method per kind of line, because they want different treatment:
+    // a person's turn, the assistant's prose, the dimmed record of a tool
+    // that ran, and a note from the viewer itself.
+    void sayUser(const std::string& text);
+    void sayAssistant(const std::string& text);
+    void sayTool(const std::string& label, bool failed);
+    void sayNote(const std::string& text);
     void setBusy(bool busy, const std::string& note = std::string());
 };
 
