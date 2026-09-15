@@ -120,6 +120,10 @@
         You can type a model name that is not in the list. The lists are a starting point, not a limit.
     </text>
 
+    <button follows="left|top" layout="topleft"
+     left="368" top="296" width="140" height="22"
+     label="Memory..." name="memory_btn" />
+
     <text type="string" follows="left|top" layout="topleft"
      left="30" top="358" width="480" height="58" word_wrap="true">
         A key is stored the way Lumen stores your Second Life password: scrambled and tied to this computer, so it will not work if copied elsewhere and never sits in settings.xml where it could be attached to a bug report. That is not strong encryption. Treat a key here as you would a saved password.

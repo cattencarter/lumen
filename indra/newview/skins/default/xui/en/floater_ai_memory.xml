@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<floater
+ legacy_header_height="18"
+ can_minimize="false"
+ can_close="true"
+ can_resize="true"
+ height="420"
+ min_height="300"
+ min_width="420"
+ layout="topleft"
+ name="floater_ai_memory"
+ help_topic="floater_ai_memory"
+ save_rect="true"
+ single_instance="true"
+ title="What the assistant knows about you"
+ width="520">
+
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="12" top="24" width="496" height="56" word_wrap="true">
+        Paste what you want the assistant to remember: who you are, what you do in Second Life, how you like to be spoken to. If you use ChatGPT or Claude, open its memory or personalisation screen and copy the list from there.
+    </text>
+
+    <text_editor follows="all" layout="topleft"
+     left="12" top="86" width="496" height="256"
+     name="memory" word_wrap="true" max_length="16384" />
+
+    <text type="string" follows="left|bottom" layout="topleft"
+     left="12" top="350" width="330" height="16" name="count">
+        0 characters
+    </text>
+
+    <text type="string" follows="left|bottom" layout="topleft"
+     left="12" top="368" width="496" height="16" word_wrap="true">
+        This is sent with every message, so keep it short.
+    </text>
+
+    <button follows="left|bottom" layout="topleft"
+     left="12" top="390" width="120" height="22"
+     label="Import a file..." name="import_btn" />
+
+    <button follows="right|bottom" layout="topleft"
+     left="350" top="390" width="70" height="22"
+     label="Save" name="save_btn" />
+
+    <button follows="right|bottom" layout="topleft"
+     left="428" top="390" width="80" height="22"
+     label="Cancel" name="cancel_btn" />
+
+</floater>

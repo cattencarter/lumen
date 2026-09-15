@@ -32,6 +32,7 @@
 
 #include "llbutton.h"
 #include "llcombobox.h"
+#include "llfloaterreg.h"
 #include "lllineeditor.h"
 #include "llsdutil.h"
 #include "llsecapi.h"
@@ -223,6 +224,14 @@ bool FSPanelPreferenceAIKeys::postBuild()
 
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+
+    if (LLButton* mem = findChild<LLButton>("memory_btn"))
+    {
+        mem->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            LLFloaterReg::showInstance("ai_memory");
+        });
+    }
 
     refresh();
     return true;
