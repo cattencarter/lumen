@@ -315,13 +315,22 @@ namespace
      * across a turn's tool round trips genuinely add up rather than
      * double-counting. That is what the bill does too.
      */
-    void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out, S32& cached)
+    void addUsage(const LLSD& reply, bool is_openai, S32& in, S32& out,
+                  S32& cached, S32& created)
     {
         if (!reply.has("usage") || !reply["usage"].isMap())
         {
+            LL_WARNS("FSAIChat") << "No usage block in the reply; token counts "
+                                    "and any cache figures will be missing." << LL_ENDL;
             return;
         }
         const LLSD u = reply["usage"];
+
+        // Logged verbatim, every call. The bar shows a summary that scrolls
+        // away; this is the record to check afterwards when the question is
+        // "did the cache actually do anything". Numbers only -- no message
+        // content goes near the log.
+        LL_INFOS("FSAIChat") << "usage " << ll_pretty_print_sd(u) << LL_ENDL;
 
         if (is_openai)
         {
@@ -343,7 +352,8 @@ namespace
         }
         if (u.has("cache_creation_input_tokens"))
         {
-            in += u["cache_creation_input_tokens"].asInteger();
+            const S32 c = u["cache_creation_input_tokens"].asInteger();
+            in += c; created += c;
         }
     }
 
@@ -637,7 +647,8 @@ void FSAIChatFloater::sayHeader()
                             true, dimStyle());
 }
 
-void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 calls)
+void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
+                               bool caching_expected)
 {
     if (calls == 0)
     {
@@ -647,9 +658,6 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 calls)
 
     if (in == 0 && out == 0)
     {
-        // Calls were made and neither provider reported a count. Almost
-        // certainly the field names have moved, and showing nothing would hide
-        // that behind a bar that merely looks idle.
         setActivity("no token count returned");
         return;
     }
@@ -657,21 +665,37 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 calls)
     mSessionIn  += in;
     mSessionOut += out;
 
-    // The turn is over, so the bar has nothing left to report but what it
-    // cost. It stays there until the next question replaces it.
     std::string line = compact(in) + " in";
+
     if (cached > 0)
     {
-        // Named so the saving is visible. These were billed at a fraction of
-        // the normal rate rather than not at all, so they stay inside the
-        // total rather than being quietly deducted from it.
+        // Billed at a fraction of the normal rate rather than free, so it
+        // stays inside the total and is named rather than deducted.
         line += " (" + compact(cached) + " cached)";
     }
+    else if (caching_expected && calls > 1 && created == 0)
+    {
+        // We asked for caching, made more than one call, and the provider
+        // reported neither writing nor reading a cache. That means the request
+        // was accepted and the cache_control was ignored.
+        //
+        // **This is the whole point of saying it out loud.** A cache that
+        // silently does nothing looks exactly like a cache that works and is
+        // not mentioned, and this project has believed that before. An absence
+        // is not evidence; a sentence is.
+        line += " \xc2\xb7 CACHING NOT WORKING";
+    }
+    else if (caching_expected && calls > 1 && cached == 0 && created > 0)
+    {
+        // Written every call and never read back: the cached prefix is being
+        // invalidated between calls, so it costs more than no caching at all.
+        line += " \xc2\xb7 cache written but never read";
+    }
+
     line += " \xc2\xb7 " + compact(out) + " out";
+
     if (calls > 1)
     {
-        // "model calls": round trips to the provider, which is where the cost
-        // goes when a question needs several tools.
         line += " \xc2\xb7 " + llformat("%d", calls) + " model calls";
     }
     line += "  \xc2\xb7  " + compact(mSessionIn + mSessionOut) + " this window";
@@ -769,7 +793,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     setBusy(true, "Thinking...");
 
     // Across the whole turn, however many provider calls it takes.
-    S32 turn_in = 0, turn_out = 0, turn_cached = 0, calls = 0;
+    S32 turn_in = 0, turn_out = 0, turn_cached = 0, turn_created = 0, calls = 0;
     mSpokeThisTurn = false;
 
     // The user's message, in whichever dialect we are speaking.
@@ -849,12 +873,12 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
             setBusy(false);
-            sayUsage(turn_in, turn_out, turn_cached, calls);
+            sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
             return;
         }
 
         ++calls;
-        addUsage(reply, is_openai, turn_in, turn_out, turn_cached);
+        addUsage(reply, is_openai, turn_in, turn_out, turn_cached, turn_created);
 
         // ---- what came back, and whether it wants to use a tool ----
 
@@ -976,7 +1000,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                 sayAssistant(assistant_text);
             }
             setBusy(false);
-            sayUsage(turn_in, turn_out, turn_cached, calls);
+            sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
             return;
         }
 
@@ -987,5 +1011,5 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                + " rounds of tool calls without finishing. Ask me again, more "
                  "specifically, rather than letting this run up a bill.");
     setBusy(false);
-    sayUsage(turn_in, turn_out, turn_cached, calls);
+    sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
 }

@@ -122,7 +122,15 @@ private:
     void sayNote(const std::string& text);
 
     /** What the turn just cost, and what the window has cost so far. */
-    void sayUsage(S32 in, S32 out, S32 cached, S32 calls);
+    /**
+     * The turn's cost, and whether the cache actually did anything.
+     *
+     * `caching_expected` is true when we asked for it, which is what makes the
+     * negative case reportable: without it, caching silently not working looks
+     * exactly like caching working and simply not being mentioned.
+     */
+    void sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
+                  bool caching_expected);
     void setBusy(bool busy, const std::string& note = std::string());
 };
 
