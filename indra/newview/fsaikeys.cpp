@@ -31,9 +31,11 @@
 #include "fsaikeys.h"
 
 #include "llbutton.h"
+#include "llcombobox.h"
 #include "lllineeditor.h"
 #include "llsdutil.h"
 #include "llsecapi.h"
+#include "llviewercontrol.h"
 #include "lltextbox.h"
 #include "lltrans.h"
 
@@ -219,8 +221,40 @@ bool FSPanelPreferenceAIKeys::postBuild()
         mRows.push_back(row);
     }
 
+    syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
+    syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+
     refresh();
     return true;
+}
+
+void FSPanelPreferenceAIKeys::syncModelCombo(LLComboBox* combo, const std::string& setting)
+{
+    if (!combo)
+    {
+        return;
+    }
+
+    const std::string value = gSavedSettings.getString(setting);
+    if (value.empty())
+    {
+        return;
+    }
+
+    // LLComboBox offers no "does this value exist" and no selectByValue of its
+    // own, so ask by doing: setValue selects the matching item when there is
+    // one, and changes nothing when there is not.
+    combo->setValue(LLSD(value));
+
+    if (combo->getValue().asString() != value)
+    {
+        // A model the user typed. Offer it in the list so it can be selected,
+        // then show it -- otherwise the panel displays something other than
+        // the setting it is bound to, which is worse than an ugly label.
+        combo->add(value, LLSD(value), ADD_BOTTOM);
+        combo->setValue(LLSD(value));
+        combo->setLabel(value);
+    }
 }
 
 void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
@@ -237,6 +271,10 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
             row.editor->setText(LLStringUtil::null);
         }
     }
+
+    syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
+    syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+
     refresh();
 }
 

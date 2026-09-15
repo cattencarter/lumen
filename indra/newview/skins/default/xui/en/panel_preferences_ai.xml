@@ -13,7 +13,13 @@
     <!-- Positions are explicit rather than stacked padding: this panel cannot
          grow past 480, because the preferences tab container fixes its size,
          and a panel that overflows simply loses its last controls with no
-         error anywhere. -->
+         error anywhere.
+
+         Each provider owns a block: its key, then the model to use with it.
+         The model combo allows typed entry, because model names change far
+         faster than a viewer release and the list will go stale. A value that
+         is not in the list is added to it at runtime by the panel code, since
+         LLComboBox::setValue silently declines to display one it cannot find. -->
 
     <text type="string" follows="left|top" layout="topleft"
      left="30" top="14" width="480" height="16" font="SansSerifBold">
@@ -25,89 +31,102 @@
         You only need a key for the provider you want to use. Get one from that provider's own website.
     </text>
 
+    <!-- Anthropic -->
+
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="68" width="480" height="14" font="SansSerifBold">
+     left="30" top="66" width="480" height="14" font="SansSerifBold">
         Anthropic
     </text>
 
     <line_editor follows="left|top" layout="topleft"
-     left="30" top="86" width="330" height="22"
+     left="30" top="84" width="330" height="22"
      name="key_anthropic" is_password="true"
      select_on_focus="true" commit_on_focus_lost="false"
      max_length_bytes="400" />
 
     <button follows="left|top" layout="topleft"
-     left="368" top="86" width="70" height="22"
+     left="368" top="84" width="70" height="22"
      label="Clear" name="clear_anthropic" />
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="112" width="480" height="26" word_wrap="true"
+     left="30" top="110" width="480" height="26" word_wrap="true"
      name="status_anthropic">
         No key saved.
     </text>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="144" width="480" height="14" font="SansSerifBold">
+     left="30" top="142" width="52" height="16">
+        Model
+    </text>
+
+    <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
+     left="86" top="138" width="274" height="22"
+     name="model_anthropic" allow_text_entry="true" max_chars="80">
+        <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
+        <combo_box.item label="claude-sonnet-5 (balanced)"     name="s5" value="claude-sonnet-5" />
+        <combo_box.item label="claude-haiku-4-5 (fastest)"     name="h45" value="claude-haiku-4-5-20251001" />
+    </combo_box>
+
+    <!-- OpenAI -->
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="172" width="480" height="14" font="SansSerifBold">
         OpenAI
     </text>
 
     <line_editor follows="left|top" layout="topleft"
-     left="30" top="162" width="330" height="22"
+     left="30" top="190" width="330" height="22"
      name="key_openai" is_password="true"
      select_on_focus="true" commit_on_focus_lost="false"
      max_length_bytes="400" />
 
     <button follows="left|top" layout="topleft"
-     left="368" top="162" width="70" height="22"
+     left="368" top="190" width="70" height="22"
      label="Clear" name="clear_openai" />
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="188" width="480" height="26" word_wrap="true"
+     left="30" top="216" width="480" height="26" word_wrap="true"
      name="status_openai">
         No key saved.
     </text>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="222" width="480" height="14" font="SansSerifBold">
-        Which one to use
+     left="30" top="248" width="52" height="16">
+        Model
+    </text>
+
+    <combo_box control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
+     left="86" top="244" width="274" height="22"
+     name="model_openai" allow_text_entry="true" max_chars="80">
+        <combo_box.item label="gpt-4o"      name="g4o"  value="gpt-4o" />
+        <combo_box.item label="gpt-4o-mini" name="g4om" value="gpt-4o-mini" />
+    </combo_box>
+
+    <!-- Which of the two the Assistant window talks to -->
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="280" width="480" height="14" font="SansSerifBold">
+        Use
     </text>
 
     <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
-     left="30" top="240" width="180" height="22" name="provider">
+     left="30" top="298" width="180" height="22" name="provider">
         <combo_box.item label="Anthropic" name="anthropic" value="anthropic" />
         <combo_box.item label="OpenAI"    name="openai"    value="openai" />
     </combo_box>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="272" width="120" height="16">
-        Anthropic model
-    </text>
-
-    <line_editor control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
-     left="156" top="268" width="220" height="22"
-     name="model_anthropic" commit_on_focus_lost="true" />
-
-    <text type="string" follows="left|top" layout="topleft"
-     left="30" top="302" width="120" height="16">
-        OpenAI model
-    </text>
-
-    <line_editor control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
-     left="156" top="298" width="220" height="22"
-     name="model_openai" commit_on_focus_lost="true" />
-
-    <text type="string" follows="left|top" layout="topleft"
-     left="30" top="326" width="480" height="16" word_wrap="true">
-        Model names are typed, not picked from a list: they change far more often than Lumen does.
+     left="30" top="326" width="480" height="26" word_wrap="true">
+        You can type a model name that is not in the list. The lists are a starting point, not a limit.
     </text>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="352" width="480" height="58" word_wrap="true">
+     left="30" top="358" width="480" height="58" word_wrap="true">
         A key is stored the way Lumen stores your Second Life password: scrambled and tied to this computer, so it will not work if copied elsewhere and never sits in settings.xml where it could be attached to a bug report. That is not strong encryption. Treat a key here as you would a saved password.
     </text>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="416" width="480" height="30" word_wrap="true">
+     left="30" top="422" width="480" height="30" word_wrap="true">
         Saved keys are shown only as their first and last few characters. To replace one, type the new key over it. Nothing is written until you click OK.
     </text>
 

@@ -35,6 +35,7 @@
 #include <vector>
 
 class LLLineEditor;
+class LLComboBox;
 
 /**
  * Where an AI provider's API key lives, and the one place anything should ask
@@ -124,6 +125,17 @@ private:
 
     void onClear(const std::string& provider);
     void onKeyEdited(const std::string& provider);
+
+    /**
+     * Make a model combo show what is actually saved.
+     *
+     * `LLComboBox::setValue` looks the value up in its list and, when it is
+     * not there, quietly changes nothing -- so a model the user typed saves
+     * correctly and then displays as blank on the next visit, with the panel
+     * disagreeing with the setting it is bound to. Adding the value as an item
+     * first is what makes the display honest.
+     */
+    void syncModelCombo(LLComboBox* combo, const std::string& setting);
 };
 
 #endif // FS_AIKEYS_H
