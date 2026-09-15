@@ -524,8 +524,20 @@ void FSAIChatFloater::sayUser(const std::string& text)
 
 void FSAIChatFloater::sayAssistant(const std::string& text)
 {
-    if (!mTranscript) return;
-    mTranscript->appendText("\nLumen: " + plainText(text), true);
+    if (!mTranscript || text.empty()) return;
+
+    const std::string body = plainText(text);
+
+    if (mSpokeThisTurn)
+    {
+        // Already introduced this turn. A second "Lumen:" made one answer --
+        // narrate, act, report -- look like two separate replies.
+        mTranscript->appendText("\n" + body, true);
+        return;
+    }
+
+    mTranscript->appendText("\nLumen: " + body, true);
+    mSpokeThisTurn = true;
 }
 
 void FSAIChatFloater::sayTool(const std::string& label, bool failed)
@@ -534,7 +546,7 @@ void FSAIChatFloater::sayTool(const std::string& label, bool failed)
 
     // Indented and dimmed: this is a record of what happened, not part of the
     // conversation, and it should be skimmable without competing with it.
-    mTranscript->appendText("      \xc2\xb7 " + label + (failed ? "  (failed)" : ""),
+    mTranscript->appendText("      " + label + (failed ? "   (failed)" : ""),
                             true, dimStyle());
 }
 
@@ -557,16 +569,19 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 calls)
     mSessionIn  += in;
     mSessionOut += out;
 
-    std::string line = "      " + grouped(in) + " in / " + grouped(out) + " out";
+    // A blank line first: at the same indent as the tool lines and with no
+    // gap above, this read as one more tool rather than as the turn's footer.
+    std::string line = "\n      " + grouped(in) + " in \xc2\xb7 " + grouped(out) + " out";
     if (calls > 1)
     {
-        // Worth naming: a turn is several calls when tools are used, and that
-        // is where the cost goes.
-        line += " over " + llformat("%d", calls) + " calls";
+        // "model calls", not "calls": these are round trips to the provider and
+        // there is always one more of them than there are tool lines above, so
+        // the bare word invited counting the lines and finding a discrepancy.
+        line += " \xc2\xb7 " + llformat("%d", calls) + " model calls";
     }
     if (mSessionIn + mSessionOut > in + out)
     {
-        line += "   (window total " + grouped(mSessionIn) + " / " + grouped(mSessionOut) + ")";
+        line += "   (window " + grouped(mSessionIn) + " \xc2\xb7 " + grouped(mSessionOut) + ")";
     }
 
     mTranscript->appendText(line, true, dimStyle());
@@ -669,6 +684,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
     // Across the whole turn, however many provider calls it takes.
     S32 turn_in = 0, turn_out = 0, calls = 0;
+    mSpokeThisTurn = false;
 
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)
@@ -805,8 +821,12 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
                 if (type == "text")
                 {
-                    if (!assistant_text.empty()) assistant_text += "\n";
-                    assistant_text += (*it)["text"].asString();
+                    // Said here rather than collected and printed after the loop: a
+                    // model narrates before it acts ("I'll wear the matching one"),
+                    // and printing it afterwards put the explanation underneath the
+                    // thing it was explaining.
+                    assistant_text = (*it)["text"].asString();
+                    sayAssistant(assistant_text);
                 }
                 else if (type == "tool_use")
                 {
@@ -831,11 +851,6 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     }
                     tool_results.append(tr);
                 }
-            }
-
-            if (!assistant_text.empty())
-            {
-                sayAssistant(assistant_text);
             }
 
             if (wants_tools)

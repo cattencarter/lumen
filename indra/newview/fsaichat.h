@@ -84,6 +84,11 @@ private:
 
     bool mBusy = false;
 
+    // Whether "Lumen:" has already been written this turn. A model often
+    // narrates, calls tools, then reports -- two labelled blocks read as two
+    // separate replies when they are one answer.
+    bool mSpokeThisTurn = false;
+
     // Tokens this window has spent since it opened. Not persisted: it answers
     // "what is this costing me right now", which is the question someone
     // actually asks, and a lifetime total would need a currency and a price
