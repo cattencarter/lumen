@@ -36,6 +36,7 @@
 
 #include "llbutton.h"
 #include "llcoros.h"
+#include "lleventcoro.h"
 #include "llfloaterpreference.h"
 #include "llfloaterreg.h"
 #include "lltabcontainer.h"
@@ -254,13 +255,13 @@ namespace
         if (group == "inventory")
         {
             if (action == "search")           return "Searching inventory";
-            if (action == "list_folder")      return "Opening a folder";
-            if (action == "read_notecard")    return "Reading a notecard";
-            if (action == "create_notecard")  return "Writing a notecard";
-            if (action == "wear")             return "Getting dressed";
-            if (action == "detach")           return "Taking something off";
-            if (action == "wear_outfit")      return "Changing outfit";
-            if (action == "search_notecards") return "Reading your notecards";
+            if (action == "list_folder")      return "Opening folder";
+            if (action == "read_notecard")    return "Reading notecard";
+            if (action == "create_notecard")  return "Writing notecard";
+            if (action == "wear")             return "Wearing item";
+            if (action == "detach")           return "Removing attachment";
+            if (action == "wear_outfit")      return "Wearing outfit";
+            if (action == "search_notecards") return "Searching notecards";
             if (action == "delete")           return "Moving to trash";
             if (action == "undelete")         return "Restoring from trash";
         }
@@ -269,13 +270,13 @@ namespace
             if (action == "read_chat")          return "Reading chat";
             if (action == "read_messages")      return "Reading messages";
             if (action == "say")                return "Speaking";
-            if (action == "send_im")            return "Sending a message";
-            if (action == "find_person")        return "Looking someone up";
-            if (action == "list_groups")        return "Checking groups";
-            if (action == "list_friends")       return "Checking friends";
-            if (action == "send_group_notice")  return "Posting a notice";
-            if (action == "send_group_message") return "Writing to a group";
-            if (action == "give_item")          return "Giving an item";
+            if (action == "send_im")            return "Sending message";
+            if (action == "find_person")        return "Finding person";
+            if (action == "list_groups")        return "Listing groups";
+            if (action == "list_friends")       return "Listing friends";
+            if (action == "send_group_notice")  return "Posting notice";
+            if (action == "send_group_message") return "Messaging group";
+            if (action == "give_item")          return "Giving item";
         }
         else if (group == "movement")
         {
@@ -291,10 +292,10 @@ namespace
         }
         else if (group == "viewer")
         {
-            if (action == "status")          return "Checking the viewer";
+            if (action == "status")          return "Checking viewer";
             if (action == "read_actions")    return "Reviewing history";
             if (action == "read_dialogues")  return "Checking dialogues";
-            if (action == "answer_dialogue") return "Answering a dialogue";
+            if (action == "answer_dialogue") return "Answering dialogue";
         }
 
         return action.empty() ? group : (group + "." + action);
@@ -920,6 +921,11 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     // done, and a label that appears once the work is finished
                     // is a report, not an indicator.
                     setActivity(toolLabel(name, args));
+                    // A tool call is synchronous, so without this the coroutine
+                    // sets the label and runs the whole tool before the main
+                    // loop next repaints -- only the last label of a batch
+                    // would ever have been seen. One frame is enough.
+                    llcoro::suspend();
 
                     bool is_error = false;
                     const std::string result = ok
@@ -965,6 +971,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                     const std::string name    = (*it)["name"].asString();
 
                     setActivity(toolLabel(name, (*it)["input"]));
+                    llcoro::suspend();
 
                     bool is_error = false;
                     const std::string result =
@@ -1004,7 +1011,11 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             return;
         }
 
-        setBusy(true, "Working...");
+        // Deliberately NOT reset to a generic word here. The model call that
+        // follows is where the seconds go, so overwriting "Searching
+        // inventory" with "Working" at this point is precisely why the bar
+        // only ever seemed to say the latter. The last real action stands
+        // until something truer replaces it.
     }
 
     sayNote("I stopped after " + llformat("%d", MAX_TOOL_TURNS)
