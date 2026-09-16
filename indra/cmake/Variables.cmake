@@ -144,7 +144,34 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(DARWIN 1)
 
   string(REGEX MATCH "-mmacosx-version-min=([^ ]+)" scratch "$ENV{LL_BUILD}")
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "${CMAKE_MATCH_1}" CACHE STRING "macOS Deploy Target" FORCE)
+  set(LUMEN_DEPLOY_TARGET "${CMAKE_MATCH_1}")
+  # <FS:AICtl> fs-build-variables asks for macOS 11, and Xcode 27 refuses to
+  # target anything below 12.0 -- every target fails at project-generation time,
+  # before a line is compiled. Raise the floor here rather than editing the
+  # upstream variables clone, which we keep pristine. Drop this when upstream
+  # moves their own minimum up.
+  if (LUMEN_DEPLOY_TARGET AND LUMEN_DEPLOY_TARGET VERSION_LESS "12.0")
+    message(STATUS "Raising macOS deploy target ${LUMEN_DEPLOY_TARGET} -> 12.0 (Xcode's minimum)")
+    set(LUMEN_DEPLOY_TARGET "12.0")
+    # Raising the CMake variable alone is not enough, and the way it fails is
+    # worth knowing: LL_BUILD is appended to CMAKE_CXX_FLAGS by 00-Common, so
+    # the compiler still gets -mmacosx-version-min=11 while Xcode passes
+    # -target arm64-apple-macos12.0. clang calls that an overriding option, and
+    # -Werror turns it into an error in every translation unit. Rewrite the
+    # flag at the source so both agree. 00-Common includes this file first.
+    string(REGEX REPLACE "-mmacosx-version-min=[^ ]+"
+           "-mmacosx-version-min=12.0" LUMEN_LL_BUILD "$ENV{LL_BUILD}")
+    # Raising the target also turns every "deprecated in macOS 12.0" in upstream's
+    # own code into an error, because the build is -Werror: kIOMasterPortDefault,
+    # NSSavePanel setAllowedFileTypes:, and however many more are found one
+    # ten-minute build at a time. None of them is our code and none is a defect --
+    # they are deprecations we inherited by being forced off macOS 11. Keep them
+    # as warnings so they stay visible, and leave upstream's files untouched.
+    set(LUMEN_LL_BUILD "${LUMEN_LL_BUILD} -Wno-error=deprecated-declarations")
+    set(ENV{LL_BUILD} "${LUMEN_LL_BUILD}")
+  endif ()
+  # </FS:AICtl>
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "${LUMEN_DEPLOY_TARGET}" CACHE STRING "macOS Deploy Target" FORCE)
   message(STATUS "CMAKE_OSX_DEPLOYMENT_TARGET = '${CMAKE_OSX_DEPLOYMENT_TARGET}'")
 
   # Use dwarf symbols for most libraries for compilation speed
