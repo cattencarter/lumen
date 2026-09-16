@@ -29,6 +29,7 @@
 
 #include "fsaictl.h"
 #include "fsaichat.h"
+#include "fsaikeys.h"
 #include "fsaiindex.h"
 #include "fsainotecache.h"
 
@@ -1703,7 +1704,10 @@ namespace
             "read the text out rather than summarising it: these ask for real permissions.\n"
             "- answer_while_away: answer instant messages on the user's behalf until they say "
             "they are back. Turn it ON only when they ask you to -- \"answer my IMs until I get "
-            "back\", \"cover for me\" -- and OFF the moment they say they have returned. Pass "
+            "back\", \"cover for me\" -- and OFF the moment they say they have returned. "
+            "**This is the one action that needs an API key in the viewer itself**, because the "
+            "viewer has to call a provider with nobody at the keyboard; if there is none it is "
+            "refused and says so. Pass "
             "**Set `ims` and `local_chat` from what they actually asked for, and nothing more.** "
             "\"answer my IMs\" is `ims: true` alone. \"answer in local chat\" or \"keep the "
             "scene going\" is `local_chat: true` alone -- do NOT also start answering their "
@@ -2479,6 +2483,35 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // ---- MCP ----------------------------------------------------------
     if (method == "initialize")
     {
+        // What the CLIENT says it can do, which we have never looked at.
+        //
+        // The interesting one is `sampling`: an MCP server may ask its client
+        // to run a model completion on its behalf. If Claude Desktop declares
+        // it, Lumen's own Assistant window could be driven by the host's model
+        // -- our window, their subscription, no API key, and no second app to
+        // keep in front of the viewer.
+        //
+        // `elicitation` matters too: Decisions 40 wants it for confirming an
+        // irreversible act in the conversation rather than in a floater, and
+        // recorded that no host was known to have it. Known is not the same as
+        // checked.
+        //
+        // Logged rather than acted on. This is a measurement.
+        {
+            const LLSD& theirs = params["capabilities"];
+            LL_INFOS("AICtl") << "client "
+                              << (params.has("clientInfo")
+                                  ? params["clientInfo"]["name"].asString() : std::string("?"))
+                              << " declares capabilities: "
+                              << (theirs.isUndefined() ? std::string("(none sent)")
+                                                       : ll_pretty_print_sd(theirs))
+                              << "  [sampling: "
+                              << (theirs.has("sampling") ? "YES" : "no")
+                              << ", elicitation: "
+                              << (theirs.has("elicitation") ? "YES" : "no") << "]"
+                              << LL_ENDL;
+        }
+
         LLSD capabilities;
         capabilities["tools"] = LLSD::emptyMap();
 
@@ -5102,6 +5135,34 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // Two independent channels. If neither is named, instant messages --
         // that is what "cover for me" means to most people, and it is the one
         // that is private.
+        // This one needs a provider key even when nothing else does.
+        //
+        // Every other tool works perfectly well from Claude Desktop or ChatGPT
+        // with no key at all -- the host has its own model, and the viewer just
+        // does as it is told. But answering while away means the VIEWER calls a
+        // provider, unprompted, with nobody at the keyboard. There is no host
+        // to borrow, so there is no way around a key.
+        //
+        // Refused rather than armed, because the alternative is the worst
+        // failure this project knows: "now answering your instant messages",
+        // then silence, for as long as they are gone.
+        if (on)
+        {
+            const std::string provider = gSavedSettings.getString("LumenAIProvider");
+            if (!FSAIKeys::has(provider))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] =
+                    "There is no " + FSAIKeys::displayName(provider) + " key saved, so the "
+                    "viewer cannot answer for them. Unlike every other tool, this one needs "
+                    "one: answering while they are away means the viewer calls a provider "
+                    "itself, with nobody at the keyboard, so there is no host to borrow. Tell "
+                    "them plainly that this feature needs a key in Preferences > AI, and that "
+                    "everything else works without one. NOT armed.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
         const bool local_chat = params.has("local_chat") && params["local_chat"].asBoolean();
         const bool ims = params.has("ims") ? params["ims"].asBoolean() : !local_chat;
 
