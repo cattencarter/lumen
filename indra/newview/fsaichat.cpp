@@ -318,6 +318,8 @@ namespace
             if (action == "read_dialogues")  return "Checking dialogues";
             if (action == "answer_dialogue") return "Answering dialogue";
             if (action == "answer_while_away") return "Covering for you";
+            if (action == "read_scripts")     return "Reading your script";
+            if (action == "edit_script")      return "Writing your script";
         }
 
         return action.empty() ? group : (group + "." + action);
