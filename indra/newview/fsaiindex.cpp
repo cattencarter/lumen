@@ -113,8 +113,23 @@ FSAIIndex::~FSAIIndex()
 {
     if (mWatcher)
     {
-        gInventory.removeObserver(mWatcher);
-        delete mWatcher;
+        // The inventory model OWNS every observer registered with it:
+        // cleanupInventory() pops the list and deletes each one. It runs at
+        // llappviewer.cpp:2236, and singletons are torn down at :2586 -- so by
+        // the time we get here our watcher has already been deleted, and
+        // removing and deleting it again was a double free. It crashed on
+        // quit, which is the one moment nobody is watching the screen.
+        //
+        // containsObserver only compares pointer values inside a set and never
+        // dereferences, so it is safe to ask with a stale pointer: false means
+        // the model has already destroyed it and there is nothing left to do.
+        // True means we are being torn down early, while the model is still
+        // alive, and then the observer really is ours to remove.
+        if (gInventory.containsObserver(mWatcher))
+        {
+            gInventory.removeObserver(mWatcher);
+            delete mWatcher;
+        }
         mWatcher = nullptr;
     }
 }
