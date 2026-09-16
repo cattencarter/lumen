@@ -310,6 +310,7 @@ namespace
             if (action == "turn")          return "Turning";
             if (action == "look_nearby")   return "Looking around";
             if (action == "where_am_i")    return "Checking location";
+            if (action == "camera")        return "Setting up the shot";
         }
         else if (group == "viewer")
         {

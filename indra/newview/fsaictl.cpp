@@ -34,6 +34,8 @@
 #include "fsainotecache.h"
 
 #include "llagent.h"
+#include "llvoavatar.h"
+#include "llagentcamera.h"
 #include "llappearancemgr.h"
 #include "llavatarnamecache.h"
 #include "llcallingcard.h"
@@ -1311,6 +1313,7 @@ namespace
             if (action == "turn")          return "turn";
             if (action == "where_am_i")    return "where_am_i";
             if (action == "follow")        return "follow";
+            if (action == "camera")        return "camera";
             return "";
         }
         if (group == "viewer")
@@ -1615,7 +1618,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
-              "follow",
+              "follow", "camera",
               "fly", "turn", "where_am_i" };
         LLSD move;
         move["name"] = "movement";
@@ -1632,6 +1635,21 @@ namespace
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
+            "- camera: move the view, for looking at something or setting up a photo. `shot` "
+            "picks a framing: \"face\", \"body\" (head to feet, for showing an outfit), "
+            "\"wide\" (them and their surroundings), or \"reset\" to give the camera back. "
+            "`subject` is who or what to aim at -- a person's `name`, an `object_id` from "
+            "look_nearby, or nothing for the user themselves. `angle` turns around them in "
+            "degrees (0 in front, 90 to their left, 180 behind) and `height` raises or lowers "
+            "the camera in metres.\n"
+            "  **It does NOT take a photo.** It aims; the person presses Save in the Snapshot "
+            "window, which opens alongside and previews live. Nothing is written to disk, "
+            "nothing is uploaded, and nothing costs them anything unless they choose it. Say "
+            "what you framed and let them look -- their eyes are the judge of a composition, "
+            "not you.\n"
+            "  **reset always works**, whatever state the camera is in. Offer it when they seem "
+            "done, and use it yourself if anything looks wrong: this is the one thing that moves "
+            "what they are looking at while they are looking at it.\n"
             "- follow: walk after a person and keep following them, by `name`. The viewer does "
             "the following itself, so it carries on until they teleport away, go out of range, "
             "or you call stop_walking. Say plainly that it is following and that it will keep "
@@ -1651,7 +1669,7 @@ namespace
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
         LLSD move_props;
-        move_props["action"] = actionProperty(move_actions, 10, "What to do. Required.");
+        move_props["action"] = actionProperty(move_actions, 11, "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
@@ -3638,7 +3656,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // never reached -- "Method not found" for code that plainly exists.
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
         || method == "stand"  || method == "fly"        || method == "turn"
-        || method == "follow")
+        || method == "follow" || method == "camera")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -3754,6 +3772,145 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             result["facing"] = compassPoint(now);
             LLSD summary; summary["action"] = "turn"; summary["to"] = described;
             recordAction(request_id, fingerprintOf("turn", params), "turn", "ok", result, summary);
+            return result;
+        }
+
+        if (method == "camera")
+        {
+            const std::string shot = params.has("shot")
+                                   ? lowered(params["shot"].asString()) : std::string("body");
+
+            if (shot == "reset")
+            {
+                // Always available, whatever state the camera is in. This is
+                // the one tool that moves what somebody is looking at while
+                // they are looking at it, so getting out must never fail.
+                gAgentCamera.setFocusOnAvatar(true, true);
+                gAgentCamera.changeCameraToThirdPerson(true);
+                LLSD result;
+                result["camera"] = "reset";
+                result["note"] = "The camera is back to normal.";
+                return result;
+            }
+
+            if (!isAgentAvatarValid())
+            {
+                LLSD e; e["code"] = -32000; e["message"] = "The avatar is not ready yet.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            // Who or what we are aiming at, and how tall it is.
+            LLVector3d subject = gAgent.getPositionGlobal();
+            F32 height = gAgentAvatarp->mBodySize.mV[VZ];
+            std::string who = "you";
+            LLUUID focus_id;
+
+            if (params.has("object_id") && !params["object_id"].asString().empty())
+            {
+                const LLUUID id(params["object_id"].asString());
+                LLViewerObject* obj = gObjectList.findObject(id);
+                if (!obj)
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "No object with that id is in range. Call look_nearby again.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                subject  = obj->getPositionGlobal();
+                height   = llmax(0.5f, obj->getScale().mV[VZ]);
+                focus_id = id;
+                who      = "the object";
+            }
+            else if (params.has("name") && !params["name"].asString().empty())
+            {
+                LLSD who_error;
+                const LLUUID person = resolvePerson(params, who_error);
+                if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+                if (!LLWorld::getInstance()->getAvatar(person, subject))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "They are not close enough to point the camera at.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                height   = 1.8f;             // other avatars' exact height is not ours to read
+                focus_id = person;
+                who      = params["name"].asString();
+            }
+
+            // Framing, in metres back and where to look.
+            //
+            // Worked out from the subject's real height rather than guessed:
+            // a body shot has to hold head to feet, and avatars here run from
+            // well under a metre to well over two.
+            F32 back = 3.0f, look_at_z = height * 0.5f, up = 0.0f;
+            std::string framed;
+            if (shot == "face")
+            {
+                back = 0.9f;  look_at_z = height * 0.92f;  up = 0.1f;
+                framed = "a close portrait";
+            }
+            else if (shot == "wide")
+            {
+                back = height * 4.5f;  look_at_z = height * 0.55f;  up = height * 0.5f;
+                framed = "a wide shot with the surroundings";
+            }
+            else                            // "body", and the default
+            {
+                back = height * 1.9f;  look_at_z = height * 0.52f;  up = height * 0.15f;
+                framed = "head to feet";
+            }
+
+            if (params.has("height"))
+            {
+                up += (F32)params["height"].asReal();
+            }
+
+            // Around the subject. 0 is in front of them, which means standing
+            // where they are facing -- not where the camera happens to be.
+            F32 deg = params.has("angle") ? (F32)params["angle"].asReal() : 0.f;
+            while (deg < 0.f)    deg += 360.f;
+            while (deg >= 360.f) deg -= 360.f;
+
+            LLVector3 facing = gAgent.getAtAxis();
+            if (focus_id.notNull() && focus_id != gAgent.getID())
+            {
+                facing = LLVector3(0.f, 1.f, 0.f);   // no facing for others; use north
+            }
+            facing.mV[VZ] = 0.f;
+            if (facing.magVecSquared() < 0.0001f) facing = LLVector3(0.f, 1.f, 0.f);
+            facing.normVec();
+
+            const F32 rad = deg * DEG_TO_RAD;
+            const LLVector3 offset(facing.mV[VX] * cosf(rad) - facing.mV[VY] * sinf(rad),
+                                   facing.mV[VX] * sinf(rad) + facing.mV[VY] * cosf(rad),
+                                   0.f);
+
+            LLVector3d eye = subject;
+            eye.mdV[VX] += offset.mV[VX] * back;
+            eye.mdV[VY] += offset.mV[VY] * back;
+            eye.mdV[VZ] += look_at_z + up;
+
+            LLVector3d focus = subject;
+            focus.mdV[VZ] += look_at_z;
+
+            gAgentCamera.setFocusOnAvatar(false, false);
+            gAgentCamera.setCameraPosAndFocusGlobal(eye, focus, focus_id);
+
+            // The Snapshot window, with its live preview, is the shutter. We
+            // never take a picture: no file is written, nothing is uploaded,
+            // and nothing costs them anything unless they press Save.
+            gSavedSettings.setBOOL("AutoSnapshot", true);
+            LLFloaterReg::showInstance("snapshot");
+
+            LLSD result;
+            result["framed"]  = framed;
+            result["subject"] = who;
+            result["angle"]   = deg;
+            result["took_a_photo"] = false;
+            result["note"] = "The camera is set and the Snapshot window is open, previewing "
+                             "live. THEY press Save -- nothing has been written or uploaded. "
+                             "Describe what you framed and ask if they want it adjusted; you "
+                             "cannot see the result, they can. `shot: \"reset\"` gives the "
+                             "camera back.";
             return result;
         }
 
