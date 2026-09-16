@@ -1497,7 +1497,7 @@ namespace
             "those three kinds -- for clothing use wear, and opening a landmark would teleport "
             "them, so it is refused.";
         LLSD inv_props;
-        inv_props["action"] = actionProperty(inv_actions, 12, "What to do. Required.");
+        inv_props["action"] = actionProperty(inv_actions, LL_ARRAY_SIZE(inv_actions), "What to do. Required.");
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
         LLSD ik; ik["type"]="string";
             ik["description"]="search: restrict to one kind -- clothing, bodypart, object, "
@@ -1587,7 +1587,7 @@ namespace
             "every member and CANNOT be recalled or edited, so read it back to the user and get "
             "their agreement before sending. Pass a request_id.";
         LLSD chat_props;
-        chat_props["action"] = actionProperty(chat_actions, 10, "What to do. Required.");
+        chat_props["action"] = actionProperty(chat_actions, LL_ARRAY_SIZE(chat_actions), "What to do. Required.");
         LLSD cmsg; cmsg["type"]="string"; cmsg["description"]="say / send_im: the message.";
         LLSD cch;  cch["type"]="integer";
             cch["description"]="say: 0 (default) is ordinary local chat; above 0 talks to objects.";
@@ -1639,12 +1639,6 @@ namespace
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
-            "- lighting: change the light, which for a photograph matters as much as the "
-            "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
-            "\"region\" to give the place its own light back. `name` instead applies one of the "
-            "user's own saved environment settings -- find them with inventory search, "
-            "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
-            "unaffected.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
             "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
             "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
@@ -1681,7 +1675,7 @@ namespace
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
         LLSD move_props;
-        move_props["action"] = actionProperty(move_actions, 11, "What to do. Required.");
+        move_props["action"] = actionProperty(move_actions, LL_ARRAY_SIZE(move_actions), "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
@@ -1715,7 +1709,7 @@ namespace
         // ---- viewer ---------------------------------------------------------
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
-              "answer_while_away", "read_scripts", "edit_script" };
+              "answer_while_away", "read_scripts", "edit_script", "lighting" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -1766,6 +1760,13 @@ namespace
             "is genuinely a rewrite. After they save, call read_scripts again -- the compiler "
             "errors land in that window and you can fix them from there. Tell them plainly that "
             "you have written it in and they need to save.\n"
+            "- lighting: change the light, which for a photograph matters as much as the "
+            "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
+            "\"region\" to give the place its own light back -- and the ordinary words, so "
+            "\"golden hour\" and \"dusk\" work. `name` applies one of the user's own saved "
+            "environment settings instead; find them with inventory search, "
+            "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
+            "untouched. Pair it with movement/camera to set up a photograph.\n"
             "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
             "the user what they want first.** These grant permission to take things, move the "
             "avatar, or run scripts on it. Never choose for them.";
@@ -1808,7 +1809,7 @@ namespace
             vnt["description"]="answer_while_away: anything they said on the way out -- how long "
                                "they will be, what to say, what not to. Optional.";
         view_props["on"]=von; view_props["note"]=vnt;
-        view_props["action"] = actionProperty(view_actions, 7, "What to do. Required.");
+        view_props["action"] = actionProperty(view_actions, LL_ARRAY_SIZE(view_actions), "What to do. Required.");
         LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
         LLSD vch;  vch["type"]="string";
             vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
