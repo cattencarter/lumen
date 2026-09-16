@@ -39,12 +39,15 @@
 #include "llgiveinventory.h"
 #include "llinventoryfunctions.h"
 #include "llinventorymodel.h"
+#include "llinventorypanel.h"
+#include "llfloaterreg.h"
 #include "llfilesystem.h"
 #include "llnotecard.h"
 #include "llregionhandle.h"
 #include "roles_constants.h"
 #include "llviewerassetupload.h"
 #include "llviewerinventory.h"
+#include "rlvhandler.h"
 #include "llviewermessage.h"
 #include "llselectmgr.h"
 #include "llviewerobjectlist.h"
@@ -1272,6 +1275,8 @@ namespace
             if (action == "delete")          return "delete_item";
             if (action == "undelete")        return "undelete_item";
             if (action == "wear_outfit")     return "wear_outfit";
+            if (action == "show")            return "show_item";
+            if (action == "open")            return "open_item";
             return "";
         }
         if (group == "chat")
@@ -1415,12 +1420,18 @@ namespace
         // ---- inventory ----------------------------------------------------
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
-              "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit" };
+              "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
+              "show", "open" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
             "Look through the user's inventory and put things on. Pick one with `action`:\n"
-            "- search: find items by name. Partial and case-insensitive, so \"skirt\" finds "
+            "- search: find items by name AND by the folder it sits in, which matters because "
+            "in Second Life the brand and product are usually the FOLDER while the item inside "
+            "is named only what it is. If a word matches nothing at all its spelling is "
+            "corrected, and the result then carries `spelling_corrected` -- when it does, say "
+            "what was changed, because they may have meant a different brand. "
+            "Partial and case-insensitive, so \"skirt\" finds "
             "\"Blue Silk Skirt\". Returns each item's id, name, kind, folder, **who created it**, "
             "whether it is worn and whether it is copyable. **You do not need to open anything in "
             "the viewer to find out who made something -- it is in every result, as `creator` and "
@@ -1444,6 +1455,12 @@ namespace
             "applies to anything it returns.\n"
             "- wear / detach: put on or take off clothing, a body part or an attachment. wear adds "
             "by default; `replace: true` replaces what is on that spot.\n"
+            "  **To change one garment for another, use wear with `replace: true` -- ONE call.** "
+            "Do not detach the old one and then wear the new one: that is two calls with the "
+            "avatar undressed in between, in front of whoever is nearby, and the gap lasts as "
+            "long as the second call takes. replace swaps them with nothing showing.\n"
+            "  If you genuinely must use both, **wear first and detach afterwards**, never the "
+            "other way round.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete puts it back, "
             "and only the user emptying their own Trash actually removes anything. Say so that "
             "way: \"moved to Trash\", not \"deleted\". A NO-COPY item is the only one they have, "
@@ -1451,13 +1468,28 @@ namespace
             "item's exact name. Anything worn must be detached first.\n"
             "- undelete: take an item back out of the Trash.\n"
             "- wear_outfit: put on a whole saved outfit by name, which is how people actually "
-            "think about getting dressed. `add: true` keeps what is already worn.";
+            "think about getting dressed. `add: true` keeps what is already worn.\n"
+            "- show: open the user's inventory window with an item or folder selected, so they "
+            "can SEE where it is rather than being read a path. Prefer this to reciting a folder "
+            "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`). This one "
+            "moves something on their screen, so do it when they are looking for a thing, not "
+            "after every search.\n"
+            "- open: open a NOTECARD, SCRIPT or TEXTURE in its own window, so the user can read "
+            "or edit it themselves. read_notecard gives YOU the text; this gives it to THEM, and "
+            "is the better answer whenever they want to see it rather than be told it. Only "
+            "those three kinds -- for clothing use wear, and opening a landmark would teleport "
+            "them, so it is refused.";
         LLSD inv_props;
-        inv_props["action"] = actionProperty(inv_actions, 10, "What to do. Required.");
+        inv_props["action"] = actionProperty(inv_actions, 12, "What to do. Required.");
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
         LLSD ik; ik["type"]="string";
             ik["description"]="search: restrict to one kind -- clothing, bodypart, object, "
-                              "notecard, landmark, animation, gesture, texture, sound, script.";
+                              "notecard, landmark, animation, gesture, texture, sound, script. "
+                              "**Do NOT use this to look for garments.** In Second Life a rigged "
+                              "MESH garment -- a skirt, a dress, shoes, nearly everything anyone "
+                              "wears -- is an `object`. `clothing` means only a system layer, "
+                              "like a tattoo or body paint, so kind=clothing hides almost all "
+                              "clothes. Leave kind unset unless you truly want one asset type.";
         LLSD iw; iw["type"]="boolean"; iw["description"]="search: true returns only what is worn.";
         LLSD icr; icr["type"]="string";
             icr["description"]="search: only items made by this person. An avatar id is exact and "
@@ -2404,6 +2436,10 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         if (limit > 100) limit = 100;
 
         const bool worn_only = params.has("worn") && params["worn"].asBoolean();
+        // Declared out here rather than in the index branch: the result is
+        // built below, after the two paths rejoin.
+        std::vector<std::pair<std::string, std::string> > spelling;
+        std::string prefer_fit_used;
 
         // How many matched altogether, which the old capped walk could not know
         // without walking twice. 0 means "not measured" (the worn-only path).
@@ -2471,10 +2507,73 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             if (sort == "newest") order = FSAIIndex::BY_NEWEST;
             else if (sort == "oldest") order = FSAIIndex::BY_OLDEST;
 
+            // The index is built once and worn state changes constantly, so
+            // the worn set is gathered here, live, and handed down. It comes
+            // from the outfit folder rather than a walk of inventory, which
+            // is the whole point of Findings 17: O(worn), not O(65,621).
+            std::set<LLUUID> worn_now;
+            std::map<std::string, S32> fit_votes;
+            {
+                LLInventoryModel::cat_array_t*  cof_cats  = NULL;
+                LLInventoryModel::item_array_t* cof_links = NULL;
+                const LLUUID cof = gInventory.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT);
+                if (cof.notNull())
+                {
+                    gInventory.getDirectDescendentsOf(cof, cof_cats, cof_links);
+                    if (cof_links)
+                    {
+                        for (size_t i = 0; i < cof_links->size(); ++i)
+                        {
+                            // The link points at the real item, and the real
+                            // item is what the index holds.
+                            if (LLViewerInventoryItem* real = (*cof_links)[i]->getLinkedItem())
+                            {
+                                worn_now.insert(real->getUUID());
+                                // Which body the avatar is dressed for is not
+                                // recorded anywhere; it is only ever implied
+                                // by the names of the clothes. So count the
+                                // fits mentioned and take the commonest.
+                                const std::string fit =
+                                    FSAIIndex::fitInName(lowered(real->getName()));
+                                if (!fit.empty())
+                                {
+                                    ++fit_votes[fit];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // One body wins outright in practice -- people wear one body --
+            // so the commonest is the answer, and a tie means no preference
+            // rather than a guess.
+            std::string prefer_fit;
+            S32 best_votes = 0;
+            bool tied = false;
+            for (const auto& fv : fit_votes)
+            {
+                if (fv.second > best_votes)
+                {
+                    best_votes = fv.second; prefer_fit = fv.first; tied = false;
+                }
+                else if (fv.second == best_votes)
+                {
+                    tied = true;
+                }
+            }
+            if (tied)
+            {
+                prefer_fit.clear();
+            }
+
+            prefer_fit_used = prefer_fit;
+
             size_t total = 0;
             const std::vector<FSAIIndex::Hit> hits =
                 FSAIIndex::instance().search(query, kindFromWord(kind), creator_id,
-                                             (size_t)limit, total, order);
+                                             (size_t)limit, total, order, &worn_now,
+                                             prefer_fit, &spelling);
             for (const FSAIIndex::Hit& h : hits)
             {
                 if (LLViewerInventoryItem* item = gInventory.getItem(h.id))
@@ -2496,6 +2595,75 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 }
             }
             ranked_total = total;
+        }
+
+        // Log what was asked and what won.
+        //
+        // Added after "why did it not pick the Friends List notecard?" could
+        // not be answered at all: only writes were logged, so the one thing
+        // that decides every answer -- what was searched for and what came
+        // back first -- left no trace. A ranking nobody can inspect after the
+        // fact is a ranking nobody can fix.
+        {
+            std::string top;
+            for (size_t i = 0; i < items.size() && i < 3; ++i)
+            {
+                if (!top.empty()) top += " | ";
+                top += items[i]->getName();
+            }
+            LL_INFOS("AICtl") << "search: query=\"" << query << "\""
+                              << " kind=" << (kind.empty() ? "any" : kind)
+                              << " worn_only=" << (worn_only ? "yes" : "no")
+                              << " sort=" << (params.has("sort") ? params["sort"].asString()
+                                                                 : std::string("best"))
+                              << " creator=" << (params.has("creator")
+                                      ? params["creator"].asString() : std::string("any"))
+                              << " fit=" << (prefer_fit_used.empty() ? "none" : prefer_fit_used)
+                              << " returned=" << items.size()
+                              << " matched=" << ranked_total
+                              << " top=[" << top << "]" << LL_ENDL;
+        }
+
+        // An empty result has to say what emptied it.
+        //
+        // "tapi skirt" matched 144 items and returned none, because a creator
+        // filter rejected every one -- and the caller was told only that there
+        // was nothing, so it went looking for a differently named skirt that
+        // did not exist. A filter that removes everything is information, not
+        // silence.
+        std::string filters_note;
+        if (items.empty() && ranked_total > 0)
+        {
+            std::string why = llformat("%d items matched \"", (S32)ranked_total)
+                            + query + "\" by name, but none survived the filters you set: ";
+            bool first = true;
+            if (params.has("creator"))
+            {
+                why += "creator=" + params["creator"].asString();
+                first = false;
+            }
+            if (!kind.empty())
+            {
+                if (!first) why += ", ";
+                why += "kind=" + kind;
+                first = false;
+            }
+            if (worn_only)
+            {
+                if (!first) why += ", ";
+                why += "worn=true";
+            }
+            why += ". Try again without them before concluding the item is not there.";
+
+            if (!kind.empty() && (kind == "clothing" || kind == "bodypart"))
+            {
+                why += " In particular: a rigged MESH garment -- which is most "
+                       "clothing in Second Life -- is an `object`, not `clothing`. "
+                       "`clothing` means a system layer, such as a tattoo or body "
+                       "paint. Searching for a skirt with kind=clothing will miss "
+                       "nearly every skirt.";
+            }
+            filters_note = why;
         }
 
         LLSD found = LLSD::emptyArray();
@@ -2522,7 +2690,32 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         LLSD result;
+        if (!filters_note.empty())
+        {
+            result["filters_removed_everything"] = true;
+            result["note"] = filters_note;
+        }
         result["items"] = found;
+
+        // A correction must never be silent. The user asked for "tantacio" and
+        // is being shown "tentacio"; if the assistant repeats the corrected
+        // name without saying so, a genuine "no, that is a different brand"
+        // has no way of ever being said.
+        if (!spelling.empty())
+        {
+            LLSD fixed = LLSD::emptyArray();
+            for (const auto& c : spelling)
+            {
+                LLSD one;
+                one["from"] = c.first;
+                one["to"]   = c.second;
+                fixed.append(one);
+            }
+            result["spelling_corrected"] = fixed;
+            result["note"] = "Nothing matched as spelled, so the spelling was corrected. "
+                             "TELL THE USER what was changed to what -- they may have meant "
+                             "something else entirely.";
+        }
         result["returned"] = (LLSD::Integer)found.size();
         result["truncated"] = worn_only ? ((S32)items.size() > limit)
                                         : ((S32)ranked_total > (S32)found.size());
@@ -3644,6 +3837,209 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         result["items"] = contents;
         result["item_count"] = total;
         result["truncated"] = total > limit;
+        return result;
+    }
+
+    if (method == "show_item")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // RLV can forbid opening inventory, and the viewer's own show_item_original
+        // simply returns when it does. That is the failure this project keeps meeting:
+        // nothing happens and nothing says why. Say why.
+        if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_SHOWINV))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing forbids opening their inventory "
+                           "(an RLV @showinv restriction), so the window cannot be shown. "
+                           "Tell them the item's name and folder instead.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // A folder if asked for by id; otherwise an item, falling back to a folder
+        // of that name, because "show me my skirts" is a folder and "show me my
+        // skirt" is an item and the user says both.
+        bool is_folder = false;
+        LLUUID target;
+        LLSD error;
+        if (params.has("folder_id") && !params["folder_id"].asString().empty())
+        {
+            target = resolveFolder(params, error);
+            is_folder = true;
+        }
+        else
+        {
+            target = resolveItem(params, error);
+            if (target.isNull())
+            {
+                const std::string name = params.has("name") ? params["name"].asString()
+                                                            : std::string();
+                if (!name.empty())
+                {
+                    LLSD folder_error;
+                    const LLUUID as_folder = resolveFolder(params, folder_error);
+                    if (as_folder.notNull())
+                    {
+                        target = as_folder;
+                        is_folder = true;
+                        error = LLSD();
+                    }
+                }
+            }
+        }
+        if (target.isNull())
+        {
+            LLSD w; w["__error"] = error; return w;
+        }
+
+        LLSD result;
+        std::string name;
+        if (is_folder)
+        {
+            LLViewerInventoryCategory* cat = gInventory.getCategory(target);
+            name = cat ? cat->getName() : std::string();
+            result["folder_id"] = target;
+            result["path"] = folderPath(target);
+        }
+        else
+        {
+            // What search returns for a worn item is the link in the outfit folder,
+            // not the thing itself. Showing the link would point at Current Outfit,
+            // which is not where the user keeps it. getLinkedItemID is a no-op for
+            // anything that is not a link.
+            const LLUUID original = gInventory.getLinkedItemID(target);
+            if (original.notNull() && original != target)
+            {
+                result["followed_link"] = true;
+                target = original;
+            }
+            LLViewerInventoryItem* item = gInventory.getItem(target);
+            name = item ? item->getName() : std::string();
+            result["item_id"] = target;
+            if (item)
+            {
+                result["path"] = folderPath(item->getParentUUID());
+            }
+        }
+
+        // take_keyboard_focus is false on purpose: the window opens and scrolls to
+        // the row, but a half-typed sentence somewhere else survives it.
+        LLInventoryPanel::openInventoryPanelAndSetSelection(
+            /*auto_open*/ true, target, /*use_main_panel*/ true,
+            /*take_keyboard_focus*/ false, /*reset_filter*/ true);
+
+        LLFloater* inv_floater = LLFloaterReg::findInstance("inventory");
+        const bool is_open = inv_floater && inv_floater->getVisible();
+
+        result["kind"] = is_folder ? "folder" : "item";
+        result["name"] = name;
+        result["inventory_open"] = is_open;
+        result["selection_confirmed"] = false;
+        result["note"] =
+            "The inventory window was asked to open with this selected, and the filter was "
+            "cleared so nothing hides it. Whether the row is actually on the user's screen "
+            "is not reported back -- the selection is applied as the list builds. Say it was "
+            "opened for them, not that they can see it.";
+        return result;
+    }
+
+    if (method == "open_item")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD error;
+        LLUUID id = resolveItem(params, error);
+        if (id.isNull())
+        {
+            LLSD w; w["__error"] = error; return w;
+        }
+        // A worn item is a link; the thing worth opening is the original.
+        const LLUUID original = gInventory.getLinkedItemID(id);
+        if (original.notNull())
+        {
+            id = original;
+        }
+
+        LLViewerInventoryItem* item = gInventory.getItem(id);
+        if (!item)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "That item is no longer in inventory.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // An explicit allowlist, NOT the viewer's own doAction().
+        //
+        // LLInvFVBridgeAction is what a double click runs, and "open" there
+        // means whatever that type does when you double click it: an OBJECT
+        // attaches, CLOTHING and a BODYPART are worn, a LANDMARK teleports
+        // (the viewer's own comment says so), and a SOUND is played out loud
+        // to everyone nearby. A verb that reads as "let me look at this" must
+        // not do any of that, so only the three that genuinely open a window
+        // are allowed, and the floater is named here rather than inherited --
+        // if upstream ever changes what a bridge action does, this cannot
+        // silently change with it.
+        const char* floater = NULL;
+        const char* kind    = NULL;
+        ERlvBehaviour  guard = RLV_BHVR_UNKNOWN;
+        switch (item->getType())
+        {
+            case LLAssetType::AT_NOTECARD:
+                floater = "preview_notecard"; kind = "notecard"; guard = RLV_BHVR_VIEWNOTE;
+                break;
+            case LLAssetType::AT_LSL_TEXT:
+                floater = "preview_script";   kind = "script";   guard = RLV_BHVR_VIEWSCRIPT;
+                break;
+            case LLAssetType::AT_TEXTURE:
+                floater = "preview_texture";  kind = "texture";  guard = RLV_BHVR_VIEWTEXTURE;
+                break;
+            default:
+                break;
+        }
+
+        if (!floater)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = std::string("\"") + item->getName() + "\" is a "
+                         + LLAssetType::lookupHumanReadable(item->getType())
+                         + ", and open only works on a notecard, a script or a texture. "
+                           "Opening other kinds in the viewer does something rather than "
+                           "showing something -- clothing would be worn, an object attached, "
+                           "a landmark would teleport them and a sound would play out loud "
+                           "where other people can hear it. Use wear for clothing, or show to "
+                           "point at it in their inventory.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (guard != RLV_BHVR_UNKNOWN &&
+            rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(guard))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = std::string("Something the user is wearing forbids opening a ")
+                         + kind + " (an RLV restriction), so the window cannot be shown.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLFloaterReg::showInstance(floater, LLSD(id), TAKE_FOCUS_YES);
+
+        LLSD result;
+        result["opened"] = true;
+        result["kind"]   = kind;
+        result["item_id"] = id;
+        result["name"]   = item->getName();
+        result["path"]   = folderPath(item->getParentUUID());
+        result["note"]   = "The window was opened on the user's screen. Its contents are "
+                           "fetched from Second Life afterwards, so it may say loading for a "
+                           "moment -- that is the viewer working, not a failure. Whether they "
+                           "can actually see it is not reported back, so say it was opened for "
+                           "them rather than that they can read it.";
         return result;
     }
 
