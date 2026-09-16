@@ -212,15 +212,17 @@ size_t FSAIIndex::size()
 /**
  * The body fits worth knowing about.
  *
- * **The order is load-bearing wherever one entry is a prefix of another, and
- * the list is scanned in the order written.** "lara" is a prefix of "larax",
- * and Maitreya Lara and Maitreya LaraX are *different bodies* -- clothes cut
- * for one do not fit the other. Measured while building this: scanning the
- * shorter first reported "lara" 59 times and "larax" 59 times across 100
- * skirts, identical counts, because every "lara" hit was really a "larax". The
- * two bodies had been silently merged and nothing anywhere said so.
+ * **One entry is a prefix of another and that is the trap.** "lara" is a prefix
+ * of "larax", and Maitreya Lara and Maitreya LaraX are *different bodies* --
+ * clothes cut for one do not fit the other. Measured while building this: a
+ * plain substring scan reported "lara" 59 times and "larax" 59 times across
+ * 100 skirts, identical counts, because every "lara" hit was really a "larax".
+ * The two bodies had been silently merged and nothing anywhere said so.
  *
- * So "larax" must stay above "lara", and any future pair like it must too.
+ * What separates them is the word-boundary test in fitInName, not the order of
+ * this list: "lara" inside "larax" is followed by a letter and so is not a
+ * word. The order here is therefore free, and must stay free -- fitInName
+ * picks by position in the NAME, deliberately (see its comment).
  *
  * This is not a complete list of every body ever sold and does not need to be:
  * it only has to recognise the fit the wearer is actually in. An unknown fit
@@ -441,16 +443,55 @@ static std::string nearFolder(const std::string& path)
     return path.substr(prev == std::string::npos ? 0 : prev + 1);
 }
 
+/**
+ * Which body a name is for. **The LAST fit mentioned wins, not the first.**
+ *
+ * Second Life names put the maker in front and the body after it, so the word
+ * that answers "which body" is the rightmost one: *Maitreya* LaraX, *Belleza*
+ * Freya, *Legacy* Perky, *Slink* Hourglass. Taking the first match instead
+ * reads the brand and calls it the fit.
+ *
+ * Found by counting the author's own worn items, which is the one place this
+ * has to be right: "Tapi Skirt - Maitreya LaraX" voted *maitreya*, so a LaraX
+ * wardrobe came to 2 votes for larax against 1 for maitreya and 1 for belleza
+ * -- a majority of two that one detached garment would have tied away, and a
+ * tie means no preference at all. Reading it the other way round makes the
+ * same evidence 3 to 1.
+ *
+ * Returns "" when no body is named, which is not a fault: a third of this
+ * inventory names none.
+ */
 std::string FSAIIndex::fitInName(const std::string& lname)
 {
+    std::string best;
+    size_t      best_at = 0;
+
     for (const char* fit : BODY_FITS)
     {
-        if (namesFit(lname, fit))
+        const size_t len = strlen(fit);
+
+        // The rightmost word-edge occurrence of this one. Every occurrence is
+        // tried, not just the first: stopping at one that is not on a word
+        // boundary would give up on "Bellezafied Belleza Freya", the same
+        // shape as the NOT_THE_THING scan and wrong for the same reason.
+        size_t at = lname.find(fit);
+        size_t last = std::string::npos;
+        while (at != std::string::npos)
         {
-            return fit;
+            if (isWordEdge(lname, at, len))
+            {
+                last = at;
+            }
+            at = lname.find(fit, at + 1);
+        }
+
+        if (last != std::string::npos && (best.empty() || last > best_at))
+        {
+            best_at = last;
+            best    = fit;
         }
     }
-    return std::string();
+    return best;
 }
 
 
