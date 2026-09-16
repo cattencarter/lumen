@@ -1721,6 +1721,48 @@ FSAIControl::~FSAIControl()
     stop();
 }
 
+/**
+ * Subscribe to the message and chat streams whether or not the socket is up.
+ *
+ * `subscribe()` used to be reached only from `tick()`, which returns early
+ * without a pump -- and there is no pump when `FSAIControlEnabled` is off. So
+ * with the endpoint switched off **nothing was ever subscribed**, and
+ * `read_messages` and `read_chat` returned an empty list for the in-viewer
+ * assistant. Not an error: an empty list, which reads as "nobody has written
+ * to you".
+ *
+ * Decisions 54 says the in-viewer assistant works with the endpoint off. That
+ * was true of every tool that asks the viewer a question directly, and false
+ * of the two that read a stream -- the half nobody tested, because the author
+ * had the endpoint on while building it.
+ *
+ * The subscription is two signal connections. It has nothing to do with the
+ * socket and no reason to wait for one.
+ */
+void FSAIControl::listenForStreams()
+{
+    if (mSubscribed || mStreamListenerUp)
+    {
+        return;
+    }
+    LLEventPumps::instance().obtain("mainloop").listen(
+        "FSAIControlStreams",
+        [this](const LLSD&)
+        {
+            // LLIMModel is not ready on the first frames, so this retries until
+            // it takes, then takes itself off the pump.
+            subscribe();
+            if (mSubscribed)
+            {
+                LLEventPumps::instance().obtain("mainloop")
+                    .stopListening("FSAIControlStreams");
+                mStreamListenerUp = false;
+            }
+            return false;
+        });
+    mStreamListenerUp = true;
+}
+
 void FSAIControl::subscribe()
 {
     if (mSubscribed)
@@ -1792,7 +1834,9 @@ bool FSAIControl::startInternal()
 
     if (!gSavedSettings.getBOOL("FSAIControlEnabled"))
     {
-        LL_INFOS("AICtl") << "Disabled by setting; not starting." << LL_ENDL;
+        LL_INFOS("AICtl") << "Disabled by setting; not listening. The read streams are "
+                             "subscribed anyway -- they are not the socket." << LL_ENDL;
+        listenForStreams();
         return false;
     }
 

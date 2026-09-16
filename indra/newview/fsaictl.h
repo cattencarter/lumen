@@ -167,6 +167,9 @@ private:
 
     /** Subscribe to the viewer's own message signals. Idempotent. */
     void subscribe();
+    /** Get the streams subscribed even when the socket is switched off. */
+    void listenForStreams();
+    bool mStreamListenerUp = false;
 
     /**
      * Look up a previous write by the caller's request id.
