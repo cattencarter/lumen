@@ -39,6 +39,20 @@
 #include "fsaimemory.h"
 
 #include "llbutton.h"
+#include "fsnearbychathub.h"
+#include "llchat.h"
+#include "llagent.h"
+#include "llagentui.h"
+#include "llavatarname.h"
+#include "llavatarnamecache.h"
+#include "llmutelist.h"
+#include "llavataractions.h"
+#include "llimview.h"
+#include "bufferarray.h"
+#include "bufferstream.h"
+#include <algorithm>
+#include <sstream>
+#include <cctype>
 #include "llcoros.h"
 #include "lleventcoro.h"
 #include "llfloaterpreference.h"
@@ -302,6 +316,7 @@ namespace
             if (action == "read_actions")    return "Reviewing history";
             if (action == "read_dialogues")  return "Checking dialogues";
             if (action == "answer_dialogue") return "Answering dialogue";
+            if (action == "answer_while_away") return "Covering for you";
         }
 
         return action.empty() ? group : (group + "." + action);
@@ -1199,4 +1214,487 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
                  "specifically, rather than letting this run up a bill.");
     setBusy(false);
     sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
+}
+
+// ---------------------------------------------------------------------------
+//  FSAIAutoResponder -- answering while you are away
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    /**
+     * What the assistant is told when it answers for somebody who is not there.
+     *
+     * Two instructions carry the weight. It must not commit its owner to
+     * anything -- an agreement made while they were out of the room is worse
+     * than no reply at all -- and it must not claim to be them. Beyond that it
+     * is asked to keep the thread alive rather than end it, which is the whole
+     * point: in a roleplay, silence is not neutral, it is a character
+     * collapsing mid-scene.
+     */
+    /** ASCII lowercase, for matching a name in a line of chat. */
+    std::string lowerOf(const std::string& in)
+    {
+        std::string out(in);
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return out;
+    }
+
+    std::string autoRespondPrompt(const std::string& who, bool first_time,
+                                  const std::string& owner)
+    {
+        std::string p =
+            "You are answering instant messages in Second Life on behalf of the person whose "
+            "viewer you are running in, because they have stepped away from the keyboard and "
+            "asked you to answer for them until they are back.\n\n"
+            "HARD RULES:\n"
+            "- Never agree to anything on their behalf. Not a meeting, not a trade, not a "
+            "price, not a plan, not a favour. If something is being asked of them, say it "
+            "will have to wait until they are back.\n"
+            "- Do not volunteer that you are an assistant, an AI, or software, and do not "
+            "hint at it. Whether to tell anyone is " + owner + "'s decision, not yours, and "
+            "they have not asked you to. Saying somebody is away from their keyboard is true "
+            "and needs no explanation; in the middle of a roleplay it would also wreck the "
+            "scene, which is the opposite of what you are here for.\n"
+            "- Never give out information about them that is not already in this conversation.\n"
+            "- Keep it short. One or two sentences.\n\n";
+
+        // Said once, then never again to the same person.
+        //
+        // The first version repeated it on every reply, and the transcript is
+        // the argument: "I just want to tell you that you look good" was
+        // answered with "They're away from the keyboard right now", and so was
+        // everything after it. Technically true each time, and the
+        // conversation died anyway -- which is the exact failure this feature
+        // exists to prevent. Somebody who has been told once already knows.
+        if (first_time)
+        {
+            // The person on the other end has never heard of any of this.
+            //
+            // The first version produced "They're away from the keyboard at the
+            // moment, but I'm here" -- arriving under Maryam's own name, to
+            // someone with no idea an assistant exists. Who is "they"? Who is
+            // "I"? It reads as her talking about herself in the third person.
+            // A first message has to be intelligible to a stranger, so it says
+            // the name and says what is answering.
+            p += "THIS IS YOUR FIRST REPLY SINCE " + owner + " ASKED YOU TO COVER. The "
+                 "conversation below may already contain replies you sent earlier -- it is one "
+                 "continuous conversation -- but this is the first one under the instruction "
+                 "they just gave you.\n"
+                 "Your message arrives under " + owner + "'s own name, and the other person "
+                 "has no context at all for anything else -- so writing about " + owner + " in "
+                 "the third person, or referring to yourself as something separate, reads as "
+                 "nonsense.\n"
+                 "**Write as " + owner + " would write.**\n";
+            if (!FSAIAutoResponder::instance().note().empty())
+            {
+                // They said something on the way out. On the first reply that
+                // is an instruction, not a hint -- the earlier wording was "if
+                // it helps to explain a pause", and the model reasonably
+                // decided it did not help, so "tell people I am away but back
+                // shortly" produced a reply that never mentioned it.
+                p += "They left you an instruction below, and **this first reply is where you "
+                     "carry it out.** If it says to tell people something, tell them here.\n";
+            }
+            else
+            {
+                p += "If it helps to explain a pause, say once and briefly that you stepped "
+                     "away from the keyboard for a bit.\n";
+            }
+            p += "Then reply to what they actually said.\n\n";
+        }
+        else
+        {
+            p += "YOU HAVE ALREADY MENTIONED to this person that you stepped away. **Do not "
+                 "say it "
+                 "again.** They know. Saying it a second and third time turns you into a "
+                 "recorded message and ends the conversation, which is the one thing you are "
+                 "here to prevent. Just reply to what they said, as yourself.\n\n";
+        }
+
+        p += "DO NOT REPEAT YOURSELF.\n"
+            "Your own earlier replies are in the conversation below, and copying their shape is "
+            "the most common way this goes wrong: a greeting, then the same greeting, then the "
+            "same greeting again, while the other person answers each one. **Read what you "
+            "already said and say something different.** If you have greeted them, do not greet "
+            "them again. If they answered your question, respond to the answer instead of asking "
+            "it once more.\n\n"
+            "WHAT TO DO:\n"
+            "- **Answer what was actually said.** If they paid a compliment, take it. If they "
+            "asked something, answer if you can. If they are telling a story, respond to the "
+            "story. The message in front of you is the subject, not their absence.\n"
+            "- Keep the conversation alive rather than closing it. If there is a thread -- a "
+            "scene, a story, something being talked through -- hold it open so it is still "
+            "there when they get back.\n"
+            "- Match the tone of what is being said to you.\n";
+        if (!who.empty())
+        {
+            p += "\nWhat they have told you about themselves:\n" + who + "\n";
+        }
+        const std::string note = FSAIAutoResponder::instance().note();
+        if (!note.empty())
+        {
+            p += "\nWhat " + owner + " said as they left. This takes precedence over "
+                 "everything above except the hard rules -- and if it asks you to tell people "
+                 "an assistant is answering, or to stay in character and not break a scene, "
+                 "that is their call and you follow it:\n" + note + "\n";
+        }
+        return p;
+    }
+}
+
+FSAIAutoResponder::FSAIAutoResponder()
+{
+}
+
+void FSAIAutoResponder::arm(bool on, const std::string& note, bool local_chat,
+                            const std::vector<std::string>& also_called)
+{
+    mExtraNames = on ? also_called : std::vector<std::string>();
+    mArmed = on;
+    mLocalChat = on && local_chat;
+    mNote  = on ? note : std::string();
+    mArmedAt = LLTimer::getTotalSeconds();
+    // Counters reset on each arming, so one long afternoon does not spend the
+    // allowance for the next time.
+    mRepliesTo.clear();
+    mRepliesTotal = 0;
+    LL_INFOS("AICtl") << "auto-respond " << (on ? "armed" : "disarmed")
+                      << (mLocalChat ? " (incl. local chat)" : "") << LL_ENDL;
+}
+
+bool FSAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) const
+{
+    if (!mArmed)
+    {
+        why_not = "not armed"; return false;
+    }
+
+    // A time limit as well as the two counts, because they answer different
+    // questions. Six replies to one person can stretch across an entire
+    // afternoon; "stop after an hour" is what somebody actually means by how
+    // long it should cover for them. 0 switches it off.
+    const S32 minutes = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
+    if (minutes > 0
+        && (LLTimer::getTotalSeconds() - mArmedAt) > (F64)minutes * 60.0)
+    {
+        why_not = "the time limit has passed"; return false;
+    }
+
+    // One-to-one only. Group chat is a room, and a room full of people does not
+    // need someone's absent avatar joining in.
+    if (data["session_type"].asInteger() != LLIMModel::LLIMSession::P2P_SESSION)
+    {
+        why_not = "not a one-to-one IM"; return false;
+    }
+
+    const LLUUID from_id = data["from_id"].asUUID();
+    if (from_id.isNull() || from_id == gAgentID)
+    {
+        why_not = "from us"; return false;
+    }
+    if (LLMuteList::getInstance()->isMuted(from_id))
+    {
+        why_not = "muted"; return false;
+    }
+    if (gSavedPerAccountSettings.getBOOL("LumenAIAutoRespondFriendsOnly")
+        && !LLAvatarActions::isFriend(from_id))
+    {
+        why_not = "not a friend"; return false;
+    }
+    if (mInFlight.count(from_id))
+    {
+        why_not = "already answering them"; return false;
+    }
+
+    const S32 per_person = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMaxPerPerson");
+    const S32 total      = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMaxTotal");
+    std::map<LLUUID, S32>::const_iterator it = mRepliesTo.find(from_id);
+    if (it != mRepliesTo.end() && it->second >= per_person)
+    {
+        why_not = "reached the limit for this person"; return false;
+    }
+    if (mRepliesTotal >= total)
+    {
+        why_not = "reached the limit for this time away"; return false;
+    }
+    return true;
+}
+
+void FSAIAutoResponder::considerChat(const LLSD& data)
+{
+    if (!mArmed || !mLocalChat)
+    {
+        return;
+    }
+    // An agent speaking, not an object and not the system. A scripted object
+    // that chats is the one thing guaranteed to be in earshot all day.
+    if (data["source"].asInteger() != CHAT_SOURCE_AGENT)
+    {
+        return;
+    }
+    const LLUUID from_id = data["from_id"].asUUID();
+    if (from_id.isNull() || from_id == gAgentID)
+    {
+        return;                                  // our own voice
+    }
+    if (LLMuteList::getInstance()->isMuted(from_id))
+    {
+        return;
+    }
+
+    // Spoken to, not merely spoken near.
+    //
+    // Answering every line in local chat would be noise in any region with
+    // people in it, and the avatar would look unhinged rather than present.
+    // A name is how a roleplay addresses somebody, so that is the trigger.
+    //
+    // But "the name" is not one string. An account has a legacy name
+    // ("Maryam Camino"), a username ("maryamcamino", or "someone Resident"),
+    // and a DISPLAY name that can be nothing like either -- and in a roleplay
+    // the display name is usually the one people say. Matching only the legacy
+    // first name would have left the avatar silent whenever it was addressed
+    // by the name actually on screen above its head.
+    //
+    // "Resident" is excluded on purpose: it is half of every old username and
+    // would answer any line containing the word.
+    std::vector<std::string> names;
+    {
+        std::string legacy;
+        LLAgentUI::buildFullname(legacy);
+        names.push_back(legacy);
+        const size_t sp = legacy.find(' ');
+        if (sp != std::string::npos && sp > 0)
+        {
+            names.push_back(legacy.substr(0, sp));   // the first name alone
+        }
+
+        // What people ACTUALLY call you, which no field holds.
+        //
+        // A display name can be written in lookalike Unicode -- one avatar here
+        // shows as "\xd2\x9c\xd1\xa0\xc6\x9b\xc6\x9d\xc4\xac\xc6\xac\xc6\x9b" -- with the username
+        // "tyria06", while everybody in chat types "kwanita". None of the three
+        // fields contains the word anybody says. So the name in use is a social
+        // fact, not a data field, and the only way to know it is to be told.
+        const std::string extra = gSavedPerAccountSettings.getString("LumenAIAutoRespondNames");
+        {
+            std::string one;
+            std::istringstream parts(extra);
+            while (std::getline(parts, one, ','))
+            {
+                LLStringUtil::trim(one);
+                if (!one.empty()) names.push_back(one);
+            }
+        }
+        for (const std::string& n : mExtraNames)
+        {
+            names.push_back(n);
+        }
+
+        LLAvatarName av;
+        if (LLAvatarNameCache::get(gAgentID, &av))
+        {
+            names.push_back(av.getDisplayName());
+            names.push_back(av.getAccountName());
+            const std::string dn = av.getDisplayName();
+            const size_t dsp = dn.find(' ');
+            if (dsp != std::string::npos && dsp > 0)
+            {
+                names.push_back(dn.substr(0, dsp));
+            }
+        }
+    }
+
+    const std::string said = lowerOf(data["message"].asString());
+    bool addressed = false;
+    for (const std::string& n : names)
+    {
+        const std::string low = lowerOf(n);
+        // Three characters is the floor -- a two-letter display name would
+        // match almost any sentence.
+        if (low.size() >= 3 && low != "resident" && said.find(low) != std::string::npos)
+        {
+            addressed = true;
+            break;
+        }
+    }
+    if (!addressed)
+    {
+        return;
+    }
+
+    std::string why_not;
+    LLSD as_im;
+    as_im["from_id"]      = from_id;
+    as_im["from"]         = data["from"];
+    as_im["message"]      = data["message"];
+    as_im["session_id"]   = LLUUID::null;        // no IM session; we speak aloud
+    as_im["session_type"] = (S32)LLIMModel::LLIMSession::P2P_SESSION;
+    if (!shouldAnswer(as_im, why_not))
+    {
+        return;
+    }
+
+    replyTo(from_id, data["from"].asString(), LLUUID::null,
+            /*speak_aloud*/ true, data["message"].asString());
+}
+
+void FSAIAutoResponder::consider(const LLSD& data)
+{
+    std::string why_not;
+    if (!shouldAnswer(data, why_not))
+    {
+        return;
+    }
+    replyTo(data["from_id"].asUUID(), data["from"].asString(),
+            data["session_id"].asUUID(), /*speak_aloud*/ false,
+            data["message"].asString());
+}
+
+/**
+ * Compose and send one reply, whether it is going into an IM or said aloud.
+ *
+ * Shared on purpose: two copies of this would drift, and the rules that matter
+ * -- never agreeing to anything, never repeating itself, the counters -- would
+ * end up enforced in one of them and not the other.
+ */
+void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
+                                const LLUUID& session_id, bool speak_aloud,
+                                const std::string& latest)
+{
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    const std::string key      = FSAIKeys::get(provider);
+    if (key.empty())
+    {
+        return;                                  // nothing to answer with
+    }
+
+    // Read the conversation SILENTLY. getMessages() would clear the unread
+    // count, so the user would come back to a conversation that looks as
+    // though they had already seen it.
+    std::list<LLSD> history;
+    if (session_id.notNull())
+    {
+        LLIMModel::instance().getMessagesSilently(session_id, history, 0);
+    }
+    // Local chat has no session to read back, so the line just heard is the
+    // whole context. Thin, and honest about being thin.
+
+    // mMsgs is NEWEST FIRST -- llimview.cpp:1216, "Add most recent messages to
+    // the front of mMsgs". Reading it front-to-back and keeping the tail
+    // therefore handed the model the twelve OLDEST lines, in reverse order,
+    // and never the one just received. It greeted, was told "good thanks", and
+    // greeted again, because the answer was not in front of it.
+    //
+    // So: take from the front, which is the recent end, then reverse to put
+    // the conversation back in the order it happened.
+    std::vector<LLSD> recent;
+    for (std::list<LLSD>::const_iterator h = history.begin();
+         h != history.end() && recent.size() < 12; ++h)
+    {
+        recent.push_back(*h);
+    }
+
+    LLSD messages = LLSD::emptyArray();
+    for (std::vector<LLSD>::const_reverse_iterator r = recent.rbegin();
+         r != recent.rend(); ++r)
+    {
+        LLSD one;
+        one["role"]    = ((*r)["from_id"].asUUID() == gAgentID) ? "assistant" : "user";
+        one["content"] = (*r)["message"].asString();
+        messages.append(one);
+    }
+    if (messages.size() == 0)
+    {
+        LLSD one; one["role"] = "user"; one["content"] = latest;
+        messages.append(one);
+    }
+
+    // Asked BEFORE the counter moves. Reading it afterwards would find the
+    // entry we just created and conclude we had already told them, on the one
+    // reply where we had not.
+    const bool first_time = (mRepliesTo.find(from_id) == mRepliesTo.end());
+
+    mInFlight.insert(from_id);
+    mRepliesTo[from_id] += 1;
+    mRepliesTotal += 1;
+
+    const std::string memory = gSavedPerAccountSettings.getString("LumenAIMemory");
+    std::string owner;
+    LLAgentUI::buildFullname(owner);
+    const std::string system = autoRespondPrompt(memory, first_time, owner);
+    const bool is_openai = (provider == FSAIKeys::OPENAI);
+    const std::string model = gSavedSettings.getString(
+        is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+
+    LLCoros::instance().launch("FSAIAutoRespond",
+        [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()
+    {
+        LLSD body;
+        LLSD headers;
+        body["model"] = model;
+        if (is_openai)
+        {
+            LLSD with_system = LLSD::emptyArray();
+            LLSD sys; sys["role"] = "system"; sys["content"] = system;
+            with_system.append(sys);
+            for (LLSD::array_const_iterator m = messages.beginArray();
+                 m != messages.endArray(); ++m) with_system.append(*m);
+            body["messages"] = with_system;
+            headers["Authorization"] = "Bearer " + key;
+        }
+        else
+        {
+            body["max_tokens"] = 300;            // one or two sentences
+            body["system"]     = system;
+            body["messages"]   = messages;
+            headers["x-api-key"]         = key;
+            headers["anthropic-version"] = "2023-06-01";
+        }
+
+        std::string error;
+        const LLSD reply = postJson(is_openai ? OPENAI_URL : ANTHROPIC_URL,
+                                    body, headers, error);
+
+        std::string text;
+        if (error.empty())
+        {
+            if (is_openai)
+            {
+                text = reply["choices"][0]["message"]["content"].asString();
+            }
+            else
+            {
+                for (LLSD::array_const_iterator b = reply["content"].beginArray();
+                     b != reply["content"].endArray(); ++b)
+                {
+                    if ((*b)["type"].asString() == "text") text += (*b)["text"].asString();
+                }
+            }
+        }
+
+        LLStringUtil::trim(text);
+        if (!text.empty())
+        {
+            if (speak_aloud)
+            {
+                const LLWString wide = utf8str_to_wstring(text);
+                FSNearbyChat::sendChatFromViewer(wide, wide, CHAT_TYPE_NORMAL, false, 0);
+                LL_INFOS("AICtl") << "auto-answered " << from << " in local chat" << LL_ENDL;
+            }
+            else
+            {
+                LLIMModel::sendMessage(text, session_id, from_id, IM_NOTHING_SPECIAL);
+                LL_INFOS("AICtl") << "auto-answered " << from << LL_ENDL;
+            }
+        }
+        else
+        {
+            LL_WARNS("AICtl") << "auto-response to " << from << " produced nothing"
+                              << (error.empty() ? "" : (": " + error)) << LL_ENDL;
+        }
+
+        FSAIAutoResponder::instance().mInFlight.erase(from_id);
+    });
 }

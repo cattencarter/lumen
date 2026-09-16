@@ -2,7 +2,7 @@
 <panel
  border="true"
  follows="all"
- height="480"
+ height="560"
  layout="topleft"
  left="1"
  top="1"
@@ -125,13 +125,59 @@
      label="Memory..." name="memory_btn" />
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="358" width="480" height="58" word_wrap="true">
-        A key is stored the way Lumen stores your Second Life password: scrambled and tied to this computer, so it will not work if copied elsewhere and never sits in settings.xml where it could be attached to a bug report. That is not strong encryption. Treat a key here as you would a saved password.
+     left="30" top="358" width="480" height="26" word_wrap="true">
+        Keys are stored the same way as your Second Life password, and are no safer than one.
     </text>
 
     <text type="string" follows="left|top" layout="topleft"
-     left="30" top="422" width="480" height="30" word_wrap="true">
-        Saved keys are shown only as their first and last few characters. To replace one, type the new key over it. Nothing is written until you click OK.
+     left="30" top="392" width="480" height="14" font="SansSerifBold">
+        While you are away
+    </text>
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="410" width="480" height="30" word_wrap="true">
+        Ask the assistant: "answer my IMs until I get back". Tell it when you return and it stops.
+    </text>
+
+    <check_box control_name="LumenAIAutoRespondFriendsOnly" follows="left|top" layout="topleft"
+     left="30" top="440" width="480" height="16"
+     name="auto_respond_friends"
+     label="Only answer people on my friends list" />
+
+    <spinner control_name="LumenAIAutoRespondMinutes" follows="left|top" layout="topleft"
+     left="30" top="462" width="200" height="20"
+     name="auto_respond_minutes"
+     label="Stop after" label_width="60"
+     min_val="0" max_val="1440" increment="15" decimal_digits="0" />
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="236" top="465" width="280" height="16">
+        minutes (0 = no limit)
+    </text>
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="510" width="120" height="16">
+        Also answer to
+    </text>
+
+    <line_editor control_name="LumenAIAutoRespondNames" follows="left|top" layout="topleft"
+     left="140" top="507" width="260" height="20"
+     name="auto_respond_names" max_length_bytes="255" />
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="30" top="532" width="480" height="16">
+        Nicknames people use for you in chat, separated by commas.
+    </text>
+
+    <spinner control_name="LumenAIAutoRespondMaxPerPerson" follows="left|top" layout="topleft"
+     left="30" top="486" width="200" height="20"
+     name="auto_respond_per_person"
+     label="At most" label_width="60"
+     min_val="1" max_val="50" increment="1" decimal_digits="0" />
+
+    <text type="string" follows="left|top" layout="topleft"
+     left="236" top="489" width="280" height="16">
+        replies to any one person
     </text>
 
 </panel>

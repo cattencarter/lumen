@@ -28,6 +28,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "fsaictl.h"
+#include "fsaichat.h"
 #include "fsaiindex.h"
 #include "fsainotecache.h"
 
@@ -1312,6 +1313,7 @@ namespace
             if (action == "read_actions") return "read_actions";
             if (action == "read_dialogues") return "read_dialogues";
             if (action == "answer_dialogue") return "answer_dialogue";
+            if (action == "answer_while_away") return "answer_while_away";
             return "";
         }
         return "";
@@ -1669,7 +1671,8 @@ namespace
 
         // ---- viewer ---------------------------------------------------------
         static const char* const view_actions[] =
-            { "status", "read_actions", "read_dialogues", "answer_dialogue" };
+            { "status", "read_actions", "read_dialogues", "answer_dialogue",
+              "answer_while_away" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -1686,11 +1689,43 @@ namespace
             "offer, a teleport invitation, a request from a script. Each comes with its `id`, what "
             "it says, and the `choices` available. Check this whenever something seems stuck, and "
             "read the text out rather than summarising it: these ask for real permissions.\n"
+            "- answer_while_away: answer instant messages on the user's behalf until they say "
+            "they are back. Turn it ON only when they ask you to -- \"answer my IMs until I get "
+            "back\", \"cover for me\" -- and OFF the moment they say they have returned. Pass "
+            "`local_chat: true` as well if they want the scene around them kept going, not just "
+            "their IMs; that speaks where everyone nearby can see it, and only when somebody "
+            "says their name. "
+            "`on`, and `note` for anything they said about how to handle it or how long they will "
+            "be. While it is on, each incoming IM from a friend gets one short reply that never "
+            "agrees to anything for them and never claims to be them. It stops by itself after a "
+            "few replies to any one person. **Tell them plainly when you switch it on and off**, "
+            "and if they say they are back, turn it off even if they did not ask.\n"
             "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
             "the user what they want first.** These grant permission to take things, move the "
             "avatar, or run scripts on it. Never choose for them.";
         LLSD view_props;
-        view_props["action"] = actionProperty(view_actions, 4, "What to do. Required.");
+        LLSD von; von["type"]="boolean";
+            von["description"]="answer_while_away: true to start answering for them, false to stop.";
+        LLSD vcl; vcl["type"]="array";
+            vcl["items"] = LLSD().with("type", "string");
+            vcl["description"]="answer_while_away with local_chat: the names people actually "
+                               "call the user in chat, if different from their avatar name. "
+                               "Needed more often than it sounds -- a display name can be "
+                               "written in decorative characters nobody types, while everyone "
+                               "uses a nickname that appears in no field at all. If they "
+                               "mention what they are called, pass it.";
+        view_props["called"]=vcl;
+        LLSD vlc; vlc["type"]="boolean";
+            vlc["description"]="answer_while_away: also answer in LOCAL CHAT, where everyone "
+                               "nearby sees it, and only when somebody says the user's name. "
+                               "For holding a roleplay scene together. Off unless they ask for "
+                               "it -- speaking in public is not the same as answering an IM.";
+        view_props["local_chat"]=vlc;
+        LLSD vnt; vnt["type"]="string";
+            vnt["description"]="answer_while_away: anything they said on the way out -- how long "
+                               "they will be, what to say, what not to. Optional.";
+        view_props["on"]=von; view_props["note"]=vnt;
+        view_props["action"] = actionProperty(view_actions, 5, "What to do. Required.");
         LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
         LLSD vch;  vch["type"]="string";
             vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
@@ -1799,11 +1834,22 @@ void FSAIControl::onInstantMessage(const LLSD& data)
     // sequence number, so nothing is interpreted here that a caller might want
     // to interpret differently.
     mMessages.append(data);
+
+    // And the auto-responder gets a look at the same message. It rides this
+    // subscription rather than opening its own: this one already exists, is
+    // already retried until the message system is up, and sees exactly the
+    // traffic the responder cares about. It declines almost everything.
+    FSAIAutoResponder::instance().consider(data);
 }
 
 void FSAIControl::onNearbyChat(const LLSD& data)
 {
     mChat.append(data);
+
+    // The auto-responder sees local chat too, and declines almost all of it:
+    // only when it has been armed for local chat AND somebody says the
+    // avatar's name.
+    FSAIAutoResponder::instance().considerChat(data);
 }
 
 bool FSAIControl::start()
@@ -4842,6 +4888,60 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 "rather than summarising, and do not answer one without being told which choice "
                 "they want -- several of these grant permission to take things or to control the "
                 "avatar.";
+        }
+        return result;
+    }
+
+    if (method == "answer_while_away")
+    {
+        const bool on = params.has("on") ? params["on"].asBoolean() : true;
+        const std::string note = params.has("note") ? params["note"].asString() : std::string();
+
+        const bool local_chat = params.has("local_chat") && params["local_chat"].asBoolean();
+
+        std::vector<std::string> also_called;
+        if (params.has("called"))
+        {
+            const LLSD& c = params["called"];
+            if (c.isArray())
+            {
+                for (LLSD::array_const_iterator i = c.beginArray(); i != c.endArray(); ++i)
+                {
+                    also_called.push_back(i->asString());
+                }
+            }
+            else if (!c.asString().empty())
+            {
+                also_called.push_back(c.asString());
+            }
+        }
+
+        FSAIAutoResponder::instance().arm(on, note, local_chat, also_called);
+
+        LLSD result;
+        result["answering_while_away"] = on;
+        if (on)
+        {
+            if (!note.empty()) result["note_given"] = note;
+            result["friends_only"] =
+                gSavedPerAccountSettings.getBOOL("LumenAIAutoRespondFriendsOnly");
+            result["max_per_person"] =
+                gSavedPerAccountSettings.getS32("LumenAIAutoRespondMaxPerPerson");
+            result["max_total"] =
+                gSavedPerAccountSettings.getS32("LumenAIAutoRespondMaxTotal");
+            result["stops_after_minutes"] =
+                gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
+            result["local_chat"] = local_chat;
+            result["note"] =
+                "Now answering one-to-one IMs for them. Say so plainly, including that it "
+                "will not agree to anything on their behalf and will stop on its own after a "
+                "few replies to any one person. It answers only; it cannot wear, give or move "
+                "anything. Turn this off the moment they say they are back.";
+        }
+        else
+        {
+            result["note"] = "Stopped. Tell them, and if anyone wrote while they were away, "
+                             "offer to read it back.";
         }
         return result;
     }

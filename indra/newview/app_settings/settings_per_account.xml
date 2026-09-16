@@ -1,5 +1,51 @@
 <llsd>
     <map>
+  <key>LumenAIAutoRespondNames</key>
+  <map>
+    <key>Comment</key>
+    <string>Other names people call you in chat, separated by commas. Used to decide when local chat is talking to you.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>String</string>
+    <key>Value</key>
+    <string></string>
+  </map>
+  <key>LumenAIAutoRespondMinutes</key>
+  <map>
+    <key>Comment</key>
+    <string>Stop answering for you this many minutes after you asked. 0 means no time limit.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>S32</string>
+    <key>Value</key>
+    <integer>60</integer>
+  </map>
+    <key>LumenAIAutoRespondFriendsOnly</key>
+    <map>
+      <key>Comment</key>
+      <string>Only answer people on your friends list</string>
+      <key>Persist</key><integer>1</integer>
+      <key>Type</key><string>Boolean</string>
+      <key>Value</key><integer>1</integer>
+    </map>
+    <key>LumenAIAutoRespondMaxPerPerson</key>
+    <map>
+      <key>Comment</key>
+      <string>Most replies to any one person while away. Also the loop guard.</string>
+      <key>Persist</key><integer>1</integer>
+      <key>Type</key><string>S32</string>
+      <key>Value</key><integer>6</integer>
+    </map>
+    <key>LumenAIAutoRespondMaxTotal</key>
+    <map>
+      <key>Comment</key>
+      <string>Most replies in total while away, across everyone</string>
+      <key>Persist</key><integer>1</integer>
+      <key>Type</key><string>S32</string>
+      <key>Value</key><integer>100</integer>
+    </map>
     <key>AvatarHoverOffsetZ</key>
     <map>
       <key>Comment</key>

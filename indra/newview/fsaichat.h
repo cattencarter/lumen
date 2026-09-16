@@ -29,8 +29,14 @@
 #define FS_AICHAT_H
 
 #include "llfloater.h"
+#include "llsingleton.h"
+#include "llsd.h"
+#include "lluuid.h"
 
+#include <map>
+#include <set>
 #include <string>
+#include <vector>
 
 class LLLineEditor;
 class LLTextEditor;
@@ -58,6 +64,89 @@ class LLButton;
  * you are talking to a person when you are not, or the reverse -- and the
  * person this is built for is the one least able to afford it.
  */
+/**
+ * Answers instant messages, in your voice, while you are away.
+ *
+ * Not a bot in Linden Lab's sense: the account is a person's own, used by that
+ * person, and this is the same auto-response Firestorm has shipped for years
+ * with the fixed text replaced by a written one. LL's rule is about an account
+ * *primarily operating* as a scripted agent, which this is not.
+ *
+ * The purpose is continuity rather than notification. "She is away" is what a
+ * canned reply already says; what it cannot do is keep a conversation, or a
+ * character in a roleplay, from simply falling over the moment its owner steps
+ * out of the room.
+ *
+ * Four things bound it, and each exists for a reason rather than for caution:
+ *
+ *  - **It only speaks while AFK**, driven by the viewer's own idle timer.
+ *  - **It carries no tools.** It answers; it does not act. An assistant that
+ *    could undress the avatar or give things away while nobody is watching is
+ *    a different and much larger decision than this one.
+ *  - **It counts.** Every reply is a paid request, so somebody who spams you
+ *    could otherwise run up a bill while you sleep. There is a cap per person
+ *    and a cap in total.
+ *  - **The per-person cap is also the loop guard**, and deliberately so: the
+ *    incoming-message signal does not carry the message type, so we cannot
+ *    tell an auto-response from a person typing. Two of these talking to each
+ *    other therefore stop after a handful of turns rather than never.
+ */
+class FSAIAutoResponder : public LLSingleton<FSAIAutoResponder>
+{
+    LLSINGLETON(FSAIAutoResponder);
+public:
+    /** Offered every incoming instant message. Decides, and usually declines. */
+    void consider(const LLSD& data);
+
+    /**
+     * Turned on and off by asking, not by a checkbox and not by a timer.
+     *
+     * The first version watched gAgent.getAFK(). That is a guess about intent
+     * -- the idle timer fires while you sit reading, and has not fired yet when
+     * you stand up -- where "answer for me until I am back" is a statement of
+     * it. And a checkbox stays ticked: switched on for one lunch break, still
+     * on three weeks later, which is exactly the case where it answers
+     * something you would not have wanted it to.
+     *
+     * It is also the whole premise of this viewer. Asking in your own words is
+     * the thing Lumen exists to allow; putting this behind a preferences panel
+     * rebuilt the barrier it is meant to remove (Decisions 40, same argument).
+     */
+    void arm(bool on, const std::string& note, bool local_chat,
+             const std::vector<std::string>& also_called = std::vector<std::string>());
+
+    /**
+     * Offered every line of nearby chat. Answers only when spoken to.
+     *
+     * Local chat is a room, not a conversation: everyone within earshot sees
+     * every word, and a scripted object can talk too. So this is off unless
+     * asked for separately, and even then it speaks only when the message
+     * carries the avatar's name -- which is how people address each other in a
+     * roleplay, and is the difference between holding a scene open and
+     * answering every passer-by in a busy region.
+     */
+    void considerChat(const LLSD& data);
+    bool armed() const { return mArmed; }
+    const std::string& note() const { return mNote; }
+
+private:
+    bool shouldAnswer(const LLSD& data, std::string& why_not) const;
+    void replyTo(const LLUUID& from_id, const std::string& from,
+                 const LLUUID& session_id, bool speak_aloud,
+                 const std::string& latest);
+
+    bool                  mArmed = false;
+    bool                  mLocalChat = false;
+    /// Names given for this stint, on top of the saved ones.
+    std::vector<std::string> mExtraNames;
+    /// When arming happened, so the time limit can be measured from it.
+    F64                   mArmedAt = 0.0;
+    std::string           mNote;
+    std::map<LLUUID, S32> mRepliesTo;
+    S32                   mRepliesTotal = 0;
+    std::set<LLUUID>      mInFlight;
+};
+
 class FSAIChatFloater : public LLFloater
 {
 public:
