@@ -195,6 +195,8 @@ private:
     /// Whether the transcript currently carries a "no key" notice, so it is
     /// said once and withdrawn once rather than repeated or left standing.
     bool mSaidNoKey = false;
+    /// Provider and model as last announced, so a change can be noticed.
+    std::string mAnnounced;
 
     // Whether "Lumen:" has already been written this turn. A model often
     // narrates, calls tools, then reports -- two labelled blocks read as two

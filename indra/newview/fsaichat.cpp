@@ -485,6 +485,33 @@ namespace
         return out;
     }
 
+    /**
+     * What a newer OpenAI model needs before it will accept function tools.
+     *
+     * Its own words: "Function tools with reasoning_effort are not supported
+     * for gpt-5.6-luna in /v1/chat/completions. To use function tools, use
+     * /v1/responses or set reasoning_effort to 'none'." These models carry a
+     * default effort, and that plus tools is refused on this endpoint.
+     *
+     * Only for the models that have the setting: gpt-4o and earlier reject an
+     * unknown parameter, so it cannot go on every request. Brittle by nature --
+     * it keys on the model name, and a name is not a capability. When a newer
+     * one fails here, read the message; it has said what to do both times.
+     *
+     * A function rather than two copies, because there ARE two places building
+     * an OpenAI request -- the Assistant window and the auto-responder -- and
+     * the first version of this fix went into one of them and was tested
+     * against the other.
+     */
+    void addReasoningEffort(LLSD& body, const std::string& model)
+    {
+        if (model.rfind("gpt-5", 0) == 0 || model.rfind("o1", 0) == 0
+            || model.rfind("o3", 0) == 0 || model.rfind("o4", 0) == 0)
+        {
+            body["reasoning_effort"] = "none";
+        }
+    }
+
     LLSD openAITools()
     {
         LLSD out = LLSD::emptyArray();
@@ -573,14 +600,32 @@ namespace
         // The raw handler hands back bytes; the JSON one would have parsed for
         // us. Keep the status block it also returns, so the error path below
         // still sees what it expects.
+        // The body arrives under one of TWO keys, and missing that cost a
+        // diagnosis: a success puts it in HTTP_RESULTS_RAW, but a 4xx goes
+        // through HttpCoroHandler::onCompleted, whose parseBody returns binary
+        // that is not a map, so it lands in HTTP_RESULTS_CONTENT instead.
+        // Reading only the first meant every provider error read as a bare
+        // "400" while its explanation sat in the reply.
         LLSD reply = raw;
-        if (raw.has(LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW))
+        std::string body_text;
+        for (const std::string& key : { LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW,
+                                        LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_CONTENT })
         {
-            const LLSD::Binary& bytes =
-                raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW].asBinary();
-            const std::string text(bytes.begin(), bytes.end());
+            if (raw.has(key) && raw[key].isBinary())
+            {
+                const LLSD::Binary& bytes = raw[key].asBinary();
+                if (!bytes.empty())
+                {
+                    body_text.assign(bytes.begin(), bytes.end());
+                    break;
+                }
+            }
+        }
+
+        if (!body_text.empty())
+        {
             bool parsed_ok = false;
-            const LLSD parsed = jsonParse(text, parsed_ok);
+            const LLSD parsed = jsonParse(body_text, parsed_ok);
             if (parsed_ok)
             {
                 reply = parsed;
@@ -589,6 +634,12 @@ namespace
                     reply[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS] =
                         raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
                 }
+            }
+            else
+            {
+                // Not JSON at all -- a proxy page, or HTML. Keep it anyway;
+                // unparseable text beats no text when something is wrong.
+                reply["error"]["message"] = body_text.substr(0, 500);
             }
         }
 
@@ -601,13 +652,44 @@ namespace
             // Prefer the provider's own words: "invalid x-api-key" is worth
             // far more to the person reading than "400 Bad Request".
             std::string detail;
-            if (reply.has("error") && reply["error"].has("message"))
+
+            // http_result.error_body is a STRING holding the provider's JSON,
+            // and that is where it has been all along. Two earlier attempts
+            // looked for binary under HTTP_RESULTS_RAW and HTTP_RESULTS_CONTENT
+            // and found nothing, so every provider error read as a bare "400"
+            // -- including the one that said exactly what to change. Reading
+            // the reply instead of reasoning about its shape took one minute.
+            if (reply.has("http_result")
+                && reply["http_result"].has("error_body"))
+            {
+                bool ok = false;
+                const LLSD body = jsonParse(
+                    reply["http_result"]["error_body"].asString(), ok);
+                if (ok && body.has("error") && body["error"].has("message"))
+                {
+                    detail = body["error"]["message"].asString();
+                }
+                else
+                {
+                    detail = reply["http_result"]["error_body"].asString().substr(0, 500);
+                }
+            }
+            else if (reply.has("error") && reply["error"].has("message"))
             {
                 detail = reply["error"]["message"].asString();
             }
             else if (http.has(LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_MESSAGE))
             {
                 detail = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_MESSAGE].asString();
+            }
+
+            // The whole reply, when asked for. Two attempts at recovering the
+            // provider's message from it have now failed, and guessing at the
+            // shape of an LLSD I cannot see is what wasted the last one.
+            if (gSavedSettings.getBOOL("LumenAILogRequests"))
+            {
+                LL_INFOS("AICtl") << "provider error, whole reply: "
+                                  << ll_pretty_print_sd(reply) << LL_ENDL;
             }
 
             error_out = llformat("%d", status.getType());
@@ -671,6 +753,20 @@ void FSAIChatFloater::refreshKeyNotice()
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     const bool have = FSAIKeys::has(provider);
+
+    // The header is written once, when the window opens, so changing the model
+    // in Preferences afterwards left it naming the old one -- and it was
+    // believed, because a header that says "OpenAI . gpt-4o" looks like a fact
+    // about the request rather than a memory of one. Say it again when it
+    // changes.
+    const std::string model = gSavedSettings.getString(
+        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+    const std::string now = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+    if (!mAnnounced.empty() && now != mAnnounced)
+    {
+        sayNote("Now using " + now + ".");
+    }
+    mAnnounced = now;
 
     if (!have && !mSaidNoKey)
     {
@@ -841,6 +937,7 @@ void FSAIChatFloater::sayHeader()
     // should be able to see which model answered without opening Preferences.
     mTranscript->appendText(FSAIKeys::displayName(provider) + " \xc2\xb7 " + model,
                             true, dimStyle());
+    mAnnounced = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
 }
 
 void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
@@ -1017,6 +1114,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             body["model"]    = model;
             body["messages"] = mMessages;
             body["tools"]    = openAITools();
+            addReasoningEffort(body, model);
 
             // OpenAI takes the system prompt as the first message rather than
             // as its own field.
@@ -1822,6 +1920,9 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
             for (LLSD::array_const_iterator m = messages.beginArray();
                  m != messages.endArray(); ++m) with_system.append(*m);
             body["messages"] = with_system;
+
+            addReasoningEffort(body, model);
+
             headers["Authorization"] = "Bearer " + key;
         }
         else
