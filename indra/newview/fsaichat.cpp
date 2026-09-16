@@ -508,8 +508,71 @@ namespace
             headers->append(it->first, it->second.asString());
         }
 
-        LLCoreHttpUtil::HttpCoroutineAdapter adapter("FSAIChat", LLCore::HttpRequest::DEFAULT_POLICY_ID);
-        LLSD reply = adapter.postJsonAndSuspend(request, url, body, options, headers);
+        // Our own policy class, NOT DEFAULT_POLICY_ID.
+        //
+        // A policy class has a limited number of connections, and DEFAULT is
+        // the one the viewer uses for its own traffic -- including the
+        // capability POSTs that a region handshake depends on. A model can
+        // think for a long time, and the timeout above is 180 seconds, so a
+        // call sitting in that pool is a connection the viewer cannot use to
+        // reach a simulator.
+        //
+        // Whether that caused the region timeout seen on 2026-09-16 was never
+        // established; the grid in question is flaky on its own account. It is
+        // fixed anyway, because an optional feature being *able* to starve the
+        // viewer's own networking is wrong whether or not it has yet.
+        static const LLCore::HttpRequest::policy_t ai_policy =
+            LLCore::HttpRequest::createPolicyClass();
+        LLCoreHttpUtil::HttpCoroutineAdapter adapter("FSAIChat", ai_policy);
+        // Serialised and posted RAW, not via postJsonAndSuspend.
+        //
+        // That function logs the whole request body at WARNING, unconditionally
+        // -- about 20 KB of system prompt and tool descriptions on every call,
+        // which buries everything else in the log. Doing it ourselves means the
+        // upstream file stays untouched AND we decide when the body is worth
+        // logging, which is what LumenAILogRequests is for.
+        //
+        // Not a privacy measure: this account's log directory already holds
+        // full IM logs in plain text, deliberately, and that is a Second Life
+        // feature people rely on (Decisions 79). The API key travels in a
+        // header and is not in the body either way.
+        const std::string payload = jsonString(body);
+
+        if (gSavedSettings.getBOOL("LumenAILogRequests"))
+        {
+            LL_INFOS("AICtl") << "request to " << url << ": " << payload << LL_ENDL;
+        }
+
+        LLCore::BufferArray::ptr_t rawbody(new LLCore::BufferArray);
+        {
+            LLCore::BufferArrayStream outs(rawbody.get());
+            outs << payload;
+        }
+        headers->append(HTTP_OUT_HEADER_CONTENT_TYPE, "application/json");
+
+        LLSD raw = adapter.postRawAndSuspend(request, url, rawbody, options, headers);
+
+        // The raw handler hands back bytes; the JSON one would have parsed for
+        // us. Keep the status block it also returns, so the error path below
+        // still sees what it expects.
+        LLSD reply = raw;
+        if (raw.has(LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW))
+        {
+            const LLSD::Binary& bytes =
+                raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW].asBinary();
+            const std::string text(bytes.begin(), bytes.end());
+            bool parsed_ok = false;
+            const LLSD parsed = jsonParse(text, parsed_ok);
+            if (parsed_ok)
+            {
+                reply = parsed;
+                if (raw.has(LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS))
+                {
+                    reply[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS] =
+                        raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
+                }
+            }
+        }
 
         const LLSD http = reply[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
         const LLCore::HttpStatus status =
