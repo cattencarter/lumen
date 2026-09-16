@@ -71,9 +71,9 @@
       <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
        left="76" top="122" width="274" height="22"
        name="model_anthropic" allow_text_entry="true" max_chars="80">
-          <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
+          <combo_box.item label="claude-haiku-4-5 (fastest, the default)" name="h45" value="claude-haiku-4-5-20251001" />
           <combo_box.item label="claude-sonnet-5 (balanced)"     name="s5" value="claude-sonnet-5" />
-          <combo_box.item label="claude-haiku-4-5 (fastest)"     name="h45" value="claude-haiku-4-5-20251001" />
+          <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
       </combo_box>
 
       <text type="string" follows="left|top" layout="topleft"
@@ -103,8 +103,12 @@
       <combo_box control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
        left="76" top="232" width="274" height="22"
        name="model_openai" allow_text_entry="true" max_chars="80">
-          <combo_box.item label="gpt-4o"      name="g4o"  value="gpt-4o" />
-          <combo_box.item label="gpt-4o-mini" name="g4om" value="gpt-4o-mini" />
+          <combo_box.item label="gpt-5.6-luna"  name="g56l" value="gpt-5.6-luna" />
+          <combo_box.item label="gpt-5.6-sol"   name="g56s" value="gpt-5.6-sol" />
+          <combo_box.item label="gpt-5.6-terra" name="g56t" value="gpt-5.6-terra" />
+          <combo_box.item label="gpt-5.1"       name="g51"  value="gpt-5.1" />
+          <combo_box.item label="gpt-5"         name="g5"   value="gpt-5" />
+          <combo_box.item label="gpt-4o-mini"   name="g4om" value="gpt-4o-mini" />
       </combo_box>
 
       <text type="string" follows="left|top" layout="topleft"

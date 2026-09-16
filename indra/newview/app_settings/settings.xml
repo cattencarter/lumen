@@ -14614,7 +14614,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Type</key>
       <string>String</string>
       <key>Value</key>
-      <string>claude-sonnet-5</string>
+      <string>claude-haiku-4-5-20251001</string>
   </map>
   <key>LumenAIOpenAIModel</key>
     <map>
