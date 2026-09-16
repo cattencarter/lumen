@@ -11,6 +11,10 @@
 
 	-->
 	<color
+     name="AIChatNameColor"
+     value="0.42 0.82 0.84 1.0" />
+
+<color
 	 name="ltgrey123"
 	 value="0.33333  0.33333  0.33333 1.0" />
 	 <color

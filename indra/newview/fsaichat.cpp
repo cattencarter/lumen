@@ -30,6 +30,10 @@
 
 #include "fsaichat.h"
 
+#include "llui.h"
+#include "llviewerchat.h"
+#include "lluiimage.h"
+
 #include "fsaictl.h"
 #include "fsaikeys.h"
 #include "fsaimemory.h"
@@ -264,6 +268,8 @@ namespace
             if (action == "search_notecards") return "Searching notecards";
             if (action == "delete")           return "Moving to trash";
             if (action == "undelete")         return "Restoring from trash";
+            if (action == "show")             return "Opening inventory";
+            if (action == "open")             return "Opening item";
         }
         else if (group == "chat")
         {
@@ -572,16 +578,45 @@ bool FSAIChatFloater::postBuild()
     return true;
 }
 
+/**
+ * Say whether a key is missing -- and take it back when one appears.
+ *
+ * The notice used to be written once in onOpen and then left standing, so
+ * somebody who read "put one in Preferences > AI, then come back" and did
+ * exactly that came back to the same sentence, with nothing to say it was no
+ * longer true. Doing what a message tells you to do must visibly change it.
+ */
+void FSAIChatFloater::refreshKeyNotice()
+{
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    const bool have = FSAIKeys::has(provider);
+
+    if (!have && !mSaidNoKey)
+    {
+        sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
+                "Put one in Preferences > AI -- this line will change when it is saved.");
+        mSaidNoKey = true;
+    }
+    else if (have && mSaidNoKey)
+    {
+        sayNote(FSAIKeys::displayName(provider) + " key found. Go ahead.");
+        mSaidNoKey = false;
+    }
+}
+
+void FSAIChatFloater::onFocusReceived()
+{
+    LLFloater::onFocusReceived();
+    // Coming back from Preferences is a focus change, not an open, so onOpen
+    // alone never sees the key that was just saved.
+    refreshKeyNotice();
+}
+
 void FSAIChatFloater::onOpen(const LLSD& key)
 {
     LLFloater::onOpen(key);
 
-    const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    if (!FSAIKeys::has(provider))
-    {
-        sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
-                "Put one in Preferences > AI, then come back.");
-    }
+    refreshKeyNotice();
 
     // Only when the conversation has not started: reopening the window should
     // not stamp the header in again halfway down.
@@ -598,22 +633,69 @@ void FSAIChatFloater::onOpen(const LLSD& key)
 
 namespace
 {
-    LLStyle::Params dimStyle()
+    /**
+     * Both colours, always, and the reason is not obvious.
+     *
+     * lltextbase.cpp:3958 draws
+     *   (mEditor.getReadOnly() ? mStyle->getReadOnlyColor() : mStyle->getColor())
+     * and the transcript is enabled="false", so it is read-only and **never
+     * looks at `color` at all.** Setting only `color` therefore does nothing
+     * whatsoever -- every style came out as the field's default grey, which is
+     * exactly what happened here.
+     *
+     * It hid itself, too: the dim style used for notes had always set only
+     * `color`, and looked correct the whole time, because the default
+     * read-only colour happens to be that same grey.
+     */
+    LLStyle::Params coloured(const std::string& name)
     {
         LLStyle::Params p;
-        p.color = LLUIColorTable::instance().getColor("TextFgTentativeColor");
+        const LLUIColor c = LLUIColorTable::instance().getColor(name);
+        p.color = c;
+        p.readonly_color = c;
+        // Preferences > Chat > Chat Windows > "Chat window font size", the same
+        // setting every other chat window obeys. Read per message rather than
+        // fixed at build time, so changing it takes effect on the next line
+        // without reopening anything.
+        p.font = LLViewerChat::getChatFont();
         return p;
     }
+
+    LLStyle::Params dimStyle()
+    {
+        return coloured("TextFgTentativeColor");
+    }
+
+    /**
+     * Who is speaking, in the same colour an IM window uses for a name.
+     *
+     * The transcript follows the viewer's own instant-message window rather
+     * than inventing a layout: one line per message, the speaker coloured,
+     * the words white, no blank lines anywhere. Two rounds of hunting for a
+     * gap "a little smaller than a blank line" failed because a text editor
+     * has no such thing -- colour separates the turns while spending no
+     * vertical space at all, which is what IM worked out long ago.
+     */
+    LLStyle::Params nameStyle()
+    {
+        return coloured("AIChatNameColor");
+    }
+
+    /** What was said. White, as in IM. */
+    LLStyle::Params bodyStyle()
+    {
+        return coloured("White");
+    }
+
 }
 
 void FSAIChatFloater::sayUser(const std::string& text)
 {
     if (!mTranscript) return;
 
-    // A blank line before each of the user's turns. Without it the whole
-    // exchange runs together as one wall and there is nothing to scan back
-    // through to find where a question started.
-    mTranscript->appendText("\nYou: " + text, true);
+    mTranscript->appendText("\n", false);
+    mTranscript->appendText("You: ", false, nameStyle());
+    mTranscript->appendText(text, false, bodyStyle());
 }
 
 void FSAIChatFloater::sayAssistant(const std::string& text)
@@ -622,16 +704,35 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
 
     const std::string body = plainText(text);
 
-    if (mSpokeThisTurn)
-    {
-        // Already introduced this turn. A second "Lumen:" made one answer --
-        // narrate, act, report -- look like two separate replies.
-        mTranscript->appendText(body, true);
-        return;
-    }
+    // Every message says who is speaking, including the later parts of one
+    // turn.
+    //
+    // This reverses an earlier decision. Suppressing the repeat was meant to
+    // stop "narrate, act, report" reading as three separate replies -- but
+    // without the name those later lines have no owner at all, and the
+    // author found that more confusing than the repetition it avoided. The
+    // earlier reasoning was about how the answer is composed; this is about
+    // how it reads, and how it reads wins.
 
-    mTranscript->appendText("Lumen: " + body, true);
-    mSpokeThisTurn = true;
+    // Half a line between the question and the answer: enough to separate
+    // them, not so much that they stop looking like one exchange.
+    // The gap between a question and its answer, smaller than the one between
+    // two exchanges.
+    //
+    // A newline on its own does not work: a line with no characters on it is
+    // laid out at the default height, so styling the newline changed nothing
+    // and both gaps came out identical. The line needs an actual character to
+    // take its height from, hence the space -- it is invisible, and it makes
+    // the line as tall as the small font rather than the normal one.
+    // Same shape as an IM line: speaker in the name colour, words in white,
+    // one line break and no blank line.
+    //
+    // The icon that replaced "Lumen:" is gone. It read as a stray mark rather
+    // than a speaker, and it pushed the first line in while every wrapped line
+    // stayed at the margin, so the answer never lined up with its own marker.
+    mTranscript->appendText("\n", false);
+    mTranscript->appendText("Lumen: ", false, nameStyle());
+    mTranscript->appendText(body, false, bodyStyle());
 }
 
 void FSAIChatFloater::setActivity(const std::string& what)
@@ -808,7 +909,6 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
     // Across the whole turn, however many provider calls it takes.
     S32 turn_in = 0, turn_out = 0, turn_cached = 0, turn_created = 0, calls = 0;
-    mSpokeThisTurn = false;
 
     // The user's message, in whichever dialect we are speaking.
     if (is_openai)

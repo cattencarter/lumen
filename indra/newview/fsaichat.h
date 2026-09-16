@@ -66,6 +66,7 @@ public:
 
     bool postBuild() override;
     void onOpen(const LLSD& key) override;
+    void onFocusReceived() override;
 
 private:
     LLTextEditor* mTranscript = nullptr;
@@ -83,11 +84,13 @@ private:
     std::string mHistoryProvider;
 
     bool mBusy = false;
+    /// Whether the transcript currently carries a "no key" notice, so it is
+    /// said once and withdrawn once rather than repeated or left standing.
+    bool mSaidNoKey = false;
 
     // Whether "Lumen:" has already been written this turn. A model often
     // narrates, calls tools, then reports -- two labelled blocks read as two
     // separate replies when they are one answer.
-    bool mSpokeThisTurn = false;
 
     // Whether the current line is the running list of things being done, so
     // the next one can be added to it instead of starting a new line. Four
@@ -120,6 +123,7 @@ private:
     /** Names the provider and model once, at the top of a new conversation. */
     void sayHeader();
     void sayNote(const std::string& text);
+    void refreshKeyNotice();
 
     /** What the turn just cost, and what the window has cost so far. */
     /**

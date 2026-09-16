@@ -23,6 +23,7 @@
      top="24"
      width="420"
      name="transcript"
+     font="SansSerifSmall"
      max_length="262144"
      enabled="false"
      word_wrap="true"
