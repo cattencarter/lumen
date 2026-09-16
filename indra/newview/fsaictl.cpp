@@ -32,6 +32,8 @@
 #include "fsaikeys.h"
 #include "fsaiindex.h"
 #include "llenvironment.h"
+#include "llsettingssky.h"
+#include "llvirtualtrackball.h"
 #include "rlvactions.h"
 #include "llviewercamera.h"
 #include "fsainotecache.h"
@@ -1767,6 +1769,15 @@ namespace
             "environment settings instead; find them with inventory search, "
             "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
             "untouched. Pair it with movement/camera to set up a photograph.\n"
+            "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
+            "higher is brighter), `ambient` (fills the shadows), `contrast` (0 flat, 1 harsh -- "
+            "this is what \"softer\" and \"less contrast\" mean), `sun_elevation` in degrees "
+            "(90 overhead, 10 low and raking, negative below the horizon) and `sun_azimuth` "
+            "(0 north, 90 east). These change the sky ALREADY IN FORCE, so one thing moves and "
+            "the rest of the place stays put -- unlike a preset, which replaces it wholly and can "
+            "easily make a bright region darker.\n"
+            "  **You cannot see the result and they can.** Change one thing, say what you "
+            "changed, and ask.\n"
             "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
             "the user what they want first.** These grant permission to take things, move the "
             "avatar, or run scripts on it. Never choose for them.";
@@ -3802,6 +3813,106 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD result;
             result["lighting"] = "region";
             result["note"] = "The place has its own light back.";
+            return result;
+        }
+
+        // Fine adjustments, applied to whatever sky is already in force.
+        //
+        // The presets alone were not enough, and the transcript showed exactly
+        // why: asked for "brighter with less contrast" the assistant applied
+        // midday and the scene got DARKER, because a preset REPLACES the
+        // region's sky wholesale and this region is brighter than stock midday.
+        // It then apologised four times and sent the author to the graphics
+        // preferences. Every control below is one Personal Lighting already
+        // offers; there was no reason it could not be reached from here.
+        const bool fine = params.has("brightness") || params.has("ambient")
+                       || params.has("sun_elevation") || params.has("sun_azimuth")
+                       || params.has("haze") || params.has("contrast");
+        if (fine)
+        {
+            LLSettingsSky::ptr_t sky_now = env.getEnvironmentFixedSky(LLEnvironment::ENV_LOCAL);
+            if (!sky_now)
+            {
+                // Nothing local yet: start from what they are actually looking
+                // at, so an adjustment changes one thing instead of replacing
+                // the place -- which is the mistake the presets made.
+                sky_now = env.getEnvironmentFixedSky(LLEnvironment::ENV_CURRENT);
+            }
+            if (!sky_now)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The sky is not loaded yet. Try again in a moment.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            LLSettingsSky::ptr_t edit = sky_now->buildClone();
+            LLSD changed = LLSD::emptyMap();
+
+            if (params.has("brightness"))
+            {
+                const F32 g = llclamp((F32)params["brightness"].asReal(), 0.1f, 10.0f);
+                edit->setGamma(g);
+                changed["brightness"] = (LLSD::Real)g;
+            }
+            if (params.has("ambient"))
+            {
+                // What fills the shadows.
+                const F32 a = llclamp((F32)params["ambient"].asReal(), 0.0f, 3.0f);
+                edit->setAmbientColor(LLColor3(a, a, a));
+                changed["ambient"] = (LLSD::Real)a;
+            }
+            if (params.has("contrast"))
+            {
+                // Said the way a person says it: less contrast is more fill.
+                const F32 c = llclamp((F32)params["contrast"].asReal(), 0.0f, 1.0f);
+                const F32 a = 0.1f + (1.0f - c) * 0.9f;
+                edit->setAmbientColor(LLColor3(a, a, a));
+                changed["contrast"] = (LLSD::Real)c;
+                changed["ambient"]  = (LLSD::Real)a;
+            }
+            if (params.has("haze"))
+            {
+                const F32 h = llclamp((F32)params["haze"].asReal(), 0.0f, 5.0f);
+                edit->setHazeDensity(h);
+                changed["haze"] = (LLSD::Real)h;
+            }
+            if (params.has("sun_elevation") || params.has("sun_azimuth"))
+            {
+                F32 az = 180.f, el = 45.f;
+                LLVirtualTrackball::getAzimuthAndElevationDeg(edit->getSunRotation(), az, el);
+                if (params.has("sun_azimuth"))   az = (F32)params["sun_azimuth"].asReal();
+                if (params.has("sun_elevation")) el = (F32)params["sun_elevation"].asReal();
+
+                // The same construction Personal Lighting uses
+                // (llfloaterenvironmentadjust.cpp:387), including its guard
+                // against an elevation of exactly zero.
+                F32 azr = az * DEG_TO_RAD;
+                F32 elr = llclamp(el, -90.f, 90.f) * DEG_TO_RAD;
+                if (is_approx_zero(elr)) elr = F_APPROXIMATELY_ZERO;
+
+                LLQuaternion quat; quat.setAngleAxis(-elr, 0, 1, 0);
+                LLQuaternion az_q; az_q.setAngleAxis(F_TWO_PI - azr, 0, 0, 1);
+                quat *= az_q;
+                edit->setSunRotation(quat);
+
+                changed["sun_azimuth"]   = (LLSD::Real)az;
+                changed["sun_elevation"] = (LLSD::Real)el;
+            }
+
+            edit->update();
+            env.setEnvironment(LLEnvironment::ENV_LOCAL, edit);
+            env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL, LLEnvironment::TRANSITION_FAST);
+            env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+
+            LLSD result;
+            result["lighting"] = "adjusted";
+            result["changed"]  = changed;
+            result["scope"]    = "just this viewer";
+            result["note"] = "Adjusted the sky already in force rather than replacing it, so "
+                             "everything else is as it was. They can see it and you cannot -- ask. "
+                             "`preset: \"region\"` puts the place's own light back.";
+            recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                         fingerprintOf("lighting", params), "lighting", "ok", result, LLSD());
             return result;
         }
 
