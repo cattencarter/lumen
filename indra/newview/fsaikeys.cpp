@@ -387,7 +387,42 @@ void FSPanelPreferenceAIKeys::apply()
         row.editor->setText(LLStringUtil::null);
     }
 
+    followTheKey();
     refresh();
+}
+
+/**
+ * If "Use" points at a provider with no key, and the other one has one, move it.
+ *
+ * Reported from use: a key was saved for Anthropic while Use sat on OpenAI, and
+ * nothing said so. The setup looks complete -- a key is visibly saved, a model
+ * is chosen -- and the only symptom arrives later, as "there is no OpenAI key
+ * saved yet" from a window the person did not connect to this screen.
+ *
+ * Deliberately NOT "always select whichever has a key". With keys for both, the
+ * choice is the user's and this must not touch it. This only acts when the
+ * current selection cannot work and exactly one alternative can, which is a
+ * state nobody chooses on purpose.
+ */
+void FSPanelPreferenceAIKeys::followTheKey()
+{
+    const std::string chosen = gSavedSettings.getString("LumenAIProvider");
+    if (FSAIKeys::has(chosen))
+    {
+        return;                                   // it can work; leave it alone
+    }
+
+    const std::string other = (chosen == FSAIKeys::OPENAI)
+                            ? FSAIKeys::ANTHROPIC : FSAIKeys::OPENAI;
+    if (!FSAIKeys::has(other))
+    {
+        return;                                   // neither works; nothing to pick
+    }
+
+    // Not logged: the logging macros reach a private member of
+    // LLPanelPreference from here. It does not need to be -- refresh() follows,
+    // so the change is visible in the control itself rather than only in a file.
+    gSavedSettings.setString("LumenAIProvider", other);
 }
 
 void FSPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_to_skip)

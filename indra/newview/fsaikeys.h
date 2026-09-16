@@ -105,6 +105,9 @@ public:
 
     bool postBuild() override;
     void apply() override;
+
+    /** Move "Use" off a provider that has no key, when the other one does. */
+    void followTheKey();
     void cancel(const std::vector<std::string> settings_to_skip = {}) override;
     void onOpen(const LLSD& key) override;
 
