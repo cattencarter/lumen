@@ -31,6 +31,7 @@
 #include "fsaichat.h"
 #include "fsaikeys.h"
 #include "fsaiindex.h"
+#include "llviewercamera.h"
 #include "fsainotecache.h"
 
 #include "llagent.h"
@@ -3836,28 +3837,73 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 who      = params["name"].asString();
             }
 
-            // Framing, in metres back and where to look.
+            // Framing.
             //
-            // Worked out from the subject's real height rather than guessed:
-            // a body shot has to hold head to feet, and avatars here run from
-            // well under a metre to well over two.
-            F32 back = 3.0f, look_at_z = height * 0.5f, up = 0.0f;
+            // Two things this got wrong, and the picture showed both at once:
+            // the subject was small AND sat low in the frame.
+            //
+            // **An avatar's position is its PELVIS, not its feet.** Proven by
+            // the viewer's own code -- `llvoavatar.cpp:4526` subtracts
+            // `mPelvisToFoot` to put a nametag above someone's head. So adding
+            // half a body height to the position aimed roughly ABOVE the head,
+            // and the avatar hung below centre. Everything below is measured
+            // from the feet, which is the only end that means anything.
+            //
+            // **And the distance was a guessed multiplier.** `height * 1.9`
+            // with the default 60-degree field of view frames 3.95 m of
+            // vertical space for a 1.8 m avatar -- she fills 46% of it, which
+            // is a snapshot of a landscape with somebody in it. The distance
+            // is now computed from the field of view actually in use, so it
+            // stays right if the user has changed `CameraAngle` (a persisted
+            // setting people do change) and if a future default differs.
+            //
+            //     visible height at distance d = 2 * d * tan(fov / 2)
+            //     so  d = (height / fill) / (2 * tan(fov / 2))
+            const F32 fov = LLViewerCamera::getInstance()->getView();
+            const F32 half_tan = tanf(llclamp(fov, 0.2f, 3.0f) * 0.5f);
+
+            const F32 foot_z = (focus_id.isNull() || focus_id == gAgent.getID())
+                             ? -gAgentAvatarp->getPelvisToFoot()
+                             : -height * 0.5f;   // others: assume centre, we cannot read theirs
+
+            // How much of the frame's height the subject should occupy.
+            F32 fill = 0.82f;               // head to feet, with air top and bottom
+            F32 aim_z = foot_z + height * 0.5f;
+            F32 up = 0.0f;
             std::string framed;
+
             if (shot == "face")
             {
-                back = 0.9f;  look_at_z = height * 0.92f;  up = 0.1f;
+                // Frame the head: roughly the top fifth of a body.
+                fill  = 0.78f;
+                aim_z = foot_z + height * 0.90f;
+                up    = 0.02f;
                 framed = "a close portrait";
             }
             else if (shot == "wide")
             {
-                back = height * 4.5f;  look_at_z = height * 0.55f;  up = height * 0.5f;
+                fill  = 0.30f;              // the subject small, the place around them
+                aim_z = foot_z + height * 0.55f;
+                up    = height * 0.35f;
                 framed = "a wide shot with the surroundings";
             }
             else                            // "body", and the default
             {
-                back = height * 1.9f;  look_at_z = height * 0.52f;  up = height * 0.15f;
                 framed = "head to feet";
             }
+
+            // `mBodySize` is the BODY. Hair sits above it and heels below it,
+            // and framing to the body alone put the top of the head exactly on
+            // the frame edge -- measured, on this avatar, in the Snapshot
+            // preview. An allowance of 15% is what the difference looked like;
+            // it costs a little air on a bald avatar and saves a haircut on
+            // everyone else, which is the right way round.
+            const F32 with_hair = height * 1.15f;
+            const F32 subject_extent = (shot == "face") ? with_hair * 0.28f : with_hair;
+            F32 back = (subject_extent / fill) / (2.0f * half_tan);
+            back = llclamp(back, 0.35f, 60.0f);
+
+            const F32 look_at_z = aim_z;
 
             if (params.has("height"))
             {
