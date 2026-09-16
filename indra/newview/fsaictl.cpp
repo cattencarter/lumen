@@ -1692,9 +1692,12 @@ namespace
             "- answer_while_away: answer instant messages on the user's behalf until they say "
             "they are back. Turn it ON only when they ask you to -- \"answer my IMs until I get "
             "back\", \"cover for me\" -- and OFF the moment they say they have returned. Pass "
-            "`local_chat: true` as well if they want the scene around them kept going, not just "
-            "their IMs; that speaks where everyone nearby can see it, and only when somebody "
-            "says their name. "
+            "**Set `ims` and `local_chat` from what they actually asked for, and nothing more.** "
+            "\"answer my IMs\" is `ims: true` alone. \"answer in local chat\" or \"keep the "
+            "scene going\" is `local_chat: true` alone -- do NOT also start answering their "
+            "private messages because it seemed helpful. Both only if they asked for both. "
+            "Local chat speaks where everyone nearby can see it, and only when somebody says "
+            "their name. "
             "`on`, and `note` for anything they said about how to handle it or how long they will "
             "be. While it is on, each incoming IM from a friend gets one short reply that never "
             "agrees to anything for them and never claims to be them. It stops by itself after a "
@@ -1716,11 +1719,14 @@ namespace
                                "mention what they are called, pass it.";
         view_props["called"]=vcl;
         LLSD vlc; vlc["type"]="boolean";
-            vlc["description"]="answer_while_away: also answer in LOCAL CHAT, where everyone "
-                               "nearby sees it, and only when somebody says the user's name. "
-                               "For holding a roleplay scene together. Off unless they ask for "
-                               "it -- speaking in public is not the same as answering an IM.";
+            vlc["description"]="answer_while_away: answer in LOCAL CHAT, where everyone nearby "
+                               "sees it, and only when somebody says the user's name. For "
+                               "holding a roleplay scene together.";
         view_props["local_chat"]=vlc;
+        LLSD vim; vim["type"]="boolean";
+            vim["description"]="answer_while_away: answer instant messages. Defaults to true "
+                               "unless they asked ONLY for local chat.";
+        view_props["ims"]=vim;
         LLSD vnt; vnt["type"]="string";
             vnt["description"]="answer_while_away: anything they said on the way out -- how long "
                                "they will be, what to say, what not to. Optional.";
@@ -4897,7 +4903,11 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         const bool on = params.has("on") ? params["on"].asBoolean() : true;
         const std::string note = params.has("note") ? params["note"].asString() : std::string();
 
+        // Two independent channels. If neither is named, instant messages --
+        // that is what "cover for me" means to most people, and it is the one
+        // that is private.
         const bool local_chat = params.has("local_chat") && params["local_chat"].asBoolean();
+        const bool ims = params.has("ims") ? params["ims"].asBoolean() : !local_chat;
 
         std::vector<std::string> also_called;
         if (params.has("called"))
@@ -4912,11 +4922,21 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             else if (!c.asString().empty())
             {
-                also_called.push_back(c.asString());
+                // One string may still hold several, comma separated, which is
+                // how the Preferences field works and how a person would type
+                // it. Accept both rather than depending on which shape the
+                // model chose.
+                std::string one;
+                std::istringstream parts(c.asString());
+                while (std::getline(parts, one, ','))
+                {
+                    LLStringUtil::trim(one);
+                    if (!one.empty()) also_called.push_back(one);
+                }
             }
         }
 
-        FSAIAutoResponder::instance().arm(on, note, local_chat, also_called);
+        FSAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called);
 
         LLSD result;
         result["answering_while_away"] = on;
@@ -4931,7 +4951,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 gSavedPerAccountSettings.getS32("LumenAIAutoRespondMaxTotal");
             result["stops_after_minutes"] =
                 gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
-            result["local_chat"] = local_chat;
+            result["answering_ims"] = ims;
+            result["answering_local_chat"] = local_chat;
             result["note"] =
                 "Now answering one-to-one IMs for them. Say so plainly, including that it "
                 "will not agree to anything on their behalf and will stop on its own after a "

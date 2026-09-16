@@ -112,7 +112,16 @@ public:
      * the thing Lumen exists to allow; putting this behind a preferences panel
      * rebuilt the barrier it is meant to remove (Decisions 40, same argument).
      */
-    void arm(bool on, const std::string& note, bool local_chat,
+    /**
+     * @param ims         answer instant messages
+     * @param local_chat  answer in local chat when somebody says the user's name
+     *
+     * Two independent channels, not one with an extra. Asked to "answer in
+     * local chat", the first version also started answering IMs -- announced,
+     * but not asked for. Doing what was asked is easier to predict than doing
+     * what was probably meant.
+     */
+    void arm(bool on, const std::string& note, bool ims, bool local_chat,
              const std::vector<std::string>& also_called = std::vector<std::string>());
 
     /**
@@ -136,9 +145,19 @@ private:
                  const std::string& latest);
 
     bool                  mArmed = false;
+    bool                  mIMs = true;
     bool                  mLocalChat = false;
     /// Names given for this stint, on top of the saved ones.
     std::vector<std::string> mExtraNames;
+    /**
+     * Who is currently talking TO us in local chat, and until when.
+     *
+     * A name is how a conversation *opens*, not how every line of it is
+     * written. "hi princess" got no answer because it carries no name, which
+     * was correct by the rule and wrong for the conversation. So being named
+     * starts a window, and inside it every line from that person is answered.
+     */
+    std::map<LLUUID, F64> mTalkingToMe;
     /// When arming happened, so the time limit can be measured from it.
     F64                   mArmedAt = 0.0;
     std::string           mNote;

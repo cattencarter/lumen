@@ -42,6 +42,7 @@
 #include "fsnearbychathub.h"
 #include "llchat.h"
 #include "llagent.h"
+#include "llanimationstates.h"
 #include "llagentui.h"
 #include "llavatarname.h"
 #include "llavatarnamecache.h"
@@ -1241,8 +1242,115 @@ namespace
         return out;
     }
 
+    /**
+     * Is this display name made of letters somebody could actually type?
+     *
+     * The rule is a ceiling, borrowed from the sl-agent project where it was
+     * worked out against real names on a real sim: **everything up to Latin
+     * Extended-B is a name; past that is Greek and Cyrillic lookalikes,
+     * combining marks and symbols.**
+     *
+     * My first version tested for *mixed scripts* instead, on the theory that
+     * decorative text borrows letter shapes from wherever it can. It let
+     * through the case that project had already met: `l̶l̶avєη Oh`, where the
+     * H is two struck-through l's -- ASCII letters plus U+0336, one script,
+     * and unreadable. A combining mark is not a different alphabet.
+     *
+     * The cost is that a name written entirely in Cyrillic or Japanese is
+     * refused although it is genuine. That is the right way round: the
+     * consequence is addressing somebody without a name, which is merely
+     * plain, where the alternative is addressing them by something they
+     * cannot read.
+     */
+    bool nameIsReadable(const std::string& utf8)
+    {
+        bool any_letter = false;
+
+        for (size_t i = 0; i < utf8.size(); )
+        {
+            unsigned char c = (unsigned char)utf8[i];
+            U32 cp = c; size_t len = 1;
+            if      ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+            else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+            else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+            for (size_t k = 1; k < len && i + k < utf8.size(); ++k)
+            {
+                cp = (cp << 6) | ((unsigned char)utf8[i + k] & 0x3F);
+            }
+            i += len;
+
+            if (cp == ' ' || cp == '-' || cp == '\'' || cp == '.')
+            {
+                continue;
+            }
+            if (cp > 0x024F)
+            {
+                return false;              // past Latin Extended-B
+            }
+            if (cp >= 0x0300 && cp <= 0x036F)
+            {
+                return false;              // a combining mark; unreachable here
+            }                              // but kept so the intent is explicit
+            if (cp < 0x80)
+            {
+                if (isalpha((int)cp)) { any_letter = true; continue; }
+                if (isdigit((int)cp)) continue;
+                return false;              // punctuation or a symbol
+            }
+            any_letter = true;             // Latin-1 and Latin Extended letters
+        }
+
+        return any_letter;
+    }
+
+    /**
+     * Does this reply talk about the machinery? Then it is not sent at all.
+     *
+     * Borrowed from sl-agent, whose third guard exists for exactly this: the
+     * first two catch a failed call, and neither catches **the model writing
+     * about connections and timeouts as ordinary dialogue**, which is
+     * sendable, in character, and fatal.
+     *
+     * **It applies to instant messages exactly as much as to local chat**, and
+     * the reason is not embarrassment. A line naming the provider, or
+     * apologising for a timeout, is reconnaissance: it tells a stranger that
+     * something automated is answering, roughly what it is, and that it can be
+     * made to fail. Somebody who knows that can start working on the next
+     * step. One reader is enough for that, so the size of the audience is not
+     * what decides it.
+     *
+     * (Fifteen people can also read a line of local chat, and any of them can
+     * screenshot it. That is the smaller of the two problems.)
+     *
+     * Distinctive phrases only, never bare common words -- "error" alone would
+     * fire on somebody saying they made one. And a match is LOGGED, because a
+     * false positive here is silence, which looks exactly like working.
+     */
+    bool talksAboutTheMachinery(const std::string& text)
+    {
+        static const char* const GIVEAWAYS[] = {
+            "api key", "api call", "rate limit", "timed out", "timeout",
+            "connection error", "network error", "server error",
+            "http", "json", "endpoint", "anthropic", "openai",
+            "language model", "my training", "my system prompt",
+            "i'm an ai", "i am an ai", "as an ai",
+        };
+        const std::string low = lowerOf(text);
+        for (const char* g : GIVEAWAYS)
+        {
+            if (low.find(g) != std::string::npos)
+            {
+                LL_WARNS("AICtl") << "auto-reply withheld; it mentioned \"" << g
+                                  << "\"" << LL_ENDL;
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::string autoRespondPrompt(const std::string& who, bool first_time,
-                                  const std::string& owner)
+                                  const std::string& owner,
+                                  const std::string& call_them)
     {
         std::string p =
             "You are answering instant messages in Second Life on behalf of the person whose "
@@ -1258,7 +1366,12 @@ namespace
             "and needs no explanation; in the middle of a roleplay it would also wreck the "
             "scene, which is the opposite of what you are here for.\n"
             "- Never give out information about them that is not already in this conversation.\n"
-            "- Keep it short. One or two sentences.\n\n";
+            "- Keep it short. One or two sentences.\n"
+            "- **Never mention the machinery.** Not a connection, a timeout, an error, a "
+            "service, a key, a model or a prompt -- not even to apologise for one. If "
+            "something has gone wrong, say nothing about it and answer as if it had not. "
+            "Fifteen people can read a line of local chat and any of them can screenshot "
+            "it.\n\n";
 
         // Said once, then never again to the same person.
         //
@@ -1320,6 +1433,12 @@ namespace
             "already said and say something different.** If you have greeted them, do not greet "
             "them again. If they answered your question, respond to the answer instead of asking "
             "it once more.\n\n"
+            "ANSWER IN THE LANGUAGE THEY WROTE IN.\n"
+            "These instructions are in English, which is not a reason to reply in English. "
+            "If they write Danish, answer in Danish; French, answer in French. " + owner +
+            " is a person with a life in whatever language their friends speak, and a reply "
+            "in the wrong one is as plainly not them as signing off with the wrong name. If "
+            "the conversation has been running in one language, stay in it.\n\n"
             "WHAT TO DO:\n"
             "- **Answer what was actually said.** If they paid a compliment, take it. If they "
             "asked something, answer if you can. If they are telling a story, respond to the "
@@ -1348,11 +1467,13 @@ FSAIAutoResponder::FSAIAutoResponder()
 {
 }
 
-void FSAIAutoResponder::arm(bool on, const std::string& note, bool local_chat,
+void FSAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
                             const std::vector<std::string>& also_called)
 {
     mExtraNames = on ? also_called : std::vector<std::string>();
+    mTalkingToMe.clear();
     mArmed = on;
+    mIMs       = on && ims;
     mLocalChat = on && local_chat;
     mNote  = on ? note : std::string();
     mArmedAt = LLTimer::getTotalSeconds();
@@ -1361,7 +1482,11 @@ void FSAIAutoResponder::arm(bool on, const std::string& note, bool local_chat,
     mRepliesTo.clear();
     mRepliesTotal = 0;
     LL_INFOS("AICtl") << "auto-respond " << (on ? "armed" : "disarmed")
-                      << (mLocalChat ? " (incl. local chat)" : "") << LL_ENDL;
+                      << (on ? (std::string(" [")
+                                + (mIMs ? "IM" : "")
+                                + (mIMs && mLocalChat ? "+" : "")
+                                + (mLocalChat ? "local" : "")
+                                + "]") : std::string()) << LL_ENDL;
 }
 
 bool FSAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) const
@@ -1519,9 +1644,30 @@ void FSAIAutoResponder::considerChat(const LLSD& data)
             break;
         }
     }
-    if (!addressed)
+
+    // Being named opens a conversation; it does not have to be repeated.
+    //
+    // People say a name once and then talk. Requiring it in every line meant
+    // answering roughly one line in four and looking half absent, which is the
+    // opposite of holding a scene together. So a name starts a window, and
+    // while it is open every line from that person is answered -- and each
+    // answer pushes it out again, so a conversation continues and a passing
+    // greeting expires.
+    static const F64 WINDOW = 5.0 * 60.0;
+    const F64 now = LLTimer::getTotalSeconds();
+
+    if (addressed)
     {
-        return;
+        mTalkingToMe[from_id] = now + WINDOW;
+    }
+    else
+    {
+        std::map<LLUUID, F64>::const_iterator open = mTalkingToMe.find(from_id);
+        if (open == mTalkingToMe.end() || open->second < now)
+        {
+            return;                              // not talking to us
+        }
+        mTalkingToMe[from_id] = now + WINDOW;
     }
 
     std::string why_not;
@@ -1542,6 +1688,11 @@ void FSAIAutoResponder::considerChat(const LLSD& data)
 
 void FSAIAutoResponder::consider(const LLSD& data)
 {
+    if (!mIMs)
+    {
+        return;                                   // armed for local chat only
+    }
+
     std::string why_not;
     if (!shouldAnswer(data, why_not))
     {
@@ -1623,7 +1774,34 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
     const std::string memory = gSavedPerAccountSettings.getString("LumenAIMemory");
     std::string owner;
     LLAgentUI::buildFullname(owner);
-    const std::string system = autoRespondPrompt(memory, first_time, owner);
+
+    // What to call the person we are answering.
+    //
+    // Never the username: nobody is addressed as "tyria06". A real display
+    // name if it is readable; the first name from the account if they have no
+    // display name; and if the display name is decorative, no name at all --
+    // "Hey you" beats "Hey" followed by characters nobody can read or type.
+    std::string call_them;
+    {
+        LLAvatarName av;
+        if (LLAvatarNameCache::get(from_id, &av))
+        {
+            const std::string dn = av.getDisplayName();
+            if (!av.isDisplayNameDefault() && nameIsReadable(dn))
+            {
+                call_them = dn;
+            }
+            else if (av.isDisplayNameDefault())
+            {
+                const std::string legacy = av.getUserName();
+                const size_t sp = legacy.find_first_of(". ");
+                call_them = (sp == std::string::npos) ? legacy : legacy.substr(0, sp);
+                if (!nameIsReadable(call_them)) call_them.clear();
+            }
+        }
+    }
+
+    const std::string system = autoRespondPrompt(memory, first_time, owner, call_them);
     const bool is_openai = (provider == FSAIKeys::OPENAI);
     const std::string model = gSavedSettings.getString(
         is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
@@ -1675,8 +1853,45 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
         }
 
         LLStringUtil::trim(text);
+        if (!text.empty() && talksAboutTheMachinery(text))
+        {
+            text.clear();                        // silence beats explaining
+        }
         if (!text.empty())
         {
+            // Type for a moment first.
+            //
+            // The reply used to land the instant the provider answered, which
+            // reads as a machine however well it is written -- nobody composes
+            // a sentence in no time. So the typing indicator goes up, we wait
+            // roughly as long as writing it would take, and then it arrives.
+            //
+            // Both surfaces have their own signal: an IM sends a typing state
+            // to the other person, and local chat plays the typing animation
+            // the avatar performs when its owner is at the keyboard. Doing
+            // neither, and merely pausing, would look like a lag spike.
+            const F32 seconds = llclamp(1.2f + 0.035f * (F32)text.size(), 1.5f, 9.0f);
+
+            if (speak_aloud)
+            {
+                gAgent.sendAnimationRequest(ANIM_AGENT_TYPE, ANIM_REQUEST_START);
+            }
+            else
+            {
+                LLIMModel::sendTypingState(session_id, from_id, true);
+            }
+
+            llcoro::suspendUntilTimeout(seconds);
+
+            if (speak_aloud)
+            {
+                gAgent.sendAnimationRequest(ANIM_AGENT_TYPE, ANIM_REQUEST_STOP);
+            }
+            else
+            {
+                LLIMModel::sendTypingState(session_id, from_id, false);
+            }
+
             if (speak_aloud)
             {
                 const LLWString wide = utf8str_to_wstring(text);
