@@ -1309,6 +1309,7 @@ namespace
             if (action == "fly")           return "fly";
             if (action == "turn")          return "turn";
             if (action == "where_am_i")    return "where_am_i";
+            if (action == "follow")        return "follow";
             return "";
         }
         if (group == "viewer")
@@ -1613,6 +1614,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
+              "follow",
               "fly", "turn", "where_am_i" };
         LLSD move;
         move["name"] = "movement";
@@ -1629,7 +1631,11 @@ namespace
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
-            "- stop_walking: give up a walk in progress.\n"
+            "- follow: walk after a person and keep following them, by `name`. The viewer does "
+            "the following itself, so it carries on until they teleport away, go out of range, "
+            "or you call stop_walking. Say plainly that it is following and that it will keep "
+            "doing so -- this is the one movement that does not finish on its own.\n"
+            "- stop_walking: give up a walk in progress, and stop following.\n"
             "- sit: on an object by `object_id`, or `ground: true` where the avatar stands. An "
             "object decides whether the avatar may sit and where it ends up.\n"
             "- stand: get up.\n"
@@ -1644,7 +1650,7 @@ namespace
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
         LLSD move_props;
-        move_props["action"] = actionProperty(move_actions, 9, "What to do. Required.");
+        move_props["action"] = actionProperty(move_actions, 10, "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
@@ -1817,6 +1823,55 @@ FSAIControl::~FSAIControl()
  * The subscription is two signal connections. It has nothing to do with the
  * socket and no reason to wait for one.
  */
+/**
+ * Re-arm the follow when the autopilot has finished and the leader has moved.
+ *
+ * Checked on the mainloop rather than driven by it: the viewer still does the
+ * walking, and all this does is notice that it has stopped while the person is
+ * now somewhere else. Five metres of slack so it does not twitch after every
+ * step, against a stop distance of three.
+ */
+void FSAIControl::keepFollowing()
+{
+    if (mFollowListenerUp)
+    {
+        return;
+    }
+    LLEventPumps::instance().obtain("mainloop").listen(
+        "FSAIControlFollow",
+        [this](const LLSD&)
+        {
+            if (mFollowing.isNull())
+            {
+                LLEventPumps::instance().obtain("mainloop").stopListening("FSAIControlFollow");
+                mFollowListenerUp = false;
+                return false;
+            }
+
+            LLVector3d theirs;
+            if (!LLWorld::getInstance()->getAvatar(mFollowing, theirs))
+            {
+                // Gone: teleported away, or out of range. Following somebody
+                // who is not there is worse than stopping, because nothing
+                // says it has failed.
+                LL_INFOS("AICtl") << "follow: they are no longer in range; stopping" << LL_ENDL;
+                mFollowing.setNull();
+                return false;
+            }
+
+            if (!gAgent.getAutoPilot())
+            {
+                const F64 gap = (theirs - gAgent.getPositionGlobal()).magVec();
+                if (gap > 5.0)
+                {
+                    gAgent.startFollowPilot(mFollowing, true, 3.0f);
+                }
+            }
+            return false;
+        });
+    mFollowListenerUp = true;
+}
+
 void FSAIControl::listenForStreams()
 {
     if (mSubscribed || mStreamListenerUp)
@@ -3549,7 +3604,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
-        || method == "stand"  || method == "fly"        || method == "turn")
+        || method == "stand"  || method == "fly"        || method == "turn"
+        || method == "follow")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -3668,9 +3724,42 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
+        if (method == "follow")
+        {
+            LLSD who_error;
+            const LLUUID person = resolvePerson(params, who_error);
+            if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+
+            LLVector3d where;
+            if (!LLWorld::getInstance()->getAvatar(person, where))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That person is not close enough to follow. They may be in "
+                               "another region; teleport to them first.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            // The viewer already knows how to do this: startFollowPilot keeps
+            // re-targeting as they move, so there is nothing for us to drive
+            // frame by frame.
+            gAgent.startFollowPilot(person, /*allow_flying*/ true, /*stop_distance*/ 3.0f);
+            mFollowing = person;
+            keepFollowing();
+
+            LLSD result;
+            result["following"] = params.has("name") ? params["name"].asString() : std::string();
+            result["stops_at_metres"] = 3.0;
+            result["note"] = "Now following, and it keeps going -- this is the one movement that "
+                             "does not finish by itself. It ends when they teleport away, leave "
+                             "the region, or you call stop_walking. Tell them it is following "
+                             "and how to stop it.";
+            return result;
+        }
+
         if (method == "stop_walking")
         {
-            const bool was = gAgent.getAutoPilot();
+            const bool was = gAgent.getAutoPilot() || mFollowing.notNull();
+            mFollowing.setNull();               // stop re-arming the follow
             gAgent.stopAutoPilot(true);
             LLSD result;
             result["was_walking"] = was;
@@ -3794,6 +3883,27 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             target = where;
             described = params["name"].asString();
+        }
+        else if (params.has("object_id"))
+        {
+            // Walking to a thing rather than a person or a coordinate. The id
+            // comes from look_nearby, which is the only place the caller can
+            // learn what is around them.
+            const LLUUID obj_id(params["object_id"].asString());
+            LLViewerObject* obj = gObjectList.findObject(obj_id);
+            if (!obj)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "No object with that id is in range. Call look_nearby again -- "
+                               "objects come and go, and one seen a minute ago may be gone.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            target = obj->getPositionGlobal();
+            described = "the object";
+            if (params.has("name") && !params["name"].asString().empty())
+            {
+                described = params["name"].asString();
+            }
         }
         else if (params.has("direction"))
         {

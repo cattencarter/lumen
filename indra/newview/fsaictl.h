@@ -169,6 +169,19 @@ private:
     void subscribe();
     /** Get the streams subscribed even when the socket is switched off. */
     void listenForStreams();
+
+    /**
+     * Who we are following, and the loop that keeps it going.
+     *
+     * LLAgent::startFollowPilot is not what its name suggests: it aims the
+     * autopilot at where the leader is now and re-aims it every frame *while
+     * walking*, but the moment the stop distance is reached the autopilot
+     * finishes and nothing restarts it. So it follows somebody on the way to
+     * them and then stands still while they walk off.
+     */
+    void keepFollowing();
+    LLUUID mFollowing;
+    bool   mFollowListenerUp = false;
     bool mStreamListenerUp = false;
 
     /**
