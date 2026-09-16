@@ -30,6 +30,9 @@
 
 #include "llsingleton.h"
 #include "lluuid.h"
+
+#include <map>
+#include <set>
 #include "llassettype.h"
 
 #include <string>
@@ -87,12 +90,63 @@ public:
         BY_OLDEST
     };
 
+    /**
+     * @param worn  Items currently on the avatar, which outrank everything
+     *              else that matches. The index cannot know this -- worn
+     *              state changes constantly and the index is built once --
+     *              so the caller supplies it. Empty is fine.
+     */
     std::vector<Hit> search(const std::string& query,
                             LLAssetType::EType  kind,
                             const LLUUID&       creator_id,
                             size_t              limit,
                             size_t&             total_matches,
-                            Order               order = BY_BEST);
+                            Order               order = BY_BEST,
+                            const std::set<LLUUID>* worn = NULL,
+                            const std::string&  prefer_fit = std::string(),
+                            std::vector<std::pair<std::string, std::string> >* corrections = NULL);
+
+    /**
+     * The body-fit token in a name -- "larax", "maitreya", "legacy" -- or "".
+     *
+     * Public because the caller works out which fit the avatar is wearing by
+     * asking this about each worn item, and the vocabulary should live in one
+     * place rather than two that drift.
+     *
+     * @param lname  an already-lowercased name.
+     */
+    static std::string fitInName(const std::string& lname);
+
+    /**
+     * What a query word probably should have been, or "" to leave it alone.
+     *
+     * Runs ONLY for a word that appears nowhere in any name or folder, so a
+     * correctly spelled search is never touched and cannot be made worse: the
+     * alternative at that point is an empty result. Allows one edit for a
+     * short word and two for a long one, which catches "tantacio" for
+     * "tentacio" without pretending "skirt" might have meant "shirt" -- those
+     * are one edit apart and both real words, which is why a word that DID
+     * match is never reconsidered.
+     */
+    std::string correctWord(const std::string& word);
+
+    /** Whether @a w appears anywhere in any name or folder. */
+    bool known(const std::string& w) const;
+
+    /**
+     * Split a run-together word into two that are both known, or false.
+     *
+     * "friendlist" is not a typo for "friends list" -- it is four edits away,
+     * so correctWord() cannot reach it however generous the allowance. A
+     * missing space is its own kind of mistake and needs its own rule.
+     */
+    bool splitWord(const std::string& w, std::string& a, std::string& b) const;
+
+private:
+    /** Lowercased path of a category, memoised while building. */
+    std::string folderPathLower(const LLUUID& cat_id,
+                                std::map<LLUUID, std::string>& cache);
+public:
 
     /** Drop the index; it rebuilds on the next search. */
     void invalidate() { mBuilt = false; }
@@ -105,12 +159,29 @@ private:
     {
         LLUUID             id;
         std::string        lname;     // lowercased once, which is the whole point
+        /**
+         * The folder path, lowercased, e.g. clothing > *Tentacio* Alba skirt > larax.
+         *
+         * Searchable because in Second Life the brand and the product are
+         * routinely in the FOLDER and not in the item: the garment inside is
+         * called "alba skirt white", while only the box carries the brand and
+         * product in its own name. Matching names alone therefore finds the
+         * box and can never find the garment.
+         */
+        std::string        lfolder;
         LLAssetType::EType type = LLAssetType::AT_NONE;
         LLUUID             creator;
         time_t             acquired = 0;
     };
 
     std::vector<Entry> mEntries;
+    /**
+     * Every distinct word appearing in any name or folder, sorted.
+     *
+     * Only ever consulted for a query word that matched nothing, to find what
+     * the user probably meant. See correctWord().
+     */
+    std::vector<std::string> mTokens;
     bool               mBuilt = false;
 
     void build();
@@ -126,7 +197,8 @@ private:
      */
     static S32 score(const std::string& lname,
                      const std::vector<std::string>& words,
-                     const std::string& whole);
+                     const std::string& whole,
+                     const std::string& lfolder);
 
     class Watcher;
     Watcher* mWatcher = nullptr;

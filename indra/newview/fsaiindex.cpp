@@ -39,6 +39,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <sstream>
+#include <cstring>
+#include <cctype>
 
 namespace
 {
@@ -147,6 +149,7 @@ void FSAIIndex::build()
     // No cap: this is the one walk that is supposed to see all of it.
     gInventory.collectDescendentsIf(LLUUID::null, cats, items, true, everything);
 
+    std::map<LLUUID, std::string> path_cache;
     mEntries.reserve(items.size());
     for (const auto& it : items)
     {
@@ -157,10 +160,38 @@ void FSAIIndex::build()
         Entry e;
         e.id      = it->getUUID();
         e.lname   = lowered(it->getName());
+        e.lfolder = folderPathLower(it->getParentUUID(), path_cache);
         e.type    = it->getType();
         e.creator  = it->getPermissions().getCreator();
         e.acquired = it->getCreationDate();
         mEntries.push_back(std::move(e));
+    }
+
+    // The vocabulary, for correcting a word that matches nothing. Built here
+    // because it is the one walk that already has every name in hand.
+    {
+        std::set<std::string> distinct;
+        for (const Entry& e : mEntries)
+        {
+            for (const std::string* src : { &e.lname, &e.lfolder })
+            {
+                std::string word;
+                for (char c : *src)
+                {
+                    if (isalnum((unsigned char)c))
+                    {
+                        word += c;
+                    }
+                    else
+                    {
+                        if (word.size() >= 4) distinct.insert(word);
+                        word.clear();
+                    }
+                }
+                if (word.size() >= 4) distinct.insert(word);
+            }
+        }
+        mTokens.assign(distinct.begin(), distinct.end());
     }
 
     mBuilt = true;
@@ -178,11 +209,212 @@ size_t FSAIIndex::size()
     return mEntries.size();
 }
 
+/**
+ * The body fits worth knowing about, longest first so "larax" is found before
+ * "lara" -- they are different bodies and the shorter one is a prefix of the
+ * other.
+ *
+ * This is not a complete list of every body ever sold and does not need to be:
+ * it only has to recognise the fit the wearer is actually in. An unknown fit
+ * yields "", the preference never engages, and ranking is exactly as it was.
+ */
+static const char* const BODY_FITS[] = {
+    "hourglass", "physique", "maitreya", "gianni", "legacy", "reborn", "kupra",
+    "belleza", "slink", "ebody", "erika", "waifu", "peach", "juicy", "freya",
+    "isis", "venus", "larax", "lara", "jake"
+};
+
+/**
+ * The lowercased path of a category, memoised.
+ *
+ * Walks up until it meets a folder already in the cache, then fills in what it
+ * passed on the way back down, so building 65,000 paths costs each folder once
+ * rather than once per item inside it.
+ */
+std::string FSAIIndex::folderPathLower(const LLUUID& cat_id,
+                                       std::map<LLUUID, std::string>& cache)
+{
+    std::vector<LLUUID> chain;
+    std::string path;
+    LLUUID cur = cat_id;
+
+    while (cur.notNull())
+    {
+        const std::map<LLUUID, std::string>::const_iterator f = cache.find(cur);
+        if (f != cache.end())
+        {
+            path = f->second;
+            break;
+        }
+        LLViewerInventoryCategory* cat = gInventory.getCategory(cur);
+        if (!cat)
+        {
+            break;              // the root, or a folder not loaded
+        }
+        chain.push_back(cur);
+        cur = cat->getParentUUID();
+    }
+
+    for (std::vector<LLUUID>::const_reverse_iterator it = chain.rbegin();
+         it != chain.rend(); ++it)
+    {
+        LLViewerInventoryCategory* cat = gInventory.getCategory(*it);
+        if (!cat)
+        {
+            continue;
+        }
+        if (!path.empty())
+        {
+            path += "/";
+        }
+        path += lowered(cat->getName());
+        cache[*it] = path;
+    }
+    return path;
+}
+
+/** Levenshtein distance, abandoned as soon as it exceeds @a cap. */
+static S32 editDistance(const std::string& a, const std::string& b, S32 cap)
+{
+    const size_t n = a.size(), m = b.size();
+    if ((S32)(n > m ? n - m : m - n) > cap)
+    {
+        return cap + 1;                 // length alone rules it out
+    }
+
+    std::vector<S32> prev(m + 1), cur(m + 1);
+    for (size_t j = 0; j <= m; ++j) prev[j] = (S32)j;
+
+    for (size_t i = 1; i <= n; ++i)
+    {
+        cur[0] = (S32)i;
+        S32 row_best = cur[0];
+        for (size_t j = 1; j <= m; ++j)
+        {
+            const S32 cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            cur[j] = std::min(std::min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            row_best = std::min(row_best, cur[j]);
+        }
+        if (row_best > cap)
+        {
+            return cap + 1;             // no cell in this row can recover
+        }
+        prev.swap(cur);
+    }
+    return prev[m];
+}
+
+bool FSAIIndex::known(const std::string& w) const
+{
+    for (const std::string& t : mTokens)
+    {
+        if (t.find(w) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FSAIIndex::splitWord(const std::string& w, std::string& a, std::string& b) const
+{
+    if (w.size() < 6)
+    {
+        return false;                   // nothing useful to split
+    }
+
+    // Both halves at least three characters, so "friendlist" can become
+    // "friend list" but "skirts" cannot become "ski rts".
+    for (size_t at = 3; at + 3 <= w.size(); ++at)
+    {
+        const std::string left  = w.substr(0, at);
+        const std::string right = w.substr(at);
+        if (known(left) && known(right))
+        {
+            a = left; b = right;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string FSAIIndex::correctWord(const std::string& word)
+{
+    if (word.size() < 4)
+    {
+        return std::string();           // too short to correct safely
+    }
+
+    // Already present somewhere? Then it is not a typo, whatever it looks
+    // like, and must be left exactly alone.
+    for (const std::string& t : mTokens)
+    {
+        if (t.find(word) != std::string::npos)
+        {
+            return std::string();
+        }
+    }
+
+    const S32 cap = (word.size() <= 5) ? 1 : 2;
+    S32 best = cap + 1;
+    std::string best_token;
+    bool ambiguous = false;
+
+    for (const std::string& t : mTokens)
+    {
+        const S32 d = editDistance(word, t, cap);
+        if (d > cap)
+        {
+            continue;
+        }
+        if (d < best)
+        {
+            best = d; best_token = t; ambiguous = false;
+        }
+        else if (d == best && t != best_token)
+        {
+            ambiguous = true;           // two equally good guesses is no guess
+        }
+    }
+
+    return ambiguous ? std::string() : best_token;
+}
+
+std::string FSAIIndex::fitInName(const std::string& lname)
+{
+    for (const char* fit : BODY_FITS)
+    {
+        const size_t at = lname.find(fit);
+        if (at != std::string::npos && isWordEdge(lname, at, strlen(fit)))
+        {
+            return fit;
+        }
+    }
+    return std::string();
+}
+
 S32 FSAIIndex::score(const std::string& lname,
                      const std::vector<std::string>& words,
-                     const std::string& whole)
+                     const std::string& whole,
+                     const std::string& lfolder)
 {
     S32 s = 0;
+
+    // A word found only in the folder counts, but for less than one in the
+    // item's own name: the folder says which product this came from, the name
+    // says what it is. Scored before the name rules so a name match always
+    // wins a tie against a folder match.
+    for (const std::string& w : words)
+    {
+        if (lname.find(w) == std::string::npos)
+        {
+            const size_t at = lfolder.find(w);
+            if (at != std::string::npos)
+            {
+                s += isWordEdge(lfolder, at, w.size()) ? 250 : 80;
+            }
+        }
+    }
 
     if (lname == whole)
     {
@@ -277,7 +509,10 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
                                               const LLUUID&      creator_id,
                                               size_t             limit,
                                               size_t&            total_matches,
-                                              Order              order)
+                                              Order              order,
+                                              const std::set<LLUUID>* worn,
+                                              const std::string& prefer_fit,
+                                              std::vector<std::pair<std::string, std::string> >* corrections)
 {
     if (!mBuilt)
     {
@@ -287,7 +522,72 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
     total_matches = 0;
 
     const std::string whole = lowered(query);
-    const std::vector<std::string> words = wordsOf(whole);
+    std::vector<std::string> words = wordsOf(whole);
+
+    // Correct only what matched nothing at all.
+    //
+    // "tantacio" is not a substring of "tentacio", so the search returned zero
+    // and the assistant reported -- correctly and uselessly -- that there were
+    // no such skirts. Nothing about that is the model's doing: it passed what
+    // it was given and said what it was told.
+    //
+    // This runs after exact matching has already failed for a word, so a
+    // correctly spelled query is never altered and the worst case it replaces
+    // is an empty result.
+    {
+        std::vector<std::string> rebuilt;
+        rebuilt.reserve(words.size() + 1);
+        for (const std::string& w : words)
+        {
+            if (known(w))
+            {
+                rebuilt.push_back(w);   // matched something: never touched
+                continue;
+            }
+
+            // A missing space first, because it is the more likely mistake and
+            // the more certain one: both halves have to be real.
+            std::string a, b;
+            if (splitWord(w, a, b))
+            {
+                if (corrections)
+                {
+                    corrections->push_back(std::make_pair(w, a + " " + b));
+                }
+                rebuilt.push_back(a);
+                rebuilt.push_back(b);
+                continue;
+            }
+
+            const std::string fixed = correctWord(w);
+            if (!fixed.empty())
+            {
+                if (corrections)
+                {
+                    corrections->push_back(std::make_pair(w, fixed));
+                }
+                rebuilt.push_back(fixed);
+                continue;
+            }
+
+            rebuilt.push_back(w);       // leave it alone and return nothing
+        }
+        words.swap(rebuilt);
+    }
+
+    // The phrase bonuses compare against the whole query, so they have to see
+    // the corrected spelling too -- otherwise a fixed word still loses every
+    // exact and prefix bonus and ranks as if it had barely matched.
+    std::string corrected_whole = whole;
+    if (corrections && !corrections->empty())
+    {
+        corrected_whole.clear();
+        for (const std::string& w : words)
+        {
+            if (!corrected_whole.empty()) corrected_whole += " ";
+            corrected_whole += w;
+        }
+    }
 
     std::vector<Hit> hits;
     hits.reserve(std::min<size_t>(limit * 4, 512));
@@ -307,10 +607,14 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
         // Every word, anywhere, in any order. Findings 59: matching the query
         // as one run of characters missed almost everything, because Second
         // Life names are brand, punctuation, product and body fit.
+        // The folder counts as part of the name, because in Second Life it
+        // routinely IS the name: "*Tentacio* Alba skirt/larax/alba skirt
+        // white". Without this, "tentacio skirt" matches only the box.
         bool all = true;
         for (const std::string& w : words)
         {
-            if (e.lname.find(w) == std::string::npos)
+            if (e.lname.find(w) == std::string::npos &&
+                e.lfolder.find(w) == std::string::npos)
             {
                 all = false;
                 break;
@@ -323,7 +627,61 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
 
         ++total_matches;
 
-        const S32 sc = score(e.lname, words, whole);
+        S32 sc = score(e.lname, words, corrected_whole, e.lfolder);
+
+        // What the avatar is already wearing outranks everything else that
+        // matches, and the bonus is larger than the exact-name bonus on
+        // purpose.
+        //
+        // "skirt" returned an unrelated object literally named SKIRT, because
+        // an exact name is worth 10000 and no amount of being the actual
+        // garment on the avatar was worth anything at all. A stronger model
+        // avoided this by passing worn:true, which the description asks for;
+        // a smaller one read the same description and did not. Ranking that
+        // only works when the caller reads carefully is ranking that does not
+        // work -- the same argument as the demo and HUD penalties above.
+        //
+        // This can only reorder items that already matched every word of the
+        // query, so "blue skirt" is not dragged to a red one that is worn.
+        if (worn && worn->count(e.id))
+        {
+            sc += 12000;
+        }
+
+        // The body fit the avatar is already in.
+        //
+        // "wear one of the tentacio skirts" attached the *box* rather than the
+        // garment, and the two scored 969 against 968 -- the winner was
+        // whichever sat earlier in inventory. Nothing separated them, because
+        // neither "box" nor "boxed" is in the box's name; it is simply called
+        // "*Tentacio* Marla skirt black".
+        //
+        // Asset type cannot separate them either: a rigged mesh garment IS an
+        // object, exactly like a box, so preferring clothing over objects
+        // would hide most modern clothing in Second Life.
+        //
+        // What does separate them is that a rigged garment names the body it
+        // is cut for and a box does not. Preferring the fit already being worn
+        // therefore picks the garment over the box and the right body over the
+        // wrong one, with one rule.
+        //
+        // Below the exact-name bonus on purpose: this is a preference, not an
+        // override. It also cannot rescue a demo or a HUD, whose penalties are
+        // the same size and cancel it out.
+        if (!prefer_fit.empty())
+        {
+            // The fit is as often a folder ("...\/larax\/skirt") as part of
+            // the item's name, and either one means the same thing.
+            const size_t at_n = e.lname.find(prefer_fit);
+            const size_t at_f = e.lfolder.find(prefer_fit);
+            if ((at_n != std::string::npos &&
+                 isWordEdge(e.lname, at_n, prefer_fit.size())) ||
+                (at_f != std::string::npos &&
+                 isWordEdge(e.lfolder, at_f, prefer_fit.size())))
+            {
+                sc += 3000;
+            }
+        }
 
         // Collapse items sharing a name as we go, rather than afterwards.
         //
