@@ -31,6 +31,8 @@
 #include "fsaichat.h"
 #include "fsaikeys.h"
 #include "fsaiindex.h"
+#include "llenvironment.h"
+#include "rlvactions.h"
 #include "llviewercamera.h"
 #include "fsainotecache.h"
 
@@ -1323,6 +1325,7 @@ namespace
             if (action == "read_actions") return "read_actions";
             if (action == "read_dialogues") return "read_dialogues";
             if (action == "answer_dialogue") return "answer_dialogue";
+            if (action == "lighting")        return "lighting";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -1636,6 +1639,12 @@ namespace
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
+            "- lighting: change the light, which for a photograph matters as much as the "
+            "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
+            "\"region\" to give the place its own light back. `name` instead applies one of the "
+            "user's own saved environment settings -- find them with inventory search, "
+            "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
+            "unaffected.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
             "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
             "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
@@ -3709,6 +3718,126 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // replay and the sitting rules, so they share a branch. Adding a verb here
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
+    if (method == "lighting")
+    {
+        // Before anything touches the environment.
+        //
+        // Calling this at the login screen killed the viewer outright -- the
+        // environment and RLV both assume an agent that is not there yet. The
+        // endpoint answers from the first frame (Findings 12), so every handler
+        // that reaches into the world has to say "not yet" rather than find out
+        // the hard way. The guard other handlers already use, applied here.
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Not logged in yet, so there is no sky to change.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // RLV can forbid this, and the viewer's own menu checks it first
+        // (llviewermenu.cpp:11991). Refusing plainly beats appearing to
+        // work and changing nothing -- Findings 49, and the same shape the
+        // `show` action already handles.
+        if (!RlvActions::canChangeEnvironment())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing is currently preventing "
+                           "environment changes (RLV). The light is unchanged.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLEnvironment& env = LLEnvironment::instance();
+
+        // One of their own saved settings, by name.
+        if (params.has("name") && !params["name"].asString().empty())
+        {
+            LLSD item_error;
+            const LLUUID item_id = resolveItem(params, item_error);
+            if (item_id.isNull()) { LLSD w; w["__error"] = item_error; return w; }
+
+            LLViewerInventoryItem* item = gInventory.getItem(item_id);
+            if (!item || item->getType() != LLAssetType::AT_SETTINGS)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "That is not an environment setting. Their saved ones are "
+                               "inventory items of kind \"settings\" -- search for those.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            env.setManualEnvironment(LLEnvironment::ENV_LOCAL, item->getAssetUUID());
+            env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL);
+            env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+
+            LLSD result;
+            result["lighting"] = item->getName();
+            result["scope"]    = "just this viewer";
+            result["note"]     = "Applied \"" + item->getName() + "\". Only they can see it; "
+                                 "the region and everybody in it are unchanged. "
+                                 "`preset: \"region\"` puts the place's own light back.";
+            recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                         fingerprintOf("lighting", params), "lighting", "ok", result, LLSD());
+            return result;
+        }
+
+        std::string preset = params.has("preset")
+                           ? lowered(params["preset"].asString()) : std::string("midday");
+
+        // The words people use, not ours.
+        if (preset == "noon" || preset == "day" || preset == "daytime") preset = "midday";
+        else if (preset == "dawn" || preset == "morning")               preset = "sunrise";
+        else if (preset == "dusk" || preset == "evening" || preset == "golden hour")
+                                                                        preset = "sunset";
+        else if (preset == "night" || preset == "dark")                 preset = "midnight";
+        else if (preset == "reset" || preset == "default" || preset == "normal")
+                                                                        preset = "region";
+
+        if (preset == "region")
+        {
+            env.clearEnvironment(LLEnvironment::ENV_LOCAL);
+            env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL,
+                                       LLEnvironment::TRANSITION_INSTANT);
+            env.updateEnvironment(LLEnvironment::TRANSITION_INSTANT, true);
+
+            LLSD result;
+            result["lighting"] = "region";
+            result["note"] = "The place has its own light back.";
+            return result;
+        }
+
+        LLUUID sky;
+        if (preset == "sunrise")       sky = LLEnvironment::KNOWN_SKY_SUNRISE;
+        else if (preset == "midday")   sky = LLEnvironment::KNOWN_SKY_MIDDAY;
+        else if (preset == "sunset")   sky = LLEnvironment::KNOWN_SKY_SUNSET;
+        else if (preset == "midnight") sky = LLEnvironment::KNOWN_SKY_MIDNIGHT;
+        else
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "\"" + preset + "\" is not a light I have. Use sunrise, midday, "
+                           "sunset, midnight, or region to give the place its own back -- or "
+                           "`name` for one of their own saved settings.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        env.setManualEnvironment(LLEnvironment::ENV_LOCAL, sky);
+        env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL);
+        env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+
+        LLSD result;
+        result["lighting"] = preset;
+        result["scope"]    = "just this viewer";
+        result["note"] = "The light is now " + preset + ", for them alone -- the region and "
+                         "everybody in it are unchanged. `preset: \"region\"` puts the "
+                         "place's own light back. Pair it with camera to set up a photograph.";
+        recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                     fingerprintOf("lighting", params), "lighting", "ok", result, LLSD());
+        return result;
+    }
+
+        // Outside the movement branch on purpose. `camera` and `turn` live inside a
+    // shared `if` that lists the movement verbs by name, and a handler written
+    // inside it is unreachable for anything not on that list -- which is how
+    // `lighting` answered "Method not found" while plainly present in the file.
+    // Findings 38, met a second time, in the same `if`.
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
         || method == "stand"  || method == "fly"        || method == "turn"
         || method == "follow" || method == "camera")
@@ -3830,7 +3959,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
-        if (method == "camera")
+if (method == "camera")
         {
             std::string shot = params.has("shot")
                              ? lowered(params["shot"].asString()) : std::string("body");
