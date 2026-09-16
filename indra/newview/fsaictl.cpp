@@ -1637,8 +1637,10 @@ namespace
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
-            "picks a framing: \"face\", \"body\" (head to feet, for showing an outfit), "
-            "\"wide\" (them and their surroundings), or \"reset\" to give the camera back. "
+            "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
+            "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
+            "surroundings), or \"reset\" to give the camera back. The ordinary words work too "
+            "-- \"portrait\", \"upper body\", \"full body\", \"close-up\". "
             "`subject` is who or what to aim at -- a person's `name`, an `object_id` from "
             "look_nearby, or nothing for the user themselves. `angle` turns around them in "
             "degrees (0 in front, 90 to their left, 180 behind) and `height` raises or lowers "
@@ -3778,8 +3780,37 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
         if (method == "camera")
         {
-            const std::string shot = params.has("shot")
-                                   ? lowered(params["shot"].asString()) : std::string("body");
+            std::string shot = params.has("shot")
+                             ? lowered(params["shot"].asString()) : std::string("body");
+
+            // What people ask for, mapped to what exists.
+            //
+            // "can we zoom in on just the upper body" had no answer: the shots
+            // were face, body and wide, so the model reached for `face`, which
+            // aims at the chin, and the picture came back with the top of her
+            // head cut off. A missing option is not a neutral absence -- it is
+            // answered with the nearest wrong one.
+            if (shot == "upper" || shot == "upper body" || shot == "upperbody"
+                || shot == "torso" || shot == "half" || shot == "waist"
+                || shot == "portrait" || shot == "bust")
+            {
+                shot = "upper";
+            }
+            else if (shot == "head" || shot == "close" || shot == "closeup"
+                     || shot == "close-up" || shot == "face")
+            {
+                shot = "face";
+            }
+            else if (shot == "full" || shot == "whole" || shot == "fullbody"
+                     || shot == "full body" || shot == "body")
+            {
+                shot = "body";
+            }
+            else if (shot == "wide" || shot == "far" || shot == "scene"
+                     || shot == "environment" || shot == "landscape")
+            {
+                shot = "wide";
+            }
 
             if (shot == "reset")
             {
@@ -3874,11 +3905,24 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
             if (shot == "face")
             {
-                // Frame the head: roughly the top fifth of a body.
+                // Head and shoulders. Aimed at 0.94 rather than 0.90: the head
+                // runs from about the chin at 0.87 to the skull at 1.00, so a
+                // tenth lower put the hair through the top edge.
                 fill  = 0.78f;
-                aim_z = foot_z + height * 0.90f;
+                aim_z = foot_z + height * 0.94f;
                 up    = 0.02f;
-                framed = "a close portrait";
+                framed = "a close portrait, head and shoulders";
+            }
+            else if (shot == "upper")
+            {
+                // Head to waist -- what "upper body" means, and what neither
+                // `face` nor `body` was. The waist sits near 0.55 of a height
+                // and hair reaches past 1.05, so the subject is a little over
+                // half a body, centred above the middle.
+                fill  = 0.80f;
+                aim_z = foot_z + height * 0.82f;
+                up    = 0.02f;
+                framed = "head to waist";
             }
             else if (shot == "wide")
             {
@@ -3899,7 +3943,9 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             // it costs a little air on a bald avatar and saves a haircut on
             // everyone else, which is the right way round.
             const F32 with_hair = height * 1.15f;
-            const F32 subject_extent = (shot == "face") ? with_hair * 0.28f : with_hair;
+            F32 subject_extent = with_hair;
+            if (shot == "face")       subject_extent = height * 0.34f;   // chin to hair
+            else if (shot == "upper") subject_extent = height * 0.58f;   // waist to hair
             F32 back = (subject_extent / fill) / (2.0f * half_tan);
             back = llclamp(back, 0.35f, 60.0f);
 
