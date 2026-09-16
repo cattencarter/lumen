@@ -1455,7 +1455,14 @@ namespace
             "whether it is worn and whether it is copyable. **You do not need to open anything in "
             "the viewer to find out who made something -- it is in every result, as `creator` and "
             "`creator_name`.** Pass `creator` to return only one person's work: an avatar id from "
-            "find_person is exact, a name is best-effort. Use `worn: true` to list what the avatar "
+            "find_person is exact, a name is best-effort. "
+            "**Do not ask the user which body their clothes are cut for.** Results are already "
+            "ranked with the fit the avatar is wearing -- LaraX, Legacy, Maitreya, Reborn and so "
+            "on -- worked out from the clothes on them right now. Garments naming a different "
+            "body are pushed down, garments naming no body are left alone, and nothing is ever "
+            "hidden. When that happened the result carries `assumed_body_fit`; mention it only if "
+            "the user seems to want something else. Naming a body in the query overrides it. "
+            "Use `worn: true` to list what the avatar "
             "is wearing now "
             "-- that is the only reliable way, because inventories run to tens of thousands of "
             "items and the worn ones will not be among the first you see.\n"
@@ -2931,13 +2938,11 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 prefer_fit.clear();
             }
 
-            prefer_fit_used = prefer_fit;
-
             size_t total = 0;
             const std::vector<FSAIIndex::Hit> hits =
                 FSAIIndex::instance().search(query, kindFromWord(kind), creator_id,
                                              (size_t)limit, total, order, &worn_now,
-                                             prefer_fit, &spelling);
+                                             prefer_fit, &spelling, &prefer_fit_used);
             for (const FSAIIndex::Hit& h : hits)
             {
                 if (LLViewerInventoryItem* item = gInventory.getItem(h.id))
@@ -3060,6 +3065,30 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             result["note"] = filters_note;
         }
         result["items"] = found;
+
+        // Say the assumption out loud.
+        //
+        // The ranking now quietly favours whichever body the avatar is dressed
+        // for, so that "find me a skirt" stops returning garments cut for a
+        // body she does not have. That is the right default and it is still an
+        // assumption, made from the clothes she happens to be wearing at this
+        // moment -- and an assumption nobody is told about is one nobody can
+        // contradict. Findings 50 is the same lesson from the other side: the
+        // failure was not that an answer was wrong, it was that nothing in it
+        // showed its working.
+        //
+        // Empty when the query named a body itself, when nothing worn names
+        // one, or when two bodies tied -- and in every one of those cases no
+        // assumption was made, so there is nothing to report.
+        if (!prefer_fit_used.empty())
+        {
+            result["assumed_body_fit"] = prefer_fit_used;
+            result["assumed_body_fit_note"] =
+                "Ranked with items cut for " + prefer_fit_used + " first, because that is "
+                "what the avatar is wearing. Items naming a different body were pushed down; "
+                "items naming none were left alone. Nothing was hidden. If the user wanted a "
+                "different body, name it in the query -- that overrides this.";
+        }
 
         // A correction must never be silent. The user asked for "tantacio" and
         // is being shown "tentacio"; if the assistant repeats the corrected

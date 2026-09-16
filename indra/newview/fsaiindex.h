@@ -95,6 +95,20 @@ public:
      *              else that matches. The index cannot know this -- worn
      *              state changes constantly and the index is built once --
      *              so the caller supplies it. Empty is fine.
+     *
+     * @param prefer_fit  The body fit to favour, e.g. "larax", worked out by
+     *              the caller from what the avatar is wearing. Items naming
+     *              it are boosted, items naming a *different* fit are demoted,
+     *              and items naming none are left exactly where they were --
+     *              a third of this inventory names no fit at all, so treating
+     *              silence as a mark against an item would bury it.
+     *              **Ignored when the query names a fit itself**, because a
+     *              stated body beats an inferred one.
+     *
+     * @param fit_used  Out: the fit that was actually preferred, which is not
+     *              always @a prefer_fit -- see above. The caller reports an
+     *              assumption to the user, so it must be told whether one was
+     *              made rather than asked to predict this rule.
      */
     std::vector<Hit> search(const std::string& query,
                             LLAssetType::EType  kind,
@@ -104,7 +118,8 @@ public:
                             Order               order = BY_BEST,
                             const std::set<LLUUID>* worn = NULL,
                             const std::string&  prefer_fit = std::string(),
-                            std::vector<std::pair<std::string, std::string> >* corrections = NULL);
+                            std::vector<std::pair<std::string, std::string> >* corrections = NULL,
+                            std::string*        fit_used = NULL);
 
     /**
      * The body-fit token in a name -- "larax", "maitreya", "legacy" -- or "".

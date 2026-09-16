@@ -210,9 +210,17 @@ size_t FSAIIndex::size()
 }
 
 /**
- * The body fits worth knowing about, longest first so "larax" is found before
- * "lara" -- they are different bodies and the shorter one is a prefix of the
- * other.
+ * The body fits worth knowing about.
+ *
+ * **The order is load-bearing wherever one entry is a prefix of another, and
+ * the list is scanned in the order written.** "lara" is a prefix of "larax",
+ * and Maitreya Lara and Maitreya LaraX are *different bodies* -- clothes cut
+ * for one do not fit the other. Measured while building this: scanning the
+ * shorter first reported "lara" 59 times and "larax" 59 times across 100
+ * skirts, identical counts, because every "lara" hit was really a "larax". The
+ * two bodies had been silently merged and nothing anywhere said so.
+ *
+ * So "larax" must stay above "lara", and any future pair like it must too.
  *
  * This is not a complete list of every body ever sold and does not need to be:
  * it only has to recognise the fit the wearer is actually in. An unknown fit
@@ -380,18 +388,71 @@ std::string FSAIIndex::correctWord(const std::string& word)
     return ambiguous ? std::string() : best_token;
 }
 
+/**
+ * Does @a text name this fit, as a word rather than as letters inside one?
+ *
+ * Every occurrence is tried, not just the first. Stopping at one that is not
+ * on a word boundary would give up on "Bellezafied Belleza Freya" -- the same
+ * shape as the NOT_THE_THING scan, and wrong for the same reason.
+ */
+static bool namesFit(const std::string& text, const std::string& fit)
+{
+    size_t at = text.find(fit);
+    while (at != std::string::npos)
+    {
+        if (isWordEdge(text, at, fit.size()))
+        {
+            return true;
+        }
+        at = text.find(fit, at + 1);
+    }
+    return false;
+}
+
+/**
+ * The last two segments of a folder path.
+ *
+ * **Measured, and it overturned the obvious design.** Asking whether the fit
+ * appears anywhere in the path looks right and is useless here, because this
+ * inventory files everything under
+ *
+ *     clothing/amazon new system larax/clothes/skirts/...
+ *
+ * so "larax" is in the path of every garment in it -- the Legacy one, the
+ * Reborn one, all of them. A rule that is true of everything separates nothing,
+ * and it would have shipped looking like it worked: plausible items in a
+ * confident order, with the wrong body quietly still on top.
+ *
+ * The distinction that survives contact with a real inventory is **how close
+ * the folder is to the item**. An immediate parent called "larax", as in
+ * "*Tentacio* Alba skirt/larax/alba skirt white", is the product's own label
+ * for what is inside it. A folder four levels up called "amazon new system
+ * larax" is where this person keeps things. Two segments, because a fatpack
+ * commonly puts the fit one above the colour.
+ */
+static std::string nearFolder(const std::string& path)
+{
+    const size_t last = path.rfind('/');
+    if (last == std::string::npos || last == 0)
+    {
+        return path;            // one segment, or a leading slash: all of it
+    }
+    const size_t prev = path.rfind('/', last - 1);
+    return path.substr(prev == std::string::npos ? 0 : prev + 1);
+}
+
 std::string FSAIIndex::fitInName(const std::string& lname)
 {
     for (const char* fit : BODY_FITS)
     {
-        const size_t at = lname.find(fit);
-        if (at != std::string::npos && isWordEdge(lname, at, strlen(fit)))
+        if (namesFit(lname, fit))
         {
             return fit;
         }
     }
     return std::string();
 }
+
 
 S32 FSAIIndex::score(const std::string& lname,
                      const std::vector<std::string>& words,
@@ -512,7 +573,8 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
                                               Order              order,
                                               const std::set<LLUUID>* worn,
                                               const std::string& prefer_fit,
-                                              std::vector<std::pair<std::string, std::string> >* corrections)
+                                              std::vector<std::pair<std::string, std::string> >* corrections,
+                                              std::string*       fit_used)
 {
     if (!mBuilt)
     {
@@ -587,6 +649,27 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
             if (!corrected_whole.empty()) corrected_whole += " ";
             corrected_whole += w;
         }
+    }
+
+    // If the query names a body itself, stop guessing.
+    //
+    // "a legacy skirt" from somebody wearing LaraX is not a mistake to be
+    // corrected; it is the one case where the person has said outright which
+    // body they mean, and a preference inferred from their clothes must not
+    // argue with it. The word filter above already keeps only items naming
+    // that fit, so nothing here has to replace the preference -- it only has
+    // to get out of the way.
+    //
+    // Same principle as NOT_THE_THING skipping a penalty the query asked for:
+    // an inferred rule yields to a stated one.
+    std::string wanted_fit = prefer_fit;
+    if (!fitInName(corrected_whole).empty())
+    {
+        wanted_fit.clear();
+    }
+    if (fit_used)
+    {
+        *fit_used = wanted_fit;
     }
 
     std::vector<Hit> hits;
@@ -668,19 +751,45 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
         // Below the exact-name bonus on purpose: this is a preference, not an
         // override. It also cannot rescue a demo or a HUD, whose penalties are
         // the same size and cancel it out.
-        if (!prefer_fit.empty())
+        // A garment labelled for another body is worse than one labelled for
+        // none, so the two cannot score alike.
+        //
+        // Measured across 100 of this account's skirts: 52 name a fit, 14 name
+        // one only in the folder, and **34 name none at all**. So a filter is
+        // out of the question -- it would hide a third of the wardrobe, and
+        // hide it silently, which is this project's worst failure shape. Three
+        // outcomes instead, and the middle one is the point:
+        //
+        //   names the worn fit    +3000   this one fits
+        //   names a different fit -3000   this one is known NOT to fit
+        //   names no fit at all       0   unknown, and unknown is not bad
+        //
+        // Symmetric with the boost on purpose, and the same size as the demo
+        // and HUD penalties, so a wrong-fit demo cannot climb back.
+        //
+        // The worn fit is looked for first and a different one only if it is
+        // absent, which is what keeps a fatpack safe: "Skirt - Lara & LaraX"
+        // names two bodies, and asking "which fit is this?" would answer with
+        // whichever comes first in BODY_FITS and demote a garment that fits
+        // perfectly well.
+        // **The item's own name is asked first and, if it answers, alone.**
+        //
+        // The fit is as often in a folder ("...\/larax\/skirt") as in the
+        // item's name, so both are consulted -- but not equally, and not at
+        // the same time. "Jungsu skirt legacy leo" sits inside a folder whose
+        // path contains "larax"; taking either as good enough scored it
+        // exactly like "Jungsu skirt larax leo" sitting beside it. When a
+        // garment names a body in its own name, that IS the answer, and the
+        // folder cannot overrule it.
+        if (!wanted_fit.empty())
         {
-            // The fit is as often a folder ("...\/larax\/skirt") as part of
-            // the item's name, and either one means the same thing.
-            const size_t at_n = e.lname.find(prefer_fit);
-            const size_t at_f = e.lfolder.find(prefer_fit);
-            if ((at_n != std::string::npos &&
-                 isWordEdge(e.lname, at_n, prefer_fit.size())) ||
-                (at_f != std::string::npos &&
-                 isWordEdge(e.lfolder, at_f, prefer_fit.size())))
-            {
-                sc += 3000;
-            }
+            const std::string near = nearFolder(e.lfolder);
+
+            if (namesFit(e.lname, wanted_fit))          sc += 3000;
+            else if (!fitInName(e.lname).empty())       sc -= 3000;
+            else if (namesFit(near, wanted_fit))        sc += 3000;
+            else if (!fitInName(near).empty())          sc -= 3000;
+            // else: nothing anywhere names a body, and that is not a fault.
         }
 
         // Collapse items sharing a name as we go, rather than afterwards.
