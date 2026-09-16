@@ -65,6 +65,27 @@ public:
     void stop();
 
     bool isRunning() const { return mRunning; }
+
+    /**
+     * Where the avatar should be looking while a photo is framed, if anywhere.
+     *
+     * In third person the viewer points the avatar's head along the camera's
+     * own view axis, nudged by where the mouse is on screen
+     * (`LLAgentCamera::updateLookAt`). That is right when the camera sits
+     * behind you -- you look where you are looking. It is wrong when the
+     * camera has been placed in FRONT of you for a portrait: the same rule
+     * makes her look away from the lens, and every twitch of the mouse drags
+     * her eyes with it. At 0.68 m from her face the mouse may as well be her
+     * face.
+     *
+     * Returns false unless a shot is framed, so the viewer's own behaviour is
+     * untouched at every other moment.
+     */
+    static bool photoGaze(LLVector3& world_dir_out);
+
+    /** Called by `camera`; cleared by `reset`. */
+    void setPhotoGaze(bool on, const LLVector3d& camera_pos = LLVector3d::zero,
+                      const std::string& mode = "camera");
     U16  port() const { return mPort; }
 
     /**
@@ -130,6 +151,10 @@ private:
      * screen: the socket is bound and listening, and nothing ever accepts.
      * Found the hard way, 2026-09-13.
      */
+    bool        mPhotoGaze = false;
+    LLVector3d  mPhotoEye;
+    std::string mPhotoGazeMode;
+
     bool tick(const LLSD&);
 
     /** start() is a guard around this; nothing here may escape as an exception. */

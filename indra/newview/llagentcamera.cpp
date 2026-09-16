@@ -26,6 +26,7 @@
 
 #include "llviewerprecompiledheaders.h"
 #include "llagentcamera.h"
+#include "fsaictl.h" // <FS:AICtl>
 
 #include "pipeline.h"
 
@@ -1223,6 +1224,33 @@ void LLAgentCamera::updateLookAt(const S32 mouse_x, const S32 mouse_y)
     static LLVector3 last_at_axis;
 
     if (!isAgentAvatarValid()) return;
+
+    // <FS:AICtl> A framed photo owns the gaze.
+    //
+    // Everything below points the head along the camera's view axis, nudged by
+    // where the mouse sits on screen. Correct for a camera behind you; wrong
+    // for one placed in front of you for a portrait, where it looks away from
+    // the lens and follows every twitch of the pointer. Returns false whenever
+    // no shot is framed, so ordinary use is untouched.
+    {
+        LLVector3 photo_target;
+        if (FSAIControl::photoGaze(photo_target))
+        {
+            // FOCUS, not FREELOOK, and this is the whole fix.
+            //
+            // Placing the camera sets LOOKAT_TARGET_FOCUS (priority 6, no
+            // timeout) at the focus point -- which for a portrait is a spot on
+            // her own face. So she was staring at herself, and every FreeLook
+            // we set at priority 2 was refused outright by
+            // `LLHUDEffectLookAt::setTargetObjectAndOffset`. Same target type
+            // means the same priority, and the comparison is strictly less
+            // than, so this is accepted and simply moves the point off her
+            // face and onto the lens.
+            setLookAt(LOOKAT_TARGET_FOCUS, NULL, photo_target);
+            return;
+        }
+    }
+    // </FS:AICtl>
 
     LLQuaternion av_inv_rot = ~gAgentAvatarp->mRoot->getWorldRotation();
     LLVector3 root_at = LLVector3::x_axis * gAgentAvatarp->mRoot->getWorldRotation();

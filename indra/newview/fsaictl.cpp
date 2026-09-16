@@ -2499,6 +2499,58 @@ static LLFloater* frontmostScriptWindow(std::string* title_out = NULL)
     return best;
 }
 
+void FSAIControl::setPhotoGaze(bool on, const LLVector3d& camera_pos, const std::string& mode)
+{
+    mPhotoGaze     = on;
+    mPhotoEye      = camera_pos;
+    mPhotoGazeMode = mode;
+}
+
+bool FSAIControl::photoGaze(LLVector3& world_dir_out)
+{
+    if (!instanceExists())
+    {
+        return false;   // never construct the endpoint from the camera loop
+    }
+    FSAIControl& me = instance();
+    if (!me.mPhotoGaze || !isAgentAvatarValid())
+    {
+        return false;
+    }
+
+    // Self-correcting: the moment the user's own camera snaps back to the
+    // avatar, the shot is over and the viewer takes its gaze back. Better than
+    // a flag only we can clear, which would outlive whatever set it.
+    if (gAgentCamera.getFocusOnAvatar())
+    {
+        me.mPhotoGaze = false;
+        return false;
+    }
+
+    // Runs every frame from the camera loop, and the head is not there for all
+    // of them: an avatar is not built at login, and is rebuilt after an
+    // appearance change or a teleport. `llhudeffectlookat` guards its own use
+    // with isBuilt() for the same reason.
+    if (!gAgentAvatarp->isBuilt())
+    {
+        return false;
+    }
+
+    if (me.mPhotoGazeMode == "ahead")
+    {
+        // Two metres in front of her, in agent coordinates.
+        world_dir_out = gAgent.getPosAgentFromGlobal(gAgent.getPositionGlobal())
+                      + gAgent.getAtAxis() * 2.0f;
+        return true;
+    }
+
+    // "camera": look at the lens. An ABSOLUTE position in agent coordinates,
+    // which is what LOOKAT_TARGET_FOCUS with no target object takes -- the
+    // viewer passes exactly this shape itself at llagentcamera.cpp:2948.
+    world_dir_out = gAgent.getPosAgentFromGlobal(me.mPhotoEye);
+    return true;
+}
+
 LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 {
     // ---- MCP ----------------------------------------------------------
@@ -3819,6 +3871,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 // they are looking at it, so getting out must never fail.
                 gAgentCamera.setFocusOnAvatar(true, true);
                 gAgentCamera.changeCameraToThirdPerson(true);
+                setPhotoGaze(false);
                 LLSD result;
                 result["camera"] = "reset";
                 result["note"] = "The camera is back to normal.";
@@ -3986,6 +4039,16 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
             gAgentCamera.setFocusOnAvatar(false, false);
             gAgentCamera.setCameraPosAndFocusGlobal(eye, focus, focus_id);
+
+            // Take the gaze while the shot stands. Only for a shot of the user
+            // themselves: pointing somebody else's avatar is not ours to do,
+            // and the viewer never did it anyway.
+            const std::string gaze = params.has("gaze")
+                                   ? lowered(params["gaze"].asString()) : std::string("camera");
+            if (focus_id.isNull() || focus_id == gAgent.getID())
+            {
+                setPhotoGaze(gaze != "free", eye, gaze);
+            }
 
             // The Snapshot window, with its live preview, is the shutter. We
             // never take a picture: no file is written, nothing is uploaded,
