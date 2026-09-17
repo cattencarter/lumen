@@ -193,7 +193,7 @@ No tutorial is currently available.
    icon="alertmodal.tga"
    name="BadInstallation"
    type="alertmodal">
- Installation of [APP_NAME] is defective. Please [https://www.firestormviewer.org/downloads download a new copy] of the Viewer and reinstall.
+ Installation of [APP_NAME] is defective. Please reinstall it from wherever you obtained it.
     <tag>fail</tag>
     <usetemplate
      name="okbutton"
@@ -1923,7 +1923,7 @@ Visit [_URL] for more information?
     <tag>confirm</tag>
     <url option="0" name="url">
 
-			https://wiki.firestormviewer.org/fs_system_requirements
+			https://secondlife.com/support/system-requirements/
     </url>
     <usetemplate
      ignoretext="My computer hardware is not supported"
@@ -4019,7 +4019,7 @@ We&apos;re having trouble connecting. There may be a problem with your Internet 
 You can either check your Internet connection and try again in a few minutes, click Help to view the [SUPPORT_SITE], or click Teleport to attempt to teleport home.
     <url option="1" name="url">
 
-			https://www.firestormviewer.org/support/
+			https://support.secondlife.com/
     </url>
     <form name="form">
       <button
@@ -4047,7 +4047,7 @@ We&apos;re having trouble connecting. There may be a problem with your Internet 
 
 You can either check your Internet connection and try again in a few minutes or click Help to view the [SUPPORT_SITE].
     <url option="1" name="url">
-			https://www.firestormviewer.org/support/
+			https://support.secondlife.com/
     </url>
     <form name="form">
       <button
@@ -10177,7 +10177,6 @@ Please check your network and firewall setup.
 Disable any SIP ALG feature in your router.
 
 Voice communications will not be available.
-https://wiki.firestormviewer.org/fs_voice
     <tag>voice</tag>
   <tag>fail</tag>
     <usetemplate
@@ -10193,8 +10192,7 @@ https://wiki.firestormviewer.org/fs_voice
 We're having trouble connecting to your voice server.
 
 Voice communications will not be available.
-Please check your network and firewall setup.
-[https://wiki.firestormviewer.org/fs_voice]
+Please check your network and firewall setup, and disable any SIP ALG feature in your router.
     <tag>voice</tag>
   <tag>fail</tag>
     <usetemplate
@@ -14899,9 +14897,7 @@ To improve [APP_NAME]'s performance, please whitelist it.
 
 Some antivirus programs may mistakenly block parts of [APP_NAME], slowing down its performance and causing some features to malfunction. To prevent these issues, we strongly recommend adding [APP_NAME] to your antivirus program's whitelist (or exclusion list). This will ensure the viewer runs smoothly.
 
-For detailed instructions on how to whitelist [APP_NAME] - including a list of files and folders to exclude - please visit our guide:
-
-https://wiki.firestormviewer.org/antivirus_whitelisting
+Add the [APP_NAME] application itself, and the folder it keeps its settings and cache in, to that exclusion list. Your antivirus program's own documentation will say where to do it.
   </notification>
 
    <notification
