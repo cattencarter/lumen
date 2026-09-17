@@ -2155,7 +2155,10 @@ namespace
             "untouched. Pair it with movement/camera to set up a photograph.\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
             "higher is brighter), `sun_elevation` in degrees (90 overhead, 10 low and raking, "
-            "negative below the horizon), `sun_azimuth` (0 north, 90 east), `sun_color` "
+            "negative below the horizon), `sun_azimuth` -- which takes the WORDS "
+            "\"front\", \"behind\", \"left\" and \"right\", worked out from the way "
+            "they are facing, and that is almost always what somebody means; a number is a "
+            "compass bearing, 0 north, 90 east -- `sun_color` "
             "(\"golden\", \"warm\", \"neutral\", \"cool\", \"blue\" -- changes the colour "
             "of the light and therefore of the shadows, without changing how bright it is), "
             "`clouds` 0 to 1 (cloud cover, which also lifts the shadows -- this is the fill "
@@ -2263,7 +2266,9 @@ namespace
                                     "the reflection probes and `ambient` stops working." },
                 { "sun_elevation",  "lighting: degrees. 90 overhead, 10 low and raking, "
                                     "negative below the horizon." },
-                { "sun_azimuth",    "lighting: degrees. 0 north, 90 east." },
+                { "sun_azimuth",    "lighting: \"front\", \"behind\", \"left\" or "
+                                    "\"right\" relative to the way they face -- or a compass "
+                                    "bearing in degrees, 0 north, 90 east." },
             };
             for (size_t i = 0; i < LL_ARRAY_SIZE(nums); ++i)
             {
@@ -4538,7 +4543,43 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 F32 az = 180.f, el = 45.f;
                 LLVirtualTrackball::getAzimuthAndElevationDeg(edit->getSunRotation(), az, el);
-                if (params.has("sun_azimuth"))   az = (F32)params["sun_azimuth"].asReal();
+                if (params.has("sun_azimuth"))
+                {
+                    // **The words people actually use.** "Put the sun in front of
+                    // me" needs the avatar's heading and some arithmetic, and a
+                    // model asked for exactly that set an absolute bearing
+                    // instead and reported success while the light did not move.
+                    // Relative is the common case, so it is the one that reads.
+                    const std::string w = lowered(params["sun_azimuth"].asString());
+                    F32 rel = -1.f;
+                    if      (w == "front" || w == "ahead" || w == "in front") rel = 0.f;
+                    else if (w == "behind" || w == "back")                    rel = 180.f;
+                    else if (w == "left")                                     rel = 270.f;
+                    else if (w == "right")                                    rel = 90.f;
+
+                    if (rel >= 0.f)
+                    {
+                        const LLVector3 at = gAgent.getAtAxis();
+                        F32 heading = atan2f(at.mV[VX], at.mV[VY]) * RAD_TO_DEG;  // Decisions 39
+                        while (heading < 0.f) heading += 360.f;
+                        az = heading + rel;
+                    }
+                    else
+                    {
+                        az = (F32)params["sun_azimuth"].asReal();
+                    }
+
+                    // Measured, not derived: the value this quaternion wants is
+                    // 90 degrees off a compass bearing. With her facing 119, the
+                    // sun lit her front at a parameter of 29 and backlit her at
+                    // 209 -- so the parameter is bearing minus 90. The
+                    // description claimed "0 north, 90 east" and was simply
+                    // wrong; the construction below is the viewer's own
+                    // (llfloaterenvironmentadjust.cpp:386) and is not the error.
+                    az -= 90.f;
+                    while (az < 0.f)    az += 360.f;
+                    while (az >= 360.f) az -= 360.f;
+                }
                 if (params.has("sun_elevation")) el = (F32)params["sun_elevation"].asReal();
 
                 // The same construction Personal Lighting uses
