@@ -201,15 +201,7 @@
         bottom="-60"
         wrap="true">
 The web browser plugin seems to be taking a while to open.
-If the plugin never loads, please visit:
-
-https://wiki.firestormviewer.org/fs_search_issues
-
-and
-
-https://wiki.firestormviewer.org/fs_media
-
-for possible steps to resolve this issue.
+If the plugin never loads, If it never loads, close this window and restart the viewer.
       </text>
       <web_browser
         bottom="-2"
