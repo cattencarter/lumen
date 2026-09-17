@@ -101,6 +101,10 @@
 #include "llviewerregion.h"
 #include "fslslbridge.h"   // <FS:AICtl> worn_by
 #include "llavatarpropertiesprocessor.h"  // <FS:AICtl> profile
+#include "lldiriterator.h"                 // <FS:AICtl> settings lookup
+#include "llfloaterpreference.h"           // <FS:AICtl> settings lookup
+#include "llsearcheditor.h"                // <FS:AICtl> settings lookup
+#include "lltabcontainer.h"                // <FS:AICtl> settings lookup
 #include "apr_base64.h"      // <FS:AICtl> the bridge base64-encodes anything a person wrote
 #include "llversioninfo.h"
 
@@ -1639,6 +1643,8 @@ namespace
             if (action == "read_dialogues") return "read_dialogues";
             if (action == "answer_dialogue") return "answer_dialogue";
             if (action == "lighting")        return "lighting";
+            if (action == "set_setting")   return "set_setting";
+            if (action == "show_setting")  return "show_setting";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2121,7 +2127,8 @@ namespace
         // ---- viewer ---------------------------------------------------------
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
-              "answer_while_away", "read_scripts", "edit_script", "lighting" };
+              "answer_while_away", "read_scripts", "edit_script", "lighting",
+              "set_setting", "show_setting" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2179,6 +2186,17 @@ namespace
             "environment settings instead; find them with inventory search, "
             "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
             "untouched. Pair it with movement/camera to set up a photograph.\n"
+            "- set_setting / show_setting: **two different jobs, and picking the wrong one is the "
+            "mistake to avoid.** \"Set my draw distance to 64\" is set_setting -- it changes it and "
+            "reads the value back, so you report what the viewer actually holds. \"Where do I "
+            "change my draw distance\" is show_setting -- it opens Preferences with that typed into "
+            "the search box, so the setting is highlighted and everything else hidden, and they "
+            "learn where it lives. Someone asking WHERE wants to be shown, not to have it done for "
+            "them.\n"
+            "  `name` is the words on the panel, like \"draw distance\" -- not the internal name. "
+            "**If no setting matches, say so and offer show_setting. Never invent a menu path: "
+            "this viewer is not stock Firestorm and a wrong path cannot be checked by the person "
+            "you told it to.**\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
             "higher is brighter), `sun_elevation` in degrees (90 overhead, 10 low and raking, "
             "negative below the horizon), `sun_azimuth` -- which takes the WORDS "
@@ -3252,6 +3270,133 @@ namespace
     private:
         LLUUID mWho;
     };
+}
+
+// <FS:AICtl> Finding a setting by the words a person would use for it.
+//
+// **The obvious lookup does not work, and the author's own example proves it.**
+// "Draw distance" is `RenderFarClip`, whose settings.xml comment reads
+// "Distance of far clip plane from camera (meters)" -- so searching names and
+// comments misses the single most likely question. The words a person uses are
+// the **label on the Preferences panel**, and that lives in the XUI:
+//
+//     <slider control_name="RenderFarClip" ... label="Draw distance" ...
+//
+// So the panels are read once and a label -> control map built from them. Only
+// panel_preferences_*.xml, which is nineteen small files rather than the six
+// hundred and ninety that define the whole interface.
+namespace
+{
+    std::map<std::string, std::string> sSettingLabels;   // lowercased label -> control
+    std::map<std::string, std::string> sSettingPanel;    // control -> panel_preferences_*.xml
+    std::map<std::string, std::pair<std::string, std::string> > sTabs;  // file -> (tab name, tab label)
+    bool sSettingLabelsBuilt = false;
+
+    /**
+     * Which TAB each preference file is, from floater_preferences.xml.
+     *
+     * Highlighting alone is not enough and the author caught it at once: the
+     * filter lit the setting up but Preferences stayed on whatever tab it was
+     * last left on, so "where do I change my draw distance" opened the wrong
+     * page with an invisible answer on another one. The container names the
+     * panels -- panel_preferences_graphics1.xml is `name="display"`, labelled
+     * "Graphics" -- so the tab can be selected as well as the setting lit.
+     */
+    void buildTabMap()
+    {
+        const std::string f = gDirUtilp->getExpandedFilename(LL_PATH_SKINS, "default", "xui", "en")
+                            + gDirUtilp->getDirDelimiter() + "floater_preferences.xml";
+        LLXMLNodePtr root;
+        if (!LLXMLNode::parseFile(f, root, NULL)) return;
+
+        std::vector<LLXMLNodePtr> stack(1, root);
+        while (!stack.empty())
+        {
+            LLXMLNodePtr n = stack.back(); stack.pop_back();
+            std::string file, name, label;
+            if (n->getAttributeString("filename", file) && n->getAttributeString("name", name))
+            {
+                n->getAttributeString("label", label);
+                sTabs[file] = std::make_pair(name, label.empty() ? name : label);
+            }
+            for (LLXMLNodePtr c = n->getFirstChild(); c.notNull(); c = c->getNextSibling())
+                stack.push_back(c);
+        }
+    }
+
+    void buildSettingLabels()
+    {
+        if (sSettingLabelsBuilt) return;
+        sSettingLabelsBuilt = true;
+        buildTabMap();
+
+        const std::string dir = gDirUtilp->getExpandedFilename(LL_PATH_SKINS, "default", "xui", "en");
+        LLDirIterator it(dir, "panel_preferences_*.xml");
+        std::string name;
+        S32 files = 0;
+        while (it.next(name))
+        {
+            LLXMLNodePtr root;
+            if (!LLXMLNode::parseFile(dir + gDirUtilp->getDirDelimiter() + name, root, NULL)) continue;
+            ++files;
+
+            std::vector<LLXMLNodePtr> stack(1, root);
+            while (!stack.empty())
+            {
+                LLXMLNodePtr node = stack.back();
+                stack.pop_back();
+                std::string ctrl, label;
+                if (node->getAttributeString("control_name", ctrl)
+                    && node->getAttributeString("label", label)
+                    && !ctrl.empty() && !label.empty())
+                {
+                    sSettingLabels[lowered(label)] = ctrl;
+                    sSettingPanel[ctrl] = name;
+                }
+                for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
+                {
+                    stack.push_back(c);
+                }
+            }
+        }
+        LL_INFOS("AICtl") << "settings: " << sSettingLabels.size()
+                          << " labelled controls from " << files << " preference panel(s)" << LL_ENDL;
+    }
+
+    /**
+     * The control somebody means, and every near miss if it is not obvious.
+     *
+     * Tries an exact label, then a label containing the words, then the control
+     * name itself, then the settings comment. Returns "" and fills `near` when
+     * it cannot decide -- refusing with candidates rather than guessing, the
+     * same rule the ambiguous-item refusal follows.
+     */
+    std::string findSetting(const std::string& query, LLSD& near)
+    {
+        buildSettingLabels();
+        const std::string want = lowered(query);
+        near = LLSD::emptyArray();
+
+        std::map<std::string, std::string>::const_iterator exact = sSettingLabels.find(want);
+        if (exact != sSettingLabels.end()) return exact->second;
+
+        std::vector<std::string> hits;
+        for (const auto& kv : sSettingLabels)
+        {
+            if (kv.first.find(want) != std::string::npos || want.find(kv.first) != std::string::npos)
+            {
+                hits.push_back(kv.second);
+                LLSD one; one["label"] = kv.first; one["setting"] = kv.second;
+                near.append(one);
+            }
+        }
+        if (hits.size() == 1) return hits[0];
+
+        // A control name, given literally.
+        if (gSavedSettings.controlExists(query)) return query;
+        if (gSavedPerAccountSettings.controlExists(query)) return query;
+        return std::string();
+    }
 }
 
 std::string FSAIControl::profileLink(const LLUUID& agent_id)
@@ -4550,6 +4695,130 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // replay and the sitting rules, so they share a branch. Adding a verb here
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
+    if (method == "set_setting" || method == "show_setting")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string what = params.has("name") ? params["name"].asString() : std::string();
+        if (what.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give `name` -- the words on the Preferences panel, like \"draw distance\".";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // "Where do I change my draw distance" wants the panel, not the value.
+        //
+        // Firestorm's own Preferences search highlights what matches and hides
+        // the rest (llfloaterpreference.cpp, hightlightAndHide), so handing it
+        // the words the person used shows them the setting in place -- which
+        // teaches where it lives, where setting it for them does not.
+        if (method == "show_setting")
+        {
+            LLFloaterReg::showInstance("preferences");
+            LLFloater* prefs = LLFloaterReg::findInstance("preferences");
+            bool filtered = false;
+            if (prefs)
+            {
+                if (LLUICtrl* box = prefs->findChild<LLUICtrl>("search_prefs_edit", true))
+                {
+                    box->setValue(what);
+                    box->onCommit();
+                    filtered = true;
+                }
+            }
+            LLSD near; const std::string ctrl = findSetting(what, near);
+
+            // The tab first, then the filter. Lighting a setting up on a page
+            // nobody is looking at is not an answer.
+            std::string tab_label;
+            if (prefs && !ctrl.empty())
+            {
+                std::map<std::string, std::string>::const_iterator pf = sSettingPanel.find(ctrl);
+                if (pf != sSettingPanel.end())
+                {
+                    std::map<std::string, std::pair<std::string, std::string> >::const_iterator
+                        tb = sTabs.find(pf->second);
+                    if (tb != sTabs.end())
+                    {
+                        if (LLTabContainer* tc = prefs->findChild<LLTabContainer>("pref core", true))
+                        {
+                            if (tc->selectTabByName(tb->second.first)) tab_label = tb->second.second;
+                        }
+                    }
+                }
+            }
+
+            LLSD r;
+            r["opened"] = (prefs != NULL);
+            if (!tab_label.empty()) r["tab"] = tab_label;
+            r["searched_for"] = what;
+            r["filter_applied"] = filtered;
+            if (!ctrl.empty()) r["setting"] = ctrl;
+            if (near.size()) r["near_matches"] = near;
+            r["note"] = filtered
+                ? "Preferences is open ON THE RIGHT TAB with that typed into its search box, so "
+                  "the setting is highlighted and the rest hidden. `tab` is the tab it is on -- "
+                  "name it, so they learn where it lives. The viewer cannot confirm they can "
+                  "actually see it, so say it is open rather than that they can see it."
+                : "Preferences was opened but the search box could not be filled, so they will "
+                  "have to look. Say that rather than claiming it is highlighted.";
+            recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
+            return r;
+        }
+
+        // "Set draw distance to 64" wants it changed and confirmed.
+        LLSD near;
+        const std::string ctrl = findSetting(what, near);
+        if (ctrl.empty())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = near.size()
+                ? "More than one setting matches \"" + what + "\". Ask which, or use show_setting."
+                : "No setting matches \"" + what + "\" in this viewer. Do NOT invent a menu path; "
+                  "show_setting opens Preferences so they can look.";
+            if (near.size()) e["data"] = near;
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!params.has("value"))
+        {
+            LLSD e; e["code"] = -32602; e["message"] = "Give `value` to set, or use show_setting.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLControlVariablePtr var = gSavedSettings.getControl(ctrl);
+        LLControlGroup* grp = &gSavedSettings;
+        if (var.isNull()) { var = gSavedPerAccountSettings.getControl(ctrl); grp = &gSavedPerAccountSettings; }
+        if (var.isNull())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "That setting is not in this viewer.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const LLSD before = var->getValue();
+        grp->setUntypedValue(ctrl, params["value"]);
+        const LLSD after = var->getValue();
+
+        LLSD r;
+        r["setting"] = ctrl;
+        r["was"] = before;
+        r["now"] = after;
+        r["changed"] = (after.asString() != before.asString());
+        r["note"] = r["changed"].asBoolean()
+            ? "Read back from the viewer after setting it, so this is what it actually holds -- "
+              "not what was asked for."
+            : "The viewer still reports the old value. It may clamp this setting, or refuse the "
+              "type. Tell them it did not change rather than that it did.";
+        LL_INFOS("AICtl") << "set_setting: " << ctrl << " " << before << " -> " << after << LL_ENDL;
+        recordAction(request_id, fingerprintOf(method, params), "set_setting", "ok", r, r);
+        return r;
+    }
+
     if (method == "lighting")
     {
         // Before anything touches the environment.

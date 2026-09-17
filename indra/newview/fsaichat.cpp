@@ -412,6 +412,8 @@ namespace
             if (action == "read_scripts")     return "Reading your script";
             if (action == "edit_script")      return "Writing your script";
             if (action == "lighting")         return "Adjusting the light";
+            if (action == "set_setting") return "Changing a setting";
+            if (action == "show_setting") return "Opening Preferences";
         }
 
         return action.empty() ? group : (group + "." + action);
