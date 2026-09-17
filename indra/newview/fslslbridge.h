@@ -36,7 +36,19 @@
 class FSLSLBridgeRequestResponder;
 
 const std::string LIB_ROCK_NAME = "Rock - medium, round";
-const std::string FS_BRIDGE_NAME = "#Firestorm LSL Bridge v";
+// <FS:AICtl> Lumen's own bridge, not Firestorm's (Decisions 112).
+// Lumen used to create an object called "#Firestorm LSL Bridge v2.29" in the
+// user's inventory and hang it on their avatar, where everybody can read the
+// name. That is Decisions 5 -- do not masquerade as Firestorm -- in its most
+// visible form, and it is somebody else's unmarked script besides.
+const std::string FS_BRIDGE_NAME = "#Lumen LSL Bridge v";
+
+// The name Lumen used to create, kept ONLY so the old one can be found and
+// cleaned up on the first run after upgrading. Everything already in the
+// world was made under this name; dropping the constant would strand it,
+// worn, for ever. Remove it when no installed Lumen can still have one.
+const std::string FS_BRIDGE_LEGACY_NAME = "#Firestorm LSL Bridge v";
+// </FS:AICtl>
 const U8 FS_BRIDGE_POINT = 31;
 const std::string FS_BRIDGE_ATTACHMENT_POINT_NAME = "Center 2";
 

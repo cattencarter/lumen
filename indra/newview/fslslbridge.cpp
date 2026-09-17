@@ -54,10 +54,19 @@
 
 static const std::string FS_BRIDGE_FOLDER = "#LSL Bridge";
 static const std::string FS_BRIDGE_CONTAINER_FOLDER = "Landscaping";
-static const U32 FS_BRIDGE_MAJOR_VERSION = 2;
-static const U32 FS_BRIDGE_MINOR_VERSION = 29;
+// <FS:AICtl> Ours starts at 1.0, and MUST match VERSION in lumen_bridge.lsltxt
+// -- the viewer compares the version the script announces against this name to
+// decide whether the bridge it is talking to is the one it built.
+static const U32 FS_BRIDGE_MAJOR_VERSION = 1;
+static const U32 FS_BRIDGE_MINOR_VERSION = 0;
+// </FS:AICtl>
 static const U32 FS_MAX_MINOR_VERSION = 99;
-static const std::string UPLOAD_SCRIPT_CURRENT = "EBEDD1D2-A320-43f5-88CF-DD47BBCA5DFB.lsltxt";
+// <FS:AICtl> Our script, written fresh against the same command vocabulary
+// (Decisions 112). Firestorm's EBEDD1D2-....lsltxt is still in fs_resources and
+// still shipped -- it is unmodified upstream, and removing it would be an edit
+// to their tree for no gain.
+static const std::string UPLOAD_SCRIPT_CURRENT = "lumen_bridge.lsltxt";
+// </FS:AICtl>
 static const std::string FS_STATE_ATTRIBUTE = "state=";
 static const std::string FS_ERROR_ATTRIBUTE = "error=";
 
@@ -1675,6 +1684,22 @@ void FSLSLBridge::cleanUpBridgeFolder()
 void FSLSLBridge::cleanUpOldVersions()
 {
     std::string mProcessingName;
+
+    // <FS:AICtl> Sweep the Firestorm-named bridges Lumen itself created before
+    // Decisions 112. detachOtherBridges() already takes one OFF the avatar --
+    // anything in the folder that is not the current bridge is detached -- but
+    // nothing deletes it, so without this the user keeps "#Firestorm LSL Bridge
+    // v2.29" in their inventory for ever, which is most of what we were trying
+    // to stop. The range is Firestorm's own, because those are the only names
+    // that can exist.
+    for (S32 i = 1; i <= 2; i++)
+    {
+        for (S32 j = 0; j <= (S32)FS_MAX_MINOR_VERSION; j++)
+        {
+            cleanUpBridgeFolder(llformat("%s%d.%d", FS_BRIDGE_LEGACY_NAME.c_str(), i, j));
+        }
+    }
+    // </FS:AICtl>
 
     for (S32 i = 1; i <= FS_BRIDGE_MAJOR_VERSION; i++)
     {

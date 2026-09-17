@@ -104,6 +104,7 @@ set(viewer_SOURCE_FILES
     fsareasearchmenu.cpp
     fsaichat.cpp
     fsaiindex.cpp
+    lumenfolders.cpp
     fsainotecache.cpp
     fsaimemory.cpp
     fsaictl.cpp
@@ -969,6 +970,7 @@ set(viewer_HEADER_FILES
     fsareasearchmenu.h
     fsaichat.h
     fsaiindex.h
+    lumenfolders.h
     fsainotecache.h
     fsaimemory.h
     fsaictl.h
