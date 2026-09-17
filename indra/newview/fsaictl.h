@@ -194,6 +194,7 @@ private:
     void subscribe();
     /** Get the streams subscribed even when the socket is switched off. */
     void listenForStreams();
+    void showDisclaimerWhenLoggedIn();
 
     /**
      * Who we are following, and the loop that keeps it going.
@@ -208,6 +209,7 @@ private:
     LLUUID mFollowing;
     bool   mFollowListenerUp = false;
     bool mStreamListenerUp = false;
+    bool mDisclaimerListenerUp = false;
 
     /**
      * Look up a previous write by the caller's request id.

@@ -15083,4 +15083,33 @@ You can enable saving transcripts under Preferences &gt; Privacy &gt; Logs &amp;
      yestext="OK"/>
   </notification>
   <!-- </FS:TJ>-->
+
+  <!-- Lumen: shown once, the first time somebody logs in. The author's own
+       words, kept short on purpose: a disclaimer nobody reads protects
+       nobody. Three things that are not visible from looking at the viewer:
+       that an AI is involved, that this is not a finished product, and that
+       using it sends data off the machine.
+
+       It keeps appearing at login until the box is ticked, rather than being
+       shown once and assumed read. That is the author's call and the better
+       one: a notice dismissed by quitting, or by clicking through, has not
+       been read, and this one is the only place a user is told their chat may
+       leave the machine. Ticking it puts it in Preferences > Notifications
+       with every other one, so it can be brought back. -->
+  <notification
+   icon="alertmodal.tga"
+   name="LumenAIFirstRun"
+   type="alertmodal">
+This viewer allows AI agents to help you with your Second Life experience.
+
+Everything is made with great care and testing, but as with everything there is the possibility of asset loss. Consider this more of a proof of concept than a working product.
+
+Also bear in mind that AIs transmit data to datacentres for processing, which could involve your chat logs and other information. Check with your AI provider for their privacy policy.
+    <tag>confirm</tag>
+    <usetemplate
+     ignoretext="Show the Lumen AI notice at login"
+     name="okignore"
+     yestext="I understand"/>
+  </notification>
+
 </notifications>

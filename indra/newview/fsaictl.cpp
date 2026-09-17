@@ -92,6 +92,7 @@
 #include "llsdjson.h"
 #include "lldate.h"
 #include "llstartup.h"
+#include "llnotificationsutil.h"
 #include "lltimer.h"
 #include "lluuid.h"
 #include "llviewercontrol.h"
@@ -2243,6 +2244,54 @@ void FSAIControl::keepFollowing()
     mFollowListenerUp = true;
 }
 
+/**
+ * The disclaimer, shown once, the first time somebody logs in.
+ *
+ * It says three things, and none of them is visible from looking at the
+ * viewer: that an AI is involved, that it is fallible, and that using it sends
+ * text to somebody else's computer. The third is the one that matters most and
+ * the one this project had not addressed anywhere a user would see: reading
+ * the Third-Party Viewer Policy established that it contains no provision at
+ * all about transmitting a resident's conversation to an external service, so
+ * it is not a compliance question. It falls to plain ethics, and the sharp
+ * edge of it is that **the other person in an instant message never agreed.**
+ *
+ * At login rather than at startup, because the login screen is not where
+ * somebody is ready to read anything, and because `gSavedSettings` is the
+ * install's, so it does not need an account.
+ *
+ * The listener removes itself either way -- once shown, or once it has seen a
+ * login with the flag already set -- so it costs one comparison per frame for
+ * a few seconds and nothing afterwards.
+ */
+void FSAIControl::showDisclaimerWhenLoggedIn()
+{
+    if (mDisclaimerListenerUp) return;
+
+    LLEventPumps::instance().obtain("mainloop").listen("FSAIControlDisclaimer",
+        [this](const LLSD&)
+        {
+            if (!LLStartUp::getStartupState()
+                || LLStartUp::getStartupState() < STATE_STARTED)
+            {
+                return false;
+            }
+
+            // No flag of our own. `okignore` gives the notification a "do not
+            // show this again" box, and the viewer then suppresses it through
+            // the same machinery as every other notice -- which also means it
+            // appears in Preferences > Notifications and can be brought back.
+            // A setting here would have been a second, worse copy of that.
+            LLNotificationsUtil::add("LumenAIFirstRun");
+
+            LLEventPumps::instance().obtain("mainloop")
+                .stopListening("FSAIControlDisclaimer");
+            mDisclaimerListenerUp = false;
+            return false;
+        });
+    mDisclaimerListenerUp = true;
+}
+
 void FSAIControl::listenForStreams()
 {
     if (mSubscribed || mStreamListenerUp)
@@ -2346,6 +2395,10 @@ bool FSAIControl::startInternal()
         LL_INFOS("AICtl") << "Already listening on " << mPort << LL_ENDL;
         return true;
     }
+
+    // Whether or not the endpoint is switched on, and whether or not they ever
+    // use the assistant: they are told what this viewer is before they use it.
+    showDisclaimerWhenLoggedIn();
 
     if (!gSavedSettings.getBOOL("FSAIControlEnabled"))
     {
