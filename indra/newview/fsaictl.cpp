@@ -99,6 +99,8 @@
 #include "llviewercontrol.h"
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
+#include "fslslbridge.h"   // <FS:AICtl> worn_by
+#include "apr_base64.h"      // <FS:AICtl> the bridge base64-encodes anything a person wrote
 #include "llversioninfo.h"
 
 #include <boost/json.hpp>
@@ -1616,6 +1618,7 @@ namespace
             if (action == "sit")           return "sit";
             if (action == "stand")         return "stand";
             if (action == "look_nearby")   return "look_nearby";
+            if (action == "worn_by")       return "worn_by";
             if (action == "fly")           return "fly";
             if (action == "turn")          return "turn";
             if (action == "where_am_i")    return "where_am_i";
@@ -1975,7 +1978,7 @@ namespace
 
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
-            { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
+            { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
               "follow", "camera", "pose", "stop_pose", "save_photo",
               "fly", "turn", "where_am_i" };
         LLSD move;
@@ -2057,6 +2060,12 @@ namespace
             "- look_nearby: people and objects around the avatar, with distances. Objects are "
             "named only once the region answers, so a first call may show \"(unnamed)\" and a "
             "second a moment later will not.\n"
+            "- worn_by: what somebody ELSE is wearing, and WHO MADE each piece. Give `person` (a "
+            "name) or `agent_id`. The viewer cannot see this at all -- it is read by a script in "
+            "world, and selecting an object to learn its creator would draw a beam that person "
+            "can see. The reply arrives a moment later, so the first call returns `pending: true` "
+            "and you call again with the same agent_id to collect it. Say nothing about their "
+            "outfit until you have the real answer.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
@@ -3102,6 +3111,135 @@ bool FSAIControl::photoGaze(LLVector3& world_dir_out)
 
     world_dir_out = lens;
     return true;
+}
+
+namespace
+{
+    // Replies from the in-world bridge, held until the caller asks again.
+    //
+    // The bridge answers over HTTP from a script running in Second Life, so the
+    // reply cannot arrive during the call that asked for it -- Findings 19, the
+    // same shape as reading a notecard. Keyed by avatar, because two questions
+    // about two people must not collect each other's answer.
+    std::map<LLUUID, LLSD> sWornReplies;
+    std::set<LLUUID>       sWornPending;
+
+    std::string fromBase64(const std::string& in)
+    {
+        if (in.empty()) return std::string();
+        S32 len = apr_base64_decode_len(in.c_str());
+        if (len <= 0) return std::string();
+        std::vector<U8> out;
+        out.resize(len);
+        len = apr_base64_decode_binary(&out[0], in.c_str());
+        if (len <= 0) return std::string();
+        out.resize(len);
+        std::string text((const char*)&out[0], out.size());
+        // Decisions 28: anything a person wrote may not be valid UTF-8, and an
+        // invalid byte here makes the whole JSON response unparseable.
+        return rawstr_to_utf8(text);
+    }
+}
+
+bool FSAIControl::wornRequestPending(const LLUUID& who)
+{
+    return sWornPending.count(who) > 0;
+}
+
+void FSAIControl::beginWornRequest(const LLUUID& who)
+{
+    sWornPending.insert(who);
+}
+
+bool FSAIControl::takeWornReply(const LLUUID& who, LLSD& out)
+{
+    std::map<LLUUID, LLSD>::iterator it = sWornReplies.find(who);
+    if (it == sWornReplies.end()) return false;
+    out = it->second;
+    sWornReplies.erase(it);
+    return true;
+}
+
+void FSAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
+{
+    sWornPending.erase(who);
+
+    // The script answers <llsd><string>...</string></llsd>, so this arrives as
+    // one string: a first line giving free attachment slots, then one line per
+    // attachment from describe().
+    std::string body = data.isString() ? data.asString() : std::string();
+    if (body.empty() && data.isMap() && data.has("content"))
+    {
+        body = data["content"].asString();
+    }
+
+    LLSD result;
+    result["agent_id"] = who;
+
+    LLSD items = LLSD::emptyArray();
+    std::istringstream lines(body);
+    std::string line;
+    bool first = true;
+    while (std::getline(lines, line))
+    {
+        if (!line.empty() && line[line.size() - 1] == '\r') line.erase(line.size() - 1);
+        if (line.empty()) continue;
+        if (first)
+        {
+            result["free_attachment_slots"] = (LLSD::Integer)atoi(line.c_str());
+            first = false;
+            continue;
+        }
+
+        // id, name(b64), description(b64), creator, owner, attachment point,
+        // land impact, script count, creation time(b64)
+        std::vector<std::string> f;
+        std::string::size_type at = 0, comma;
+        while ((comma = line.find(',', at)) != std::string::npos)
+        {
+            f.push_back(line.substr(at, comma - at));
+            at = comma + 1;
+        }
+        f.push_back(line.substr(at));
+        if (f.size() < 9) continue;
+
+        LLSD one;
+        one["id"]           = LLUUID(f[0]);
+        one["name"]         = fromBase64(f[1]);
+        one["description"]  = fromBase64(f[2]);
+        one["creator"]      = LLUUID(f[3]);
+        one["attach_point"] = (LLSD::Integer)atoi(f[5].c_str());
+        one["land_impact"]  = (LLSD::Integer)atoi(f[6].c_str());
+        one["scripts"]      = (LLSD::Integer)atoi(f[7].c_str());
+        const std::string made = fromBase64(f[8]);
+        if (!made.empty()) one["created"] = made;
+
+        // The creator's NAME is the whole point -- Decisions 101 established
+        // that a creator id identifies a shop and a name does not survive a
+        // rename. Resolve what the cache already knows and say how many it
+        // could not, rather than returning fewer.
+        LLAvatarName av;
+        if (LLAvatarNameCache::get(one["creator"].asUUID(), &av))
+        {
+            one["creator_name"] = av.getUserName();
+        }
+        else
+        {
+            LLAvatarNameCache::get(one["creator"].asUUID(), [](const LLUUID&, const LLAvatarName&){});
+        }
+        items.append(one);
+    }
+
+    result["worn"] = items;
+    result["count"] = (LLSD::Integer)items.size();
+    result["note"] =
+        "Read by a script in Second Life, which is the only thing that can see another avatar's "
+        "attachments -- the viewer itself cannot, and selecting an object to learn its creator "
+        "draws a beam that person would see. `creator_name` is missing where the viewer has not "
+        "cached that name yet; ask again in a moment and more will be filled in.";
+
+    LL_INFOS("AICtl") << "worn_by: " << items.size() << " attachment(s) for " << who << LL_ENDL;
+    sWornReplies[who] = result;
 }
 
 LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
@@ -6717,6 +6855,85 @@ if (method == "camera")
         summary["characters"] = (LLSD::Integer)message.size();
         recordAction(request_id, print, "send_group_message", "ok", result, summary);
         return result;
+    }
+
+    if (method == "worn_by")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Who.
+        LLUUID target;
+        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
+        {
+            target = params["agent_id"].asUUID();
+        }
+        else
+        {
+            const std::string who = params.has("person") ? params["person"].asString() : std::string();
+            if (who.empty())
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "Give `person` (a name) or `agent_id`.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLSD people = findPeople(who);
+            if (people.size() == 0)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nobody nearby or on the friends list matched \"" + who + "\". "
+                               "The viewer cannot search Second Life for a resident by name.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (people.size() > 1)
+            {
+                // Findings 41: attach the candidates or the caller is told to ask
+                // and given nothing to ask about.
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one person matched \"" + who + "\". "
+                               "Ask which, then pass their agent_id.";
+                e["data"] = people;
+                LLSD w; w["__error"] = e; return w;
+            }
+            target = people[0]["agent_id"].asUUID();
+        }
+
+        // The bridge is the only way to ask. Say so plainly when it cannot.
+        if (!FSLSLBridge::instance().canUseBridge())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The LSL bridge is not answering, so what somebody else is wearing "
+                           "cannot be read. It rebuilds itself at login; if this persists the "
+                           "viewer log records why under FSLSLBridge.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Already have the answer from a previous call?
+        LLSD ready;
+        if (takeWornReply(target, ready))
+        {
+            return ready;
+        }
+
+        if (!wornRequestPending(target))
+        {
+            beginWornRequest(target);
+            FSLSLBridge::instance().viewerToLSL("worn|" + target.asString(),
+                                                [target](const LLSD& data) { finishWornReply(target, data); });
+        }
+
+        // Findings 19's shape: the answer comes back over HTTP from an in-world
+        // script, so it cannot be waited for on the frame loop.
+        LLSD pending;
+        pending["agent_id"] = target;
+        pending["pending"] = true;
+        pending["note"] = "Asked the in-world bridge what they are wearing. The reply comes back "
+                          "over HTTP a moment later -- call worn_by again with the same agent_id "
+                          "to collect it. Do NOT tell the user anything about their outfit yet.";
+        return pending;
     }
 
     if (method == "find_person")

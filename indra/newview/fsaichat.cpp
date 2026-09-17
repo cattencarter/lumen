@@ -312,6 +312,7 @@ namespace
             if (action == "fly")           return "Flying";
             if (action == "turn")          return "Turning";
             if (action == "look_nearby")   return "Looking around";
+            if (action == "worn_by")     return "Looking at what they are wearing";
             if (action == "where_am_i")    return "Checking location";
             if (action == "camera")        return "Setting up the shot";
             if (action == "follow")        return "Following";

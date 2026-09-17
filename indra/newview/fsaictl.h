@@ -113,6 +113,19 @@ public:
 
 private:
 
+    // <FS:AICtl> worn_by: replies from the in-world bridge arrive later,
+
+    // over HTTP, so they are parked until the caller asks again.
+
+    static bool wornRequestPending(const LLUUID& who);
+
+    static void beginWornRequest(const LLUUID& who);
+
+    static bool takeWornReply(const LLUUID& who, LLSD& out);
+
+    static void finishWornReply(const LLUUID& who, const LLSD& data);
+
+
     LLSD dispatch(const std::string& method, const LLSD& params);
     LLSD toolStatus() const;
 
