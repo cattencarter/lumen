@@ -1,0 +1,92 @@
+# Does Lumen compile on Windows?
+#
+# That is the whole question this answers. It is NOT a release pipeline, and it
+# deliberately does not become one.
+#
+# WHY NOT UPSTREAM'S build_viewer.yml. Firestorm's own workflow builds Windows
+# on every push, and reusing it looks like the obvious move. It cannot work
+# here: it wants **34 secrets** -- Azure code signing, BugSplat crash
+# reporting, Discord webhooks, rclone uploads -- and it configures with
+# `-DUSE_FMODSTUDIO=ON -DUSE_KDU=ON`. FMOD Studio and Kakadu are licensed
+# libraries Firestorm has agreements for and Lumen does not. That is the whole
+# reason this project builds `ReleaseOS`, the open-source configuration.
+#
+# So: no secrets, no signing, no packaging, no upload. None of the 34 is needed
+# to find out whether the code compiles.
+#
+# MANUAL ONLY, ON PURPOSE. lumen-viewer is private, so Actions minutes are
+# metered, and Windows bills at **twice** the rate of Linux. A viewer build is
+# long. Running this per-push would spend the monthly allowance in a few days
+# for an answer that changes rarely, so it is `workflow_dispatch` and stays
+# that way.
+#
+# EXPECTED TO FAIL THE FIRST TIME, which is the point -- a list of real
+# compiler errors beats a list of guesses. The one known in advance:
+# `newview/CMakeLists.txt` links SQLite as
+# `$<$<NOT:$<BOOL:${WINDOWS}>>:sqlite3>`, i.e. nothing at all on Windows, so
+# `fsainotecache.cpp` will not find `sqlite3.h`. Windows needs the amalgamation
+# (one sqlite3.c) or an autobuild package. Fix locally, run again.
+
+name: Lumen - does it build on Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    # A viewer is a long build and a hung one should not eat the allowance.
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out Lumen
+        uses: actions/checkout@v6
+        with:
+          path: lumen
+
+      # Upstream's, unmodified -- the same repository bootstrap-mac.sh clones.
+      - name: Check out the build variables
+        uses: actions/checkout@v6
+        with:
+          repository: FirestormViewer/fs-build-variables
+          path: build-variables
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: autobuild
+        working-directory: lumen
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        shell: cmd
+
+      # cmd.exe, not PowerShell: upstream's own doc/building_windows.md warns
+      # that PowerShell does not detect the Visual Studio build tools properly.
+      - name: Configure
+        working-directory: lumen
+        env:
+          AUTOBUILD_VARIABLES_FILE: ${{ github.workspace }}/build-variables/variables
+        run: autobuild configure -c ReleaseOS -A 64 -- -DVIEWER_CHANNEL:STRING=Lumen -DPACKAGE:BOOL=OFF
+        shell: cmd
+
+      - name: Build
+        working-directory: lumen
+        env:
+          AUTOBUILD_VARIABLES_FILE: ${{ github.workspace }}/build-variables/variables
+        run: autobuild build -c ReleaseOS --no-configure
+        shell: cmd
+
+      # The errors are the product of this workflow, so keep them even when --
+      # especially when -- the build fails.
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            lumen/build-vc*/**/*.log
+            lumen/build-vc*/CMakeFiles/CMakeError.log
+            lumen/build-vc*/CMakeFiles/CMakeOutput.log
