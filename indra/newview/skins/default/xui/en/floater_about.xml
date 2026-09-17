@@ -26,15 +26,16 @@
       <text
         follows="top|left|right"
         font="SansSerif"
-        height="30"
+        height="46"
         layout="topleft"
         left="11"
         name="support_intro"
-        top="16"
+        top="10"
         width="434"
         wrap="true">
-For the latest information about Firestorm, visit 
-https://www.firestormviewer.org
+Lumen is built on Firestorm, and is not supported by them.
+Please do not take Lumen problems to Firestorm's support team.
+Firestorm itself: https://www.firestormviewer.org
       </text>
       <text_editor
         parse_urls="true"

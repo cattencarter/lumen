@@ -15100,11 +15100,13 @@ You can enable saving transcripts under Preferences &gt; Privacy &gt; Logs &amp;
    icon="alertmodal.tga"
    name="LumenAIFirstRun"
    type="alertmodal">
-This viewer allows AI agents to help you with your Second Life experience.
+Lumen allows AI assistants to help you interact with Second Life.
 
-Everything is made with great care and testing, but as with everything there is the possibility of asset loss. Consider this more of a proof of concept than a working product.
+Lumen has been developed and tested with care, but AI can make mistakes. Actions involving your inventory or viewer may therefore have unintended results, including possible asset loss. Please consider Lumen experimental software rather than a finished product.
 
-Also bear in mind that AIs transmit data to datacentres for processing, which could involve your chat logs and other information. Check with your AI provider for their privacy policy.
+When you use AI features, information needed to process your request may be sent to the AI provider you have selected. This can include chat and instant messages, inventory information, avatar information, nearby-world information, the text of notecards and scripts you ask it to read, and other relevant Second Life data. Messages from other Residents may therefore also be included when the AI is asked to work with conversations.
+
+How this information is processed, stored, or retained depends on your chosen AI provider. Please review that provider's privacy policy and terms before using Lumen's AI features.
     <tag>confirm</tag>
     <usetemplate
      ignoretext="Show the Lumen AI notice at login"

@@ -2840,7 +2840,12 @@ if (DARWIN)
   set(MACOSX_BUNDLE_BUNDLE_NAME "Lumen")
   set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
-  set(MACOSX_BUNDLE_COPYRIGHT "Based on Firestorm, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")
+  # <FS:AICtl> This is the line the macOS About panel shows, NOT
+  # CFBundleGetInfoString, which is legacy and shows nothing. Decisions 57's
+  # shape a second time: the visible string comes from a different key than the
+  # obvious one, and editing the obvious one changes nothing while looking
+  # like it should have.
+  set(MACOSX_BUNDLE_COPYRIGHT "Copyright 2026 Catten Carter. Based on Firestorm, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")
   set(MACOSX_BUNDLE_NSMAIN_NIB_FILE "Firestorm.nib")
   set(MACOSX_BUNDLE_NSPRINCIPAL_CLASS "LLApplication")
 

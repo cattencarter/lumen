@@ -4207,7 +4207,7 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <key>license_file</key>
       <string>docs/LICENSE-source.txt</string>
       <key>copyright</key>
-      <string>Copyright (c) 2026, The Phoenix Firestorm Project, Inc.</string>
+      <string>Copyright (c) 2026, Catten Carter. Lumen is based on Phoenix Firestorm, Copyright (c) 2010-2026, The Phoenix Firestorm Project, Inc., and on the Second Life Viewer, Copyright (c) 2010, Linden Research, Inc. Licensed under the GNU Lesser General Public License, version 2.1. Changes from Firestorm are listed in CHANGES-LUMEN.md.</string>
       <key>version_file</key>
       <string>newview/viewer_version.txt</string>
       <key>name</key>
