@@ -64,6 +64,9 @@
 #include "llviewermessage.h"
 #include "llselectmgr.h"
 #include "llviewerobjectlist.h"
+#include "fspose.h"
+#include "llanimationstates.h"
+#include "llmotion.h"
 #include "lllandmark.h"
 #include "llworld.h"
 #include "llworldmap.h"
@@ -1192,6 +1195,86 @@ namespace
      * how an assistant puts on the wrong ones, and the caller cannot tell that
      * happened. Ambiguity comes back as the candidates so it can ask.
      */
+
+    /**
+     * What is actually animating the avatar, and at what priority.
+     *
+     * **Nothing here arbitrates.** An animation's priority is baked into the
+     * asset, and the higher number simply wins: a pose at 5 beats an AO at 4,
+     * and a pose at 3 never plays at all. The viewer does not choose and
+     * neither can this tool -- so the useful thing it can do is report the two
+     * numbers, and let somebody pick a different animation.
+     *
+     * The distinction that matters, and it is the author's correction:
+     * Firestorm's own AO is a viewer setting we can pause, but **an AO HUD is
+     * an LSL script in a worn attachment and the viewer has no authority over
+     * it whatsoever.** Pausing `UseAO` does nothing for anyone using one, which
+     * is most people. So the HUD is something to report, never something to
+     * pretend we switched off.
+     *
+     * `mAnimationSources` maps the object that started an animation to the
+     * animation, so an AO HUD can usually be named rather than guessed at.
+     */
+    LLSD playingAnimations(const LLUUID& ours)
+    {
+        LLSD out = LLSD::emptyArray();
+        if (!isAgentAvatarValid()) return out;
+
+        for (LLVOAvatar::AnimIterator it = gAgentAvatarp->mPlayingAnimations.begin();
+             it != gAgentAvatarp->mPlayingAnimations.end(); ++it)
+        {
+            const LLUUID& id = it->first;
+            LLSD row;
+            row["id"] = id;
+
+            // The viewer's own animations are in the library and named; a
+            // third-party one is not, and that is what tells an AO's pose from
+            // an ordinary walk without guessing at names.
+            const char* built_in = gAnimLibrary.animStateToString(id);
+            row["built_in"] = built_in ? LLSD(std::string(built_in)) : LLSD();
+
+            LLMotion* m = gAgentAvatarp->findMotion(id);
+            if (m) row["priority"] = (LLSD::Integer)m->getPriority();
+
+            if (ours.notNull() && id == ours) row["is_the_one_asked_for"] = true;
+
+            for (LLVOAvatar::AnimSourceIterator s = gAgentAvatarp->mAnimationSources.begin();
+                 s != gAgentAvatarp->mAnimationSources.end(); ++s)
+            {
+                if (s->second != id) continue;
+                LLViewerObject* obj = gObjectList.findObject(s->first);
+                if (!obj) break;
+                const LLUUID item_id = obj->getAttachmentItemID();
+                LLViewerInventoryItem* item =
+                    item_id.notNull() ? gInventory.getItem(item_id) : NULL;
+                if (item) row["played_by"] = item->getName();
+                break;
+            }
+
+            out.append(row);
+        }
+        return out;
+    }
+
+    // The highest priority running on the avatar that is NOT one of the
+    // viewer's own built-ins and not the animation asked for -- which is, in
+    // practice, whatever an AO is holding the avatar at.
+    S32 highestForeignPriority(const LLUUID& ours, std::string& who)
+    {
+        S32 best = -1;
+        const LLSD rows = playingAnimations(ours);
+        for (LLSD::array_const_iterator it = rows.beginArray(); it != rows.endArray(); ++it)
+        {
+            const LLSD& r = *it;
+            if (r.has("is_the_one_asked_for")) continue;
+            if (r["built_in"].isString()) continue;         // the viewer's own
+            if (!r.has("priority")) continue;
+            const S32 p = r["priority"].asInteger();
+            if (p > best) { best = p; who = r.has("played_by") ? r["played_by"].asString() : ""; }
+        }
+        return best;
+    }
+
     LLUUID resolveItem(const LLSD& params, LLSD& error)
     {
         if (params.has("item_id"))
@@ -1332,6 +1415,8 @@ namespace
             if (action == "where_am_i")    return "where_am_i";
             if (action == "follow")        return "follow";
             if (action == "camera")        return "camera";
+            if (action == "pose")          return "pose";
+            if (action == "stop_pose")     return "stop_pose";
             return "";
         }
         if (group == "viewer")
@@ -1513,11 +1598,12 @@ namespace
             "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`). This one "
             "moves something on their screen, so do it when they are looking for a thing, not "
             "after every search.\n"
-            "- open: open a NOTECARD, SCRIPT or TEXTURE in its own window, so the user can read "
-            "or edit it themselves. read_notecard gives YOU the text; this gives it to THEM, and "
-            "is the better answer whenever they want to see it rather than be told it. Only "
-            "those three kinds -- for clothing use wear, and opening a landmark would teleport "
-            "them, so it is refused.";
+            "- open: open a NOTECARD, SCRIPT, TEXTURE or ANIMATION in its own window, so the "
+            "user can read, edit or play it themselves. read_notecard gives YOU the text; this "
+            "gives it to THEM, and is the better answer whenever they want to see it rather "
+            "than be told it. An animation opens a preview window with play buttons -- it does "
+            "not start playing; movement/pose does that. Only those four kinds -- for clothing "
+            "use wear, and opening a landmark would teleport them, so it is refused.";
         LLSD inv_props;
         inv_props["action"] = actionProperty(inv_actions, LL_ARRAY_SIZE(inv_actions), "What to do. Required.");
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
@@ -1644,7 +1730,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
-              "follow", "camera",
+              "follow", "camera", "pose", "stop_pose",
               "fly", "turn", "where_am_i" };
         LLSD move;
         move["name"] = "movement";
@@ -1661,6 +1747,31 @@ namespace
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
             "mean something -- status reports facing and heading_degrees.\n"
+            "- pose: play an animation from their inventory -- a pose for a photograph, a "
+            "dance, a gesture. `name` is the animation in inventory; find it with inventory "
+            "search and `kind: \"animation\"`. Calling pose with NO name instead reports what "
+            "is animating them right now. stop_pose ends it.\n"
+            "  **Call pose with no name a second later to find out whether it worked**, and "
+            "read `pose_is_showing`. Starting one does not tell you: the simulator has to "
+            "answer first, and more importantly an animation can be RUNNING and not SEEN. "
+            "Every animation carries a priority baked into the asset, the highest number "
+            "takes the joints, and a lower one goes on running invisibly -- so \"it is "
+            "playing\" is not \"it worked\".\n"
+            "  **Their AO comes back when they move.** Starting a pose clears whatever was "
+            "running, so even a low-priority animation usually holds at first -- and then "
+            "they turn or walk, their AO fires again, and if it has the higher priority the "
+            "pose vanishes while still being listed. Watched happening: a priority 2 pose "
+            "held until she turned, and then a priority 3 AO took her back.\n"
+            "  **An AO HUD cannot be switched off from here.** It is a script in something "
+            "they are wearing, not a viewer setting, so the viewer has no authority over it; "
+            "only they can turn it off. Say which animation is winning and at what priority, "
+            "and let them choose -- a higher-priority pose, or switching the AO off. "
+            "Firestorm's own built-in AO is different and is paused automatically, and given "
+            "back by stop_pose.\n"
+            "  **Everyone nearby sees this.** The camera and the lighting change only what the "
+            "user sees; an animation goes through the simulator and plays on their avatar in "
+            "front of whoever is there. Ordinary -- it is what a gesture does -- but say what "
+            "you are about to play rather than surprising them.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
             "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
             "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
@@ -4161,7 +4272,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // Findings 38, met a second time, in the same `if`.
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
         || method == "stand"  || method == "fly"        || method == "turn"
-        || method == "follow" || method == "camera")
+        || method == "follow" || method == "camera"
+        || method == "pose"   || method == "stop_pose")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -4177,6 +4289,173 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["replayed"] = true;
             replay["note"] = "This request_id was already carried out.";
             return replay;
+        }
+
+        if (method == "pose" || method == "stop_pose")
+        {
+            if (!isAgentAvatarValid())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The avatar is not loaded yet. Try again in a moment.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            // Firestorm's own AO is a viewer setting, so it can be paused and
+            // must then be given back. An AO HUD cannot be touched at all --
+            // see playingAnimations(). Only the first is ours to move.
+            static bool s_paused_firestorm_ao = false;
+            // FSPose keeps its own current pose but does not expose it, and the
+            // read needs to mark which row is the one that was asked for --
+            // otherwise the model gets a list and no way to find itself in it.
+            static LLUUID s_last_pose;
+
+            if (method == "stop_pose")
+            {
+                FSPose::getInstance()->stopPose();
+                gAgent.setCustomAnim(false);
+                gAgent.stopCurrentAnimations(true);
+                s_last_pose.setNull();
+
+                bool restored = false;
+                if (s_paused_firestorm_ao)
+                {
+                    gSavedPerAccountSettings.setBOOL("UseAO", true);
+                    s_paused_firestorm_ao = false;
+                    restored = true;
+                }
+
+                LLSD result;
+                result["stopped"] = true;
+                if (restored) result["firestorm_ao_restored"] = true;
+                result["note"] = "The pose is stopped. If they wear an AO HUD it takes the "
+                                 "avatar back by itself within a second or two -- that is a "
+                                 "script in-world, and not something the viewer did.";
+                recordAction(request_id, fingerprintOf("stop_pose", params),
+                             "stop_pose", "ok", result, LLSD());
+                return result;
+            }
+
+            // `pose` with nothing to play is the read: what is animating them
+            // now. It is the second half of starting one, because the viewer is
+            // not told whether an animation took until the simulator says so --
+            // which is a round trip later, and this handler runs on the frame
+            // loop and must not wait for it.
+            if (!params.has("name") && !params.has("item_id"))
+            {
+                LLSD result;
+                const LLSD rows = playingAnimations(s_last_pose);
+                result["animations"] = rows;
+
+                // Being in this list means RUNNING, not VISIBLE, and the two
+                // were conflated until they were watched side by side: a
+                // priority 2 pose sat in the list, marked as the one asked for,
+                // while the avatar plainly stood in her AO's idle at priority 3.
+                // A tool that reported only "it is playing" would have said the
+                // pose worked. So the comparison is made here rather than left
+                // for the caller to notice.
+                S32 top = -1; bool ours_on_top = false; std::string top_from;
+                for (LLSD::array_const_iterator it = rows.beginArray();
+                     it != rows.endArray(); ++it)
+                {
+                    if (!(*it).has("priority")) continue;
+                    const S32 p = (*it)["priority"].asInteger();
+                    if (p <= top) continue;
+                    top = p;
+                    ours_on_top = (*it).has("is_the_one_asked_for");
+                    top_from = (*it).has("played_by") ? (*it)["played_by"].asString()
+                                                      : std::string();
+                }
+                if (top >= 0)
+                {
+                    result["highest_priority"] = (LLSD::Integer)top;
+                    if (!top_from.empty()) result["highest_priority_from"] = top_from;
+                    if (s_last_pose.notNull()) result["pose_is_showing"] = ours_on_top;
+                }
+                result["note"] =
+                    "What is animating them right now. A row here is RUNNING, which is not "
+                    "the same as being SEEN: `priority` is baked into each animation, the "
+                    "highest number takes the joints, and a lower one goes on running "
+                    "invisibly. `pose_is_showing` is the answer to \"did it work\". "
+                    "A row with `built_in` set is one of the viewer's own (standing, "
+                    "walking); a row without one is a third-party animation, and "
+                    "`played_by` names the attachment that started it when it can be "
+                    "found -- usually their AO.";
+                return result;
+            }
+
+            LLSD item_error;
+            const LLUUID item_id = resolveItem(params, item_error);
+            if (item_id.isNull()) { LLSD w; w["__error"] = item_error; return w; }
+
+            LLViewerInventoryItem* item = gInventory.getItem(item_id);
+            if (!item || item->getType() != LLAssetType::AT_ANIMATION)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = std::string("\"") + (item ? item->getName() : std::string("that"))
+                             + "\" is not an animation. Find one with inventory search and "
+                               "`kind: \"animation\"`.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            const LLUUID asset_id = item->getAssetUUID();
+            if (asset_id.isNull())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That animation has no asset yet. Try again in a moment.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            // Read the field BEFORE playing, so the answer describes what the
+            // pose is up against rather than what it joined.
+            std::string blocker;
+            const S32 against = highestForeignPriority(asset_id, blocker);
+
+            if (gSavedPerAccountSettings.getBOOL("UseAO"))
+            {
+                gSavedPerAccountSettings.setBOOL("UseAO", false);
+                s_paused_firestorm_ao = true;
+            }
+
+            gAgent.setCustomAnim(true);
+            FSPose::getInstance()->setPose(asset_id.asString());
+            s_last_pose = asset_id;
+
+            LL_INFOS("AICtl") << "pose: " << item->getName()
+                              << " against foreign priority " << against
+                              << (blocker.empty() ? "" : (" from " + blocker)) << LL_ENDL;
+
+            LLSD result;
+            result["started"]  = item->getName();
+            result["item_id"]  = item_id;
+            if (s_paused_firestorm_ao) result["firestorm_ao_paused"] = true;
+            if (against >= 0)
+            {
+                result["competing_priority"] = (LLSD::Integer)against;
+                if (!blocker.empty()) result["competing_animation_from"] = blocker;
+            }
+            result["everyone_can_see_this"] = true;
+            result["note"] =
+                "Asked for. Whether it actually plays is decided by PRIORITY, which is baked "
+                "into the animation itself and which the viewer does not choose: the higher "
+                "number wins, so a pose at 5 beats an AO at 4 and one at 3 never appears. "
+                "Call pose again with no name a second later and read `pose_is_showing` -- "
+                "that is the only way to know it took, because an animation can be running "
+                "and still be invisible under a higher one. "
+                + std::string(against >= 0
+                    ? "Something already running is at priority "
+                      + llformat("%d", against)
+                      + (blocker.empty() ? std::string("")
+                                         : (", from \"" + blocker + "\""))
+                      + "; if the pose loses to it, say so and ask them to turn that off or "
+                        "pick a higher-priority animation. If it is an AO HUD, the viewer "
+                        "cannot switch it off -- only they can."
+                    : "") +
+                " Unlike the camera and the lighting, this is seen by everyone nearby. "
+                "stop_pose ends it.";
+            LLSD summary; summary["action"] = "pose"; summary["item"] = item->getName();
+            recordAction(request_id, fingerprintOf("pose", params), "pose", "ok",
+                         result, summary);
+            return result;
         }
 
         if (method == "fly")
@@ -5087,6 +5366,13 @@ if (method == "camera")
             case LLAssetType::AT_TEXTURE:
                 floater = "preview_texture";  kind = "texture";  guard = RLV_BHVR_VIEWTEXTURE;
                 break;
+            case LLAssetType::AT_ANIMATION:
+                // Checked against LLAnimationBridgeAction (llinventorybridge.cpp:9206)
+                // rather than assumed: a double click opens `preview_anim`, a window
+                // with play buttons in it. It does NOT play the animation, so this
+                // belongs on the allowlist. There is no RLV behaviour for it.
+                floater = "preview_anim";     kind = "animation";
+                break;
             default:
                 break;
         }
@@ -5096,7 +5382,8 @@ if (method == "camera")
             LLSD e; e["code"] = -32602;
             e["message"] = std::string("\"") + item->getName() + "\" is a "
                          + LLAssetType::lookupHumanReadable(item->getType())
-                         + ", and open only works on a notecard, a script or a texture. "
+                         + ", and open only works on a notecard, a script, a texture or "
+                           "an animation. "
                            "Opening other kinds in the viewer does something rather than "
                            "showing something -- clothing would be worn, an object attached, "
                            "a landmark would teleport them and a sound would play out loud "
