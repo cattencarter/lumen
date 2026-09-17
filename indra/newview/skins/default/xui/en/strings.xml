@@ -11,7 +11,7 @@
 	<string name="CAPITALIZED_APP_NAME">LUMEN</string>
 	<string name="SECOND_LIFE_GRID">Second Life Grid</string>
 	<string name="SUPPORT_SITE">Second Life Support</string>
-	<string name="DOWNLOAD_URL">wherever you obtained it</string>
+	<string name="DOWNLOAD_URL">https://github.com/cattencarter/lumen/releases</string>
 	<string name="CURRENT_GRID"/> <!-- Will be set in fsgridhandler.cpp / llviewernetwork.cpp -->
 	<string name="VIEWER_GENERATION">Viewer [VERSION]</string>
 	<string name="SHORT_VIEWER_GENERATION">V[VERSION]</string>
@@ -140,7 +140,7 @@ Voice Server Version: [VOICE_VERSION]
 	<string name="AgniGridLabel">Second Life Main Grid (Agni)</string>
 	<string name="AditiGridLabel">Second Life Beta Test Grid (Aditi)</string>
 	
-	<string name="ViewerDownloadURL">wherever you obtained it</string>
+	<string name="ViewerDownloadURL">https://github.com/cattencarter/lumen/releases</string>
 	<string name="LoginFailedViewerNotPermitted">
 The viewer you are using can no longer access Second Life. Please visit the following page to download a new viewer:
 https://secondlife.com/support/downloads/
@@ -404,7 +404,7 @@ are allowed.
 
 	<string name="ReleaseNotes">Release Notes</string>
 	<!-- Always mark translate="false" for strings that are nothing but URLs, as they don't need translation. -->
-	<string name="RELEASE_NOTES_BASE_URL" translate="false">https://wiki.firestormviewer.org/changelog:firestorm_change_log_</string>
+	<string name="RELEASE_NOTES_BASE_URL" translate="false">https://github.com/cattencarter/lumen/releases#</string>
 
 	<!-- Indicates something is being loaded. Maybe should be merged with RetrievingData -->
 	<string name="LoadingData">Loading...</string>

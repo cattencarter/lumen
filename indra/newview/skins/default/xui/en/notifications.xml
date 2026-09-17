@@ -193,7 +193,7 @@ No tutorial is currently available.
    icon="alertmodal.tga"
    name="BadInstallation"
    type="alertmodal">
- Installation of [APP_NAME] is defective. Please reinstall it from wherever you obtained it.
+ Installation of [APP_NAME] is defective. Please [https://github.com/cattencarter/lumen/releases download a new copy] and reinstall.
     <tag>fail</tag>
     <usetemplate
      name="okbutton"
