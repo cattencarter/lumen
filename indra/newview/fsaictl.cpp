@@ -65,6 +65,11 @@
 #include "llselectmgr.h"
 #include "llviewerobjectlist.h"
 #include "fspose.h"
+#include "llimagepng.h"
+#include "llsnapshotmodel.h"
+#include "llviewerwindow.h"
+#include "llviewertexture.h"
+#include "llviewertexturelist.h"
 #include "llanimationstates.h"
 #include "llmotion.h"
 #include "lllandmark.h"
@@ -1275,6 +1280,116 @@ namespace
         return best;
     }
 
+    /**
+     * Where a saved picture goes, and why it is the Desktop.
+     *
+     * The author's point, and it is the whole argument: a folder somebody has
+     * to *find* is the same barrier again, moved out of the viewer. "It is on
+     * your desktop" is the only instruction that needs no second step.
+     *
+     * Their own choice comes first though. If they have ever saved a snapshot
+     * they have set `SnapshotBaseDir`, and that is where they expect pictures;
+     * guessing over a decision they have already made would be rude. The
+     * viewer's own default for it is the empty string, so there is nothing to
+     * inherit when they have not.
+     *
+     * **macOS will ask for permission the first time**, because ~/Desktop is
+     * behind TCC. If they decline, the write fails with EPERM and nothing in
+     * the viewer would say why -- so the caller checks the file afterwards
+     * rather than trusting that save() was called.
+     */
+    std::string pictureDir()
+    {
+        const std::string theirs = gSavedPerAccountSettings.getString("SnapshotBaseDir");
+        if (!theirs.empty() && LLFile::isdir(theirs)) return theirs;
+
+        const char* home = getenv("HOME");
+        if (home && *home)
+        {
+            const std::string desktop = std::string(home) + gDirUtilp->getDirDelimiter() + "Desktop";
+            if (LLFile::isdir(desktop)) return desktop;
+            return std::string(home);
+        }
+        return gDirUtilp->getLindenUserDir();
+    }
+
+    // How big the file on disk actually is. "save() returned true" and "there
+    // is a file" are different claims, and every report here makes the second.
+    S32 fileSize(const std::string& path)
+    {
+        llstat st;
+        if (LLFile::stat(path, &st) != 0) return -1;
+        return (S32)st.st_size;
+    }
+
+    // Never overwrite something already there. A picture saved over the top of
+    // one saved a minute ago is a loss with no undo, and the person asking has
+    // no way to know it happened.
+    std::string unusedPath(const std::string& dir, const std::string& stem,
+                           const std::string& ext)
+    {
+        const std::string sep = gDirUtilp->getDirDelimiter();
+        std::string path = dir + sep + stem + ext;
+        for (S32 n = 2; n < 1000 && LLFile::isfile(path); ++n)
+        {
+            path = dir + sep + stem + "-" + llformat("%d", n) + ext;
+        }
+        return path;
+    }
+
+    // The outcome of the last save, because writing the file is asynchronous
+    // (the picture has to be re-fetched at full resolution first) and this
+    // handler runs on the frame loop and must not wait -- Findings 19, the
+    // same shape as a notecard.
+    struct LastSave
+    {
+        bool        running = false;
+        bool        done    = false;
+        std::string item;
+        std::string path;
+        std::string error;
+    };
+    LastSave gLastSave;
+
+    void onPictureFetched(bool success, LLViewerFetchedTexture*, LLImageRaw* raw,
+                          LLImageRaw*, S32, bool final, void* userdata)
+    {
+        std::string* want = (std::string*)userdata;
+        if (!final) return;
+
+        gLastSave.running = false;
+        gLastSave.done    = true;
+
+        if (!success || !raw)
+        {
+            gLastSave.error = "The picture could not be fetched from Second Life.";
+        }
+        else
+        {
+            LLPointer<LLImagePNG> png = new LLImagePNG;
+            if (!png->encode(raw, 0.0f))
+            {
+                gLastSave.error = "The picture could not be encoded as a PNG.";
+            }
+            else if (!png->save(*want))
+            {
+                // The likeliest cause on macOS by far, and it arrives as a
+                // plain write failure with nothing naming the real reason.
+                gLastSave.error = "Could not write the file. On macOS the Desktop is "
+                                  "permission-protected: if the system asked whether Lumen "
+                                  "may access it and the answer was no, this is what that "
+                                  "looks like. It can be changed in System Settings > "
+                                  "Privacy & Security > Files and Folders.";
+            }
+            else
+            {
+                gLastSave.path = *want;
+                gLastSave.error.clear();
+            }
+        }
+        delete want;
+    }
+
     LLUUID resolveItem(const LLSD& params, LLSD& error)
     {
         if (params.has("item_id"))
@@ -1386,6 +1501,7 @@ namespace
             if (action == "wear_outfit")     return "wear_outfit";
             if (action == "show")            return "show_item";
             if (action == "open")            return "open_item";
+            if (action == "save_image")      return "save_image";
             return "";
         }
         if (group == "chat")
@@ -1417,6 +1533,7 @@ namespace
             if (action == "camera")        return "camera";
             if (action == "pose")          return "pose";
             if (action == "stop_pose")     return "stop_pose";
+            if (action == "save_photo")    return "save_photo";
             return "";
         }
         if (group == "viewer")
@@ -1538,7 +1655,7 @@ namespace
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
-              "show", "open" };
+              "show", "open", "save_image" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -1603,7 +1720,19 @@ namespace
             "gives it to THEM, and is the better answer whenever they want to see it rather "
             "than be told it. An animation opens a preview window with play buttons -- it does "
             "not start playing; movement/pose does that. Only those four kinds -- for clothing "
-            "use wear, and opening a landmark would teleport them, so it is refused.";
+            "use wear, and opening a landmark would teleport them, so it is refused.\n"
+            "- save_image: write a picture from their inventory to a file on their own "
+            "computer, as a PNG. It lands on their DESKTOP unless they have already chosen "
+            "somewhere for snapshots, because a folder you have to go looking for is no help "
+            "to anybody. Nothing is uploaded and it costs them nothing.\n"
+            "  Second Life allows this only for a FULL PERMISSION picture -- copy, modify and "
+            "transfer -- and that is the creator's decision, not a setting. Anything less is "
+            "refused, the same way the viewer's own Save button is greyed out.\n"
+            "  Call it again with no name to find out whether it landed: writing waits for the "
+            "picture to come back at full size, and the answer then names the file and its "
+            "size on disk rather than saying a write was attempted. On macOS the first save "
+            "makes the system ask whether Lumen may use the Desktop -- if they decline, this "
+            "is where it shows up.";
         LLSD inv_props;
         inv_props["action"] = actionProperty(inv_actions, LL_ARRAY_SIZE(inv_actions), "What to do. Required.");
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
@@ -1730,7 +1859,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby",
-              "follow", "camera", "pose", "stop_pose",
+              "follow", "camera", "pose", "stop_pose", "save_photo",
               "fly", "turn", "where_am_i" };
         LLSD move;
         move["name"] = "movement";
@@ -1772,6 +1901,13 @@ namespace
             "user sees; an animation goes through the simulator and plays on their avatar in "
             "front of whoever is there. Ordinary -- it is what a gesture does -- but say what "
             "you are about to play rather than surprising them.\n"
+            "- save_photo: write what the camera is looking at to a PNG on their own "
+            "computer, without the interface or HUDs in it. It lands on their DESKTOP unless "
+            "they have already chosen somewhere for snapshots. **Nothing is uploaded and it "
+            "costs them nothing** -- an upload to inventory costs L$10, a file does not. The "
+            "answer names the file and its size on disk, or says plainly that macOS refused "
+            "the folder. Frame it with camera first, and say where the file is rather than "
+            "what is in it -- you cannot see it.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
             "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
             "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
@@ -4273,7 +4409,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
         || method == "stand"  || method == "fly"        || method == "turn"
         || method == "follow" || method == "camera"
-        || method == "pose"   || method == "stop_pose")
+        || method == "pose"   || method == "stop_pose"
+        || method == "save_photo")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
@@ -4289,6 +4426,59 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["replayed"] = true;
             replay["note"] = "This request_id was already carried out.";
             return replay;
+        }
+
+        if (method == "save_photo")
+        {
+            // Decisions 92 said the camera frames a shot and never takes one,
+            // and the reason given was that nothing should be written,
+            // uploaded or paid for per attempt. The author's revision, and it
+            // is correct: **saving to disk costs nothing.** An upload to
+            // inventory costs L$10 and is what that rule was really about; a
+            // PNG on their own computer costs nothing, goes nowhere, and is
+            // the thing they wanted a photograph for. `camera` still only
+            // frames -- this is a separate verb, so the harmless one stays
+            // harmless.
+            const S32 w = gViewerWindow->getWindowWidthRaw();
+            const S32 h = gViewerWindow->getWindowHeightRaw();
+            const std::string path =
+                unusedPath(pictureDir(), "Lumen Snapshot", ".png");
+
+            // No interface and no HUDs: a photograph of the world, not of the
+            // screen. That is what somebody means by "take a picture", and it
+            // is what the Snapshot window's own defaults do.
+            const bool ok = gViewerWindow->saveSnapshot(
+                path, w, h, /*show_ui*/ false, /*show_hud*/ false,
+                /*do_rebuild*/ false, /*show_balance*/ false,
+                LLSnapshotModel::SNAPSHOT_TYPE_COLOR,
+                LLSnapshotModel::SNAPSHOT_FORMAT_PNG);
+
+            LLSD result;
+            if (ok && LLFile::isfile(path))
+            {
+                result["saved"] = true;
+                result["file"]  = path;
+                result["bytes"] = (LLSD::Integer)fileSize(path);
+                result["size"]  = llformat("%d x %d", w, h);
+                result["note"]  = "Written to their own computer. Nothing was uploaded and it "
+                                  "cost them nothing. Tell them the file name and where it is; "
+                                  "you cannot see the picture, so do not describe it.";
+            }
+            else
+            {
+                result["saved"] = false;
+                result["tried"] = path;
+                result["problem"] =
+                    "The file was not written. On macOS the Desktop is permission-protected: "
+                    "if the system asked whether Lumen may use that folder and the answer was "
+                    "no, this is exactly what it looks like. It can be changed in System "
+                    "Settings > Privacy & Security > Files and Folders. The viewer cannot "
+                    "grant itself that.";
+            }
+            LLSD summary; summary["action"] = "save_photo";
+            recordAction(request_id, fingerprintOf("save_photo", params), "save_photo",
+                         ok ? "ok" : "failed", result, summary);
+            return result;
         }
 
         if (method == "pose" || method == "stop_pose")
@@ -5414,6 +5604,119 @@ if (method == "camera")
                            "moment -- that is the viewer working, not a failure. Whether they "
                            "can actually see it is not reported back, so say it was opened for "
                            "them rather than that they can read it.";
+        return result;
+    }
+
+    if (method == "save_image")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // With nothing named, this reports the last save. Writing the file is
+        // asynchronous -- the picture has to come back from Second Life at full
+        // resolution first -- and this handler runs on the frame loop, so it
+        // cannot wait for it. Findings 19, the same shape as a notecard.
+        if (!params.has("name") && !params.has("item_id"))
+        {
+            LLSD result;
+            if (!gLastSave.done && !gLastSave.running)
+            {
+                result["nothing_saved_yet"] = true;
+            }
+            else if (gLastSave.running)
+            {
+                result["still_working"] = true;
+                result["item"] = gLastSave.item;
+                result["note"] = "Still fetching the picture at full size. Ask again.";
+            }
+            else if (!gLastSave.error.empty())
+            {
+                result["saved"] = false;
+                result["item"]  = gLastSave.item;
+                result["problem"] = gLastSave.error;
+            }
+            else
+            {
+                result["saved"] = true;
+                result["item"]  = gLastSave.item;
+                result["file"]  = gLastSave.path;
+                // Checked rather than assumed: save() returning true and a file
+                // existing on disk are different claims, and this tool makes the
+                // second one.
+                result["bytes"] = (LLSD::Integer)fileSize(gLastSave.path);
+            }
+            return result;
+        }
+
+        LLSD item_error;
+        const LLUUID id = resolveItem(params, item_error);
+        if (id.isNull()) { LLSD w; w["__error"] = item_error; return w; }
+
+        LLViewerInventoryItem* item = gInventory.getItem(id);
+        if (!item || item->getType() != LLAssetType::AT_TEXTURE)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = std::string("\"") + (item ? item->getName() : std::string("that"))
+                         + "\" is not a picture. Photographs and textures are kind "
+                           "\"texture\" in inventory search.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Second Life's own rule for exporting an image, and the exact test the
+        // Save button in the texture window is enabled by
+        // (LLPreviewTexture::canSaveAs, llpreviewtexture.cpp:380). We do not
+        // invent a policy here; we ask the one that already exists.
+        if (!item->checkPermissionsSet(PERM_ITEM_UNRESTRICTED))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = std::string("\"") + item->getName() + "\" cannot be saved to disk: "
+                           "Second Life only allows it for a picture that is full permission "
+                           "-- copy, modify AND transfer. This one is not, and that is the "
+                           "creator's decision rather than a setting. The viewer's own Save "
+                           "button is greyed out for the same reason.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string dir = pictureDir();
+        const std::string path = unusedPath(dir, LLDir::getScrubbedFileName(item->getName()), ".png");
+
+        LLViewerFetchedTexture* tex = LLViewerTextureManager::getFetchedTexture(
+            item->getAssetUUID(), FTT_DEFAULT, true, LLGLTexture::BOOST_PREVIEW);
+        if (!tex)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The picture could not be opened.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        gLastSave = LastSave();
+        gLastSave.running = true;
+        gLastSave.item    = item->getName();
+
+        tex->forceToSaveRawImage(0);
+        tex->setLoadedCallback(onPictureFetched, 0, true, false,
+                               new std::string(path), NULL);
+
+        LL_INFOS("AICtl") << "save_image: " << item->getName() << " -> " << path << LL_ENDL;
+
+        LLSD result;
+        result["saving"]   = item->getName();
+        result["will_be"]  = path;
+        result["note"] =
+            "Started. The picture has to come back from Second Life at full size before "
+            "anything can be written, so call save_image again with no name to find out "
+            "whether it landed -- it reports the file and its size on disk, not merely "
+            "that a write was attempted. "
+            "Nothing is uploaded and nothing costs them anything. "
+            "**On macOS the first save to the Desktop makes the system ask whether Lumen "
+            "may use that folder.** If they say no, the save fails and the answer will say "
+            "so; it is not something the viewer can grant itself.";
+        LLSD summary; summary["action"] = "save_image"; summary["item"] = item->getName();
+        recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                     fingerprintOf("save_image", params), "save_image", "ok", result, summary);
         return result;
     }
 
