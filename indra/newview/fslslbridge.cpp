@@ -58,7 +58,7 @@ static const std::string FS_BRIDGE_CONTAINER_FOLDER = "Landscaping";
 // -- the viewer compares the version the script announces against this name to
 // decide whether the bridge it is talking to is the one it built.
 static const U32 FS_BRIDGE_MAJOR_VERSION = 1;
-static const U32 FS_BRIDGE_MINOR_VERSION = 0;
+static const U32 FS_BRIDGE_MINOR_VERSION = 4;
 // </FS:AICtl>
 static const U32 FS_MAX_MINOR_VERSION = 99;
 // <FS:AICtl> Our script, written fresh against the same command vocabulary
@@ -1322,7 +1322,44 @@ void FSLSLBridgeScriptCallback::fire(const LLUUID& inv_item)
             FSLSLBridge::instance().mScriptItemID = inv_item;
 
             LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<LLScriptAssetUpload>(obj->getID(), inv_item, LLScriptAssetUpload::MONO, true, LLUUID::null, buffer,
-                [](LLUUID, LLUUID, LLUUID, LLSD) {
+                [](LLUUID, LLUUID, LLUUID, LLSD response) {
+                    // <FS:AICtl> Say whether the script COMPILED.
+                    //
+                    // The server answers a script upload with `compiled` and,
+                    // when it is false, `errors` -- which is how the script
+                    // editor shows you a syntax error (llpreviewscript.cpp:2482).
+                    // This callback declared that parameter and did not name it,
+                    // so the answer was dropped on the floor: a bridge whose
+                    // script does not compile is created, attached, named and
+                    // logged as "Bridge created", and then never speaks. Every
+                    // feature that needs it goes quiet with nothing anywhere
+                    // saying why -- and it cost an evening to find by noticing
+                    // that <bridgeURL> appeared zero times in the log.
+                    if (response.has("compiled") && !response["compiled"].asBoolean())
+                    {
+                        LL_WARNS("FSLSLBridge") << "BRIDGE SCRIPT DID NOT COMPILE. "
+                                                   "The bridge will be created and attached and will "
+                                                   "never answer; everything that depends on it is off."
+                                                << LL_ENDL;
+                        const LLSD& errors = response["errors"];
+                        if (errors.isArray())
+                        {
+                            for (LLSD::array_const_iterator it = errors.beginArray();
+                                 it != errors.endArray(); ++it)
+                            {
+                                LL_WARNS("FSLSLBridge") << "  " << it->asString() << LL_ENDL;
+                            }
+                        }
+                        else if (errors.isDefined())
+                        {
+                            LL_WARNS("FSLSLBridge") << "  " << errors << LL_ENDL;
+                        }
+                    }
+                    else
+                    {
+                        LL_INFOS("FSLSLBridge") << "Bridge script compiled." << LL_ENDL;
+                    }
+                    // </FS:AICtl>
                     FSLSLBridge::getInstance()->setTimerResult(FSLSLBridge::SCRIPT_UPLOAD_FINISHED);
                 }, nullptr));
             LLViewerAssetUpload::EnqueueInventoryUpload(url, uploadInfo);
@@ -1390,6 +1427,17 @@ std::string FSLSLBridgeScriptCallback::prepUploadFile(std::string &aBuffer)
         LL_WARNS("FSLSLBridge") << "Invalid bridge script" << LL_ENDL;
         return std::string();
     }
+    // <FS:AICtl> Only the FIRST occurrence is replaced, so a second one -- even
+    // inside a comment -- silently steals the substitution and the script
+    // announces the placeholder verbatim. The viewer then rejects its own
+    // bridge and rebuilds it in a loop. Cheap to detect, invisible otherwise.
+    if (aBuffer.find(bridgekey, pos + bridgekey.length()) != std::string::npos)
+    {
+        LL_WARNS("FSLSLBridge") << "Bridge script names the auth placeholder more than once; "
+                                   "only the first is substituted, so the bridge will announce "
+                                   "the placeholder and be rejected in a loop." << LL_ENDL;
+    }
+    // </FS:AICtl>
     aBuffer.replace(pos, bridgekey.length(), FSLSLBridge::getInstance()->getBridgeFolder().asString());
 
     LLFILE *fpOut = LLFile::fopen(fNew, "wt");

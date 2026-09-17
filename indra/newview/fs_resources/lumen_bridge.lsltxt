@@ -30,7 +30,7 @@
 // time and asking what somebody is wearing would be twenty-five requests
 // through an in-world script.
 
-string  VERSION = "1.0";
+string  VERSION = "1.4";
 string  gURL;
 key     gOwner;
 integer gViewerIsLumen;
@@ -238,7 +238,11 @@ default
 
     attach(key k)
     {
-        if (!k) return;
+        // Detach passes NULL_KEY; attach passes the wearer. Compared rather
+        // than negated: LSL's ! takes an INTEGER, so `if (!k)` on a key is a
+        // type mismatch and the whole script fails to compile -- which is how
+        // this bridge spent an evening installed, attached and mute.
+        if (k == NULL_KEY) return;
 
         gOwner = llGetOwner();
         // Controls are taken for one reason only: flight assist and movelock
@@ -382,10 +386,19 @@ default
             gURL = body;
             if (gViewerIsLumen || gTryHandshakeOnce)
             {
-                // BRIDGEKEY is replaced with this bridge's inventory folder id
-                // by the viewer before upload (fslslbridge.cpp:1376). It is how
-                // the viewer knows the announcement came from the bridge it
-                // made, and not from a copy somebody else is wearing.
+                // The auth token below is replaced with this bridge's
+                // inventory folder id by the viewer before upload
+                // (prepUploadFile). It is how the viewer knows the
+                // announcement came from the bridge it made, and not from a
+                // copy somebody else is wearing.
+                //
+                // **Do not name that token anywhere above this line.**
+                // prepUploadFile replaces the FIRST occurrence only, so a
+                // mention in a comment is substituted instead of the real one,
+                // the script announces the placeholder verbatim, the viewer
+                // rejects its own bridge and rebuilds it every thirty seconds
+                // for ever. That is exactly what an earlier draft of this
+                // comment did.
                 llOwnerSay("<bridgeURL>" + gURL + "</bridgeURL><bridgeAuth>BRIDGEKEY</bridgeAuth><bridgeVer>" + VERSION + "</bridgeVer>");
                 gTryHandshakeOnce = FALSE;
             }
