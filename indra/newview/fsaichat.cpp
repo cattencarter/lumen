@@ -285,6 +285,7 @@ namespace
             if (action == "undelete")         return "Restoring from trash";
             if (action == "show")             return "Opening inventory";
             if (action == "open")             return "Opening item";
+            if (action == "save_image")       return "Saving the picture";
         }
         else if (group == "chat")
         {
@@ -298,6 +299,8 @@ namespace
             if (action == "send_group_notice")  return "Posting notice";
             if (action == "send_group_message") return "Messaging group";
             if (action == "give_item")          return "Giving item";
+            if (action == "read_history")       return "Reading your conversation";
+            if (action == "search_history")     return "Searching your conversations";
         }
         else if (group == "movement")
         {
@@ -311,6 +314,10 @@ namespace
             if (action == "look_nearby")   return "Looking around";
             if (action == "where_am_i")    return "Checking location";
             if (action == "camera")        return "Setting up the shot";
+            if (action == "follow")        return "Following";
+            if (action == "pose")          return "Posing";
+            if (action == "stop_pose")     return "Stopping the pose";
+            if (action == "save_photo")    return "Saving the photo";
         }
         else if (group == "viewer")
         {
@@ -321,6 +328,7 @@ namespace
             if (action == "answer_while_away") return "Covering for you";
             if (action == "read_scripts")     return "Reading your script";
             if (action == "edit_script")      return "Writing your script";
+            if (action == "lighting")         return "Adjusting the light";
         }
 
         return action.empty() ? group : (group + "." + action);
