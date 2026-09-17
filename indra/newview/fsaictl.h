@@ -111,20 +111,21 @@ public:
      */
     std::string handleRequest(const std::string& body);
 
-private:
-
-    // <FS:AICtl> worn_by: replies from the in-world bridge arrive later,
-
-    // over HTTP, so they are parked until the caller asks again.
-
+    // <FS:AICtl> worn_by and creator links.
+    //
+    // A reply from the in-world bridge arrives later, over HTTP, so it is
+    // parked until the caller asks again (Findings 19). profileLink is here
+    // rather than in the .cpp's anonymous namespace because itemToLLSD needs
+    // it too, and one spelling of the link beats two that drift.
+    static std::string profileLink(const LLUUID& agent_id);
     static bool wornRequestPending(const LLUUID& who);
-
     static void beginWornRequest(const LLUUID& who);
-
     static bool takeWornReply(const LLUUID& who, LLSD& out);
-
     static void finishWornReply(const LLUUID& who, const LLSD& data);
+    // </FS:AICtl>
 
+
+private:
 
     LLSD dispatch(const std::string& method, const LLSD& params);
     LLSD toolStatus() const;

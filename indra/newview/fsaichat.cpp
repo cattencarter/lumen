@@ -112,6 +112,82 @@ namespace
      * This is the whole point of the design: no second implementation of the
      * tools, no second set of guards. Whatever Claude Desktop gets, this gets.
      */
+    /**
+     * Creator names this conversation has seen, and where their profile is.
+     *
+     * **The model was asked to paste `creator_link` and did not.** Haiku wrote
+     * the names as plain text, exactly as it had ignored `worn: true` in
+     * Decisions 66 -- and that entry already settled what to do about it:
+     * *a rule that only works when the caller reads carefully is a rule that
+     * does not work.* So the viewer does it instead of asking.
+     */
+    std::map<std::string, std::string> sProfileLinks;
+
+    /** Harvest creator_name/creator_link pairs from any tool result. */
+    void rememberProfileLinks(const LLSD& node)
+    {
+        if (node.isMap())
+        {
+            if (node.has("creator_name") && node.has("creator_link"))
+            {
+                const std::string nm = node["creator_name"].asString();
+                const std::string ln = node["creator_link"].asString();
+                if (!nm.empty() && !ln.empty()) { sProfileLinks[nm] = ln; }
+            }
+            for (LLSD::map_const_iterator it = node.beginMap(); it != node.endMap(); ++it)
+            {
+                rememberProfileLinks(it->second);
+            }
+        }
+        else if (node.isArray())
+        {
+            for (LLSD::array_const_iterator it = node.beginArray(); it != node.endArray(); ++it)
+            {
+                rememberProfileLinks(*it);
+            }
+        }
+    }
+
+    /**
+     * Turn names the tools gave us into profile links, in text the model wrote.
+     *
+     * The substitution is deliberately narrow: only names a TOOL returned in
+     * this conversation, matched whole, longest first so "Catten Carter" is not
+     * half-replaced by a shorter name inside it. The viewer renders the link
+     * with the person's name as its label, so **the visible words do not
+     * change** -- they merely become clickable.
+     */
+    std::string linkifyKnownNames(std::string text)
+    {
+        if (sProfileLinks.empty()) return text;
+
+        std::vector<std::string> names;
+        for (const auto& kv : sProfileLinks) { names.push_back(kv.first); }
+        std::sort(names.begin(), names.end(),
+                  [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+
+        for (const std::string& nm : names)
+        {
+            if (nm.size() < 3) continue;          // too short to be safe
+            const std::string& link = sProfileLinks[nm];
+            std::string::size_type at = 0;
+            while ((at = text.find(nm, at)) != std::string::npos)
+            {
+                // Do not rewrite a name that is already inside a link.
+                const std::string before = text.substr(0, at);
+                if (before.rfind("secondlife:///") != std::string::npos
+                    && before.rfind("secondlife:///") > before.rfind(' '))
+                {
+                    at += nm.size();
+                    continue;
+                }
+                text.replace(at, nm.size(), link);
+                at += link.size();
+            }
+        }
+        return text;
+    }
+
     LLSD rpc(const std::string& method, const LLSD& params)
     {
         static S32 next_id = 1;
@@ -128,6 +204,11 @@ namespace
         const std::string reply = FSAIControl::instance().handleRequest(jsonString(req));
         bool ok = false;
         const LLSD parsed = jsonParse(reply, ok);
+        // <FS:AICtl> Remember every creator this result named, so the reply can
+        // be made clickable without the model having to cooperate. See
+        // linkifyKnownNames().
+        if (ok) { rememberProfileLinks(parsed); }
+        // </FS:AICtl>
         return ok ? parsed : LLSD();
     }
 
@@ -919,7 +1000,7 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
     // stayed at the margin, so the answer never lined up with its own marker.
     mTranscript->appendText("\n", false);
     mTranscript->appendText("Lumen: ", false, nameStyle());
-    mTranscript->appendText(body, false, bodyStyle());
+    mTranscript->appendText(linkifyKnownNames(body), false, bodyStyle());
 }
 
 void FSAIChatFloater::setActivity(const std::string& what)

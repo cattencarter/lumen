@@ -882,6 +882,7 @@ namespace
             if (LLAvatarNameCache::get(creator, &av))
             {
                 out["creator_name"] = av.getUserName();
+                out["creator_link"] = FSAIControl::profileLink(creator);
             }
             // Not cached: the id is still exact, and creatorName() below asks
             // for it so the next call has a name to show.
@@ -1762,7 +1763,9 @@ namespace
             "\"Blue Silk Skirt\". Returns each item's id, name, kind, folder, **who created it**, "
             "whether it is worn and whether it is copyable. **You do not need to open anything in "
             "the viewer to find out who made something -- it is in every result, as `creator` and "
-            "`creator_name`.** Pass `creator` to return only one person's work: an avatar id from "
+            "`creator_name`, with `creator_link` beside it -- **write that link value verbatim "
+            "when you name the maker and the user can click straight to their profile.** "
+            "Never assemble one yourself.** Pass `creator` to return only one person's work: an avatar id from "
             "find_person is exact, a name is best-effort. "
             "**Do not ask the user which body their clothes are cut for.** Results are already "
             "ranked with the fit the avatar is wearing -- LaraX, Legacy, Maitreya, Reborn and so "
@@ -2066,6 +2069,10 @@ namespace
             "can see. The reply arrives a moment later, so the first call returns `pending: true` "
             "and you call again with the same agent_id to collect it. Say nothing about their "
             "outfit until you have the real answer.\n"
+            "  Every item carries `creator_link`. **When you name who made something, write that "
+            "`creator_link` value exactly as given instead of the name** -- the viewer turns it "
+            "into the person's name with their profile one click away. Copy it verbatim; never "
+            "build one yourself, and if there is no creator_link just use the name.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
@@ -3141,6 +3148,27 @@ namespace
     }
 }
 
+// <FS:AICtl> A creator's name, as something the user can click.
+//
+// The Assistant transcript parses secondlife:/// links (floater_ai_chat.xml,
+// parse_urls), and the viewer draws this one as the person's NAME and opens
+// their profile on click -- verified 2026-09-17 against LLUrlRegistry rather
+// than assumed, after a first attempt that used a deleted item id and looked
+// like the mechanism was broken.
+//
+// Built HERE, from an id the viewer already holds, and handed to the model as
+// a finished string to repeat. The model never assembles one, so it cannot
+// invent a profile that does not exist; the worst it can do is fail to use it,
+// which degrades to today's plain text.
+std::string FSAIControl::profileLink(const LLUUID& agent_id)
+{
+    if (agent_id.isNull())
+    {
+        return std::string();
+    }
+    return "secondlife:///app/agent/" + agent_id.asString() + "/about";
+}
+
 bool FSAIControl::wornRequestPending(const LLUUID& who)
 {
     return sWornPending.count(who) > 0;
@@ -3218,14 +3246,20 @@ void FSAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
         // that a creator id identifies a shop and a name does not survive a
         // rename. Resolve what the cache already knows and say how many it
         // could not, rather than returning fewer.
+        const LLUUID maker = one["creator"].asUUID();
         LLAvatarName av;
-        if (LLAvatarNameCache::get(one["creator"].asUUID(), &av))
+        if (LLAvatarNameCache::get(maker, &av))
         {
             one["creator_name"] = av.getUserName();
         }
         else
         {
-            LLAvatarNameCache::get(one["creator"].asUUID(), [](const LLUUID&, const LLAvatarName&){});
+            // Not cached yet: ask, so a second call has a name to show.
+            LLAvatarNameCache::get(maker, [](const LLUUID&, const LLAvatarName&){});
+        }
+        if (maker.notNull())
+        {
+            one["creator_link"] = profileLink(maker);
         }
         items.append(one);
     }
