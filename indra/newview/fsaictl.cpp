@@ -594,6 +594,19 @@ namespace
         return out;
     }
 
+    // Personal Lighting shows the sun and ambient swatches at a third of their
+    // stored value and multiplies back on commit
+    // (llfloaterenvironmentadjust.cpp:494, llpaneleditsky.cpp:113). Matching it
+    // means a colour given here means the same thing as one picked there.
+    const F32 SUN_COLOR_SCALE = 3.0f;
+
+    // WCAG relative luminance, the same weighting the skin's colours were
+    // matched with. Used to move the sun's hue without moving its brightness.
+    F32 relativeLuminance(const LLColor3& c)
+    {
+        return 0.2126f * c.mV[0] + 0.7152f * c.mV[1] + 0.0722f * c.mV[2];
+    }
+
     /**
      * Which way the avatar is facing, as a compass bearing.
      *
@@ -1777,10 +1790,23 @@ namespace
             "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
             "untouched. Pair it with movement/camera to set up a photograph.\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
-            "higher is brighter), `ambient` (fills the shadows), `contrast` (0 flat, 1 harsh -- "
-            "this is what \"softer\" and \"less contrast\" mean), `sun_elevation` in degrees "
-            "(90 overhead, 10 low and raking, negative below the horizon) and `sun_azimuth` "
-            "(0 north, 90 east). These change the sky ALREADY IN FORCE, so one thing moves and "
+            "higher is brighter), `sun_elevation` in degrees (90 overhead, 10 low and raking, "
+            "negative below the horizon), `sun_azimuth` (0 north, 90 east), `sun_color` "
+            "(\"golden\", \"warm\", \"neutral\", \"cool\", \"blue\" -- changes the colour "
+            "of the light and therefore of the shadows, without changing how bright it is), "
+            "`clouds` 0 to 1 (cloud cover, which also lifts the shadows -- this is the fill "
+            "control that works whatever else is set), `haze` 0 to 5 (distance and softness), "
+            "and `probe_ambiance` 0 to 10.\n"
+            "  `ambient` and `contrast` are the same value, and WHAT it does depends on the "
+            "sky -- worth saying, because the name only fits half the time. Under the "
+            "region's own light they are a BRIGHTNESS control: raising `contrast` dims the "
+            "lit side as much as the shadow, so the picture gets darker rather than harder. "
+            "Under the `midday` preset, and whenever `probe_ambiance` is above 0, they are a "
+            "real contrast control -- the shadow side falls about a quarter while the "
+            "highlights do not move at all. So for harder light on somebody's face, apply "
+            "`midday` or set `probe_ambiance` first, THEN raise `contrast`. `clouds` moves "
+            "neither and is not the answer to \"softer\".\n"
+            "  These change the sky ALREADY IN FORCE, so one thing moves and "
             "the rest of the place stays put -- unlike a preset, which replaces it wholly and can "
             "easily make a bright region darker.\n"
             "  **You cannot see the result and they can.** Change one thing, say what you "
@@ -1833,6 +1859,51 @@ namespace
             vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
         view_props["id"]=vdid; view_props["choice"]=vch;
         view_props["limit"] = slim;
+
+        // lighting. None of these were declared, which meant a host validating
+        // against the schema could strip them silently -- the failure shape this
+        // project keeps meeting (Findings 49): nothing errors, the parameter is
+        // merely not there, and the answer is a sky that did not change.
+        {
+            LLSD lp; lp["type"]="string";
+                lp["description"]="lighting: \"sunrise\", \"midday\", \"sunset\", "
+                                  "\"midnight\", or \"region\" for the place's own light.";
+            view_props["preset"]=lp;
+            LLSD ln; ln["type"]="string";
+                ln["description"]="lighting: one of the user's own saved environment settings, "
+                                  "by name. Find them with inventory search, kind \"settings\".";
+            view_props["name"]=ln;
+            struct { const char* key; const char* desc; } nums[] = {
+                { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
+                { "ambient",        "lighting: fills the shadows, 0 to 3. Under the "
+                                    "region's own sky this brightens everything rather "
+                                    "than filling; under `midday` or with "
+                                    "`probe_ambiance` set it really does fill." },
+                { "contrast",       "lighting: 0 flat, 1 harsh -- the same value as "
+                                    "`ambient`. A true contrast control only under "
+                                    "`midday` or with `probe_ambiance` set; otherwise it "
+                                    "just dims." },
+                { "haze",           "lighting: 0 to 5. Distance haze; softens and lifts." },
+                { "clouds",         "lighting: cloud cover 0 to 1. Measured inert on a "
+                                    "person and nearly so on the ground; do not reach for "
+                                    "it to soften light." },
+                { "probe_ambiance", "lighting: 0 to 10. Above 0 the ambient light comes from "
+                                    "the reflection probes and `ambient` stops working." },
+                { "sun_elevation",  "lighting: degrees. 90 overhead, 10 low and raking, "
+                                    "negative below the horizon." },
+                { "sun_azimuth",    "lighting: degrees. 0 north, 90 east." },
+            };
+            for (size_t i = 0; i < LL_ARRAY_SIZE(nums); ++i)
+            {
+                LLSD n; n["type"]="number"; n["description"]=nums[i].desc;
+                view_props[nums[i].key]=n;
+            }
+            LLSD scl;
+                scl["description"]="lighting: \"golden\", \"warm\", \"neutral\", \"cool\" "
+                                   "or \"blue\" -- or [r, g, b] each 0 to 1. The named ones "
+                                   "keep the brightness and move only the colour.";
+            view_props["sun_color"]=scl;
+        }
         LLSD view_schema; view_schema["type"]="object"; view_schema["properties"]=view_props;
         LLSD view_req = LLSD::emptyArray(); view_req.append("action");
         view_schema["required"]=view_req;
@@ -3856,7 +3927,9 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // offers; there was no reason it could not be reached from here.
         const bool fine = params.has("brightness") || params.has("ambient")
                        || params.has("sun_elevation") || params.has("sun_azimuth")
-                       || params.has("haze") || params.has("contrast");
+                       || params.has("haze") || params.has("contrast")
+                       || params.has("clouds") || params.has("sun_color")
+                       || params.has("probe_ambiance");
         if (fine)
         {
             LLSettingsSky::ptr_t sky_now = env.getEnvironmentFixedSky(LLEnvironment::ENV_LOCAL);
@@ -3904,6 +3977,113 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 const F32 h = llclamp((F32)params["haze"].asReal(), 0.0f, 5.0f);
                 edit->setHazeDensity(h);
                 changed["haze"] = (LLSD::Real)h;
+            }
+            if (params.has("clouds"))
+            {
+                // "Cloud Coverage" in Personal Lighting is setCloudShadow(), and
+                // the shader does use it on the ambient floor --
+                // `tmpAmbient = ambient + (1 - ambient) * cloud_shadow * 0.5`
+                // in atmosphericsFuncs.glsl. Reading that, this was written up as
+                // "the fill control that works where `ambient` does not".
+                // **Measured, it is not.** 0 to 1 moved the foreground by 1 point
+                // of 123, darkened the distance by 12%, and on a standing avatar
+                // moved the lit side by 0.1 and the shadow by 0.4 against a noise
+                // floor of 0.1. The term is small whenever ambient is already near
+                // 1, which it is in an ordinary sky.
+                // A mechanism in the shader is not an effect on the screen.
+                const F32 c = llclamp((F32)params["clouds"].asReal(), 0.0f, 1.0f);
+                edit->setCloudShadow(c);
+                changed["clouds"] = (LLSD::Real)c;
+            }
+            if (params.has("sun_color"))
+            {
+                // Named warmths keep the sun's LUMINANCE and move only its hue,
+                // so "warmer" changes the colour of the light and the shadows
+                // without also changing the exposure -- which is what somebody
+                // means by it. An array is the escape hatch for a literal colour,
+                // in the 0..1 the swatch shows, scaled the way the floater scales
+                // it (llfloaterenvironmentadjust.cpp:494).
+                LLColor3 sun = edit->getSunlightColor();
+                LLSD sc = params["sun_color"];
+                if (sc.isArray() && sc.size() >= 3)
+                {
+                    sun = LLColor3(llclamp((F32)sc[0].asReal(), 0.f, 1.f) * SUN_COLOR_SCALE,
+                                   llclamp((F32)sc[1].asReal(), 0.f, 1.f) * SUN_COLOR_SCALE,
+                                   llclamp((F32)sc[2].asReal(), 0.f, 1.f) * SUN_COLOR_SCALE);
+                }
+                else
+                {
+                    const std::string w = lowered(sc.asString());
+                    F32 mr = 1.f, mg = 1.f, mb = 1.f;
+                    if (w == "golden" || w == "sunset" || w == "sunrise")
+                                                  { mr = 1.20f; mg = 0.95f; mb = 0.60f; }
+                    else if (w == "warm")         { mr = 1.10f; mg = 1.00f; mb = 0.84f; }
+                    else if (w == "neutral" || w == "white") { /* 1,1,1 -- grey */ }
+                    else if (w == "cool")         { mr = 0.90f; mg = 0.98f; mb = 1.12f; }
+                    else if (w == "blue" || w == "cold") { mr = 0.78f; mg = 0.93f; mb = 1.25f; }
+                    else
+                    {
+                        LLSD e; e["code"] = -32602;
+                        e["message"] = "sun_color takes \"golden\", \"warm\", \"neutral\", "
+                                       "\"cool\" or \"blue\" -- or [r, g, b] each 0 to 1.";
+                        LLSD wrap; wrap["__error"] = e; return wrap;
+                    }
+
+                    // Absolute, not relative: "warm" is one colour, whatever was
+                    // set before, so asking twice does not warm it twice and a
+                    // model cannot walk the sun off into orange by repeating
+                    // itself. Measured relative first, and the second call
+                    // multiplied the first -- "warm" after "golden" came out
+                    // warmer than "golden" alone.
+                    const F32 before = relativeLuminance(sun);
+                    LLColor3 after(mr, mg, mb);
+                    const F32 now = relativeLuminance(after);
+                    if (now > 0.0001f && before > 0.0001f)
+                    {
+                        after *= (before / now);   // keep the brightness, set the colour
+                    }
+                    sun = after;
+                }
+                edit->setSunlightColor(sun);
+                LLSD out = LLSD::emptyArray();
+                out.append((LLSD::Real)sun.mV[0]);
+                out.append((LLSD::Real)sun.mV[1]);
+                out.append((LLSD::Real)sun.mV[2]);
+                changed["sun_color"] = out;
+            }
+            if (params.has("probe_ambiance"))
+            {
+                // This one has a side effect worth knowing about rather than
+                // discovering: setReflectionProbeAmbiance() sets mCanAutoAdjust
+                // false (llsettingssky.cpp:1517), which makes classic_mode 0 in
+                // the shaders, and in that mode the ambient light comes from the
+                // reflection probes instead of `ambient_color`
+                // (reflectionProbeF.glsl:744). So this switches the scene into
+                // the HDR path AND stops `ambient` filling anything.
+                // **Measured, not inferred, and measured twice because the first
+                // measurement asked the wrong surface.** On flat ground: under
+                // the region's sky `ambient` 0 to 3 took it 74 -> 204, and with
+                // probe_ambiance set first the same sweep went 91 -> 66. That
+                // read as "probe ambiance switches ambient off" -- but ground is
+                // horizontal and faces the whole sky, so it can only ever show
+                // brightness. On a standing avatar, with probe ambiance set,
+                // `contrast` 0 -> 1 drops the SHADOW side 14% while the lit side
+                // does not move (three pairs, all three); under `midday` it is
+                // 25% with the highlights fixed (four pairs, all four). So this
+                // does not switch ambient off -- it turns a brightness control
+                // into a contrast control. `midday` behaves the same way, which
+                // is how we know that asset carries a probe ambiance of its own;
+                // the other three presets do not.
+                const F32 a = llclamp((F32)params["probe_ambiance"].asReal(), 0.0f, 10.0f);
+                edit->setReflectionProbeAmbiance(a);
+                changed["probe_ambiance"] = (LLSD::Real)a;
+                if (a > 0.f)
+                {
+                    changed["note_probe_ambiance"] =
+                        "Above zero this hands the ambient light to the reflection probes, so "
+                        "`ambient` and `contrast` stop having an effect. Set it to 0 to get "
+                        "them back.";
+                }
             }
             if (params.has("sun_elevation") || params.has("sun_azimuth"))
             {
