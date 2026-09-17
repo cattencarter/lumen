@@ -100,6 +100,7 @@
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
 #include "fslslbridge.h"   // <FS:AICtl> worn_by
+#include "llavatarpropertiesprocessor.h"  // <FS:AICtl> profile
 #include "apr_base64.h"      // <FS:AICtl> the bridge base64-encodes anything a person wrote
 #include "llversioninfo.h"
 
@@ -1602,6 +1603,7 @@ namespace
             if (action == "say")           return "say";
             if (action == "send_im")       return "send_im";
             if (action == "find_person")   return "find_person";
+            if (action == "profile")       return "profile";
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
             if (action == "give_item")     return "give_item";
@@ -1879,7 +1881,7 @@ namespace
 
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
-            { "read_chat", "read_messages", "say", "send_im", "find_person",
+            { "read_chat", "read_messages", "say", "send_im", "find_person", "profile",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
         LLSD chat;
@@ -1922,6 +1924,14 @@ namespace
             "- send_group_message: say something in a group's chat, where every member online in "
             "that conversation sees it. Different from send_group_notice, which goes to everyone "
             "in the group whether they are there or not.\n"
+            "- profile: what somebody has PUBLISHED about themselves -- their About text, the Web link "
+            "on their profile, their first-life text, when they joined. `links` gathers every "
+            "http link out of those fields, which is where a marketplace store, a Flickr or a blog "
+            "actually lives. This is the tool for \"does Catten have a marketplace?\" **If there "
+            "is no `links` entry, say their profile does not mention one -- do NOT conclude they "
+            "have none.** Second Life holds this, so it is right on any computer. The reply "
+            "arrives a moment later: the first call returns `pending: true`, call again with the "
+            "same agent_id.\n"
             "- find_person: look someone up by name to get their avatar id. Searches the user's "
             "friends and the avatars nearby -- the viewer cannot search all of Second Life.\n"
             "- list_groups: the groups the user belongs to, and whether they are allowed to send "
@@ -3160,6 +3170,90 @@ namespace
 // a finished string to repeat. The model never assembles one, so it cannot
 // invent a profile that does not exist; the worst it can do is fail to use it,
 // which degrades to today's plain text.
+// <FS:AICtl> `profile`: what somebody has published about themselves.
+//
+// Second Life holds this on its own servers, so it is right on any machine and
+// survives a reinstall -- unlike the chat logs, which answered a question about
+// Catten at work and had nothing to say about him here.
+//
+// Everything reported is the person's OWN words: the About text, the Web field,
+// the first-life text. Nothing is inferred and nothing is accumulated, so
+// "their profile does not mention a store" is a true answer rather than a
+// shrug.
+namespace
+{
+    std::map<LLUUID, LLSD> sProfiles;
+    std::set<LLUUID>       sProfilesPending;
+
+    /** Every http(s) link in a blob of profile text, in the order written. */
+    void collectLinks(const std::string& text, LLSD& out)
+    {
+        std::string::size_type at = 0;
+        while ((at = text.find("http", at)) != std::string::npos)
+        {
+            if (text.compare(at, 7, "http://") != 0 && text.compare(at, 8, "https://") != 0)
+            {
+                ++at;
+                continue;
+            }
+            std::string::size_type end = at;
+            while (end < text.size() && !isspace((unsigned char)text[end])
+                   && text[end] != '<' && text[end] != '"' && text[end] != ',') ++end;
+            // Trailing punctuation is almost never part of the link.
+            while (end > at && (text[end-1] == '.' || text[end-1] == ')' || text[end-1] == ';')) --end;
+            const std::string url = text.substr(at, end - at);
+            if (url.size() > 11) out.append(url);
+            at = end;
+        }
+    }
+
+    /** Listens once for one avatar, stores the answer, and unhooks itself. */
+    class ProfileWatcher : public LLAvatarPropertiesObserver
+    {
+    public:
+        explicit ProfileWatcher(const LLUUID& who) : mWho(who) {}
+
+        void processProperties(void* data, EAvatarProcessorType type) override
+        {
+            if (type != APT_PROPERTIES && type != APT_PROPERTIES_LEGACY) return;
+            LLAvatarData* d = static_cast<LLAvatarData*>(data);
+            if (!d || d->avatar_id != mWho) return;
+
+            LLSD r;
+            r["agent_id"] = mWho;
+            if (!d->about_text.empty())    r["about"]      = rawstr_to_utf8(d->about_text);
+            if (!d->fl_about_text.empty()) r["real_life"]  = rawstr_to_utf8(d->fl_about_text);
+            if (!d->profile_url.empty())   r["web"]        = d->profile_url;
+            if (d->partner_id.notNull())   r["partner_id"] = d->partner_id;
+            if (!d->customer_type.empty()) r["account"]    = d->customer_type;
+            if (d->born_on.notNull())      r["born_on"]    = d->born_on.asString();
+
+            // The links are the point: a marketplace store, a Flickr, a blog.
+            // Gathered from every field the person could have put one in.
+            LLSD links = LLSD::emptyArray();
+            if (!d->profile_url.empty()) links.append(d->profile_url);
+            collectLinks(d->about_text, links);
+            collectLinks(d->fl_about_text, links);
+            if (links.size()) r["links"] = links;
+
+            r["note"] =
+                "Everything here is what this person wrote about themselves in their own profile, "
+                "from Second Life's servers. If there is no `links` entry their profile simply "
+                "does not mention a store, a Flickr or anything else -- say that, rather than "
+                "guessing that they have none.";
+
+            LL_INFOS("AICtl") << "profile: " << mWho << " -- "
+                              << (r.has("links") ? r["links"].size() : 0) << " link(s)" << LL_ENDL;
+            sProfiles[mWho] = r;
+            sProfilesPending.erase(mWho);
+            LLAvatarPropertiesProcessor::getInstance()->removeObserver(mWho, this);
+            delete this;
+        }
+    private:
+        LLUUID mWho;
+    };
+}
+
 std::string FSAIControl::profileLink(const LLUUID& agent_id)
 {
     if (agent_id.isNull())
@@ -6967,6 +7061,69 @@ if (method == "camera")
         pending["note"] = "Asked the in-world bridge what they are wearing. The reply comes back "
                           "over HTTP a moment later -- call worn_by again with the same agent_id "
                           "to collect it. Do NOT tell the user anything about their outfit yet.";
+        return pending;
+    }
+
+    if (method == "profile")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLUUID who;
+        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
+        {
+            who = params["agent_id"].asUUID();
+        }
+        else
+        {
+            const std::string name = params.has("person") ? params["person"].asString() : std::string();
+            if (name.empty())
+            {
+                LLSD e; e["code"] = -32602; e["message"] = "Give `person` (a name) or `agent_id`.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLSD people = findPeople(name);
+            if (people.size() == 0)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nobody nearby or on the friends list matched \"" + name + "\".";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (people.size() > 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one person matched \"" + name + "\". Ask which, then pass agent_id.";
+                e["data"] = people;
+                LLSD w; w["__error"] = e; return w;
+            }
+            who = people[0]["agent_id"].asUUID();
+        }
+
+        std::map<LLUUID, LLSD>::iterator got = sProfiles.find(who);
+        if (got != sProfiles.end())
+        {
+            LLSD out = got->second;
+            sProfiles.erase(got);
+            return out;
+        }
+
+        if (!sProfilesPending.count(who))
+        {
+            sProfilesPending.insert(who);
+            ProfileWatcher* w = new ProfileWatcher(who);
+            LLAvatarPropertiesProcessor::getInstance()->addObserver(who, w);
+            LLAvatarPropertiesProcessor::getInstance()->sendAvatarPropertiesRequest(who);
+        }
+
+        LLSD pending;
+        pending["agent_id"] = who;
+        pending["pending"] = true;
+        pending["note"] = "Asked Second Life for their profile. It comes back a moment later -- "
+                          "call profile again with the same agent_id to collect it. Say nothing "
+                          "about them until you have it.";
         return pending;
     }
 

@@ -375,6 +375,7 @@ namespace
             if (action == "say")                return "Speaking";
             if (action == "send_im")            return "Sending message";
             if (action == "find_person")        return "Finding person";
+            if (action == "profile")     return "Reading their profile";
             if (action == "list_groups")        return "Listing groups";
             if (action == "list_friends")       return "Listing friends";
             if (action == "send_group_notice")  return "Posting notice";
