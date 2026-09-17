@@ -3060,9 +3060,34 @@ bool FSAIControl::photoGaze(LLVector3& world_dir_out)
     }
 
     // "camera": look at the lens. An ABSOLUTE position in agent coordinates,
-    // which is what LOOKAT_TARGET_FOCUS with no target object takes -- the
-    // viewer passes exactly this shape itself at llagentcamera.cpp:2948.
-    world_dir_out = gAgent.getPosAgentFromGlobal(me.mPhotoEye);
+    // which is what LOOKAT_TARGET_FOCUS with no target object takes --
+    // llhudeffectlookat.cpp:624 converts it back with getPosGlobalFromAgent.
+    LLVector3 lens = gAgent.getPosAgentFromGlobal(me.mPhotoEye);
+
+    // **But not at any angle.** Aiming exactly at a lens that is below her
+    // rolls the eyes down as far as they go, and seen FROM that lens the
+    // whites fill the eye -- which is what "the eyes go strange in snapshots"
+    // turned out to be. The gaze was never wrong; it was obeyed too
+    // literally. The author saw it first: "det ligner at øjnene følger med
+    // kameraet ned", which is the correct reading and the reason this is a
+    // clamp rather than a fix to the target.
+    //
+    // A person photographed from below tilts the head; the eyes stay near
+    // level. So the pitch is limited and the yaw left alone -- she still turns
+    // to face the lens, she just does not crane at it.
+    const LLVector3 head = gAgentAvatarp->mHeadp->getWorldPosition();
+    LLVector3 to_lens = lens - head;
+    const F32 flat = sqrtf(to_lens.mV[VX] * to_lens.mV[VX] + to_lens.mV[VY] * to_lens.mV[VY]);
+    if (flat > 0.01f)
+    {
+        const F32 MAX_PITCH = 18.f * DEG_TO_RAD;   // eyes, not neck
+        const F32 limit = flat * tanf(MAX_PITCH);
+        if (to_lens.mV[VZ] >  limit) to_lens.mV[VZ] =  limit;
+        if (to_lens.mV[VZ] < -limit) to_lens.mV[VZ] = -limit;
+        lens = head + to_lens;
+    }
+
+    world_dir_out = lens;
     return true;
 }
 
