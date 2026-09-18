@@ -1645,6 +1645,7 @@ namespace
             if (action == "lighting")        return "lighting";
             if (action == "set_setting")   return "set_setting";
             if (action == "show_setting")  return "show_setting";
+            if (action == "open_window")   return "open_window";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2160,7 +2161,7 @@ namespace
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
-              "set_setting", "show_setting" };
+              "set_setting", "show_setting", "open_window" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2238,6 +2239,15 @@ namespace
             "rather than claiming it is highlighted.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
+            "\n- open_window: **when they ask you to OPEN something, open it.** \"Can you open my "
+            "profile\" and \"can you open my block list\" are requests to do, not to be told -- "
+            "so use this rather than show_setting, and say where it lives afterwards so they "
+            "learn it. It puts a window on screen and nothing else: it will not undress the "
+            "avatar, teleport, or run any other menu command, and it refuses with the path when "
+            "the thing is not a window. Profile, block list, groups, friends, gestures, the "
+            "conversation log, inventory, snapshot, hover height and the rest of the menu bar's "
+            "windows all work. `confirmed_on_screen` true means the viewer was asked afterwards "
+            "and the window really is up.\n"
             "**Never invent a menu path: this viewer is not stock Firestorm and a wrong path "
             "cannot be checked by the person you told it to.**\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
@@ -3475,6 +3485,26 @@ namespace
         std::string tab;
         std::string widget;
         bool        menubar;    // in the menu bar rather than a context menu
+        /**
+         * How the menu item OPENS something, when it opens something.
+         *
+         * "Can you open my profile?" is a request to do, not to be told where.
+         * The XUI already says which items open a window -- `Floater.Show`,
+         * `Floater.Visible`, `Floater.Toggle` and
+         * `Floater.ToggleOrBringToFront` all name the floater as a parameter,
+         * and `SideTray.PanelPeopleTab` names a tab of the People window,
+         * which is how Block List, Groups and Friends are reached.
+         *
+         * **Safety is the allowlist of FUNCTION names, not our own copy of
+         * what they do.** The same menus carry `Edit.TakeOff`, `World.EnvSettings`
+         * and teleports; restricting to the handful that can only ever put a
+         * window on screen is what makes invoking the viewer's own callback
+         * safe. Same rule as inventory/open, where "open" on a sound would
+         * have played it out loud to everybody.
+         */
+        std::string openfn;
+        std::string openparam;
+        bool        open_is_floater;
         std::vector<std::string> lwords;
         std::vector<std::string> pwords;
     };
@@ -3492,7 +3522,13 @@ namespace
      */
     std::map<std::string, std::pair<F32, F32> > sSettingRange;
     /** Menu items that set nothing: a real place, real words, nothing to change. */
-    struct MenuItem { std::string label, path; bool menubar; };
+    struct MenuItem
+    {
+        std::string label, path, openfn, openparam;
+        bool menubar;
+        bool open_is_floater;
+        MenuItem() : menubar(false), open_is_floater(false) {}
+    };
     std::vector<MenuItem> sMenuItems;
     std::map<std::string, std::pair<std::string, std::string> > sTabs; // file -> (tab name, tab label)
     std::vector<FindEntry> sEntries;
@@ -3698,6 +3734,36 @@ namespace
         return false;
     }
 
+    /** The function a menu item runs, and its parameter. */
+    void menuFunction(LLXMLNodePtr item, std::string& fn, std::string& param)
+    {
+        fn.clear(); param.clear();
+        for (LLXMLNodePtr c = item->getFirstChild(); c.notNull(); c = c->getNextSibling())
+        {
+            std::string f;
+            if (c->getAttributeString("function", f) && !f.empty())
+            {
+                fn = f;
+                c->getAttributeString("parameter", param);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Does this menu function do nothing but put a window on screen?
+     *
+     * The allowlist IS the safety. Everything outside it is refused rather
+     * than tried, because the same menus can undress the avatar and move it.
+     */
+    bool opensAWindow(const std::string& fn, bool& is_floater)
+    {
+        is_floater = (fn == "Floater.Show" || fn == "Floater.Toggle"
+                      || fn == "Floater.Visible" || fn == "Floater.ToggleOrBringToFront");
+        if (is_floater) return true;
+        return (fn == "SideTray.PanelPeopleTab" || fn == "ShowAgentProfile");
+    }
+
     /** The setting a menu item toggles, if it toggles one. */
     std::string menuControl(LLXMLNodePtr item)
     {
@@ -3765,6 +3831,13 @@ namespace
                     m.label   = label;
                     m.path    = path;
                     m.menubar = menubar;
+                    std::string fn, par;
+                    menuFunction(node, fn, par);
+                    bool isfl = false;
+                    if (!fn.empty() && opensAWindow(fn, isfl))
+                    {
+                        m.openfn = fn; m.openparam = par; m.open_is_floater = isfl;
+                    }
                     sMenuItems.push_back(m);
                 }
             }
@@ -3962,6 +4035,7 @@ namespace
             e.tab     = h->second.tab;
             e.widget  = h->second.widget;
             e.menubar = (h->second.file == "menu_viewer.xml");
+            e.open_is_floater = false;
             e.lwords  = wordsOf(e.label);
             e.pwords  = wordsOf(e.path);
             sEntries.push_back(e);
@@ -3973,6 +4047,9 @@ namespace
             e.path    = m->path;
             e.kind    = "menu";
             e.menubar = m->menubar;
+            e.openfn  = m->openfn;
+            e.openparam = m->openparam;
+            e.open_is_floater = m->open_is_floater;
             e.lwords  = wordsOf(e.label);
             e.pwords  = wordsOf(e.path);
             sEntries.push_back(e);
@@ -5426,6 +5503,90 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // replay and the sitting rules, so they share a branch. Adding a verb here
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
+    if (method == "open_window")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string what = params.has("name") ? params["name"].asString() : std::string();
+        if (what.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give `name` -- what they called it, like \"my profile\" or "
+                           "\"block list\".";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD near;
+        const S32 at = findEntry(what, near);
+        if (at < 0)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = near.size()
+                ? "More than one thing matches \"" + what + "\". Ask which."
+                : "Nothing in this viewer's menus or panels carries those words. Say so rather "
+                  "than inventing a way to open it.";
+            if (near.size()) e["data"] = near;
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const FindEntry& e = sEntries[at];
+        const std::string where = whereOf(e.kind, e.path, e.label);
+        if (e.openfn.empty())
+        {
+            // **Refused rather than attempted.** The menus that hold these also
+            // hold `Edit.TakeOff` and teleports, so anything outside the
+            // window-opening allowlist is a path to read out, never a callback
+            // to fire.
+            LLSD e2; e2["code"] = -32000;
+            e2["message"] = "\"" + e.label + "\" is not something this viewer opens as a window. "
+                            "It is at: " + where + " -- give them that, and do not try to do it "
+                            "for them.";
+            LLSD d; d["where"] = where; d["called"] = e.label; e2["data"] = d;
+            LLSD w; w["__error"] = e2; return w;
+        }
+
+        bool opened = false;
+        if (e.open_is_floater)
+        {
+            // showInstance, never the menu's own toggle: asked to OPEN
+            // something already open, a toggle closes it.
+            LLFloaterReg::showInstance(e.openparam);
+            LLFloater* f = LLFloaterReg::findInstance(e.openparam);
+            opened = (f != NULL && f->getVisible());
+        }
+        else if (LLUICtrl::commit_callback_t* cb =
+                     LLUICtrl::CommitCallbackRegistry::getValue(e.openfn))
+        {
+            // The viewer's own callback, exactly as clicking the menu would --
+            // which is why the allowlist above has to be small.
+            (*cb)(NULL, LLSD(e.openparam));
+            opened = true;     // no handle to check; say what was done, not that they can see it
+        }
+
+        LLSD r;
+        r["called"] = e.label;
+        r["where"]  = where;
+        r["opened"] = opened;
+        r["confirmed_on_screen"] = (e.open_is_floater && opened);
+        r["note"] = opened
+            ? (e.open_is_floater
+               ? "The window was opened and confirmed on screen. Tell them it is open and where it "
+                 "lives (`where`), so they can get to it themselves next time."
+               : "The viewer's own menu command was run. There is no handle to check afterwards, "
+                 "so say it was opened for them rather than that they can see it -- and give them "
+                 "`where` so they can do it themselves next time.")
+            : "The window did not come up. Give them `where` instead and say it has to be done by "
+              "hand.";
+        recordAction(request_id, fingerprintOf(method, params), "open_window",
+                     opened ? "ok" : "failed", r, r);
+        return r;
+    }
+
     if (method == "set_setting" || method == "show_setting")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)

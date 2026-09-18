@@ -414,6 +414,7 @@ namespace
             if (action == "lighting")         return "Adjusting the light";
             if (action == "set_setting") return "Changing a setting";
             if (action == "show_setting") return "Opening Preferences";
+            if (action == "open_window")  return "Opening that window";
         }
 
         return action.empty() ? group : (group + "." + action);
