@@ -4393,13 +4393,13 @@ namespace
     }
 
     /** Fill one candidate row, saying where it lives. */
-    void nearRow(LLSD& near, const FindEntry& e)
+    void nearRow(LLSD& nearby, const FindEntry& e)
     {
         LLSD one;
         one["label"] = e.label;
         one["where"] = whereOf(e.kind, e.path, e.label);
         if (!e.ctrl.empty()) one["setting"] = e.ctrl;
-        near.append(one);
+        nearby.append(one);
     }
 
     bool scoreBetter(const std::pair<S32, size_t>& a, const std::pair<S32, size_t>& b)
@@ -4416,10 +4416,10 @@ namespace
      * answer reaches the ranked search, so the worst the new code can replace
      * is a "not found".
      */
-    S32 findEntry(const std::string& query, LLSD& near)
+    S32 findEntry(const std::string& query, LLSD& nearby)
     {
         buildSettingLabels();
-        near = LLSD::emptyArray();
+        nearby = LLSD::emptyArray();
         const std::string want = lowered(query);
 
         // 1. An exact label naming exactly one control.
@@ -4460,7 +4460,7 @@ namespace
             }
             // An exact label naming several controls is a refusal, not a coin
             // toss: `View People Icons` names four different lists.
-            for (size_t i = 0; i < found.size(); ++i) nearRow(near, sEntries[found[i]]);
+            for (size_t i = 0; i < found.size(); ++i) nearRow(nearby, sEntries[found[i]]);
             if (!found.empty()) return -1;
         }
 
@@ -4521,7 +4521,7 @@ namespace
                         || (ranked[0].first * 4 >= ranked[1].first * 5);
         if (clear) return (S32)ranked[0].second;
 
-        for (size_t i = 0; i < ranked.size() && i < 6; ++i) nearRow(near, sEntries[ranked[i].second]);
+        for (size_t i = 0; i < ranked.size() && i < 6; ++i) nearRow(nearby, sEntries[ranked[i].second]);
         return -1;
     }
 }
@@ -6489,16 +6489,16 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
 
-        LLSD near;
-        const S32 at = findEntry(what, near);
+        LLSD nearby;
+        const S32 at = findEntry(what, nearby);
         if (at < 0)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = near.size()
+            e["message"] = nearby.size()
                 ? "More than one thing matches \"" + what + "\". Ask which."
                 : "Nothing in this viewer's menus or panels carries those words. Say so rather "
                   "than inventing a way to open it.";
-            if (near.size()) e["data"] = near;
+            if (nearby.size()) e["data"] = nearby;
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -6580,12 +6580,12 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // teaches where it lives, where setting it for them does not.
         if (method == "show_setting")
         {
-            LLSD near;
-            const S32 at = findEntry(what, near);
+            LLSD nearby;
+            const S32 at = findEntry(what, nearby);
 
             LLSD r;
             r["searched_for"] = what;
-            if (near.size()) r["near_matches"] = near;
+            if (nearby.size()) r["near_matches"] = nearby;
 
             if (at < 0)
             {
@@ -6593,7 +6593,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 // candidates.** Nothing is opened for one, because choosing
                 // between two things that answer equally well is the guess
                 // this refuses to make.
-                if (near.size())
+                if (nearby.size())
                 {
                     r["opened"] = false;
                     r["filter_applied"] = false;
@@ -6775,8 +6775,8 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         // "Set draw distance to 64" wants it changed and confirmed.
-        LLSD near;
-        const S32 at = findEntry(what, near);
+        LLSD nearby;
+        const S32 at = findEntry(what, nearby);
         std::string ctrl = (at >= 0) ? sEntries[at].ctrl : std::string();
         if (ctrl.empty())
         {
@@ -6794,11 +6794,11 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             // menus, and cannot be set from here -- and saying only "no setting
             // matches" would send somebody looking for something they already
             // have.
-            if (near.size())
+            if (nearby.size())
             {
                 e["message"] = "More than one thing matches \"" + what + "\". Ask which, or use "
                                "show_setting.";
-                e["data"] = near;
+                e["data"] = nearby;
             }
             else if (at >= 0)
             {

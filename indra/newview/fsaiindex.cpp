@@ -824,12 +824,12 @@ std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
         // folder cannot overrule it.
         if (!wanted_fit.empty())
         {
-            const std::string near = nearFolder(e.lfolder);
+            const std::string nearby = nearFolder(e.lfolder);
 
             if (namesFit(e.lname, wanted_fit))          sc += 3000;
             else if (!fitInName(e.lname).empty())       sc -= 3000;
-            else if (namesFit(near, wanted_fit))        sc += 3000;
-            else if (!fitInName(near).empty())          sc -= 3000;
+            else if (namesFit(nearby, wanted_fit))        sc += 3000;
+            else if (!fitInName(nearby).empty())          sc -= 3000;
             // else: nothing anywhere names a body, and that is not a fault.
         }
 
