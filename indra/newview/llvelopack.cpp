@@ -600,7 +600,7 @@ static void register_uninstall_info(const std::wstring& install_dir,
 
         // <FS:TJ> Use Firestorm installation information
         //std::wstring link_url = L"https://support.secondlife.com/contact-support/";
-        std::wstring link_url = L"https://www.firestormviewer.org/support";
+        std::wstring link_url = L"https://github.com/cattencarter/lumen/issues";
         // </FS:TJ>
         RegSetValueExW(hkey, L"HelpLink", 0, REG_SZ,
             (BYTE*)link_url.c_str(), (DWORD)((link_url.size() + 1) * sizeof(wchar_t)));
@@ -614,7 +614,7 @@ static void register_uninstall_info(const std::wstring& install_dir,
 
         // <FS:TJ> Use Firestorm installation information
         //link_url = L"https://secondlife.com/support/downloads/";
-        link_url = L"https://www.firestormviewer.org/downloads";
+        link_url = L"https://github.com/cattencarter/lumen/releases";
         // </FS:TJ>
         RegSetValueExW(hkey, L"URLUpdateInfo", 0, REG_SZ,
             (BYTE*)link_url.c_str(), (DWORD)((link_url.size() + 1) * sizeof(wchar_t)));

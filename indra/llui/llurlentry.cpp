@@ -1739,7 +1739,9 @@ std::string LLUrlEntryJira::getUrl(const std::string &string) const
         string.find("SLS") != std::string::npos ||
         string.find("SUP") != std::string::npos )
     {
-        return llformat("https://jira.firestormviewer.org/browse/%s", string.c_str());
+        // <FS:AICtl> A ticket id typed in chat linked to FIRESTORM's bug tracker.
+        // Lumen has no Jira; point at this project's issues instead.
+        return llformat("https://github.com/cattencarter/lumen/issues?q=%s", string.c_str());
     }
     else
     {

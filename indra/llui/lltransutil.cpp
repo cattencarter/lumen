@@ -46,11 +46,11 @@ bool LLTransUtil::parseStrings(const std::string& xml_filename, const std::set<s
     {
         const std::string error_string =
             "Firestorm couldn't access some of the files it needs and will be closed."
-            "\n\nPlease reinstall viewer from https://www.firestormviewer.org/download and "
-            "contact https://www.firestormviewer.org/support if issue persists after reinstall.";
+            "\n\nPlease reinstall the viewer from https://github.com/cattencarter/lumen/releases and "
+            "report it at https://github.com/cattencarter/lumen/issues if the problem persists.";
         LLError::LLUserWarningMsg::show(error_string, LLError::LLUserWarningMsg::ERROR_MISSING_FILES);
         gDirUtilp->dumpCurrentDirectories(LLError::LEVEL_WARN);
-        LL_ERRS() << "Couldn't load string table " << xml_filename << ". Please reinstall viewer from https://www.firestormviewer.org/download and contact https://www.firestormviewer.org/support if issue persists after reinstall." << LL_ENDL;
+        LL_ERRS() << "Couldn't load string table " << xml_filename << ". Please reinstall the viewer from https://github.com/cattencarter/lumen/releases and report it at https://github.com/cattencarter/lumen/issues if the problem persists." << LL_ENDL;
         return false;
     }
 
