@@ -1302,6 +1302,40 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         return mCodex->send(m) ? id : -1;
     };
 
+    // **Codex asks before it calls one of our tools, and silence is a
+    // deadlock.** Two attempts hung here before the stream was read properly:
+    // the server sends `mcpServer/elicitation/request` and waits, and a client
+    // that ignores server REQUESTS -- as opposed to notifications -- simply
+    // never answers.
+    //
+    // Lumen accepts, and that is not a shortcut. The viewer is the authority
+    // on what is allowed: every call arrives at the same `handleRequest` any
+    // other host uses, so the no-copy confirmations, the ambiguity refusals,
+    // the idempotency and the action log all still apply. A second approval
+    // layer inside Codex would only ask the user to confirm things the viewer
+    // is about to refuse anyway -- and Decisions 40 already settled that a
+    // confirmation belongs in the conversation, not in a dialog.
+    auto answerIfAsked = [&](const LLSD& msg) -> bool
+    {
+        if (!msg.has("id") || !msg.has("method")) return false;
+        LLSD out;
+        out["jsonrpc"] = "2.0";
+        out["id"] = msg["id"];
+        if (msg["method"].asString() == "mcpServer/elicitation/request")
+        {
+            LLSD r;
+            r["action"] = "accept";
+            r["content"] = LLSD::emptyMap();
+            out["result"] = r;
+        }
+        else
+        {
+            out["result"] = LLSD::emptyMap();
+        }
+        mCodex->send(out);
+        return true;
+    };
+
     // Wait for one particular reply, carrying the stream along meanwhile.
     auto await = [&](S32 want, F32 seconds, LLSD& result) -> bool
     {
@@ -1311,6 +1345,7 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         {
             if (mCodex->poll(msg))
             {
+                if (answerIfAsked(msg)) continue;
                 if (msg.has("id") && msg["id"].asInteger() == want)
                 {
                     result = msg.has("result") ? msg["result"] : LLSD();
@@ -1323,6 +1358,8 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         return false;
     };
+
+
 
     LLSD res;
     if (!await(rpc("initialize", LLSD().with("clientInfo",
@@ -1337,8 +1374,20 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
 
     if (mCodexThread.empty())
     {
+        // **Register the viewer as an MCP server for THIS THREAD.** Codex
+        // speaks streamable HTTP, and the endpoint already is one, so it
+        // reaches the tools directly -- no bridge script, nothing that only
+        // exists in a source tree. And per-thread rather than
+        // `codex mcp add`, so nothing is written into the user's own Codex
+        // configuration: Lumen's threads have it, the rest of Codex does not.
+        LLSD server;
+        server["url"] = llformat("http://127.0.0.1:%d/mcp",
+                                 gSavedSettings.getU32("FSAIControlPort"));
+        LLSD cfg;
+        cfg["mcp_servers"] = LLSD().with("second_life", server);
+
         LLSD started;
-        if (!await(rpc("thread/start", LLSD()), 30.f, started))
+        if (!await(rpc("thread/start", LLSD().with("config", cfg)), 30.f, started))
         {
             sayNote("Codex would not start a conversation.");
             setBusy(false);
@@ -1380,6 +1429,8 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
             llcoro::suspend();
             continue;
         }
+
+        if (answerIfAsked(msg)) continue;
 
         const std::string method = msg.has("method") ? msg["method"].asString() : std::string();
         if (method == "item/agentMessage/delta")

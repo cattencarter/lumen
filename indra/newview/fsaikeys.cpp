@@ -357,10 +357,10 @@ std::string FSPanelPreferenceAIKeys::codexStatus()
         return "Codex is installed, but its background service is not running. Start it with:  "
                "codex app-server daemon start";
     }
-    return "Codex is installed and running, and Lumen can talk to it. Your ChatGPT account "
-           "pays for this, so there is no API key and no separate bill -- your plan's limits "
-           "apply instead. It cannot use the viewer's own tools yet, so ask it questions rather "
-           "than asking it to do things in Second Life.";
+    return "Codex is installed and running, and Lumen can talk to it -- including the viewer's "
+           "own tools, which it reaches over the same endpoint any other assistant uses. Your "
+           "ChatGPT account pays for this, so there is no API key and no separate bill; your "
+           "plan's limits apply instead.";
 }
 
 void FSPanelPreferenceAIKeys::refresh()
