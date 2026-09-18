@@ -72,8 +72,37 @@
 
 namespace
 {
-    const std::string ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-    const std::string OPENAI_URL    = "https://api.openai.com/v1/chat/completions";
+    const std::string ANTHROPIC_URL_DEFAULT = "https://api.anthropic.com/v1/messages";
+    const std::string OPENAI_URL_DEFAULT    = "https://api.openai.com/v1/chat/completions";
+
+    /**
+     * Where the provider lives -- settable, because the dialect is not the
+     * vendor.
+     *
+     * The author asked whether a ChatGPT subscription could drive the Assistant
+     * window instead of a paid key. It can, through the `codex` CLI, and that
+     * was measured working -- but the only codex on this machine is the one
+     * inside ChatGPT.app, which Decisions 3 refuses to build on, and using a
+     * subscription as a third-party engine is a question about HIS account that
+     * nobody has answered.
+     *
+     * **These two constants were the real obstacle, and they are not an
+     * obstacle.** Ollama, LM Studio, llama.cpp and vLLM all serve
+     * `/v1/chat/completions` in exactly the dialect this viewer already speaks,
+     * on localhost. One setting reaches every one of them, plus any compatible
+     * gateway, and adds no dependency to anyone who does not want it.
+     *
+     * *And it answers something else the login notice has to warn about:* with
+     * a local model nothing leaves the machine at all -- no datacentre, no
+     * provider, no bill.
+     */
+    std::string providerUrl(bool is_openai)
+    {
+        const std::string set = gSavedSettings.getString(
+            is_openai ? "LumenAIOpenAIURL" : "LumenAIAnthropicURL");
+        if (!set.empty()) return set;
+        return is_openai ? OPENAI_URL_DEFAULT : ANTHROPIC_URL_DEFAULT;
+    }
 
     // Anthropic pins its wire format with a date rather than a version number.
     const std::string ANTHROPIC_API_VERSION = "2023-06-01";
@@ -1351,7 +1380,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         }
 
         std::string error;
-        const LLSD reply = postJson(is_openai ? OPENAI_URL : ANTHROPIC_URL,
+        const LLSD reply = postJson(providerUrl(is_openai),
                                     body, headers, error);
 
         if (!error.empty())
@@ -2129,7 +2158,7 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
         }
 
         std::string error;
-        const LLSD reply = postJson(is_openai ? OPENAI_URL : ANTHROPIC_URL,
+        const LLSD reply = postJson(providerUrl(is_openai),
                                     body, headers, error);
 
         std::string text;

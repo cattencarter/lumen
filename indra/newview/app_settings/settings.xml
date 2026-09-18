@@ -14605,6 +14605,28 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <string>anthropic</string>
   </map>
+  <key>LumenAIAnthropicURL</key>
+    <map>
+      <key>Comment</key>
+      <string>Where to send Anthropic-dialect requests. Empty means Anthropic themselves. Set it to reach a compatible gateway or a local server instead.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+  </map>
+  <key>LumenAIOpenAIURL</key>
+    <map>
+      <key>Comment</key>
+      <string>Where to send OpenAI-dialect requests. Empty means OpenAI themselves. Ollama is http://localhost:11434/v1/chat/completions and LM Studio is http://localhost:1234/v1/chat/completions -- both speak this dialect, cost nothing, and send nothing off the machine.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+  </map>
   <key>LumenAIAnthropicModel</key>
     <map>
       <key>Comment</key>
