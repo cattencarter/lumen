@@ -115,6 +115,7 @@ public:
     // shown, which is exactly when the saved-key status needs recomputing.
     void refresh() override;
     std::string codexStatus();
+    boost::signals2::connection mProviderConn;
 
 private:
     struct Row

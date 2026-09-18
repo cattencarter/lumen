@@ -197,6 +197,15 @@ FSPanelPreferenceAIKeys::FSPanelPreferenceAIKeys()
 
 bool FSPanelPreferenceAIKeys::postBuild()
 {
+    // Follow the setting itself. Hanging this on the combo's own commit would
+    // miss a change made anywhere else -- the same mistake the Assistant
+    // window's title made three times over.
+    if (LLControlVariablePtr c = gSavedSettings.getControl("LumenAIProvider"))
+    {
+        mProviderConn = c->getSignal()->connect(
+            boost::bind(&FSPanelPreferenceAIKeys::refresh, this));
+    }
+
     LLPanelPreference::postBuild();
 
     mRows.clear();
@@ -341,6 +350,16 @@ std::string FSPanelPreferenceAIKeys::codexStatus()
 
 void FSPanelPreferenceAIKeys::refresh()
 {
+    // **Show what was chosen and nothing else.** The panel used to show every
+    // provider at once, which is why it was crowded enough that a new block
+    // printed straight through two paragraphs. The author: *"man kan ikke
+    // skifte indhold afhaengigt af hvad der er valgt i Use?"* -- one can, and
+    // the three panels sit at the same position so only one is ever on screen.
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
+    if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");
+    if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");
+
     if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
     {
         cs->setText(codexStatus());

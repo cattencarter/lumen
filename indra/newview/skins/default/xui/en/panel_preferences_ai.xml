@@ -10,7 +10,7 @@
  label="AI"
  name="ai">
 
-  <!-- Two tabs, because one flat panel stopped fitting once answering-while-away
+  <!-- Two tabs, because one flat panel stopped fitting once answering=while=away
        arrived. Structure copied from panel_preferences_privacy.xml rather than
        invented: Decisions 42 records that a widget dropped carelessly into a
        nested tab_container is how the login screen broke once already.
@@ -39,124 +39,154 @@
      label="Providers"
      name="tab-providers" >
 
+      <!-- The choice first, then only what that choice needs. Everything below
+           lives in three panels at the same position; refresh() shows one. -->
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="14" width="480" height="26" word_wrap="true">
-          You only need a key for the provider you want to use. Get one from that provider's own website.
-      </text>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="48" width="480" height="14" font="SansSerifBold">
-          Anthropic
-      </text>
-
-      <line_editor follows="left|top" layout="topleft"
-       left="20" top="68" width="330" height="22"
-       name="key_anthropic" is_password="true"
-       max_length_bytes="255" />
-
-      <button follows="left|top" layout="topleft"
-       left="358" top="68" width="70" height="22"
-       label="Clear" name="clear_anthropic" />
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="94" width="480" height="26" word_wrap="true"
-       name="status_anthropic">
-      </text>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="126" width="52" height="16">
-          Model
-      </text>
-
-      <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
-       left="76" top="122" width="274" height="22"
-       name="model_anthropic" allow_text_entry="true" max_chars="80">
-          <combo_box.item label="claude-haiku-4-5 (fastest, the default)" name="h45" value="claude-haiku-4-5-20251001" />
-          <combo_box.item label="claude-sonnet-5 (balanced)"     name="s5" value="claude-sonnet-5" />
-          <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
-      </combo_box>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="158" width="480" height="14" font="SansSerifBold">
-          OpenAI
-      </text>
-
-      <line_editor follows="left|top" layout="topleft"
-       left="20" top="178" width="330" height="22"
-       name="key_openai" is_password="true"
-       max_length_bytes="255" />
-
-      <button follows="left|top" layout="topleft"
-       left="358" top="178" width="70" height="22"
-       label="Clear" name="clear_openai" />
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="204" width="480" height="26" word_wrap="true"
-       name="status_openai">
-      </text>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="236" width="52" height="16">
-          Model
-      </text>
-
-      <combo_box control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
-       left="76" top="232" width="274" height="22"
-       name="model_openai" allow_text_entry="true" max_chars="80">
-          <combo_box.item label="gpt-5.6-luna"  name="g56l" value="gpt-5.6-luna" />
-          <combo_box.item label="gpt-5.6-sol"   name="g56s" value="gpt-5.6-sol" />
-          <combo_box.item label="gpt-5.6-terra" name="g56t" value="gpt-5.6-terra" />
-          <combo_box.item label="gpt-5.1"       name="g51"  value="gpt-5.1" />
-          <combo_box.item label="gpt-5"         name="g5"   value="gpt-5" />
-          <combo_box.item label="gpt-4o-mini"   name="g4om" value="gpt-4o-mini" />
-      </combo_box>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="268" width="480" height="14" font="SansSerifBold">
+       left="20" top="14" width="480" height="14" font="SansSerifBold">
           Use
       </text>
 
       <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
-       left="20" top="286" width="180" height="22" name="provider">
+       left="20" top="32" width="300" height="22" name="provider">
           <combo_box.item label="Anthropic (API key)" name="anthropic" value="anthropic" />
           <combo_box.item label="OpenAI (API key)"    name="openai"    value="openai" />
           <combo_box.item label="Codex (your ChatGPT subscription)" name="codex" value="codex" />
       </combo_box>
 
-      <text type="string" follows="left|top" layout="topleft" name="codex_status"
-       left="20" top="382" width="480" height="40" word_wrap="true">
-      </text>
+      <!-- ============================ Anthropic ============================ -->
+      <panel follows="left|top" layout="topleft" name="p_anthropic"
+       left="0" top="64" width="520" height="300" background_visible="false">
 
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="432" width="480" height="14" font="SansSerifBold">
-          Server
-      </text>
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="4" width="480" height="26" word_wrap="true">
+            Get a key from Anthropic's own website and paste it here.
+        </text>
 
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="450" width="480" height="26" word_wrap="true">
-          Leave these empty to use the provider itself. Point them somewhere else to use a model running on this computer -- nothing leaves the machine, and there is no bill.
-      </text>
+        <line_editor follows="left|top" layout="topleft"
+         left="20" top="36" width="330" height="22"
+         name="key_anthropic" is_password="true" max_length_bytes="255" />
 
-      <line_editor follows="left|top" layout="topleft" control_name="LumenAIAnthropicURL"
-       left="20" top="484" width="480" height="22" name="url_anthropic" max_length_bytes="255" />
+        <button follows="left|top" layout="topleft"
+         left="358" top="36" width="70" height="22"
+         label="Clear" name="clear_anthropic" />
 
-      <line_editor follows="left|top" layout="topleft" control_name="LumenAIOpenAIURL"
-       left="20" top="512" width="480" height="22" name="url_openai" max_length_bytes="255" />
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="62" width="480" height="26" word_wrap="true"
+         name="status_anthropic">
+        </text>
 
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="538" width="480" height="26" word_wrap="true">
-          Ollama is http://localhost:11434/v1/chat/completions and LM Studio is http://localhost:1234/v1/chat/completions. Both use the OpenAI box.
-      </text>
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="96" width="52" height="16">
+            Model
+        </text>
 
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="316" width="480" height="26" word_wrap="true">
-          You can type a model name that is not in the list. The lists are a starting point, not a limit.
-      </text>
+        <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
+         left="76" top="92" width="274" height="22"
+         name="model_anthropic" allow_text_entry="true" max_chars="80">
+            <combo_box.item label="claude-haiku-4-5 (fastest, the default)" name="h45" value="claude-haiku-4-5-20251001" />
+            <combo_box.item label="claude-sonnet-5 (balanced)"     name="s5" value="claude-sonnet-5" />
+            <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
+        </combo_box>
 
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="348" width="480" height="26" word_wrap="true">
-          Keys are stored the same way as your Second Life password, and are no safer than one.
-      </text>
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="124" width="480" height="26" word_wrap="true">
+            You can type a model name that is not in the list. The list is a starting point, not a limit.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="162" width="480" height="14" font="SansSerifBold">
+            Server
+        </text>
+
+        <line_editor follows="left|top" layout="topleft" control_name="LumenAIAnthropicURL"
+         left="20" top="182" width="480" height="22" name="url_anthropic" max_length_bytes="255" />
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="208" width="480" height="40" word_wrap="true">
+            Leave this empty to use Anthropic. Point it somewhere else to reach a compatible server instead.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="254" width="480" height="26" word_wrap="true">
+            Keys are stored the same way as your Second Life password, and are no safer than one.
+        </text>
+      </panel>
+
+      <!-- ============================= OpenAI ============================= -->
+      <panel follows="left|top" layout="topleft" name="p_openai"
+       left="0" top="64" width="520" height="300" background_visible="false">
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="4" width="480" height="26" word_wrap="true">
+            Get a key from OpenAI's own website and paste it here.
+        </text>
+
+        <line_editor follows="left|top" layout="topleft"
+         left="20" top="36" width="330" height="22"
+         name="key_openai" is_password="true" max_length_bytes="255" />
+
+        <button follows="left|top" layout="topleft"
+         left="358" top="36" width="70" height="22"
+         label="Clear" name="clear_openai" />
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="62" width="480" height="26" word_wrap="true"
+         name="status_openai">
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="96" width="52" height="16">
+            Model
+        </text>
+
+        <combo_box control_name="LumenAIOpenAIModel" follows="left|top" layout="topleft"
+         left="76" top="92" width="274" height="22"
+         name="model_openai" allow_text_entry="true" max_chars="80">
+            <combo_box.item label="gpt-5.6-luna"  name="g56l" value="gpt-5.6-luna" />
+            <combo_box.item label="gpt-5.6-sol"   name="g56s" value="gpt-5.6-sol" />
+            <combo_box.item label="gpt-5.6-terra" name="g56t" value="gpt-5.6-terra" />
+            <combo_box.item label="gpt-5.1"       name="g51"  value="gpt-5.1" />
+            <combo_box.item label="gpt-5"         name="g5"   value="gpt-5" />
+            <combo_box.item label="gpt-4o-mini"   name="g4om" value="gpt-4o-mini" />
+        </combo_box>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="124" width="480" height="26" word_wrap="true">
+            You can type a model name that is not in the list. The list is a starting point, not a limit.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="162" width="480" height="14" font="SansSerifBold">
+            Server
+        </text>
+
+        <line_editor follows="left|top" layout="topleft" control_name="LumenAIOpenAIURL"
+         left="20" top="182" width="480" height="22" name="url_openai" max_length_bytes="255" />
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="208" width="480" height="40" word_wrap="true">
+            Leave this empty to use OpenAI. A model running on this computer goes here: Ollama is http://localhost:11434/v1/chat/completions and LM Studio is http://localhost:1234/v1/chat/completions. Nothing leaves the machine, and there is no bill.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="254" width="480" height="26" word_wrap="true">
+            Keys are stored the same way as your Second Life password, and are no safer than one.
+        </text>
+      </panel>
+
+      <!-- ============================== Codex ============================== -->
+      <panel follows="left|top" layout="topleft" name="p_codex"
+       left="0" top="64" width="520" height="300" background_visible="false">
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="4" width="480" height="40" word_wrap="true">
+            Codex is OpenAI's own command-line tool. It signs in with your ChatGPT account, so there is no API key and no separate bill.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft" name="codex_status"
+         left="20" top="52" width="480" height="70" word_wrap="true">
+        </text>
+      </panel>
 
     </panel>
 
