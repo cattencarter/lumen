@@ -4,9 +4,6 @@
      For example, the strings used in avatar chat bubbles, and strings
      that are returned from one component and may appear in many places-->
 <strings>
-	<string name="SUPPORT_SITE">
-		Portal de Supporte Firestorm
-	</string>
 	<string name="StartupDetectingHardware">
 		Detectando hardware...
 	</string>
@@ -184,7 +181,7 @@ Versão do servidor de voz: [VOICE_VERSION]
 		Sair
 	</string>
 	<string name="create_account_url">
-		https://www.firestormviewer.org/join-secondlife/
+		https://join.secondlife.com/
 	</string>
 	<string name="ViewerDownloadURL">
 		http://secondlife.com/download

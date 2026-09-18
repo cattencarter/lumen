@@ -82,7 +82,7 @@ Détails de l&apos;erreur : La notification, appelée &apos;[_NAME]&apos;, est i
 		<usetemplate name="okbutton" yestext="OK"/>
 	</notification>
 	<notification name="BadInstallation">
-		Une erreur est survenue lors de la mise à jour de [APP_NAME].  Veuillez [https://www.firestormviewer.org/downloads télécharger la dernière version] du client.
+		Une erreur est survenue lors de la mise à jour de [APP_NAME].  Veuillez [https://github.com/cattencarter/lumen/releases télécharger la dernière version] du client.
 		<usetemplate name="okbutton" yestext="OK"/>
 	</notification>
 	<notification name="FoundLegacyNsisInstallation">
@@ -726,7 +726,7 @@ L&apos;objet est peut-être inaccessible ou a peut-être été supprimé.
 
 Consulter [_URL] pour en savoir plus ?
 		<url name="url" option="0">
-			https://wiki.firestormviewer.org/fs_system_requirements
+			https://secondlife.com/support/system-requirements/
 		</url>
 		<usetemplate ignoretext="Mon matériel n&apos;est pas pris en charge" name="okcancelignore" notext="Non" yestext="Oui"/>
 	</notification>
@@ -1571,7 +1571,7 @@ Si vous utilisez [CURRENT_GRID] pour la première fois, vous devez ouvrir un com
 
 Vérifiez votre connexion Internet et réessayez dans quelques minutes, cliquez sur Aide pour consulter la page [SUPPORT_SITE] ou bien sur Téléporter pour essayer d&apos;aller chez vous.
 		<url name="url">
-			https://www.firestormviewer.org/support/
+			https://support.secondlife.com/
 		</url>
 		<form name="form">
 			<button name="OK" text="OK"/>
@@ -5686,7 +5686,6 @@ Certains programmes antivirus peuvent bloquer par erreur des parties de [APP_NAM
 
 Pour obtenir des instructions détaillées sur la manière de mettre [APP_NAME] sur liste blanche - y compris une liste de fichiers et de dossiers à exclure - veuillez consulter notre guide :
 
-https://wiki.firestormviewer.org/antivirus_whitelisting
 	</notification>
 	<notification label="Confirmer le remplacement de la pose" name="ConfirmPoserOverwrite">
 		Remplacer la pose “[POSE_NAME]”?

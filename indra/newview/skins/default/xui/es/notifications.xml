@@ -79,7 +79,7 @@ Detalles del error: la notificación de nombre &apos;[_NAME]&apos; no se ha enco
 		<usetemplate name="okbutton" yestext="OK"/>
 	</notification>
 	<notification name="BadInstallation">
-		Ha habido un error actualizando [APP_NAME]. Por favor, [https://www.firestormviewer.org/downloads descarga la última versión] del Visor.
+		Ha habido un error actualizando [APP_NAME]. Por favor, [https://github.com/cattencarter/lumen/releases descarga la última versión] del Visor.
 		<usetemplate name="okbutton" yestext="Aceptar"/>
 	</notification>
 	<notification name="LoginFailedNoNetwork">
@@ -642,7 +642,7 @@ El objeto debe de haber sido borrado o estar fuera de alcance (&apos;out of rang
 
 ¿Ir a [_URL] para más información?
 		<url name="url" option="0">
-			https://wiki.firestormviewer.org/fs_system_requirements
+			https://secondlife.com/support/system-requirements/
 		</url>
 		<usetemplate ignoretext="El hardware de mi ordenador no está admitido" name="okcancelignore" notext="No" yestext="Sí"/>
 	</notification>
@@ -1445,7 +1445,7 @@ Si es la primera vez que usas [CURRENT_GRID], debes crear una cuenta para poder 
 
 Puedes revisar tu conexión a Internet y volver a intentarlo en unos minutos, pulsar Ayuda para conectarte a [SUPPORT_SITE], o pulsar Teleporte para intentar teleportarte a tu Base.
 		<url name="url">
-			https://www.firestormviewer.org/support/
+			https://support.secondlife.com/
 		</url>
 		<form name="form">
 			<button name="OK" text="Aceptar"/>

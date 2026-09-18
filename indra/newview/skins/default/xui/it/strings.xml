@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <strings>
-	<string name="SUPPORT_SITE">
-		Portale di supporto di Firestorm
-	</string>
 	<string name="StartupDetectingHardware">
 		Ricerca hardware...
 	</string>
@@ -207,7 +204,7 @@ Voice Server Version: [VOICE_VERSION]
 	</string>
 	<string name="LoginFailedViewerNotPermitted">
 		Il viewer utilizzato non è più in grado di accedere a Second Life. Visitare questa pagina per scaricare un nuovo viewer:
-https://www.firestormviewer.org/downloads/
+https://github.com/cattencarter/lumen/releases/
 
 Per maggiori informazioni, consultare le domande frequenti alla pagina:
 http://secondlife.com/viewer-access-faq
@@ -554,9 +551,6 @@ Se ritieni che si tratti di un errore, contatta support@secondlife.com
 		Non si può indossare una cartella che contiene più di [AMOUNT] elementi. Per modificare questo limite, accedere ad Avanzate &gt; Mostra impostazioni di debug &gt; WearFolderLimit.
 	</string>
 	<string name="TooltipPrice" value="L$ [AMOUNT]:"/>
-	<string name="TooltipSLIcon">
-		Collegamento ad una pagina sul sito ufficiale SecondLife.com, LindenLab.com o firestormviewer.org.
-	</string>
 	<string name="TooltipFlagScript">
 		Script
 	</string>
@@ -824,7 +818,7 @@ Se ritieni che si tratti di un errore, contatta support@secondlife.com
 	</string>
 	<string name="AssetUploadRequestInvalid">
 		Errore nella richiesta di invio. Visitare
-https://www.firestormviewer.org/support per avere aiuto nella soluzione.
+https://support.secondlife.com/ per avere aiuto nella soluzione.
 	</string>
 	<string name="texture">
 		texture

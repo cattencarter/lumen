@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes" ?>
 <panel label="Absturzmeldungen" name="crash_reports">
-	<check_box label="Absturzmeldungen an firestormviewer.org senden" name="checkSendCrashReports"/>
 	<check_box label="Vor dem Senden immer fragen" name="checkSendCrashReportsAlwaysAsk"/>
 	<check_box label="Firestorm-Konfigurationsdateien einschließen" name="checkSendSettings"/>
 	<text name="textSendSettings">

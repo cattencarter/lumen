@@ -39,7 +39,7 @@
 		<usetemplate name="okbutton" yestext="ＯＫ"/>
 	</notification>
 	<notification name="BadInstallation">
-		[APP_NAME]のアップデート時にエラーが発生しました。[https://www.firestormviewer.org/downloads 最新バージョンのビューアをダウンロード]してください。
+		[APP_NAME]のアップデート時にエラーが発生しました。[https://github.com/cattencarter/lumen/releases 最新バージョンのビューアをダウンロード]してください。
 		<usetemplate name="okbutton" yestext="ＯＫ"/>
 	</notification>
 	<notification name="LoginFailedNoNetwork">
@@ -3844,7 +3844,6 @@ UDP：3478, 3479, 5060, 5062, 6250, 12000-32000
 ルーターのSIP ALG機能を無効にします。
 
 音声通話は利用できなくなります。
-https://wiki.firestormviewer.org/fs_voice
 		<usetemplate ignoretext="ビューアが音声サーバーに接続できない場合の警告" name="okignore" yestext="ＯＫ"/>
 	</notification>
 	<notification name="NoVoiceConnect-GIAB">
@@ -3852,7 +3851,6 @@ https://wiki.firestormviewer.org/fs_voice
 
 ボイスチャットによるコミュニケーションが利用できません。
 お使いのネットワークやファイアウォールの設定を確認してください。
-[https://wiki.firestormviewer.org/fs_voice]
 		<usetemplate name="okbutton" yestext="ＯＫ"/>
 	</notification>
 	<notification name="AvatarRezLeftNotification">
@@ -5691,7 +5689,6 @@ Firestorm Viewer、Phoenix Firestorm Viewer Project Inc.、またはそのチー
 
 [APP_NAME]をホワイトリストに登録する方法 (除外するファイルとフォルダのリストを含む) の詳細については、次のガイドをご覧ください。
 
-https://wiki.firestormviewer.org/antivirus_whitelisting
 	</notification>
 	<notification name="WaterExclusionSurfacesWarning">
 		水面を非表示にするボックスをチェックすると、テクスチャ、凹凸、光沢の選択が上書きされます。

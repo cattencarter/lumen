@@ -37,7 +37,7 @@
 		[MESSAGE]
 	</notification>
 	<notification name="BadInstallation">
-		Произошла ошибка при обновлении [APP_NAME]. [https://www.firestormviewer.org/downloads Загрузите последнюю версию] клиента.
+		Произошла ошибка при обновлении [APP_NAME]. [https://github.com/cattencarter/lumen/releases Загрузите последнюю версию] клиента.
 	</notification>
 	<notification name="LoginFailedNoNetwork">
 		Не удалось подключиться к [CURRENT_GRID].
@@ -671,7 +671,7 @@
 
 Найти более подробную информацию на [_URL]?
 		<url name="url">
-			https://wiki.firestormviewer.org/fs_system_requirements
+			https://secondlife.com/support/system-requirements/
 		</url>
 		<usetemplate ignoretext="Оборудование моего компьютера не поддерживается" name="okcancelignore" notext="Нет" yestext="Да"/>
 	</notification>
@@ -3878,7 +3878,6 @@ URL: [AUDIOURL]
 Отключите любую функцию SIP ALG в вашем маршрутизаторе.
 
 Голосовая связь будет недоступна.
-https://wiki.firestormviewer.org/fs_voice
 		<usetemplate ignoretext="Возникли проблемы соединения с голосовым сервером" name="okignore" yestext="Да"/>
 	</notification>
 	<notification name="NoVoiceConnect-GIAB">
@@ -3886,7 +3885,6 @@ https://wiki.firestormviewer.org/fs_voice
 
 Голосовое общение будет недоступно.
 Проверьте настройки сети и брандмауэра.
-[https://wiki.firestormviewer.org/fs_voice]
 	</notification>
 	<notification name="AvatarRezLeftNotification">
 		( [EXISTENCE] сек. жизни )
@@ -5670,7 +5668,6 @@ https://wiki.firestormviewer.org/fs_voice
 
 Для получения подробных инструкций о том, как внести [APP_NAME] в белый список, включая список файлов и папок, которые необходимо исключить, ознакомьтесь с нашим руководством:
 
-https://wiki.firestormviewer.org/antivirus_whitelisting
 	</notification>
 
 	<notification label="Подтвердить перезапись позы" name="ConfirmPoserOverwrite">

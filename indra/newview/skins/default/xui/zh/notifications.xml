@@ -82,7 +82,7 @@
 		<usetemplate name="okbutton" yestext="確定"/>
 	</notification>
 	<notification name="BadInstallation">
-		[APP_NAME] 更新時出錯。請在 [https://www.firestormviewer.org/downloads 下載] 最新版本的檢視器。
+		[APP_NAME] 更新時出錯。請在 [https://github.com/cattencarter/lumen/releases 下載] 最新版本的檢視器。
 		<usetemplate name="okbutton" yestext="確定"/>
 	</notification>
 	<notification name="FoundLegacyNsisInstallation">
@@ -4011,7 +4011,6 @@ URL：[AUDIOURL]
 關閉路由器中的SIP ALG功能。
 
 將無法用語音通訊。
-https://wiki.firestormviewer.org/fs_voice
 		<usetemplate ignoretext="當檢視器無法連線到語音伺服器時警告我" name="okignore" yestext="確定"/>
 	</notification>
 	<notification name="NoVoiceConnect-GIAB">
@@ -4019,7 +4018,6 @@ https://wiki.firestormviewer.org/fs_voice
 
 將無法用語音通訊。
 請檢查你的網路和防火墻設定。
-[https://wiki.firestormviewer.org/fs_voice]
 		<usetemplate name="okbutton" yestext="確定"/>
 	</notification>
 	<notification name="AvatarRezLeftNotification">
@@ -5831,7 +5829,6 @@ gzip級別6壓縮的測試結果，對[FILE]檔案大小[SIZE] KB：
 
 有關如何將 [APP_NAME] 加入防毒軟體白名單的詳細說明，包括需要排除的檔案與資料夾清單，請參閱我們的指南：
 
-https://wiki.firestormviewer.org/antivirus_whitelisting
 	</notification>
 	<notification name="ConfirmPoserOverwrite">
 		是否覆蓋現有的姿勢「[POSE_NAME]」？

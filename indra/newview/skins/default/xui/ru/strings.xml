@@ -7,17 +7,11 @@
 	<string name="SECOND_LIFE">
 		[CURRENT_GRID]
 	</string>
-	<string name="APP_NAME">
-		Firestorm
-	</string>
 	<string name="CAPITALIZED_APP_NAME">
 		FIRESTORM
 	</string>
 	<string name="SECOND_LIFE_GRID">
 		Сеть Second Life
-	</string>
-	<string name="SUPPORT_SITE">
-		Портал технической поддержки Firestorm
 	</string>
 	<string name="StartupDetectingHardware">
 		Обнаружение оборудования...
@@ -225,7 +219,7 @@ SLURL: &lt;nolink&gt;[SLURL]&lt;/nolink&gt;
 		Выйти
 	</string>
 	<string name="create_account_url">
-		https://www.firestormviewer.org/join-secondlife/
+		https://join.secondlife.com/
 	</string>
 	<string name="AgniGridLabel">
 		Second Life Главная Сетка (Agni)
@@ -234,11 +228,11 @@ SLURL: &lt;nolink&gt;[SLURL]&lt;/nolink&gt;
 		Second Life Бета-тест Сетка (Aditi)
 	</string>
 	<string name="ViewerDownloadURL">
-		https://www.firestormviewer.org/choose-your-platform/
+		https://github.com/cattencarter/lumen/releases
 	</string>
 	<string name="LoginFailedViewerNotPermitted">
 		У клиента, которым вы пользуетесь, больше нет доступа к игре Second Life. Загрузить новую версию клиента можно по адресу:
-https://www.firestormviewer.org/choose-your-platform/
+https://github.com/cattencarter/lumen/releases
 
 Дополнительные сведения смотрите в разделе вопросов и ответов по адресу:
 http://secondlife.com/viewer-access-faq
@@ -569,9 +563,6 @@ support@secondlife.com.
 		Вы не можете надеть папку, содержащую более [AMOUNT] элементов.  Вы можете изменить это ограничение в Расширенное &gt; Показать настройки отладки &gt; WearFolderLimit.
 	</string>
 	<string name="TooltipPrice" value="L$[AMOUNT]: "/>
-	<string name="TooltipSLIcon">
-		Это ссылка на страницу официального домена SecondLife.com, LindenLab.com или firestormviewer.org.
-	</string>
 	<string name="TooltipFlagScript">
 		Скрипт
 	</string>
@@ -871,7 +862,7 @@ support@secondlife.com.
 	</string>
 	<string name="AssetUploadRequestInvalid">
 Ошибка в запросе на загрузку.  Пожалуйста, посетите
-https://www.firestormviewer.org/support за помощь в решении этой проблемы.
+https://support.secondlife.com/ за помощь в решении этой проблемы.
 	</string>
 	<string name="SettingValidationError">
 		Ошибка при импорте настроек [NAME]

@@ -31,7 +31,7 @@ Szczegóły błędu: Błąd o nazwie &apos;[_NAME]&apos; nie został odnaleziony
 		<usetemplate name="okcancelbuttons" notext="Anuluj" yestext="Tak"/>
 	</notification>
 	<notification name="BadInstallation">
-		Instalacja [APP_NAME] jest uszkodzona. Proszę [https://www.firestormviewer.org/downloads pobrać nową kopię] przeglądarki i ponownie ją zainstalować.
+		Instalacja [APP_NAME] jest uszkodzona. Proszę [https://github.com/cattencarter/lumen/releases pobrać nową kopię] przeglądarki i ponownie ją zainstalować.
 	</notification>
 	<notification name="FoundLegacyNsisInstallation">
 		Program [APP_NAME] wykrył zainstalowaną starszą wersję [VERSION]. Aby odinstalować starszą wersję, postępuj zgodnie z [https://community.secondlife.com/knowledgebase/english/how-to-uninstall-and-reinstall-second-life-r524/ tymi instrukcjami].
@@ -1492,7 +1492,7 @@ Możesz normalnie używać [APP_NAME], inni użytkownicy będą Cię widzieli po
 		Instalacja [APP_NAME] zakończona.
 
 Jeżeli używasz [CURRENT_GRID] po raz pierwszy to musisz stworzyć konto żeby móc się zalogować.
-Czy chcesz przejść na stronę [https://www.firestormviewer.org/join-secondlife/ firestormviewer.org] żeby stworzyć nowe konto?
+Czy chcesz przejść na stronę [https://join.secondlife.com/ join.secondlife.com] żeby stworzyć nowe konto?
 		<usetemplate name="okcancelbuttons" notext="Kontynuuj" yestext="Stwórz konto..."/>
 	</notification>
 	<notification name="LoginCantRemoveUsername">
@@ -3801,7 +3801,6 @@ Porty, które muszą być otwarte dla połączeń głosowych, to:
 Proszę sprawdź swoją sieć i ustawienia firewall.
 Wyłącz wszelkie funkcjonalności SIP ALG (Application Layer Gateway) w swoim routerze.
 
-https://wiki.firestormviewer.org/fs_voice
 		<usetemplate name="okignore" ignoretext="Ostrzegaj mnie, gdy przeglądarka nie może połączyć się z serwerem głosu" />
 	</notification>
 	<notification name="NoVoiceConnect-GIAB">
@@ -3809,8 +3808,6 @@ https://wiki.firestormviewer.org/fs_voice
 
 Komunikacja głosowa nie będzie dostępna.
 Proszę sprawdź swoją sieć i ustawienia firewall.
-
-[https://wiki.firestormviewer.org/fs_voice]
 	</notification>
 	<notification name="AvatarRezLeftNotification">
 		( [EXISTENCE] sekund w Second Life)
@@ -5558,7 +5555,6 @@ Niektóre programy antywirusowe mogą błędnie blokować części [APP_NAME]a, 
 
 Aby uzyskać szczegółowe instrukcje dotyczące umieszczania [APP_NAME]a na białej liście - w tym listę plików i folderów do wykluczenia - zapoznaj się z naszym przewodnikiem:
 
-https://wiki.firestormviewer.org/antivirus_whitelisting
 	</notification>
 	<notification label="Potwierdź nadpisanie pozy" name="ConfirmPoserOverwrite">
 		Nadpisać istniejącą pozę “[POSE_NAME]”?
