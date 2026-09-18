@@ -5578,7 +5578,15 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
         else if (sel.notNull())
         {
-            root = sel->getFirstRootObject(true);
+            // **Always climb to the real root.** Selecting one face of a child
+            // prim gave `getFirstRootObject(true)` that child, so a nine-prim
+            // object was reported as `links: 1` and the selected prim as
+            // "link 1" -- which is not its link number and link numbers are the
+            // whole point for scripting. Found on the first live test with a
+            // single face selected.
+            LLViewerObject* first = (picked ? picked->getObject() : NULL);
+            if (!first && sel->getFirstObject()) first = sel->getFirstObject();
+            if (first) root = first->getRootEdit();
             from_selection = (root != NULL);
         }
 
@@ -5605,7 +5613,19 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         r["links"] = (S32)chain.size();
         r["from_selection"] = from_selection;
 
+        // **The root is not always the prim they clicked.** Selecting one face
+        // of link 3 gives a node for link 3 and none for the root, and reading
+        // properties only from the root lost the name and the permissions
+        // entirely -- with the object selected, on screen, in front of them.
+        // Fall back to whichever prim IS selected, and say that is where it
+        // came from rather than presenting it as the object's own.
         std::map<const LLViewerObject*, LLSelectNode*>::const_iterator rn = nodes.find(root);
+        bool props_from_root = (rn != nodes.end() && rn->second->mValid);
+        if (!props_from_root && picked && picked->mValid && picked->getObject())
+        {
+            rn = nodes.find(picked->getObject());
+            if (rn != nodes.end()) r["properties_from_selected_prim"] = true;
+        }
         if (rn != nodes.end() && rn->second->mValid)
         {
             r["name"] = safeUtf8(rn->second->mName);
@@ -5613,12 +5633,32 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             if (rn->second->mPermissions)
             {
                 const LLPermissions& p = *rn->second->mPermissions;
+
+                // **Two different questions, and only one of them was being
+                // answered.** The owner mask says what THIS user may do -- what
+                // decides whether a script can be edited or saved. The
+                // NEXT-OWNER mask is what "full perm" means in Second Life and
+                // what decides whether a thing can be sold, given away or
+                // modified by whoever gets it. The author's correction: the
+                // next-owner set is the interesting one, and it was missing.
+                LLSD you;
+                you["modify"]   = (bool)(p.getMaskOwner() & PERM_MODIFY);
+                you["copy"]     = (bool)(p.getMaskOwner() & PERM_COPY);
+                you["transfer"] = (bool)(p.getMaskOwner() & PERM_TRANSFER);
+                LLSD nxt;
+                nxt["modify"]   = (bool)(p.getMaskNextOwner() & PERM_MODIFY);
+                nxt["copy"]     = (bool)(p.getMaskNextOwner() & PERM_COPY);
+                nxt["transfer"] = (bool)(p.getMaskNextOwner() & PERM_TRANSFER);
+
                 LLSD perm;
-                perm["modify"]   = (bool)(p.getMaskOwner() & PERM_MODIFY);
-                perm["copy"]     = (bool)(p.getMaskOwner() & PERM_COPY);
-                perm["transfer"] = (bool)(p.getMaskOwner() & PERM_TRANSFER);
-                perm["yours"]    = (p.getOwner() == gAgent.getID());
+                perm["you_can"]    = you;
+                perm["next_owner"] = nxt;
+                perm["yours"]      = (p.getOwner() == gAgent.getID());
+                perm["full_perm"]  = (bool)((p.getMaskNextOwner()
+                                             & (PERM_MODIFY | PERM_COPY | PERM_TRANSFER))
+                                            == (PERM_MODIFY | PERM_COPY | PERM_TRANSFER));
                 r["permissions"] = perm;
+                if (p.getGroup().notNull()) r["group_owned"] = p.isGroupOwned();
                 r["creator_id"] = p.getCreator();
                 r["creator_link"] = FSAIControl::profileLink(p.getCreator());
                 S32 asked = 0;
@@ -5643,6 +5683,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // **A big linkset is the interesting case and also the expensive one.**
         // Cut it rather than answer slowly on the frame loop, and say so.
         const S32 kMaxLinks = 64;
+        S32 unnamed_links = 0;
         LLSD links = LLSD::emptyArray();
         for (size_t i = 0; i < chain.size() && (S32)i < kMaxLinks; ++i)
         {
@@ -5658,6 +5699,20 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 {
                     L["description"] = safeUtf8(n->second->mDescription);
                 }
+            }
+            else
+            {
+                // **A prim's name arrives with the SELECTION and no other way.**
+                // The first version asked with `requestObjectPropertiesFamily`
+                // and told the caller to try again in a second -- measured over
+                // fifteen seconds and three calls, the names never came. That
+                // reply carries the root's owner information, not a child
+                // prim's name; only `ObjectProperties`, sent when prims are
+                // selected, does. A promise the tool cannot keep is worse than
+                // the gap it was covering.
+                const std::string key = o->getID().asString();
+                if (mObjectNames.has(key)) L["name"] = mObjectNames[key];
+                else ++unnamed_links;
             }
             if (i > 0) L["offset_from_root"] = V::sd(o->getPosition());
             L["scale"] = V::sd(o->getScale());
@@ -5704,6 +5759,14 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             links.append(L);
         }
         r["linkset"] = links;
+        if (unnamed_links)
+        {
+            r["links_without_a_name"] = unnamed_links;
+            r["names_note"] = "Those prims have no name here because the viewer is only ever told "
+                              "a prim's name when that prim is SELECTED. Calling again will not "
+                              "change it. If they want every prim named, ask them to select the "
+                              "whole object -- right-click, Edit, without isolating one prim.";
+        }
         if ((S32)chain.size() > kMaxLinks)
         {
             r["links_truncated"] = llformat("%d links, the first %d are listed",
@@ -5712,24 +5775,53 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
         // Which prim and face THEY are pointing at, which is what "this button"
         // and "this face" mean in a sentence.
-        if (picked && picked->getObject())
+        //
+        // **Only when they are pointing at ONE.** Editing an object selects the
+        // whole linkset, and `getFirstNode()` then returns whichever prim comes
+        // first -- so the first version reported `selected_link: 9` for a
+        // nine-prim object with everything selected, which is list order
+        // wearing the clothes of a decision. Caught on the very first live
+        // test, by noticing that all nine links had names and names only exist
+        // for selected prims.
+        const S32 selected_prims = (S32)nodes.size();
+        if (selected_prims >= (S32)chain.size())
+        {
+            r["whole_object_selected"] = true;
+        }
+        else if (picked && picked->getObject())
         {
             for (size_t i = 0; i < chain.size(); ++i)
             {
                 if (chain[i] == picked->getObject()) { r["selected_link"] = (S32)i + 1; break; }
             }
-            if (picked->hasSelectedTE())
+        }
+
+        // Same again for faces: Edit selects every face of a prim, and the
+        // "last selected" one is then meaningless. One bit set in the mask
+        // means they really did click a single face.
+        if (picked && picked->hasSelectedTE() && picked->getObject())
+        {
+            S32 mask = picked->getTESelectMask(), bits = 0, only = -1;
+            for (S32 b = 0; b < 32; ++b)
             {
-                const S32 last = picked->getLastSelectedTE();
-                if (last >= 0) r["selected_face"] = last;
+                if (mask & (1 << b)) { ++bits; only = b; }
             }
+            if (bits == 1) r["selected_face"] = only;
+            else if (bits > 1) r["all_faces_selected"] = true;
         }
 
         r["note"] = "The structure as the viewer holds it: link 1 is the root and the rest follow "
                     "in link order, which is the numbering scripts use. `selected_link` and "
-                    "`selected_face` are what the user is pointing at -- treat \"this prim\" and "
-                    "\"this face\" as those. Names, descriptions and permissions only exist for "
-                    "prims the viewer has been told about, which happens on selection. Object "
+                    "`selected_face` are what the user is pointing at, and they only appear when "
+                    "they really are pointing at ONE -- editing an object selects all of it, and "
+                    "then `whole_object_selected` is true and there is no single prim to mean by "
+                    "\"this one\". Ask which, rather than picking. Names, descriptions and permissions only exist for "
+                    "prims the viewer has been told about, which happens on selection. "
+                    "**`permissions` answers two different questions**: `you_can` is what THIS "
+                    "user may do -- that is what decides whether a script can be edited and saved "
+                    "-- while `next_owner` is what anybody they give or sell it to would get, "
+                    "which is what \"full perm\" means in Second Life. `full_perm` is that second "
+                    "set being copy, modify AND transfer. Do not report one as the other. Object "
                     "contents and scripts are NOT here; read_scripts reads an open script.";
         recordAction(request_id, fingerprintOf(method, params), "inspect_object", "ok", r, r);
         return r;
