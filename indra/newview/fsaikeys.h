@@ -59,6 +59,7 @@ namespace FSAIKeys
     extern const std::string OPENAI;
     extern const std::string LOCAL;
     extern const std::string CODEX;
+    extern const std::string CLAUDECODE;
 
     // Every provider we offer, in the order the panel shows them.
     const std::vector<std::string>& providers();
@@ -126,6 +127,7 @@ public:
         bool        ready = false;
     };
     CodexState codexStatus();
+    CodexState claudeStatus();
 
     // **A button that changes nothing visible is a button that looks broken.**
     // The author pressed Check while Codex was already ready, the status was
@@ -133,6 +135,7 @@ public:
     // time is the smallest thing that distinguishes "checked, still fine" from
     // "the button does nothing".
     std::string mCodexCheckedAt;
+    std::string mClaudeCheckedAt;
     boost::signals2::connection mProviderConn;
 
 private:

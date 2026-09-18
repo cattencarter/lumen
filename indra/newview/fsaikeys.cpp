@@ -30,6 +30,9 @@
 
 #include "fsaikeys.h"
 #include "fsaichat.h"
+#include "fsaiclaude.h"
+#include "llcoros.h"
+#include "lleventcoro.h"
 
 #include "llbutton.h"
 #include "llclipboard.h"
@@ -84,6 +87,7 @@ namespace FSAIKeys
      */
     const std::string LOCAL     = "local";
     const std::string CODEX     = "codex";
+    const std::string CLAUDECODE = "claudecode";
 
     const std::vector<std::string>& providers()
     {
@@ -97,6 +101,7 @@ namespace FSAIKeys
         if (provider == OPENAI)    return "OpenAI";
         if (provider == LOCAL)     return "the local model";
         if (provider == CODEX)     return "Codex";
+        if (provider == CLAUDECODE) return "Claude Code";
         return provider;
     }
 
@@ -249,6 +254,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
+    syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
 
     // Copy the command rather than ask somebody to retype a curl line with a
     // pipe in it. Read from the panel, not from codexStatus(), so the button
@@ -268,6 +274,87 @@ bool FSPanelPreferenceAIKeys::postBuild()
     // read when the panel is built, so without this the person follows the
     // instructions, comes back, and is still told to install it -- which reads
     // as the instructions having failed.
+    if (LLButton* cb = findChild<LLButton>("claude_copy"))
+    {
+        cb->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            LLLineEditor* ce = findChild<LLLineEditor>("claude_command");
+            if (!ce) return;
+            const LLWString w = utf8str_to_wstring(ce->getText());
+            LLClipboard::instance().copyToClipboard(w, 0, static_cast<S32>(w.length()));
+        });
+    }
+    // **It runs a real turn, because the panel says it does.** The first
+    // version of this button only stamped the time and redrew, under a line
+    // promising it would "try it for real" -- a claim the code did not back,
+    // which is the one thing this project will not ship. So it asks Claude Code
+    // a question THROUGH the viewer's own endpoint and reports what came back:
+    // that proves the CLI runs, that it is signed in, and that the tools are
+    // reachable, which is three separate things a user would otherwise
+    // discover one failure at a time.
+    if (LLButton* rb = findChild<LLButton>("claude_recheck"))
+    {
+        rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            LLTextBox* out = findChild<LLTextBox>("claude_status");
+            if (!FSAIClaude::installed())
+            {
+                refresh();
+                return;
+            }
+            if (out) out->setText(std::string(
+                "Asking Claude Code... this takes a few seconds."));
+
+            const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
+            const U16 port = (U16)gSavedSettings.getU32("FSAIControlPort");
+            LLHandle<LLPanel> h = getHandle();
+            LLCoros::instance().launch("FSAIClaudeTest", [h, model, port]()
+            {
+                FSAIClaude cc;
+                std::string why, said;
+                bool ok = false;
+
+                if (!cc.start("Call the second_life viewer tool with action=status and "
+                              "reply with ONLY the session_check value, nothing else.",
+                              std::string(), model, std::string(), port, why))
+                {
+                    said = why;
+                }
+                else
+                {
+                    const F64 until = LLTimer::getTotalSeconds() + 120.0;
+                    LLSD msg;
+                    while (LLTimer::getTotalSeconds() < until)
+                    {
+                        if (!cc.poll(msg))
+                        {
+                            if (!cc.running() && !cc.poll(msg)) break;
+                            llcoro::suspend();
+                            continue;
+                        }
+                        if (msg["type"].asString() != "result") continue;
+                        ok   = !msg["is_error"].asBoolean();
+                        said = msg["result"].asString();
+                        break;
+                    }
+                    if (said.empty()) said = "Claude Code did not answer.";
+                    cc.stop();
+                }
+
+                LLPanel* p = h.get();
+                if (!p) return;
+                LLTextBox* t = p->findChild<LLTextBox>("claude_status");
+                if (!t) return;
+                if (said.size() > 220) said = said.substr(0, 220);
+                t->setText(ok
+                    ? "It works. Claude Code ran, is signed in, and reached the viewer's "
+                      "own tools -- it answered with this session's check value: " + said
+                    : "It did not work: " + said
+                      + "\n\nIf it says not logged in, run  claude auth login  in Terminal once.");
+            });
+        });
+    }
+
     if (LLButton* rb = findChild<LLButton>("codex_recheck"))
     {
         rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
@@ -412,6 +499,7 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
+    syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
 
     refresh();
 }
@@ -513,6 +601,39 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
     return st;
 }
 
+/**
+ * What Claude Code needs next, and the command that provides it.
+ *
+ * Two states rather than Codex's four, because Claude Code needs no background
+ * service: it is a command we run per turn. What it does need is to be
+ * installed and to be signed in, and **only the second of those can be read
+ * from a file**, so being logged in is left to the Test button rather than
+ * guessed at here. A panel that says "signed in" because a file exists is the
+ * kind of confident wrong answer this project keeps writing down.
+ */
+FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
+{
+    CodexState st;
+
+    if (!FSAIClaude::installed())
+    {
+        st.text = "Step 1 of 2 -- Claude Code is not installed.\n"
+                  "It is Anthropic's own command-line tool, and it is what lets Lumen use "
+                  "your Claude subscription instead of a paid API key. Open Terminal, paste "
+                  "the command below and press Return.";
+        st.command = "npm install -g @anthropic-ai/claude-code";
+        return st;
+    }
+
+    st.ready = true;
+    st.text  = "Installed. If it has not been signed in yet, run  claude auth login  in "
+               "Terminal once -- that opens a browser and uses your own Claude account; "
+               "Lumen never sees the password.\n"
+               "Press Check again to try it for real: that asks Claude Code a question "
+               "through the viewer's own tools and says what came back.";
+    return st;
+}
+
 void FSPanelPreferenceAIKeys::refresh()
 {
     // **Show what was chosen and nothing else.** The panel used to show every
@@ -524,6 +645,7 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
     if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");
     if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");
+    if (LLPanel* p = findChild<LLPanel>("p_claudecode")) p->setVisible(provider == "claudecode");
     if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
     const CodexState codex = codexStatus();
@@ -545,6 +667,23 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLButton* cb = findChild<LLButton>("codex_copy"))
     {
         cb->setVisible(!codex.command.empty());
+    }
+
+    const CodexState claude = claudeStatus();
+    if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
+    {
+        cs->setText(mClaudeCheckedAt.empty()
+                    ? claude.text
+                    : claude.text + "\n\n(Checked at " + mClaudeCheckedAt + ".)");
+    }
+    if (LLLineEditor* ce = findChild<LLLineEditor>("claude_command"))
+    {
+        ce->setText(claude.command);
+        ce->setVisible(!claude.command.empty());
+    }
+    if (LLButton* cb = findChild<LLButton>("claude_copy"))
+    {
+        cb->setVisible(!claude.command.empty());
     }
 
     for (Row& row : mRows)

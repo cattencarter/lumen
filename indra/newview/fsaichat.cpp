@@ -37,6 +37,7 @@
 #include "fsaictl.h"
 #include "fsaikeys.h"
 #include "fsaicodex.h"
+#include "fsaiclaude.h"
 #include "llversioninfo.h"
 #include "fsaimemory.h"
 
@@ -94,6 +95,7 @@ namespace
         if (provider == FSAIKeys::OPENAI) return "LumenAIOpenAIModel";
         if (provider == FSAIKeys::LOCAL)  return "LumenAILocalModel";
         if (provider == FSAIKeys::CODEX)  return "LumenAICodexModel";
+        if (provider == FSAIKeys::CLAUDECODE) return "LumenAIClaudeCodeModel";
         return "LumenAIAnthropicModel";
     }
 
@@ -900,7 +902,7 @@ bool FSAIChatFloater::postBuild()
     // changes, with nothing in between to depend on.
     static const char* const kWatch[] = {
         "LumenAIProvider", "LumenAIAnthropicModel", "LumenAIOpenAIModel",
-        "LumenAILocalModel", "LumenAICodexModel" };
+        "LumenAILocalModel", "LumenAICodexModel", "LumenAIClaudeCodeModel" };
     for (size_t i = 0; i < LL_ARRAY_SIZE(kWatch); ++i)
     {
         if (LLControlVariablePtr c = gSavedSettings.getControl(kWatch[i]))
@@ -1394,9 +1396,14 @@ void FSAIChatFloater::onSend()
     {
         if (FSAIChatFloater* self = dynamic_cast<FSAIChatFloater*>(handle.get()))
         {
-            if (gSavedSettings.getString("LumenAIProvider") == FSAIKeys::CODEX)
+            const std::string who = gSavedSettings.getString("LumenAIProvider");
+            if (who == FSAIKeys::CODEX)
             {
                 self->runCodexTurn(text);
+            }
+            else if (who == FSAIKeys::CLAUDECODE)
+            {
+                self->runClaudeCodeTurn(text);
             }
             else
             {
@@ -1761,6 +1768,138 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
 
     if (!answer.empty()) sayAssistant(answer);
     else                 sayNote("Codex finished without saying anything.");
+    setBusy(false);
+}
+
+/**
+ * A turn on Claude Code: one child process, read a line at a time.
+ *
+ * **This is the only path that streams**, and it is not cleverness on our part
+ * -- `--output-format stream-json` hands the answer over as it is written,
+ * where the HTTP providers' layer can only deliver a whole response
+ * (`HttpHandler` declares nothing but `onCompleted`). The author asked for
+ * streaming hours before this provider existed and was told, correctly, that
+ * it would mean editing the viewer's core HTTP code. Here it is free.
+ *
+ * The conversation is held by Claude Code, not by us: it returns a
+ * `session_id`, and passing that to `--resume` continues it. Checked before
+ * being built on -- told a colour in one call and asked for it in the next, it
+ * answered, same session.
+ */
+void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
+{
+    if (!FSAIClaude::installed())
+    {
+        sayNote("Claude Code is not installed. Preferences > AI.");
+        setBusy(false);
+        return;
+    }
+
+    // A cached session belongs to the model it was started with, for the same
+    // reason a Codex thread does.
+    const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
+    if (!mClaudeSession.empty() && model != mClaudeModel)
+    {
+        mClaudeSession.clear();
+        sayNote("Switched to " + (model.empty() ? std::string("Claude Code's own default")
+                                                : model) + ". This starts a new conversation.");
+    }
+    mClaudeModel = model;
+
+    if (!mClaude) mClaude.reset(new FSAIClaude());
+
+    std::string why;
+    if (!mClaude->start(user_text, fullSystemPrompt(), model, mClaudeSession,
+                        (U16)gSavedSettings.getU32("FSAIControlPort"), why))
+    {
+        sayNote(why);
+        setBusy(false);
+        return;
+    }
+
+    setBusy(true, "Thinking...");
+
+    std::string answer;
+    std::string failed;
+    bool finished = false;
+    const F64 until = LLTimer::getTotalSeconds() + 300.0;
+    LLSD msg;
+    while (LLTimer::getTotalSeconds() < until)
+    {
+        if (!mClaude->poll(msg))
+        {
+            // **Drain before giving up.** A process that has exited may still
+            // have whole lines sitting in the pipe, and the `result` line is
+            // the last thing it writes -- so testing `running()` first would
+            // throw away the only line that matters.
+            if (!mClaude->running() && !finished)
+            {
+                if (!mClaude->poll(msg)) break;
+            }
+            else
+            {
+                llcoro::suspend();
+                continue;
+            }
+        }
+
+        const std::string type = msg.has("type") ? msg["type"].asString() : std::string();
+
+        if (type == "stream_event")
+        {
+            const LLSD& ev = msg["event"];
+            if (ev["type"].asString() == "content_block_delta"
+                && ev["delta"]["type"].asString() == "text_delta")
+            {
+                answer += ev["delta"]["text"].asString();
+            }
+        }
+        else if (type == "assistant")
+        {
+            // Tool calls arrive here; name the one running so the bar says
+            // something truer than "Thinking".
+            const LLSD& content = msg["message"]["content"];
+            for (LLSD::array_const_iterator it = content.beginArray();
+                 it != content.endArray(); ++it)
+            {
+                if ((*it)["type"].asString() != "tool_use") continue;
+
+                // **The name arrives namespaced, and the action is inside the
+                // arguments.** Claude Code calls our tools
+                // `mcp__second_life__viewer`, not `viewer`, so handing the raw
+                // name to humanAction() gives the status bar a debug string --
+                // exactly what a fourth list in actions-check was added to stop
+                // reaching a user.
+                std::string group = (*it)["name"].asString();
+                const size_t last = group.rfind("__");
+                if (last != std::string::npos) group = group.substr(last + 2);
+
+                const std::string act = (*it)["input"]["action"].asString();
+                const std::string said = humanAction(group, act);
+                if (!said.empty()) setActivity(said);
+            }
+        }
+        else if (type == "result")
+        {
+            finished = true;
+            mClaudeSession = msg["session_id"].asString();
+            if (msg["is_error"].asBoolean())
+            {
+                failed = msg["result"].asString();
+            }
+            else if (answer.empty())
+            {
+                answer = msg["result"].asString();
+            }
+            break;
+        }
+    }
+
+    mClaude->stop();
+
+    if (!failed.empty())      sayNote("Claude Code: " + failed);
+    else if (!answer.empty()) sayAssistant(answer);
+    else                      sayNote("Claude Code finished without saying anything.");
     setBusy(false);
 }
 

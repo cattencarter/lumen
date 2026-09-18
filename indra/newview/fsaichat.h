@@ -256,7 +256,11 @@ private:
     void refreshKeyNotice();
     void refreshTitle();
     void runCodexTurn(const std::string& user_text);
+    void runClaudeCodeTurn(const std::string& user_text);
     std::unique_ptr<class FSAICodex> mCodex;
+    std::unique_ptr<class FSAIClaude> mClaude;
+    std::string mClaudeSession;   // Claude Code holds the conversation
+    std::string mClaudeModel;     // what that session was started with
     std::string mCodexThread;
     std::string mCodexModel;   // what that thread was started with
     bool mWarmed = false;      // the local prefix has been sent once

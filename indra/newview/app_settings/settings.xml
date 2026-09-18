@@ -14680,7 +14680,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Type</key>
       <string>String</string>
       <key>Value</key>
-      <string>gpt-5.6-luna</string>
+      <string>gpt-5.6-terra</string>
   </map>
   <key>LumenAICodexEffort</key>
     <map>
@@ -14692,6 +14692,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>String</string>
       <key>Value</key>
       <string>low</string>
+  </map>
+  <key>LumenAIClaudeCodeModel</key>
+    <map>
+      <key>Comment</key>
+      <string>Model Claude Code is asked for. Its own aliases -- opus, sonnet, haiku -- rather than full names, because an alias keeps meaning the newest of that line. Empty means whatever Claude Code would pick itself.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>sonnet</string>
   </map>
   <key>FSAIControlPort</key>
     <map>

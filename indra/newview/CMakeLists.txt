@@ -108,6 +108,7 @@ set(viewer_SOURCE_FILES
     fsainotecache.cpp
     fsaimemory.cpp
     fsaicodex.cpp
+    fsaiclaude.cpp
     fsaictl.cpp
     fsaikeys.cpp
     fsassetblacklist.cpp
@@ -975,6 +976,7 @@ set(viewer_HEADER_FILES
     fsainotecache.h
     fsaimemory.h
     fsaicodex.h
+    fsaiclaude.h
     fsaictl.h
     fsaikeys.h
     fsassetblacklist.h
