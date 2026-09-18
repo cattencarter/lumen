@@ -293,6 +293,38 @@ static void downloadError(LLSD const &aData, std::string const &aURL)
 // call this just before the login screen and after the LLProxy has been setup.
 void FSData::startDownload()
 {
+    // <FS:AICtl> Lumen does not call Firestorm's servers. Author's decision,
+    // 2026-09-19, after going through what this actually fetched:
+    //
+    //   data.xml      MOTD, BlockedReleases, their staff flags, an asset
+    //                 blocklist and the RLVa compatibility list
+    //   defaults.<v>.xml   SETTING DEFAULTS, loaded by llappviewer at startup
+    //   client_list_v2.xml the legacy client-tag list
+    //
+    // Second Life already supplies the two that matter. The login response
+    // carries a message of the day, which llstartup puts straight into
+    // gAgent.mMOTD   and which processData() below OVERWROTE with Firestorm's,
+    // so until now this viewer showed their announcements instead of Linden
+    // Lab's. Linden Lab also blocks outdated viewers itself, through the
+    // login response's "update" reason, so BlockedReleases only ever governed
+    // THEIR releases while remaining a lever over ours.
+    //
+    // What is genuinely lost is two things, and the author weighed both:
+    // the shared asset blocklist (crash and griefer content), and the RLVa
+    // compatibility list, which only makes the viewer report an older RLV
+    // version to gear from named creators. RLVa is off by default, and the
+    // list ships empty and merges with a local RLVaCompatibilityModeList that
+    // a user can still fill in, so the mechanism survives, only uncurated.
+    //
+    // The OpenSim script libraries this also fetched are inside #ifdef OPENSIM
+    // and were already dead: OPENSIM is OFF in this build.
+    //
+    // mFSDataDone is set here rather than left false ON PURPOSE. llstartup
+    // waits on it with a 15 second timeout, so returning without it would add
+    // a quarter minute to every login. Set, login is faster than before.
+    mFSDataDone = true;
+    return;
+
     mFSdataFilename = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "fsdata.xml");
     mFSdataDefaultsFilename = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, llformat("fsdata_defaults.%s.xml", LLVersionInfo::getInstance()->getShortVersion().c_str()));
     mClientTagsFilename = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "client_list_v2.xml");
@@ -352,6 +384,16 @@ void FSData::startDownload()
 // call this _after_ the login screen to pick up grid data.
 void FSData::downloadAgents()
 {
+    // <FS:AICtl> agents.xml is Firestorm's own staff list, which drew the
+    // [FIRESTORM][FSDEV][FSSUPP] badges on profiles; assets.xml is the shared
+    // asset blocklist. Neither is fetched any more   see startDownload().
+    //
+    // mAgentsDone for the same reason as mFSDataDone: STATE_AGENTS_WAIT sleeps
+    // until this is true or 15 seconds pass. Upstream already sets it here for
+    // the OpenSim case, with a comment saying exactly that.
+    mAgentsDone = true;
+    return;
+
 #ifdef OPENSIM
     std::string filename_prefix = LLGridManager::getInstance()->getGridId();
 #else

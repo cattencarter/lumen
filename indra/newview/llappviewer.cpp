@@ -3087,16 +3087,13 @@ bool LLAppViewer::initConfiguration()
         return false;
     }
 
-    //<FS:Techwolf Lupindo>
-    // load defaults overide here. Can not use settings_files.xml as path is different then above loading of defaults.
-    std::string fsdata_defaults = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, llformat("fsdata_defaults.%s.xml", LLVersionInfo::getInstance()->getShortVersion().c_str()));
-    std::string fsdata_global = "Global";
-    std::shared_ptr<LLControlGroup> settings_group = LLControlGroup::getInstance(fsdata_global);
-    if(settings_group && settings_group->loadFromFile(fsdata_defaults, set_defaults))
-    {
-        LL_INFOS() << "Loaded settings file " << fsdata_defaults << LL_ENDL;
-    }
-    //</FS:Techwolf Lupindo>
+    // <FS:AICtl> The remote settings-defaults override is gone with the rest of
+    // FSData. This loaded fsdata_defaults.<version>.xml   a file downloaded from
+    // phoenixviewer.com and keyed by viewer version   straight into the Global
+    // control group AS DEFAULTS, so their server could change what any setting
+    // defaulted to in this viewer. Nothing fetches it now, and a stale copy left
+    // in a user's settings directory from a previous Firestorm install must not
+    // be picked up either, so the load goes rather than only the download.
 
     initStrings(); // setup paths for LLTrans based on settings files only
     // - set procedural settings
