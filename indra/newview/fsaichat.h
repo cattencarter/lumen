@@ -234,6 +234,7 @@ private:
     void sayHeader();
     void sayNote(const std::string& text);
     void refreshKeyNotice();
+    void refreshTitle();
 
     /** What the turn just cost, and what the window has cost so far. */
     /**

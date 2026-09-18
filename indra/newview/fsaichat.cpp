@@ -848,6 +848,7 @@ bool FSAIChatFloater::postBuild()
  */
 void FSAIChatFloater::refreshKeyNotice()
 {
+    refreshTitle();
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     const bool have = FSAIKeys::has(provider);
 
@@ -1029,12 +1030,18 @@ void FSAIChatFloater::sayHeader()
     const std::string model = gSavedSettings.getString(
         provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
 
-    // Once, at the top, so it reads as a fact about this conversation rather
-    // than a label sitting there saying the same thing for ever. Someone
-    // should be able to see which model answered without opening Preferences.
-    mTranscript->appendText(FSAIKeys::displayName(provider) + " \xc2\xb7 " + model,
-                            true, dimStyle());
+    // **Nothing printed.** This used to stamp "Anthropic . claude-haiku-4-5" at
+    // the top of the transcript, which was the only way to see which model was
+    // answering -- and it went stale the moment anybody changed it. Now the
+    // TITLE carries it, always current and impossible to scroll past, so the
+    // line underneath said the same thing twice. The author: *"hvis vi har det
+    // i toppen behoeves ikke den graa tekst i starten"*.
+    //
+    // `mAnnounced` is still set, because it is what makes a LATER change worth
+    // announcing: the note in the transcript records which model answered which
+    // turn, and that is a different question from which one is current.
     mAnnounced = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+    refreshTitle();
 }
 
 void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
@@ -1091,6 +1098,49 @@ void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 cal
     line += "  \xc2\xb7  " + compact(mSessionIn + mSessionOut) + " this window";
 
     setActivity(line);
+}
+
+/**
+ * The model, short enough for a title bar.
+ *
+ * `claude-haiku-4-5-20251001` is a date stamp on a name; the name is the part
+ * anybody reads. Strip a trailing -YYYYMMDD and nothing else, so an unfamiliar
+ * model is shown exactly as written rather than trimmed to fit.
+ */
+static std::string shortModel(const std::string& m)
+{
+    if (m.size() > 9)
+    {
+        const std::string tail = m.substr(m.size() - 9);
+        if (tail[0] == '-')
+        {
+            bool digits = true;
+            for (size_t i = 1; i < tail.size(); ++i)
+            {
+                if (!isdigit((unsigned char)tail[i])) { digits = false; break; }
+            }
+            if (digits) return m.substr(0, m.size() - 9);
+        }
+    }
+    return m;
+}
+
+/**
+ * Put the current model in the title bar, where it cannot be scrolled past.
+ *
+ * The transcript note says which model answered a given turn, which is the
+ * right record -- but it does not answer "which am I on NOW", and the author
+ * found the only way to see that was to close the window and open it again:
+ * *"det kraever at man lukker og aabner assistent vinduet for at se det"*.
+ * A title is always on screen and always current.
+ */
+void FSAIChatFloater::refreshTitle()
+{
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    const std::string model = gSavedSettings.getString(
+        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+    setTitle(model.empty() ? std::string("Assistant")
+                           : "Assistant \xc2\xb7 " + shortModel(model));
 }
 
 void FSAIChatFloater::sayNote(const std::string& text)
@@ -1198,6 +1248,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
             sayNote("Now using " + now + ".");
         }
         mAnnounced = now;
+        refreshTitle();
     }
 
     setBusy(true, "Thinking...");
