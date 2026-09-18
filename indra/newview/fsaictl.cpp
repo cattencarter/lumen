@@ -3333,6 +3333,19 @@ namespace
         std::string kind;   // "preferences" | "floater" | "menu"
         std::string where;  // "Preferences > Graphics", "Quick Preferences", "Avatar > Fly"
         std::string tab;    // the Preferences tab's NAME, for selectTabByName; empty elsewhere
+        /**
+         * The label **that home uses**, which is not always what was asked for.
+         *
+         * `RenderDisableVintageMode` is labelled "HDR and Emissive" in
+         * Preferences and "Enable HDR and Emissive" in Phototools -- one
+         * control, two wordings. Typing the user's words into Preferences'
+         * own search box therefore matched nothing, and its filter hides
+         * everything that does not match, so the author got an **empty
+         * Preferences window** under a sentence claiming the setting was
+         * highlighted. Filter with the home's own label, not the question.
+         */
+        std::string label;
+        std::string widget; // the XUI `name`, so the result can be LOOKED at
     };
 
     std::map<std::string, std::vector<std::string> > sSettingLabels;   // lowercased label -> control(s)
@@ -3460,7 +3473,10 @@ namespace
             {
                 noteLabel(label, ctrl);
                 noteRange(ctrl, node);
-                noteHome(ctrl, home);
+                SettingHome here = home;
+                here.label = label;
+                node->getAttributeString("name", here.widget);
+                noteHome(ctrl, here);
             }
             for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
             {
@@ -3558,6 +3574,8 @@ namespace
                     home.file  = file;
                     home.kind  = "menu";
                     home.where = here;
+                    home.label = label;
+                    node->getAttributeString("name", home.widget);
                     noteHome(ctrl, home);
                 }
                 else if (!sMenuOnly.count(lowered(label)))
@@ -3616,6 +3634,27 @@ namespace
                           << " other files and " << menus.size() << " menu files" << LL_ENDL;
     }
 
+    /**
+     * Does `hay` contain `needle` as a whole word?
+     *
+     * Plain substring matching is wrong in both directions here, and both were
+     * shipped: labels `R`, `G` and `I` from the Post-process window matched
+     * inside "hover height", and "hdr" matched inside "HDRI Preview" and
+     * answered a question about HDR with a developer render test.
+     */
+    bool containsWord(const std::string& hay, const std::string& needle)
+    {
+        if (needle.empty() || needle.size() > hay.size()) return false;
+        for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1))
+        {
+            const size_t end = at + needle.size();
+            const bool lhs = (at == 0) || !isalnum((unsigned char)hay[at - 1]);
+            const bool rhs = (end >= hay.size()) || !isalnum((unsigned char)hay[end]);
+            if (lhs && rhs) return true;
+        }
+        return false;
+    }
+
     /** Fill one candidate row, saying where it lives when that is known. */
     void nearRow(LLSD& near, const std::string& label, const std::string& ctrl)
     {
@@ -3667,19 +3706,8 @@ namespace
         for (std::map<std::string, std::vector<std::string> >::const_iterator
                  kv = sSettingLabels.begin(); kv != sSettingLabels.end(); ++kv)
         {
-            bool match = (kv->first.find(want) != std::string::npos);
-            if (!match && kv->first.size() >= 3)
-            {
-                for (size_t at = want.find(kv->first);
-                     at != std::string::npos;
-                     at = want.find(kv->first, at + 1))
-                {
-                    const size_t end = at + kv->first.size();
-                    const bool lhs = (at == 0) || !isalnum((unsigned char)want[at - 1]);
-                    const bool rhs = (end >= want.size()) || !isalnum((unsigned char)want[end]);
-                    if (lhs && rhs) { match = true; break; }
-                }
-            }
+            const bool match = (kv->first.find(want) != std::string::npos)
+                            || (kv->first.size() >= 3 && containsWord(want, kv->first));
             if (!match) continue;
             for (std::vector<std::string>::const_iterator c = kv->second.begin();
                  c != kv->second.end(); ++c)
@@ -3716,7 +3744,7 @@ namespace
         for (std::map<std::string, std::string>::const_iterator kv = sMenuOnly.begin();
              kv != sMenuOnly.end(); ++kv)
         {
-            if (kv->first.find(want) == std::string::npos) continue;
+            if (!containsWord(kv->first, want)) continue;
             if (!only.empty()) return std::string();
             only = kv->second;
         }
@@ -5066,6 +5094,22 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
             if (!in_prefs)
             {
+                // **An ambiguous query already HAS its answer -- the
+                // candidates.** Going on to search the menus answered a
+                // different question: asked about "hdr", with both real HDR
+                // settings found and listed, it reported
+                // "Developer > Render Tests > HDRI Preview".
+                if (ctrl.empty() && near.size())
+                {
+                    r["opened"] = false;
+                    r["filter_applied"] = false;
+                    r["note"] = "More than one setting matches those words, so nothing was "
+                                "opened. `near_matches` lists them WITH where each one lives -- "
+                                "ask which they mean rather than choosing for them.";
+                    recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
+                    return r;
+                }
+
                 const std::string where = (home != sSettingHome.end())
                                         ? home->second.where : findMenuPath(what);
                 if (!where.empty())
@@ -5088,6 +5132,12 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 // but the note must not imply anything was found.
             }
 
+            // **Filter with the label that panel uses, not with the question.**
+            // Preferences' own search hides everything it does not match, so
+            // one wrong word empties the window entirely.
+            const std::string term = (in_prefs && !home->second.label.empty())
+                                   ? home->second.label : what;
+
             LLFloaterReg::showInstance("preferences");
             LLFloater* prefs = LLFloaterReg::findInstance("preferences");
             bool filtered = false;
@@ -5095,7 +5145,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 if (LLUICtrl* box = prefs->findChild<LLUICtrl>("search_prefs_edit", true))
                 {
-                    box->setValue(what);
+                    box->setValue(term);
                     box->onCommit();
                     filtered = true;
                 }
@@ -5115,7 +5165,25 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 }
             }
 
+            // **And then LOOK, rather than claim.** The whole point of the
+            // filter is that it hides what does not match, so "I typed it in"
+            // and "they can see it" are different statements -- and the second
+            // one was being made on the strength of the first. The widget is
+            // named in the XUI, so it can simply be asked.
+            bool showing = false;
+            bool checked = false;
+            if (prefs && in_prefs && !home->second.widget.empty())
+            {
+                checked = true;
+                if (LLView* w = prefs->findChild<LLView>(home->second.widget, true))
+                {
+                    showing = w->isInVisibleChain();
+                }
+            }
+
             r["opened"] = (prefs != NULL);
+            if (in_prefs) r["searched_preferences_for"] = term;
+            if (checked) r["setting_is_visible"] = showing;
             if (!tab_label.empty()) r["tab"] = tab_label;
             r["filter_applied"] = filtered;
             r["note"] = !in_prefs
@@ -5124,13 +5192,19 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                   "look, but SAY IT WAS NOT FOUND -- do not invent a menu path, because they "
                   "cannot tell a wrong one from a right one except by hunting for a menu that "
                   "is not there."
-                : (filtered
-                   ? "Preferences is open ON THE RIGHT TAB with that typed into its search box, so "
-                     "the setting is highlighted and the rest hidden. `tab` is where it lives -- "
-                     "name it, so they learn where it is. The viewer cannot confirm they can "
-                     "actually see it, so say it is open rather than that they can see it."
-                   : "Preferences was opened but the search box could not be filled, so they will "
-                     "have to look. Say that rather than claiming it is highlighted.");
+                : (!filtered
+                   ? "Preferences was opened but the search box could not be filled, so they will "
+                     "have to look. Say that rather than claiming it is highlighted."
+                   : (!checked || showing
+                      ? "Preferences is open ON THE RIGHT TAB, filtered to this setting, and the "
+                        "control was found on screen afterwards -- `setting_is_visible` says so "
+                        "where it could be checked. `tab` is where it lives; name it, so they "
+                        "learn where it is. Note that the label there may differ from the words "
+                        "they used: `searched_preferences_for` is what that panel calls it."
+                      : "Preferences is open on the right tab, but the setting is NOT visible "
+                        "after filtering -- its own search did not match, so the panel is empty. "
+                        "SAY THAT and give them `tab` plus the label in `searched_preferences_for` "
+                        "to find by hand. Do not tell them it is highlighted; it is not."));
             recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
             return r;
         }
