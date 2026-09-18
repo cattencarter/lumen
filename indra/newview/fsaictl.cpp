@@ -63,6 +63,8 @@
 #include "rlvhandler.h"
 #include "llviewermessage.h"
 #include "llselectmgr.h"
+#include "llsyntaxid.h"
+#include "llsdserialize.h"
 #include "llviewerobjectlist.h"
 #include "fspose.h"
 #include "lllogchat.h"
@@ -1647,6 +1649,7 @@ namespace
             if (action == "show_setting")  return "show_setting";
             if (action == "open_window")   return "open_window";
             if (action == "inspect_object") return "inspect_object";
+            if (action == "lsl_lookup")    return "lsl_lookup";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2162,7 +2165,7 @@ namespace
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
-              "set_setting", "show_setting", "open_window", "inspect_object" };
+              "set_setting", "show_setting", "open_window", "inspect_object", "lsl_lookup" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2240,6 +2243,15 @@ namespace
             "rather than claiming it is highlighted.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
+            "\n- lsl_lookup: **check every LSL name before you write it, not after the compile "
+            "fails.** It answers from the syntax THIS REGION served, so return types, argument "
+            "order and argument types are fact rather than recollection, and it covers functions, "
+            "events and constants. A name that is not real comes back under `does_not_exist` with "
+            "`did_you_mean`. This matters more than it sounds: the LSL compiler reports only "
+            "\"Name not defined within scope\" and **never says which name**, so guessing from an "
+            "error goes wrong in both directions -- inventing functions that do not exist, and "
+            "blaming real ones that do. read_scripts also lists `names_that_do_not_exist` for the "
+            "script on screen, which is the same check applied to what is already written.\n"
             "\n- inspect_object: what an object IS, in one call -- the linkset in link order, "
             "every prim's faces with their textures, colours, alpha, glow and repeats, the "
             "permissions, and which prim and face the user has SELECTED. **Leave `object_id` out "
@@ -3404,6 +3416,179 @@ namespace
     private:
         LLUUID mWho;
     };
+}
+
+// <FS:AICtl> The LSL a model cannot be trusted to remember.
+//
+// **This is the one thing on the whole object/scripting list that a model
+// genuinely cannot do**, and the author's transcript is the proof. Asked for a
+// script to rotate link 3, the assistant wrote `llSetLinkRot`, `llGetLinkRot`
+// and `llGetLinkLocalRot` -- none of which exist -- and then, reading a compile
+// error, blamed `llGetLocalRot`, `llAxisAngle2Rot` and `llRotBetween`, **all
+// three of which are real**. Six guesses, five of them wrong in both
+// directions, and the right answer -- `llGetLinkPrimitiveParams` with
+// `PRIM_ROT_LOCAL` -- never came up.
+//
+// It is the menu-path problem again: answering from training data and producing
+// something plausible that cannot be checked by the person being told. And the
+// cure is the same one: **do not ask the model to remember the API, give it a
+// tool that reads it.**
+//
+// The viewer already holds the answer, and holds the CURRENT one:
+// `LLSyntaxIdLSL` keeps the syntax the region itself served, parsed, with
+// return types, argument names and argument types. 430 functions in the shipped
+// default alone.
+namespace
+{
+    LLSD sLslSyntax;
+    bool sLslLoaded = false;
+
+    const LLSD& lslSyntax()
+    {
+        if (!sLslLoaded)
+        {
+            sLslLoaded = true;
+            // The region's own version first -- it is why this is fact rather
+            // than recollection. The shipped file is the fallback.
+            sLslSyntax = LLSyntaxIdLSL::getInstance()->getKeywordsXML();
+            if (!sLslSyntax.isMap() || !sLslSyntax.has("functions"))
+            {
+                const std::string f = gDirUtilp->getExpandedFilename(
+                    LL_PATH_APP_SETTINGS, "keywords_lsl_default.xml");
+                llifstream in(f.c_str());
+                if (in.is_open())
+                {
+                    LLSD parsed;
+                    if (LLSDSerialize::fromXML(parsed, in) != LLSDParser::PARSE_FAILURE)
+                    {
+                        sLslSyntax = parsed;
+                    }
+                }
+            }
+            LL_INFOS("AICtl") << "lsl: "
+                              << (sLslSyntax.has("functions") ? sLslSyntax["functions"].size() : 0)
+                              << " functions, "
+                              << (sLslSyntax.has("events") ? sLslSyntax["events"].size() : 0)
+                              << " events, "
+                              << (sLslSyntax.has("constants") ? sLslSyntax["constants"].size() : 0)
+                              << " constants" << LL_ENDL;
+        }
+        return sLslSyntax;
+    }
+
+    /** Which of the three tables holds this name, or "" for none. */
+    std::string lslKindOf(const std::string& name)
+    {
+        const LLSD& s = lslSyntax();
+        static const char* const kTables[] = { "functions", "events", "constants" };
+        for (size_t i = 0; i < LL_ARRAY_SIZE(kTables); ++i)
+        {
+            if (s.has(kTables[i]) && s[kTables[i]].has(name)) return kTables[i];
+        }
+        return std::string();
+    }
+
+    /** One entry, written out the way somebody would read a signature. */
+    LLSD lslEntry(const std::string& name)
+    {
+        LLSD out;
+        const std::string kind = lslKindOf(name);
+        if (kind.empty()) return out;
+
+        const LLSD& e = lslSyntax()[kind][name];
+        out["name"] = name;
+        out["kind"] = kind.substr(0, kind.size() - 1);   // function / event / constant
+        if (e.has("return")) out["returns"] = e["return"];
+        if (e.has("type"))   out["type"]    = e["type"];
+        if (e.has("value"))  out["value"]   = e["value"];
+        if (e.has("tooltip")) out["about"]  = e["tooltip"];
+        if (e.has("energy"))  out["energy"] = e["energy"];
+        if (e.has("sleep") && e["sleep"].asReal() > 0.0) out["sleep"] = e["sleep"];
+
+        std::string sig = name;
+        if (e.has("arguments") && e["arguments"].isArray())
+        {
+            LLSD args = LLSD::emptyArray();
+            sig += "(";
+            for (LLSD::array_const_iterator a = e["arguments"].beginArray();
+                 a != e["arguments"].endArray(); ++a)
+            {
+                for (LLSD::map_const_iterator m = a->beginMap(); m != a->endMap(); ++m)
+                {
+                    LLSD one;
+                    one["name"] = m->first;
+                    if (m->second.has("type")) one["type"] = m->second["type"];
+                    if (m->second.has("tooltip")) one["about"] = m->second["tooltip"];
+                    args.append(one);
+                    if (args.size() > 1) sig += ", ";
+                    sig += m->second.has("type") ? m->second["type"].asString() : std::string("?");
+                    sig += " " + m->first;
+                }
+            }
+            sig += ")";
+            out["arguments"] = args;
+        }
+        else if (kind == "functions")
+        {
+            sig += "()";
+        }
+        if (kind == "functions")
+        {
+            out["signature"] = (e.has("return") ? e["return"].asString() + " " : std::string()) + sig;
+        }
+        return out;
+    }
+
+    /**
+     * What somebody probably meant by a name that does not exist.
+     *
+     * Longest shared prefix, which is exactly right for this vocabulary:
+     * `llSetLinkRot` shares `llSetLink` with `llSetLinkPrimitiveParamsFast`,
+     * and that is the answer. Nothing cleverer is needed and anything cleverer
+     * would guess.
+     */
+    LLSD lslDidYouMean(const std::string& name)
+    {
+        const LLSD& s = lslSyntax();
+        if (!s.has("functions")) return LLSD::emptyArray();
+
+        std::vector<std::pair<size_t, std::string> > best;
+        for (LLSD::map_const_iterator f = s["functions"].beginMap();
+             f != s["functions"].endMap(); ++f)
+        {
+            size_t n = 0;
+            while (n < name.size() && n < f->first.size()
+                   && tolower((unsigned char)name[n]) == tolower((unsigned char)f->first[n])) ++n;
+            if (n >= 6) best.push_back(std::make_pair(n, f->first));   // past "llSetL"
+        }
+        std::sort(best.begin(), best.end());
+        std::reverse(best.begin(), best.end());
+        LLSD out = LLSD::emptyArray();
+        for (size_t i = 0; i < best.size() && i < 8; ++i) out.append(best[i].second);
+        return out;
+    }
+
+    /** Every ll-name in a script that is not in the syntax at all. */
+    LLSD lslUnknownNames(const std::string& text)
+    {
+        LLSD out = LLSD::emptyArray();
+        std::set<std::string> seen;
+        for (size_t i = 0; i + 2 < text.size(); ++i)
+        {
+            if (text[i] != 'l' || text[i + 1] != 'l') continue;
+            if (i && (isalnum((unsigned char)text[i - 1]) || text[i - 1] == '_')) continue;
+            size_t j = i + 2;
+            while (j < text.size() && (isalnum((unsigned char)text[j]) || text[j] == '_')) ++j;
+            const std::string w = text.substr(i, j - i);
+            if (w.size() < 5 || !seen.insert(w).second) continue;
+            if (!lslKindOf(w).empty()) continue;
+            LLSD one;
+            one["name"] = w;
+            one["did_you_mean"] = lslDidYouMean(w);
+            out.append(one);
+        }
+        return out;
+    }
 }
 
 // <FS:AICtl> Finding a setting, and where in this viewer it actually lives.
@@ -5536,6 +5721,53 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // **One call, not eight.** A model wants the structure, the faces and the
     // permissions together, and asking eight questions is eight round trips
     // through a socket that runs on the frame loop.
+    if (method == "lsl_lookup")
+    {
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string want = params.has("name") ? params["name"].asString() : std::string();
+        if (want.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give `name` -- an LSL function, event or constant, or several "
+                           "separated by spaces or commas.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD found = LLSD::emptyArray(), missing = LLSD::emptyArray();
+        std::string cur;
+        std::vector<std::string> names;
+        for (size_t i = 0; i <= want.size(); ++i)
+        {
+            const char c = (i < want.size()) ? want[i] : ' ';
+            if (isalnum((unsigned char)c) || c == '_') cur += c;
+            else if (!cur.empty()) { names.push_back(cur); cur.clear(); }
+        }
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            const LLSD one = lslEntry(names[i]);
+            if (one.size()) { found.append(one); continue; }
+            LLSD no;
+            no["name"] = names[i];
+            no["did_you_mean"] = lslDidYouMean(names[i]);
+            missing.append(no);
+        }
+
+        LLSD r;
+        if (found.size())   r["found"] = found;
+        if (missing.size()) r["does_not_exist"] = missing;
+        r["source"] = "this region's own LSL syntax, as the simulator served it";
+        r["note"] = missing.size()
+            ? "Anything under `does_not_exist` is NOT an LSL function, event or constant in this "
+              "region -- do not write it. `did_you_mean` lists the real names closest to it. "
+              "Check before writing, not after a compile error: the compiler says only \"Name not "
+              "defined within scope\" and never says which name."
+            : "Signatures as the simulator itself defines them, so argument order and types are "
+              "fact rather than recollection. Use them exactly.";
+        recordAction(request_id, fingerprintOf(method, params), "lsl_lookup", "ok", r, r);
+        return r;
+    }
+
     if (method == "inspect_object")
     {
         // Positions as three rounded numbers -- readable, and small enough that
@@ -9063,9 +9295,10 @@ if (method == "camera")
                 one["where"] = (std::string(kind) == "preview_script")
                              ? "inventory" : "inside an object";
 
+                std::string text;
                 if (LLTextEditor* ed = f->findChild<LLTextEditor>("Script Editor"))
                 {
-                    const std::string text = ed->getText();
+                    text = ed->getText();
                     const S32 MAX = 40000;
                     one["text"] = safeUtf8(text.size() > (size_t)MAX
                                            ? text.substr(0, MAX) : text);
@@ -9097,6 +9330,18 @@ if (method == "camera")
                 if (errors.size() > 0)
                 {
                     one["compile_errors"] = errors;
+                }
+
+                // **The compiler says "Name not defined within scope" and does
+                // not say WHICH name.** So a model reading that error guesses,
+                // and the author's transcript is six wrong guesses in a row --
+                // three invented functions written, then three REAL ones
+                // blamed. We can simply say which: every ll-name in the script
+                // is checked against the region's own syntax.
+                const LLSD unknown = lslUnknownNames(text);
+                if (unknown.size())
+                {
+                    one["names_that_do_not_exist"] = unknown;
                 }
 
                 windows.append(one);

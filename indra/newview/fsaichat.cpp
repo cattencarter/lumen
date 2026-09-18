@@ -416,6 +416,7 @@ namespace
             if (action == "show_setting") return "Opening Preferences";
             if (action == "open_window")  return "Opening that window";
             if (action == "inspect_object") return "Looking at that object";
+            if (action == "lsl_lookup")    return "Checking the LSL reference";
         }
 
         return action.empty() ? group : (group + "." + action);
