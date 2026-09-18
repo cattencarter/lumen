@@ -136,7 +136,6 @@
             <combo_box.item label="gpt-5.6-terra" name="g56t" value="gpt-5.6-terra" />
             <combo_box.item label="gpt-5.1"       name="g51"  value="gpt-5.1" />
             <combo_box.item label="gpt-5"         name="g5"   value="gpt-5" />
-            <combo_box.item label="gpt-4o-mini"   name="g4om" value="gpt-4o-mini" />
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
