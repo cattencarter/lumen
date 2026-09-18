@@ -37,6 +37,8 @@
 
 #include "llviewerhelputil.h"
 #include "llviewerhelp.h"
+
+#include "llnotificationsutil.h"
 #include "llweb.h" // <FS:Beq/> Support for opening help in external browser
 
 // support for secondlife:///app/help/{TOPIC} SLapps
@@ -98,6 +100,28 @@ void LLViewerHelp::showTopic(const std::string& topic)
 {
     // <FS:Beq> allow external browser for help topics
     auto url = getURL(topic);
+
+    // <FS:AICtl> Never send this viewer's users to Firestorm's wiki.
+    //
+    // The author found the ? button doing exactly that FROM THE AI TAB, whose
+    // topic slug is one Firestorm never had, so it offered their page about a
+    // Preferences > Advanced tab instead. Renaming the viewer was supposed to
+    // have removed every path to their volunteers and this one was missed.
+    //
+    // The test is on the URL rather than on `HelpURLFormat`, because the login
+    // response can overwrite that setting (llstartup.cpp, `help_url_format`) --
+    // so a clean default is not a guarantee and this is.
+    //
+    // Nothing replaces it: there is no Lumen wiki, and pointing at a page that
+    // does not exist is the same fault on our own domain. The Assistant answers
+    // this better anyway, by reading the menus rather than remembering them, so
+    // the notice says so.
+    if (url.empty() || url.find("firestormviewer.org") != std::string::npos)
+    {
+        LLNotificationsUtil::add("LumenNoHelpPages");
+        return;
+    }
+    // </FS:AICtl>
     if ( LLWeb::useExternalBrowser(url) )
     {
         LLWeb::loadURLExternal(url);
