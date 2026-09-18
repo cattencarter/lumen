@@ -15098,9 +15098,7 @@ You can enable saving transcripts under Preferences &gt; Privacy &gt; Logs &amp;
    type="alertmodal">
 This build has no help pages of its own.
 
-Lumen is not Firestorm, so their wiki would describe a different viewer -- different menus, a different inventory folder, and none of the AI features.
-
-For anything in this viewer, ask the Assistant instead: Comm &gt; Assistant. Asking it where to find something makes it read this viewer&apos;s own menus and panels, so what it tells you is what is actually here.
+Ask the Assistant instead: Comm &gt; Assistant. Asking it where to find something makes it read this viewer&apos;s own menus and panels, so what it tells you is what is actually here rather than what a help page remembers.
     <tag>confirm</tag>
     <usetemplate
      name="okbutton"
