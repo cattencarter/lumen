@@ -1520,7 +1520,33 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         //   with      13.5s, one `show_setting`, the right tab and the real value
         // `developerInstructions` rather than `baseInstructions`, so Codex's own
         // conventions for calling tools stay intact and ours sit on top.
-        start["developerInstructions"] = fullSystemPrompt();
+        //
+        // **Plus a paragraph only this provider needs.** `systemPrompt()` was
+        // written for a wire where Lumen's four tools are the ONLY tools.
+        // Codex hands the model its own as well -- `functions.exec`,
+        // `functions.apply_patch`, `functions.wait` -- and frames it as a
+        // coding agent in a sandbox. So "USE THE TOOLS" stops being an
+        // instruction and becomes a question: which ones? The author watched
+        // the answer: *"I can't open Firestorm's Preferences window from here
+        // because no viewer-control tool is available"*, while the viewer's own
+        // log showed the MCP client connected and the thread running on the
+        // right model.
+        //
+        // Naming the server and denying the sandbox fixed it, four runs out of
+        // four on the question that had failed. It is deliberately NOT in
+        // `systemPrompt()`: the other two providers have no competing tools,
+        // and telling them about a `second_life` server that does not exist
+        // there would be its own confusion.
+        start["developerInstructions"] = fullSystemPrompt() +
+            "\n\nThe tools that matter here are the `second_life` ones. They drive the viewer "
+            "this person is looking at right now -- opening its windows, reading their "
+            "inventory, moving their avatar. When they ask you to open something, show them "
+            "something or tell them where something is, that is what to reach for.\n\n"
+            "You are not a coding agent and there is no sandbox. Any shell, patch or file tool "
+            "you can see belongs to a different job: do not run one, and do not offer to. If "
+            "something cannot be done, say so plainly rather than explaining an environment.\n\n"
+            "Write plain text. Asterisks and arrows arrive as visible punctuation in this "
+            "window; write `Avatar > Preferences`, not `**Avatar -> Preferences**`.";
 
         LLSD started;
         if (!await(rpc("thread/start", start), 30.f, started))
