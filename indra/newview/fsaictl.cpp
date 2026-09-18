@@ -3568,6 +3568,59 @@ namespace
         return out;
     }
 
+    /**
+     * Link numbers a script uses, so they can be checked against a real object.
+     *
+     * The first argument to any `ll*Link*` call is the link number. Written as
+     * a literal it is checkable, and it wants checking: asked to rotate link 3
+     * and then link 15 of a NINE-link object, the assistant wrote both without
+     * hesitating. The viewer knew the count; nothing compared them.
+     *
+     * **A warning and not a refusal**, deliberately. The script being edited
+     * usually lives in inventory rather than in the selected object, so we
+     * cannot know it is destined for the thing on screen -- refusing would
+     * block legitimate work. Stating the fact is the honest maximum.
+     */
+    std::set<S32> lslLinkNumbers(const std::string& text)
+    {
+        std::set<S32> out;
+        for (size_t i = 0; i + 6 < text.size(); ++i)
+        {
+            if (text.compare(i, 2, "ll") != 0) continue;
+            if (i && (isalnum((unsigned char)text[i - 1]) || text[i - 1] == '_')) continue;
+            size_t j = i + 2;
+            while (j < text.size() && (isalnum((unsigned char)text[j]) || text[j] == '_')) ++j;
+            const std::string fn = text.substr(i, j - i);
+            if (fn.find("Link") == std::string::npos) continue;
+            while (j < text.size() && isspace((unsigned char)text[j])) ++j;
+            if (j >= text.size() || text[j] != '(') continue;
+            ++j;
+            while (j < text.size() && isspace((unsigned char)text[j])) ++j;
+            size_t k = j;
+            while (k < text.size() && isdigit((unsigned char)text[k])) ++k;
+            if (k == j) continue;                       // not a literal; cannot check
+            while (k < text.size() && isspace((unsigned char)text[k])) ++k;
+            if (k < text.size() && (text[k] == ',' || text[k] == ')'))
+            {
+                out.insert(atoi(text.substr(j, k - j).c_str()));
+            }
+            i = j;
+        }
+        return out;
+    }
+
+    /** How many links the selected object has, or 0 if nothing is selected. */
+    S32 selectedLinkCount()
+    {
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        if (sel.isNull()) return 0;
+        LLSelectNode* n = sel->getFirstNode();
+        LLViewerObject* o = (n ? n->getObject() : NULL);
+        if (!o) return 0;
+        LLViewerObject* root = o->getRootEdit();
+        return root ? 1 + (S32)root->getChildren().size() : 0;
+    }
+
     /** Every ll-name in a script that is not in the syntax at all. */
     LLSD lslUnknownNames(const std::string& text)
     {
@@ -9344,6 +9397,27 @@ if (method == "camera")
                     one["names_that_do_not_exist"] = unknown;
                 }
 
+                const S32 have = selectedLinkCount();
+                if (have > 0)
+                {
+                    const std::set<S32> used = lslLinkNumbers(text);
+                    LLSD over = LLSD::emptyArray();
+                    for (std::set<S32>::const_iterator u = used.begin(); u != used.end(); ++u)
+                    {
+                        if (*u > have) over.append(*u);
+                    }
+                    if (over.size())
+                    {
+                        one["links_that_do_not_exist"] = over;
+                        one["selected_object_has_links"] = have;
+                        one["link_note"] = llformat(
+                            "This script uses link numbers the selected object does not have -- "
+                            "it has %d. If the script is meant for THAT object those lines will "
+                            "do nothing, silently. If it is meant for a different object, ignore "
+                            "this.", have);
+                    }
+                }
+
                 windows.append(one);
             }
         }
@@ -9466,6 +9540,34 @@ if (method == "camera")
                                "not defined within scope\" without saying which.";
                 e["data"] = bad;
                 LLSD w; w["__error"] = e; return w;
+            }
+
+            // **A warning, not a refusal, and the difference is knowable.**
+            // The script being edited usually lives in inventory, not inside
+            // the selected object, so we cannot know it is meant for the thing
+            // on screen -- refusing would block real work. Saying the number is
+            // the honest maximum. Asked to rotate link 3 and then link 15 of a
+            // NINE-link object, the assistant wrote both without pausing; the
+            // viewer knew the count and nothing compared them.
+            const S32 have = selectedLinkCount();
+            if (have > 0 && !proposed.empty())
+            {
+                const std::set<S32> used = lslLinkNumbers(proposed);
+                LLSD over = LLSD::emptyArray();
+                for (std::set<S32>::const_iterator u = used.begin(); u != used.end(); ++u)
+                {
+                    if (*u > have) over.append(*u);
+                }
+                if (over.size())
+                {
+                    result["links_that_do_not_exist"] = over;
+                    result["selected_object_has_links"] = have;
+                    result["link_warning"] = llformat(
+                        "Written, but this uses link numbers the selected object does not have -- "
+                        "it has %d. Those lines will do nothing at all, silently, if the script "
+                        "is meant for that object. TELL THEM the number rather than letting them "
+                        "find out by it not working.", have);
+                }
             }
         }
 
