@@ -8565,10 +8565,19 @@ if (method == "camera")
 
         // Keep the most recent, not the first: a long conversation read from
         // the top tells you about the day it started.
-        if (lines.size() > limit)
+        // **`LLSD::size()` returns `size_t`, not `S32`**, which is invisible
+        // here and an error on Windows: `size() - limit` is unsigned, assigning
+        // it to `S32` is C4267, and that build treats warnings as errors. clang
+        // says nothing at this project's warning level, so it cost a second
+        // two-hour CI round to find one line.
+        //
+        // Counting into an S32 once removes all three mixed comparisons rather
+        // than casting at each of them.
+        const S32 have = (S32)lines.size();
+        if (have > limit)
         {
             LLSD tail = LLSD::emptyArray();
-            for (S32 i = lines.size() - limit; i < lines.size(); ++i) tail.append(lines[i]);
+            for (S32 i = have - limit; i < have; ++i) tail.append(lines[i]);
             lines = tail;
         }
 
