@@ -1646,6 +1646,7 @@ namespace
             if (action == "set_setting")   return "set_setting";
             if (action == "show_setting")  return "show_setting";
             if (action == "open_window")   return "open_window";
+            if (action == "inspect_object") return "inspect_object";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2161,7 +2162,7 @@ namespace
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
-              "set_setting", "show_setting", "open_window" };
+              "set_setting", "show_setting", "open_window", "inspect_object" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2239,6 +2240,15 @@ namespace
             "rather than claiming it is highlighted.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
+            "\n- inspect_object: what an object IS, in one call -- the linkset in link order, "
+            "every prim's faces with their textures, colours, alpha, glow and repeats, the "
+            "permissions, and which prim and face the user has SELECTED. **Leave `object_id` out "
+            "and it uses the selection**, which is what \"this object\", \"this prim\" and "
+            "\"this face\" mean. Selecting is also the only way the viewer learns an object's "
+            "name, description and permissions at all, so if those are missing the answer is to "
+            "ask them to click it. Link 1 is the root and the numbering is the one scripts use, "
+            "so it cross-references straight into LSL: `llSetLinkAlpha(4, 0, 2)` is link 4, "
+            "face 2, and this tells you what those are.\n"
             "\n- open_window: **when they ask you to OPEN something, open it.** \"Can you open my "
             "profile\" and \"can you open my block list\" are requests to do, not to be told -- "
             "so use this rather than show_setting, and say where it lives afterwards so they "
@@ -2379,6 +2389,12 @@ namespace
         LLSD lse; lse["type"]="number";
             lse["description"]="lighting: how high the sun is, in degrees. 0 is the horizon, 90 "
                                "straight overhead, negative is below and dark.";
+        LLSD voi; voi["type"]="string";
+            voi["description"]="inspect_object: the object to look at. Leave it out to use what "
+                               "the user has SELECTED, which is almost always what is meant and "
+                               "is also the only way the viewer knows an object's name, "
+                               "description and permissions.";
+        view_props["object_id"]=voi;
         view_props["brightness"]=lbr; view_props["ambient"]=lam; view_props["contrast"]=lco;
         view_props["haze"]=lha; view_props["clouds"]=lcl; view_props["probe_ambiance"]=lpa;
         view_props["sun_azimuth"]=lsa; view_props["sun_elevation"]=lse;
@@ -5503,6 +5519,222 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // replay and the sitting rules, so they share a branch. Adding a verb here
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
+    // <FS:AICtl> What this object actually is, in one call.
+    //
+    // **The selection is the whole point.** ChatGPT's forty-item list for
+    // object and script understanding puts "selected object context" at number
+    // 29; it belongs at number 1, because without it every other item needs the
+    // user to identify the object first, which is the barrier this project
+    // exists to remove. "What is going on inside this object?" only works if
+    // *this* means something.
+    //
+    // And the selection is not merely convenient, it is where the data IS:
+    // `LLSelectNode` caches the name, description, permissions and creation
+    // date that `ObjectProperties` sent, per prim. An object nobody has clicked
+    // has a position and a shape and almost no properties.
+    //
+    // **One call, not eight.** A model wants the structure, the faces and the
+    // permissions together, and asking eight questions is eight round trips
+    // through a socket that runs on the frame loop.
+    if (method == "inspect_object")
+    {
+        // Positions as three rounded numbers -- readable, and small enough that
+        // a sixty-prim linkset is still one sane response.
+        struct V { static LLSD sd(const LLVector3& v) {
+            LLSD a = LLSD::emptyArray();
+            a.append(llround(v.mV[VX] * 1000.f) / 1000.f);
+            a.append(llround(v.mV[VY] * 1000.f) / 1000.f);
+            a.append(llround(v.mV[VZ] * 1000.f) / 1000.f);
+            return a; } };
+
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+
+        LLViewerObject* root = NULL;
+        bool from_selection = false;
+        std::map<const LLViewerObject*, LLSelectNode*> nodes;
+        LLSelectNode* picked = NULL;
+
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        if (sel.notNull())
+        {
+            for (LLObjectSelection::iterator it = sel->begin(); it != sel->end(); ++it)
+            {
+                LLSelectNode* n = *it;
+                if (n && n->getObject()) nodes[n->getObject()] = n;
+            }
+            picked = sel->getFirstNode();
+        }
+
+        if (params.has("object_id") && params["object_id"].asUUID().notNull())
+        {
+            LLViewerObject* o = gObjectList.findObject(params["object_id"].asUUID());
+            if (o) root = o->getRootEdit();
+        }
+        else if (sel.notNull())
+        {
+            root = sel->getFirstRootObject(true);
+            from_selection = (root != NULL);
+        }
+
+        if (!root)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
+                           "the object first -- selecting it is also what makes its name, "
+                           "description and permissions readable at all.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // Link order is the viewer's own: the root is 1, children follow.
+        std::vector<LLViewerObject*> chain;
+        chain.push_back(root);
+        for (LLViewerObject::const_child_list_t::const_iterator c = root->getChildren().begin();
+             c != root->getChildren().end(); ++c)
+        {
+            if (*c) chain.push_back(*c);
+        }
+
+        LLSD r;
+        r["id"] = root->getID();
+        r["links"] = (S32)chain.size();
+        r["from_selection"] = from_selection;
+
+        std::map<const LLViewerObject*, LLSelectNode*>::const_iterator rn = nodes.find(root);
+        if (rn != nodes.end() && rn->second->mValid)
+        {
+            r["name"] = safeUtf8(rn->second->mName);
+            r["description"] = safeUtf8(rn->second->mDescription);
+            if (rn->second->mPermissions)
+            {
+                const LLPermissions& p = *rn->second->mPermissions;
+                LLSD perm;
+                perm["modify"]   = (bool)(p.getMaskOwner() & PERM_MODIFY);
+                perm["copy"]     = (bool)(p.getMaskOwner() & PERM_COPY);
+                perm["transfer"] = (bool)(p.getMaskOwner() & PERM_TRANSFER);
+                perm["yours"]    = (p.getOwner() == gAgent.getID());
+                r["permissions"] = perm;
+                r["creator_id"] = p.getCreator();
+                r["creator_link"] = FSAIControl::profileLink(p.getCreator());
+                S32 asked = 0;
+                const std::string cn = creatorName(p.getCreator(), asked);
+                if (!cn.empty()) r["creator_name"] = cn;
+            }
+        }
+        else
+        {
+            r["properties_note"] = "The viewer has not been told this object's name, description "
+                                   "or permissions. It learns them when the object is SELECTED -- "
+                                   "ask them to click it.";
+        }
+
+        r["position"] = V::sd(root->getPositionRegion());
+        r["scale"]    = V::sd(root->getScale());
+        r["physical"] = root->flagUsePhysics();
+        r["phantom"]  = root->flagPhantom();
+        r["temporary"]= root->flagTemporaryOnRez();
+        if (root->isAttachment()) r["is_an_attachment"] = true;
+
+        // **A big linkset is the interesting case and also the expensive one.**
+        // Cut it rather than answer slowly on the frame loop, and say so.
+        const S32 kMaxLinks = 64;
+        LLSD links = LLSD::emptyArray();
+        for (size_t i = 0; i < chain.size() && (S32)i < kMaxLinks; ++i)
+        {
+            LLViewerObject* o = chain[i];
+            LLSD L;
+            L["link"] = (S32)i + 1;
+            L["root"] = (i == 0);
+            std::map<const LLViewerObject*, LLSelectNode*>::const_iterator n = nodes.find(o);
+            if (n != nodes.end() && n->second->mValid)
+            {
+                L["name"] = safeUtf8(n->second->mName);
+                if (!n->second->mDescription.empty() && n->second->mDescription != "(No Description)")
+                {
+                    L["description"] = safeUtf8(n->second->mDescription);
+                }
+            }
+            if (i > 0) L["offset_from_root"] = V::sd(o->getPosition());
+            L["scale"] = V::sd(o->getScale());
+
+            LLSD faces = LLSD::emptyArray();
+            const U8 n_te = o->getNumTEs();
+            for (U8 t = 0; t < n_te && t < 16; ++t)
+            {
+                const LLTextureEntry* te = o->getTE(t);
+                if (!te) continue;
+                LLSD f;
+                f["face"] = (S32)t;
+                f["texture"] = te->getID();
+                const LLColor4& col = te->getColor();
+                LLSD rgb = LLSD::emptyArray();
+                rgb.append(llround(col.mV[VRED] * 100.f) / 100.f);
+                rgb.append(llround(col.mV[VGREEN] * 100.f) / 100.f);
+                rgb.append(llround(col.mV[VBLUE] * 100.f) / 100.f);
+                f["colour"] = rgb;
+                f["alpha"] = llround(te->getAlpha() * 100.f) / 100.f;
+                if (te->getGlow() > 0.f)   f["glow"] = llround(te->getGlow() * 100.f) / 100.f;
+                if (te->getFullbright())   f["fullbright"] = true;
+                if (te->getScaleS() != 1.f || te->getScaleT() != 1.f)
+                {
+                    LLSD rep = LLSD::emptyArray();
+                    rep.append(te->getScaleS()); rep.append(te->getScaleT());
+                    f["repeats"] = rep;
+                }
+                if (te->getOffsetS() != 0.f || te->getOffsetT() != 0.f)
+                {
+                    LLSD off = LLSD::emptyArray();
+                    off.append(te->getOffsetS()); off.append(te->getOffsetT());
+                    f["offset"] = off;
+                }
+                if (te->getRotation() != 0.f) f["texture_rotation"] = te->getRotation();
+                if (picked && picked->getObject() == o && picked->isTESelected(t))
+                {
+                    f["selected"] = true;
+                }
+                faces.append(f);
+            }
+            L["faces"] = faces;
+            if (picked && picked->getObject() == o) L["selected"] = true;
+            links.append(L);
+        }
+        r["linkset"] = links;
+        if ((S32)chain.size() > kMaxLinks)
+        {
+            r["links_truncated"] = llformat("%d links, the first %d are listed",
+                                            (S32)chain.size(), kMaxLinks);
+        }
+
+        // Which prim and face THEY are pointing at, which is what "this button"
+        // and "this face" mean in a sentence.
+        if (picked && picked->getObject())
+        {
+            for (size_t i = 0; i < chain.size(); ++i)
+            {
+                if (chain[i] == picked->getObject()) { r["selected_link"] = (S32)i + 1; break; }
+            }
+            if (picked->hasSelectedTE())
+            {
+                const S32 last = picked->getLastSelectedTE();
+                if (last >= 0) r["selected_face"] = last;
+            }
+        }
+
+        r["note"] = "The structure as the viewer holds it: link 1 is the root and the rest follow "
+                    "in link order, which is the numbering scripts use. `selected_link` and "
+                    "`selected_face` are what the user is pointing at -- treat \"this prim\" and "
+                    "\"this face\" as those. Names, descriptions and permissions only exist for "
+                    "prims the viewer has been told about, which happens on selection. Object "
+                    "contents and scripts are NOT here; read_scripts reads an open script.";
+        recordAction(request_id, fingerprintOf(method, params), "inspect_object", "ok", r, r);
+        return r;
+    }
+
     if (method == "open_window")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
