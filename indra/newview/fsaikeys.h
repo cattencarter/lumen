@@ -114,6 +114,7 @@ public:
     // LLPanel declares this virtual; the floater calls it when the panel is
     // shown, which is exactly when the saved-key status needs recomputing.
     void refresh() override;
+    std::string codexStatus();
 
 private:
     struct Row

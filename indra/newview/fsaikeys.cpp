@@ -287,8 +287,52 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
     refresh();
 }
 
+/**
+ * What Codex's state on this machine actually IS, checked rather than assumed.
+ *
+ * The author asked for Codex as a choice beside the two API keys. It is a
+ * legitimate one -- OpenAI documents embedding Codex in your own product with
+ * a ChatGPT login -- but it needs things installed that a key does not, and a
+ * dropdown entry that silently does nothing is the failure this project keeps
+ * meeting. So the panel looks at the two paths that decide it and says which
+ * step is missing.
+ *
+ * **And it says plainly that the last step is not built yet**, because it is
+ * not: the wire format of the app-server socket has not been worked out, so
+ * choosing Codex today cannot answer a message. Offering it without that
+ * sentence would be a tool claiming what it cannot do.
+ */
+std::string FSPanelPreferenceAIKeys::codexStatus()
+{
+    const std::string home = gDirUtilp->getOSUserDir();
+    const std::string sep  = gDirUtilp->getDirDelimiter();
+    const std::string cli  = home + sep + ".codex" + sep + "packages" + sep + "standalone"
+                           + sep + "current" + sep + "bin" + sep + "codex";
+    const std::string sock = home + sep + ".codex" + sep + "app-server-control"
+                           + sep + "app-server-control.sock";
+
+    if (!gDirUtilp->fileExists(cli))
+    {
+        return "Codex is not installed. It is OpenAI's own command-line tool, and it lets "
+               "Lumen use your ChatGPT subscription instead of a paid API key. Install it "
+               "with:  curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+    }
+    if (!gDirUtilp->fileExists(sock))
+    {
+        return "Codex is installed, but its background service is not running. Start it with:  "
+               "codex app-server daemon start";
+    }
+    return "Codex is installed and running. NOT FINISHED: Lumen cannot talk to it yet, so "
+           "choosing Codex will not answer anything. Use a key for now.";
+}
+
 void FSPanelPreferenceAIKeys::refresh()
 {
+    if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
+    {
+        cs->setText(codexStatus());
+    }
+
     for (Row& row : mRows)
     {
         if (!row.status)

@@ -118,9 +118,35 @@
 
       <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
        left="20" top="286" width="180" height="22" name="provider">
-          <combo_box.item label="Anthropic" name="anthropic" value="anthropic" />
-          <combo_box.item label="OpenAI"    name="openai"    value="openai" />
+          <combo_box.item label="Anthropic (API key)" name="anthropic" value="anthropic" />
+          <combo_box.item label="OpenAI (API key)"    name="openai"    value="openai" />
+          <combo_box.item label="Codex (your ChatGPT subscription)" name="codex" value="codex" />
       </combo_box>
+
+      <text type="string" follows="left|top" layout="topleft" name="codex_status"
+       left="20" top="312" width="480" height="40" word_wrap="true">
+      </text>
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="360" width="480" height="14" font="SansSerifBold">
+          Server
+      </text>
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="378" width="480" height="26" word_wrap="true">
+          Leave these empty to use the provider itself. Point them somewhere else to use a model running on this computer -- nothing leaves the machine, and there is no bill.
+      </text>
+
+      <line_editor follows="left|top" layout="topleft" control_name="LumenAIAnthropicURL"
+       left="20" top="410" width="480" height="22" name="url_anthropic" max_length_bytes="255" />
+
+      <line_editor follows="left|top" layout="topleft" control_name="LumenAIOpenAIURL"
+       left="20" top="438" width="480" height="22" name="url_openai" max_length_bytes="255" />
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="464" width="480" height="26" word_wrap="true">
+          Ollama is http://localhost:11434/v1/chat/completions and LM Studio is http://localhost:1234/v1/chat/completions. Both use the OpenAI box.
+      </text>
 
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="316" width="480" height="26" word_wrap="true">
