@@ -9434,6 +9434,41 @@ if (method == "camera")
         LLSD result;
         result["script"] = where;
 
+        // **Refuse LSL that cannot exist, on the way IN.**
+        //
+        // read_scripts naming the fakes was only half a fix: it reports what is
+        // ALREADY written, so a freshly written `llGetLinkRot` is only caught
+        // after the user has pressed Save and watched it fail. The author,
+        // after six such rounds: *"at den stadig vaelger llGetLinkRot(3)"*.
+        //
+        // This project has learned twice that asking a model to read carefully
+        // does not work -- `worn: true` and `creator_link` were both ignored
+        // however politely the description asked. So the tool refuses instead,
+        // with the real names attached. The model cannot write a function that
+        // does not exist, whether or not it read anything.
+        {
+            std::string proposed;
+            if (params.has("with"))   proposed += params["with"].asString() + "\n";
+            if (params.has("text"))   proposed += params["text"].asString();
+            const LLSD bad = proposed.empty() ? LLSD::emptyArray() : lslUnknownNames(proposed);
+            if (bad.size())
+            {
+                LLSD e; e["code"] = -32602;
+                std::string names;
+                for (LLSD::array_const_iterator b = bad.beginArray(); b != bad.endArray(); ++b)
+                {
+                    if (!names.empty()) names += ", ";
+                    names += (*b)["name"].asString();
+                }
+                e["message"] = "Not written: " + names + " is not an LSL function in this region, "
+                               "so this would not compile. `data` has the real names closest to "
+                               "it -- use one of those. The compiler would only have said \"Name "
+                               "not defined within scope\" without saying which.";
+                e["data"] = bad;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
         if (params.has("replace"))
         {
             const std::string find = params["replace"].asString();
