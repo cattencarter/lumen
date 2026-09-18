@@ -2622,11 +2622,38 @@ endif (WINDOWS)
 # dumped into the target binary and runtime lookup will find the most
 # modern version.
 
+# <FS:AICtl> SQLite on Windows: compile the vendored amalgamation.
+#
+# This is the first thing the Windows port was expected to fail on, and it is
+# not a defect -- it is a platform difference nobody had resolved. macOS has
+# libsqlite3 in the SDK, Linux has it everywhere, Windows has neither, so
+# `#include <sqlite3.h>` simply does not resolve there.
+#
+# One .c and one .h, public domain, no build system and no dependency for
+# anyone to install -- the same reasoning that keeps the ChatGPT bridge in
+# `sh` rather than Node.
+#
+# **Its warnings are not ours.** SQLite is compiled with warnings off for that
+# one file: it is somebody else's code, the viewer builds with /W3 and turns
+# warnings into errors, and "fixing" a third-party amalgamation would have to
+# be redone at every version bump. Same judgement as the deprecation flag added
+# when Xcode 27 broke the tree -- silence somebody else's noise at the boundary
+# rather than editing their file.
+if (WINDOWS)
+    target_sources(${VIEWER_BINARY_NAME} PRIVATE sqlite/sqlite3.c)
+    target_include_directories(${VIEWER_BINARY_NAME} PRIVATE
+                               ${CMAKE_CURRENT_SOURCE_DIR}/sqlite)
+    set_source_files_properties(sqlite/sqlite3.c PROPERTIES
+                                COMPILE_FLAGS "/w"
+                                SKIP_PRECOMPILE_HEADERS ON)
+endif (WINDOWS)
+# </FS:AICtl>
+
 target_link_libraries(${VIEWER_BINARY_NAME}
         # <FS:AICtl> SQLite, for the notecard cache. No new autobuild package:
-        # macOS ships libsqlite3 in the SDK and Linux has it everywhere.
-        # Windows will need the amalgamation (one sqlite3.c) and is untested
-        # regardless -- see CLAUDE.md, Open questions.
+        # macOS ships libsqlite3 in the SDK and Linux has it everywhere, so
+        # there it is one linker flag. Windows ships nothing, so it compiles
+        # the vendored amalgamation instead -- see newview/sqlite/README-LUMEN.md.
         $<$<NOT:$<BOOL:${WINDOWS}>>:sqlite3>
         # </FS:AICtl>
         llaudio
