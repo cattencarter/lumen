@@ -927,7 +927,18 @@ void FSAIChatFloater::refreshKeyNotice()
     }
     mAnnounced = now;
 
-    if (!have && !mSaidNoKey)
+    // **Two of the four providers have no key, and there is no such thing as a
+    // "Codex key".** Codex signs in with the user's ChatGPT account and a local
+    // model needs nothing at all -- so this said "There is no Codex key saved
+    // yet. Put one in Preferences > AI", which sends somebody looking for a
+    // thing that does not exist. The author, immediately: *"den naevner codex
+    // key? men det er der vel ikke noget der hedder"*. There is not.
+    const bool needs_key = (provider == FSAIKeys::ANTHROPIC || provider == FSAIKeys::OPENAI);
+    if (!needs_key)
+    {
+        mSaidNoKey = false;
+    }
+    else if (!have && !mSaidNoKey)
     {
         sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
                 "Put one in Preferences > AI -- this line will change when it is saved.");
