@@ -2118,6 +2118,38 @@ namespace
         move_props["region"]=mrg; move_props["x"]=mx; move_props["y"]=my; move_props["z"]=mz;
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
+
+        // **The camera's own parameters, which were never declared.** `camera`
+        // reads `shot`, `angle`, `height`, `gaze` and `person`, and not one of
+        // them was in this schema -- so a model could only ever get the default
+        // body shot of the user, and every framing this project tested was
+        // tested by calling the endpoint directly. Found on 2026-09-18 by
+        // passing `framing` (a name that does not exist), getting a confident
+        // body shot back, and looking at the picture.
+        //
+        // The same defect as `value` on set_setting the day before, in another
+        // tool, and for the same reason: the schema is a FIFTH list and nothing
+        // compares it to the handlers.
+        LLSD csh; csh["type"]="string";
+            csh["description"]="camera: how much to frame -- `face`, `upper` (head and torso), "
+                               "`body` (head to feet, the default), `wide` (the surroundings), or "
+                               "`reset` to give the camera back. Ordinary words work too: "
+                               "portrait, close-up, torso, full body, scene.";
+        LLSD can; can["type"]="number";
+            can["description"]="camera: which side to shoot from, in degrees clockwise from in "
+                               "front of the subject. 0 is face on, 90 is their left, 180 behind.";
+        LLSD che; che["type"]="number";
+            che["description"]="camera: how far above eye level to put the lens, in metres. "
+                               "Small values only -- a lens far below rolls the eyes down.";
+        LLSD cga; cga["type"]="string";
+            cga["description"]="camera: where the subject looks -- `camera` (at the lens, the "
+                               "default) or `away`.";
+        LLSD cpe; cpe["type"]="string";
+            cpe["description"]="Somebody's name, for the actions that are about a person: whose "
+                               "attachments to read, or who to point the camera at. Leave it out "
+                               "for the user themselves.";
+        move_props["shot"]=csh; move_props["angle"]=can; move_props["height"]=che;
+        move_props["gaze"]=cga; move_props["person"]=cpe;
         LLSD move_schema; move_schema["type"]="object"; move_schema["properties"]=move_props;
         LLSD move_req = LLSD::emptyArray(); move_req.append("action");
         move_schema["required"]=move_req;
@@ -2288,6 +2320,47 @@ namespace
                 lp["description"]="lighting: \"sunrise\", \"midday\", \"sunset\", "
                                   "\"midnight\", or \"region\" for the place's own light.";
             view_props["preset"]=lp;
+
+        // **The lighting fine controls, none of which were ever declared.**
+        // A morning went into measuring what each one does on a standing
+        // avatar (the ground cannot show contrast at all), and not one of them
+        // was in this schema -- so a model could pick a preset and nothing
+        // else. Found on 2026-09-18 by the fifth list in actions-check.py, one
+        // hour after the same defect was found in `camera` by looking at a
+        // photograph. Ranges are the handler's own clamps.
+        LLSD lbr; lbr["type"]="number";
+            lbr["description"]="lighting: overall brightness, 0.1 to 10, default 1. Measured on a "
+                               "real scene: 0.5 gives 72, 1.0 gives 97, 1.35 gives 120, 2.0 gives "
+                               "153, 3.0 gives 217 -- so reach for 2.0 rather than 1.2 if they "
+                               "want a visible change.";
+        LLSD lam; lam["type"]="number";
+            lam["description"]="lighting: fill light, 0 to 3. Raises the shadow side without "
+                               "moving the lit side.";
+        LLSD lco; lco["type"]="number";
+            lco["description"]="lighting: contrast, 0 to 1. Under `midday` or any sky with "
+                               "probe_ambiance above 0 this darkens the shadow side by about a "
+                               "quarter and leaves the lit side alone. Under a region's own sky "
+                               "it dims everything instead, so say what it did rather than "
+                               "promising contrast.";
+        LLSD lha; lha["type"]="number";
+            lha["description"]="lighting: haze, 0 to 5. Higher is mistier and flatter.";
+        LLSD lcl; lcl["type"]="number";
+            lcl["description"]="lighting: cloud cover, 0 to 1.";
+        LLSD lpa; lpa["type"]="number";
+            lpa["description"]="lighting: reflection probe ambiance, 0 to 10. Above 0 it switches "
+                               "the sky out of classic mode, which is what makes `contrast` "
+                               "behave as contrast rather than as a dimmer.";
+        LLSD lsa; lsa["type"]="string";
+            lsa["description"]="lighting: where the sun is, RELATIVE to the way the user faces -- "
+                               "`front`, `behind`, `left`, `right`. That is almost always what is "
+                               "meant. A number is accepted as an absolute bearing, but working "
+                               "one out needs their heading, so prefer the words.";
+        LLSD lse; lse["type"]="number";
+            lse["description"]="lighting: how high the sun is, in degrees. 0 is the horizon, 90 "
+                               "straight overhead, negative is below and dark.";
+        view_props["brightness"]=lbr; view_props["ambient"]=lam; view_props["contrast"]=lco;
+        view_props["haze"]=lha; view_props["clouds"]=lcl; view_props["probe_ambiance"]=lpa;
+        view_props["sun_azimuth"]=lsa; view_props["sun_elevation"]=lse;
             LLSD ln; ln["type"]="string";
                 ln["description"]="lighting: one of the user's own saved environment settings, "
                                   "by name. Find them with inventory search, kind \"settings\". "
