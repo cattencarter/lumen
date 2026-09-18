@@ -81,6 +81,7 @@ namespace FSAIKeys
      * it sends leaves the machine.
      */
     const std::string LOCAL     = "local";
+    const std::string CODEX     = "codex";
 
     const std::vector<std::string>& providers()
     {
@@ -93,6 +94,7 @@ namespace FSAIKeys
         if (provider == ANTHROPIC) return "Anthropic";
         if (provider == OPENAI)    return "OpenAI";
         if (provider == LOCAL)     return "the local model";
+        if (provider == CODEX)     return "Codex";
         return provider;
     }
 
@@ -355,8 +357,10 @@ std::string FSPanelPreferenceAIKeys::codexStatus()
         return "Codex is installed, but its background service is not running. Start it with:  "
                "codex app-server daemon start";
     }
-    return "Codex is installed and running. NOT FINISHED: Lumen cannot talk to it yet, so "
-           "choosing Codex will not answer anything. Use a key for now.";
+    return "Codex is installed and running, and Lumen can talk to it. Your ChatGPT account "
+           "pays for this, so there is no API key and no separate bill -- your plan's limits "
+           "apply instead. It cannot use the viewer's own tools yet, so ask it questions rather "
+           "than asking it to do things in Second Life.";
 }
 
 void FSPanelPreferenceAIKeys::refresh()

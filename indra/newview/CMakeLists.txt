@@ -107,6 +107,7 @@ set(viewer_SOURCE_FILES
     lumenfolders.cpp
     fsainotecache.cpp
     fsaimemory.cpp
+    fsaicodex.cpp
     fsaictl.cpp
     fsaikeys.cpp
     fsassetblacklist.cpp
@@ -973,6 +974,7 @@ set(viewer_HEADER_FILES
     lumenfolders.h
     fsainotecache.h
     fsaimemory.h
+    fsaicodex.h
     fsaictl.h
     fsaikeys.h
     fsassetblacklist.h

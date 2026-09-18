@@ -58,6 +58,7 @@ namespace FSAIKeys
     extern const std::string ANTHROPIC;
     extern const std::string OPENAI;
     extern const std::string LOCAL;
+    extern const std::string CODEX;
 
     // Every provider we offer, in the order the panel shows them.
     const std::vector<std::string>& providers();

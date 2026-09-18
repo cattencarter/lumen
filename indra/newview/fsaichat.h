@@ -235,6 +235,9 @@ private:
     void sayNote(const std::string& text);
     void refreshKeyNotice();
     void refreshTitle();
+    void runCodexTurn(const std::string& user_text);
+    std::unique_ptr<class FSAICodex> mCodex;
+    std::string mCodexThread;
     std::vector<boost::signals2::connection> mModelConns;
 
     /** What the turn just cost, and what the window has cost so far. */

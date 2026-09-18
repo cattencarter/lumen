@@ -36,6 +36,8 @@
 
 #include "fsaictl.h"
 #include "fsaikeys.h"
+#include "fsaicodex.h"
+#include "llversioninfo.h"
 #include "fsaimemory.h"
 
 #include "llbutton.h"
@@ -1254,9 +1256,159 @@ void FSAIChatFloater::onSend()
     {
         if (FSAIChatFloater* self = dynamic_cast<FSAIChatFloater*>(handle.get()))
         {
-            self->runTurn(text);
+            if (gSavedSettings.getString("LumenAIProvider") == FSAIKeys::CODEX)
+            {
+                self->runCodexTurn(text);
+            }
+            else
+            {
+                self->runTurn(text);
+            }
         }
     });
+}
+
+/**
+ * A turn on the Codex app-server, which is a different shape from an HTTP
+ * provider and not a variant of one.
+ *
+ * The other two are request/response: post a body, get a body. Codex is a
+ * conversation -- start a thread, start a turn, then read a stream of events
+ * until it says it is done. The answer arrives one fragment at a time, which
+ * suits a chat window better than waiting for the whole thing.
+ *
+ * `poll()` never blocks, and this suspends between polls, so a thinking model
+ * does not freeze the viewer.
+ */
+void FSAIChatFloater::runCodexTurn(const std::string& user_text)
+{
+    std::string why;
+    if (!mCodex) mCodex.reset(new FSAICodex());
+    if (!mCodex->connected() && !mCodex->connect(why))
+    {
+        sayNote(why);
+        setBusy(false);
+        return;
+    }
+
+    S32 id = 0;
+    auto rpc = [&](const std::string& method, const LLSD& params) -> S32
+    {
+        LLSD m;
+        m["jsonrpc"] = "2.0";
+        m["id"] = ++id;
+        m["method"] = method;
+        if (params.isDefined()) m["params"] = params;
+        return mCodex->send(m) ? id : -1;
+    };
+
+    // Wait for one particular reply, carrying the stream along meanwhile.
+    auto await = [&](S32 want, F32 seconds, LLSD& result) -> bool
+    {
+        const F64 until = LLTimer::getTotalSeconds() + seconds;
+        LLSD msg;
+        while (LLTimer::getTotalSeconds() < until)
+        {
+            if (mCodex->poll(msg))
+            {
+                if (msg.has("id") && msg["id"].asInteger() == want)
+                {
+                    result = msg.has("result") ? msg["result"] : LLSD();
+                    return !msg.has("error");
+                }
+                continue;
+            }
+            if (!mCodex->connected()) return false;
+            llcoro::suspend();
+        }
+        return false;
+    };
+
+    LLSD res;
+    if (!await(rpc("initialize", LLSD().with("clientInfo",
+                   LLSD().with("name", "lumen").with("title", "Lumen")
+                         .with("version", LLVersionInfo::instance().getShortVersion()))),
+               20.f, res))
+    {
+        sayNote("Codex did not answer. Is its background service running?");
+        setBusy(false);
+        return;
+    }
+
+    if (mCodexThread.empty())
+    {
+        LLSD started;
+        if (!await(rpc("thread/start", LLSD()), 30.f, started))
+        {
+            sayNote("Codex would not start a conversation.");
+            setBusy(false);
+            return;
+        }
+        mCodexThread = started["thread"]["id"].asString();
+    }
+
+    LLSD turn;
+    turn["threadId"] = mCodexThread;
+    LLSD one;
+    one["type"] = "text";
+    one["text"] = user_text;
+    turn["input"] = LLSD::emptyArray();
+    turn["input"].append(one);
+    if (rpc("turn/start", turn) < 0)
+    {
+        sayNote("Could not send that to Codex.");
+        setBusy(false);
+        return;
+    }
+
+    setBusy(true, "Thinking...");
+
+    // Then read until the turn ends. Deltas are collected rather than printed
+    // one letter at a time -- the transcript is a chat log, not a teletype.
+    std::string answer;
+    const F64 until = LLTimer::getTotalSeconds() + 300.0;
+    LLSD msg;
+    while (LLTimer::getTotalSeconds() < until)
+    {
+        if (!mCodex->poll(msg))
+        {
+            if (!mCodex->connected())
+            {
+                sayNote("Codex closed the connection.");
+                break;
+            }
+            llcoro::suspend();
+            continue;
+        }
+
+        const std::string method = msg.has("method") ? msg["method"].asString() : std::string();
+        if (method == "item/agentMessage/delta")
+        {
+            answer += msg["params"]["delta"].asString();
+        }
+        else if (method == "item/completed"
+                 && msg["params"]["item"]["type"].asString() == "agentMessage")
+        {
+            answer = msg["params"]["item"]["text"].asString();
+        }
+        else if (method == "turn/completed" || method == "turn/failed")
+        {
+            break;
+        }
+        else if (method == "account/rateLimits/updated")
+        {
+            const LLSD& p = msg["params"]["rateLimits"]["primary"];
+            if (p.has("usedPercent"))
+            {
+                setActivity(llformat("%d%% of your Codex allowance used",
+                                     p["usedPercent"].asInteger()));
+            }
+        }
+    }
+
+    if (!answer.empty()) sayAssistant(answer);
+    else                 sayNote("Codex finished without saying anything.");
+    setBusy(false);
 }
 
 void FSAIChatFloater::runTurn(const std::string& user_text)
