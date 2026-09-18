@@ -134,9 +134,24 @@ namespace
     const std::string ANTHROPIC_API_VERSION = "2023-06-01";
 
     // How many times the model may call tools and be asked again within one
-    // turn. A ceiling rather than a target: this is the user's own money, and
-    // a model that has misunderstood can otherwise loop until the bill says so.
-    const S32 MAX_TOOL_TURNS = 12;
+    // turn. A ceiling rather than a target: on a paid provider this is the
+    // user's own money, and a model that has misunderstood can otherwise loop
+    // until the bill says so.
+    //
+    // **A local model costs nothing, so the same ceiling is the wrong one.**
+    // The author, watching an 8B model give up on a scripting question: *"this
+    // makes sense perhaps for online models but is it true for local ones?"*
+    // It is not. The only thing a local round spends is a few seconds of his
+    // own machine, which he can see happening and can stop. A small model
+    // genuinely needs more rounds than a large one to reach the same place --
+    // that is most of what makes it small -- so holding it to a limit designed
+    // to protect a wallet fails it for a reason that does not apply.
+    //
+    // Still bounded. A model that is looping rather than working looks the same
+    // from here, and twice the rounds at a few seconds each is about as long as
+    // anyone will sit and watch.
+    const S32 MAX_TOOL_TURNS       = 12;
+    const S32 MAX_TOOL_TURNS_LOCAL = 24;
 
     std::string jsonString(const LLSD& value)
     {
@@ -1828,7 +1843,8 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         mMessages.append(m);
     }
 
-    for (S32 turn = 0; turn < MAX_TOOL_TURNS; ++turn)
+    const S32 max_turns = is_local ? MAX_TOOL_TURNS_LOCAL : MAX_TOOL_TURNS;
+    for (S32 turn = 0; turn < max_turns; ++turn)
     {
         LLSD headers;
         LLSD body;
@@ -2036,9 +2052,22 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         // until something truer replaces it.
     }
 
-    sayNote("I stopped after " + llformat("%d", MAX_TOOL_TURNS)
-               + " rounds of tool calls without finishing. Ask me again, more "
-                 "specifically, rather than letting this run up a bill.");
+    // **Say what stopping actually costs, which is not the same everywhere.**
+    // "rather than letting this run up a bill" was shown to somebody running a
+    // model on his own computer, where there is no bill and the sentence is
+    // simply untrue -- and it pointed him away from the real advice, which for
+    // a small local model is usually that the task wants a bigger one.
+    const std::string why =
+        is_local ? "Ask me again in smaller steps -- and for writing scripts, a "
+                   "larger model is worth the switch; a small local one goes round "
+                   "in circles on them."
+      : (provider == FSAIKeys::CODEX)
+                 ? "Ask me again, more specifically, rather than spending more of "
+                   "your Codex allowance on this."
+                 : "Ask me again, more specifically, rather than letting this run "
+                   "up a bill.";
+    sayNote("I stopped after " + llformat("%d", max_turns)
+            + " rounds of tool calls without finishing. " + why);
     setBusy(false);
     sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
 }
