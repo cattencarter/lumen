@@ -33,6 +33,7 @@
 #include "llsd.h"
 #include "lluuid.h"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -174,6 +175,25 @@ public:
 
     bool postBuild() override;
     void onOpen(const LLSD& key) override;
+
+    /** Pay the prompt-processing cost while the window opens, not when they ask. */
+    void warmLocalModel();
+
+public:
+    /**
+     * Send the prompt and tools to a local server once, and say how it went.
+     *
+     * Public and static because Preferences calls it: the author's idea, and a
+     * better one than warming on window-open alone -- *"den kan jo bare starte
+     * naar man vaelger model som en test?"* It answers the question that panel
+     * could not answer at all, which is whether the address and the model name
+     * are right. `report` is called on the main thread when it finishes.
+     */
+    static void warmLocal(const std::string& url, const std::string& model,
+                          std::function<void(bool ok, F64 seconds,
+                                             const std::string& detail)> report);
+
+private:
     void onFocusReceived() override;
 
 private:
@@ -239,6 +259,7 @@ private:
     std::unique_ptr<class FSAICodex> mCodex;
     std::string mCodexThread;
     std::string mCodexModel;   // what that thread was started with
+    bool mWarmed = false;      // the local prefix has been sent once
 
     // **Per CONNECTION, not per turn.** The handshake is once and the request
     // ids must keep climbing; both were being reset at the top of every turn

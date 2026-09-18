@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "fsaikeys.h"
+#include "fsaichat.h"
 
 #include "llbutton.h"
 #include "llclipboard.h"
@@ -282,6 +283,73 @@ bool FSPanelPreferenceAIKeys::postBuild()
             strftime(when, sizeof(when), "%H:%M:%S", &lt);
             mCodexCheckedAt = when;
             refresh();
+        });
+    }
+
+    // **The local panel could not tell you whether it worked.** Two typed
+    // fields, no feedback, and the first sign of a wrong address or a wrong
+    // model name was the Assistant failing later -- one layer away from the
+    // cause, which is this project's favourite way to lose an afternoon.
+    //
+    // The author's idea, and it does two jobs with one request: *"den kan jo
+    // bare starte naar man vaelger model som en test?"* It answers "is this
+    // right", AND it leaves the server's prompt cache warm, so the ~20 seconds
+    // of prompt processing is spent here instead of on their first question.
+    if (LLButton* lt = findChild<LLButton>("local_test"))
+    {
+        lt->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            LLLineEditor* u = findChild<LLLineEditor>("url_local");
+            LLLineEditor* m = findChild<LLLineEditor>("model_local");
+            const std::string url   = u ? trimmed(u->getText()) : std::string();
+            const std::string model = m ? trimmed(m->getText()) : std::string();
+            LLTextBox* out = findChild<LLTextBox>("local_status");
+            if (url.empty() || model.empty())
+            {
+                if (out) out->setText(std::string(
+                    "Fill in both the address and the model name first."));
+                return;
+            }
+            if (out) out->setText(std::string(
+                "Asking " + model + "... the first time takes about twenty seconds, "
+                "because the viewer's tool descriptions have to be read before it can "
+                "answer anything."));
+
+            // The panel can be closed while this is in flight, so the reply is
+            // delivered through a handle rather than to a captured `this`.
+            LLHandle<LLPanel> h = getHandle();
+            FSAIChatFloater::warmLocal(url, model,
+                [h, model](bool ok, F64 secs, const std::string& detail)
+            {
+                LLPanel* p = h.get();
+                if (!p) return;
+                LLTextBox* t = p->findChild<LLTextBox>("local_status");
+                if (!t) return;
+                if (ok && secs < 2.0)
+                {
+                    // **"answered in 0 seconds" reads as a bug**, and it is the
+                    // commonest case: press it twice and the server still has
+                    // the prefix cached, so there is nothing to warm.
+                    t->setText(model + " answered at once -- it was already warm. "
+                               "The Assistant's first question will be quick. "
+                               "Nothing left the machine.");
+                }
+                else if (ok)
+                {
+                    t->setText(llformat(
+                        "%s answered in %.0f seconds and is warm now, so the Assistant's "
+                        "first question will be quick. Nothing left the machine.",
+                        model.c_str(), secs));
+                }
+                else
+                {
+                    t->setText("Could not use " + model + " -- "
+                               + (detail.empty()
+                                  ? std::string("Check that Ollama or LM Studio is running, "
+                                                "and that the address ends in /v1/chat/completions.")
+                                  : detail));
+                }
+            });
         });
     }
 

@@ -996,6 +996,100 @@ void FSAIChatFloater::onOpen(const LLSD& key)
     {
         mInput->setFocus(true);
     }
+
+    warmLocalModel();
+}
+
+/**
+ * Send the system prompt and the tool descriptions once, before anybody types.
+ *
+ * **The long wait is not the model thinking, it is the model reading us.** The
+ * tool surface is ~10,400 tokens before a question is added, and a local server
+ * must push all of it through before it can emit a single token. Measured on
+ * the author's own machine, qwen3-vl-8b at 8-bit: **19.5 s for the first turn
+ * and 0.8-3.0 s for every one after it**, because LM Studio then has the prefix
+ * cached. He asked whether that was normal. It is, and it is avoidable -- the
+ * cost is unavoidable, but paying it while he opens the window is free.
+ *
+ * So: one request with `max_tokens: 1`, discarded. It reaches the same prefix
+ * the real turn will use, which is the only thing that matters to the cache.
+ *
+ * **Local only, and that is not an oversight.** Anthropic and OpenAI would
+ * charge for it, and a viewer that spends somebody's money to feel faster is
+ * not a trade it may make on their behalf. Anthropic already has explicit
+ * prompt caching for exactly this, and it costs nothing extra.
+ *
+ * It says nothing in the transcript either way. A warm-up that announced itself
+ * would be machinery talking, and if it fails the next real turn simply pays
+ * the 19 seconds it would have paid anyway.
+ */
+void FSAIChatFloater::warmLocalModel()
+{
+    if (gSavedSettings.getString("LumenAIProvider") != FSAIKeys::LOCAL) return;
+
+    const std::string url = gSavedSettings.getString("LumenAILocalURL");
+    const std::string model = gSavedSettings.getString("LumenAILocalModel");
+    if (url.empty() || model.empty()) return;
+
+    // Once per window opening is enough; the cache survives between turns.
+    if (mWarmed) return;
+    mWarmed = true;
+
+    warmLocal(url, model, NULL);
+}
+
+void FSAIChatFloater::warmLocal(const std::string& url, const std::string& model,
+                                std::function<void(bool, F64, const std::string&)> report)
+{
+    const std::string system = fullSystemPrompt();
+    LLCoros::instance().launch("FSAIWarm", [url, model, system, report]()
+    {
+        LLSD body;
+        body["model"] = model;
+        body["tools"] = openAITools();
+        body["max_tokens"] = 1;
+        LLSD msgs = LLSD::emptyArray();
+        msgs.append(LLSD().with("role", "system").with("content", system));
+        msgs.append(LLSD().with("role", "user").with("content", "hi"));
+        body["messages"] = msgs;
+
+        std::string err;
+        const F64 t0 = LLTimer::getTotalSeconds();
+        const LLSD reply = postJson(url, body, LLSD(), err);
+        const F64 took = LLTimer::getTotalSeconds() - t0;
+
+        // **A reply is not the same as the right reply.** A server that is up
+        // but does not know that model name answers with an error rather than
+        // refusing the connection, and reporting "reached it" there would send
+        // somebody looking at the address when the name is the problem.
+        bool ok = err.empty();
+        std::string detail = err;
+        if (ok && reply.has("error"))
+        {
+            ok = false;
+            detail = reply["error"].isMap() && reply["error"].has("message")
+                   ? reply["error"]["message"].asString()
+                   : jsonString(reply["error"]);
+        }
+
+        // **A 200 does not mean the model name was right.** LM Studio
+        // SUBSTITUTES whatever it has loaded: asked for `no-such-model-here` it
+        // answered happily, as `qwen3-vl-8b-instruct-mlx`, with no error
+        // anywhere. The first version of this check reported that as success --
+        // watched doing it, which is the only reason it is not still doing it.
+        // The reply echoes the model it really used, so ask that rather than
+        // trusting the status code.
+        const std::string used = reply.has("model") ? reply["model"].asString() : std::string();
+        if (ok && !used.empty() && used != model)
+        {
+            ok = false;
+            detail = "that server does not have it and used " + used + " instead. "
+                     "Either correct the name or use that one.";
+        }
+        LL_INFOS("AICtl") << "warmed " << model << " in " << took << "s"
+                          << (ok ? "" : (" -- FAILED: " + detail)) << LL_ENDL;
+        if (report) report(ok, took, detail);
+    });
 }
 
 namespace

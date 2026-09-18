@@ -151,7 +151,7 @@
       </panel>
 
       <panel follows="left|top" layout="topleft" name="p_local"
-       left="0" top="64" width="520" height="300" background_visible="false">
+       left="0" top="64" width="520" height="330" background_visible="false">
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="4" width="480" height="54" word_wrap="true">
@@ -175,8 +175,15 @@
          left="76" top="122" width="274" height="22" name="model_local" max_length_bytes="120" />
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="154" width="480" height="54" word_wrap="true">
-            Whatever name that server knows the model by. Expect a small local model to be much weaker at using the viewer's tools than Anthropic or OpenAI, especially for writing scripts.
+         left="20" top="154" width="480" height="40" word_wrap="true">
+            Whatever name that server knows the model by. A small local model may be weaker at using the viewer's tools than Anthropic or OpenAI, especially for writing scripts.
+        </text>
+
+        <button follows="left|top" layout="topleft" name="local_test"
+         left="20" top="198" width="120" height="22" label="Test and warm up" />
+
+        <text type="string" follows="left|top" layout="topleft" name="local_status"
+         left="20" top="228" width="480" height="54" word_wrap="true">
         </text>
       </panel>
 
