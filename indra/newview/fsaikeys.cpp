@@ -304,7 +304,20 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
  */
 std::string FSPanelPreferenceAIKeys::codexStatus()
 {
-    const std::string home = gDirUtilp->getOSUserDir();
+    // **`getOSUserDir()` is NOT the home directory.** On macOS it is
+    // ~/Library/Application Support/Lumen, so the first version of this check
+    // looked for Codex inside the viewer's own data folder and reported "not
+    // installed" about something that had just been installed -- with the
+    // install command printed underneath, which is the worst kind of wrong:
+    // confident, specific, and it would have had the author run an installer
+    // twice.
+    const char* env_home = getenv("HOME");
+    if (!env_home || !*env_home) env_home = getenv("USERPROFILE");   // Windows
+    if (!env_home || !*env_home)
+    {
+        return "Codex: cannot tell, because this system reports no home directory.";
+    }
+    const std::string home(env_home);
     const std::string sep  = gDirUtilp->getDirDelimiter();
     const std::string cli  = home + sep + ".codex" + sep + "packages" + sep + "standalone"
                            + sep + "current" + sep + "bin" + sep + "codex";
