@@ -77,6 +77,31 @@ jobs:
         run: autobuild build -c ReleaseOS --no-configure
         shell: cmd
 
+      # **And keep the viewer itself, not only the errors.**
+      #
+      # This job was written to answer "does it build", and it answered that by
+      # succeeding or failing. The author then asked the next question -- *"kan
+      # jeg se windows udgaven?"* -- and there was nothing to give him: a green
+      # run produced logs and no viewer.
+      #
+      # It also unblocks the one measurement that would reopen Windows code
+      # signing. That decision rests on SmartScreen being one click where macOS
+      # buries its bypass, which is knowledge rather than something anybody has
+      # watched. Downloading this artifact INSIDE a Windows VM sets Mark of the
+      # Web exactly as a real download would, and then the dialog says what it
+      # says.
+      #
+      # `PACKAGE:BOOL=OFF` above means there is no installer, so this is the
+      # build tree: unzip it and run the executable in place.
+      - name: Keep the viewer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen-windows-x64
+          if-no-files-found: error
+          retention-days: 7
+          path: lumen/build-vc*/newview/Release/
+
       # The errors are the product of this workflow, so keep them even when --
       # especially when -- the build fails.
       - name: Keep the logs
