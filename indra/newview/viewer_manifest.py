@@ -222,14 +222,13 @@ class ViewerManifest(LLManifest,FSViewerManifest):
                             self.path("textures.xml")
                     self.path("*/xui/*/*.xml")
                     self.path("*/xui/*/widgets/*.xml")
-                    self.path("*/themes/*/colors.xml")
-                    with self.prefix(src_dst="*/themes/*/textures"):
-                        self.path("*/*.tga")
-                        self.path("*/*.jpg")
-                        self.path("*/*.png")
-                        self.path("*.tga")
-                        self.path("*.j2c")
-                        self.path("*.png")
+                    # <FS:AICtl> No themed skins ship any more, so these seven
+                    # patterns match nothing -- and a pattern that matches
+                    # nothing is FATAL here, which is how removing six skins
+                    # broke packaging rather than merely shipping less.
+                    # Firestorm's own skins and the community ones built for it
+                    # (AnsaStorm, MetaHarper, StarLight, Vintage) carried the
+                    # themes; Lumen has one look and no sub-themes.
                     self.path("*/*.xml")
 
                     # Update: 2017-11-01 CP Now we store app code in the html folder
