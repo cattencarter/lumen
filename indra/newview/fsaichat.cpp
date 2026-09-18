@@ -810,10 +810,34 @@ FSAIChatFloater::FSAIChatFloater(const LLSD& key)
 
 FSAIChatFloater::~FSAIChatFloater()
 {
+    for (size_t i = 0; i < mModelConns.size(); ++i) mModelConns[i].disconnect();
 }
 
 bool FSAIChatFloater::postBuild()
 {
+    // **Follow the SETTING, not a focus event.**
+    //
+    // The title was refreshed when the window was opened, when it received
+    // focus, and when a message was sent. The author changed the model to
+    // claude-sonnet-5 and the title went on saying claude-haiku-4-5 -- checked
+    // rather than argued about: the saved setting said sonnet, the title bar
+    // said haiku. Closing Preferences does not necessarily hand focus to this
+    // floater, so the one path that looked certain was not.
+    //
+    // A control signal cannot miss. The moment the value changes, the title
+    // changes, with nothing in between to depend on.
+    static const char* const kWatch[] = {
+        "LumenAIProvider", "LumenAIAnthropicModel", "LumenAIOpenAIModel" };
+    for (size_t i = 0; i < LL_ARRAY_SIZE(kWatch); ++i)
+    {
+        if (LLControlVariablePtr c = gSavedSettings.getControl(kWatch[i]))
+        {
+            mModelConns.push_back(
+                c->getSignal()->connect(boost::bind(&FSAIChatFloater::refreshTitle, this)));
+        }
+    }
+    refreshTitle();
+
     mTranscript = getChild<LLTextEditor>("transcript");
     mInput      = getChild<LLLineEditor>("input");
     mStatus     = getChild<LLTextBox>("status");
