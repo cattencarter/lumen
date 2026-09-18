@@ -64,6 +64,7 @@
 #include "llviewermessage.h"
 #include "llselectmgr.h"
 #include "llsyntaxid.h"
+#include "llpreviewscript.h"
 #include "llsdserialize.h"
 #include "llviewerobjectlist.h"
 #include "fspose.h"
@@ -1650,6 +1651,7 @@ namespace
             if (action == "open_window")   return "open_window";
             if (action == "inspect_object") return "inspect_object";
             if (action == "lsl_lookup")    return "lsl_lookup";
+            if (action == "open_script")   return "open_script";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2165,7 +2167,8 @@ namespace
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
-              "set_setting", "show_setting", "open_window", "inspect_object", "lsl_lookup" };
+              "set_setting", "show_setting", "open_window", "inspect_object", "lsl_lookup",
+              "open_script" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2243,6 +2246,15 @@ namespace
             "rather than claiming it is highlighted.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
+            "\n- open_script: **opens a script that lives INSIDE an object**, so they do not "
+            "have to find and open it first. Leave `object_id` out and it uses what they have "
+            "selected; `name` picks one when there are several, and without it the reply lists "
+            "every script in the linkset with the link each sits in. Fetching an object's "
+            "contents is a round trip, so the first call may answer `pending` -- ask again in a "
+            "second. It refuses plainly when the object is no-modify. **It does NOT save.** "
+            "Opening, reading with read_scripts and writing with edit_script are all yours; "
+            "pressing Save is theirs, and nothing compiles or runs until they do. Say what you "
+            "changed and let them read it.\n"
             "\n- lsl_lookup: **check every LSL name before you write it, not after the compile "
             "fails.** It answers from the syntax THIS REGION served, so return types, argument "
             "order and argument types are fact rather than recollection, and it covers functions, "
@@ -5811,6 +5823,195 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // **One call, not eight.** A model wants the structure, the faces and the
     // permissions together, and asking eight questions is eight round trips
     // through a socket that runs on the frame loop.
+    // <FS:AICtl> Open a script that lives INSIDE an object.
+    //
+    // The author, after watching the assistant ask him to open a script window
+    // before it could help: *"jeg synes stadig godt man burde kunne sige, kan
+    // du aabne scriptet i test objekt og rette i det"* -- and, immediately
+    // after, *"uden at trykke gem"*. Both halves matter and they pull in
+    // opposite directions: **open it for them, and still let them save it.**
+    // Decisions 89 stands untouched -- a script runs in the world, can ask for
+    // money and move people, and keeps running after its owner logs out, so the
+    // person sees the code before anything can act on it. Opening a window is
+    // not saving a script.
+    //
+    // A task inventory is asynchronous (Findings 19), so this reports pending
+    // and is asked again -- the same shape as worn_by, for the same reason.
+    if (method == "open_script")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+
+        LLViewerObject* root = NULL;
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        if (params.has("object_id") && params["object_id"].asUUID().notNull())
+        {
+            LLViewerObject* o = gObjectList.findObject(params["object_id"].asUUID());
+            if (o) root = o->getRootEdit();
+        }
+        else if (sel.notNull() && sel->getFirstNode() && sel->getFirstNode()->getObject())
+        {
+            root = sel->getFirstNode()->getObject()->getRootEdit();
+        }
+        if (!root)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
+                           "the object first.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (!root->permModify())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That object does not allow modification, so its scripts cannot be "
+                           "opened for editing. Say that plainly -- it is the object's "
+                           "permissions, not a failure.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_VIEWSCRIPT))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction is stopping scripts being viewed right now.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        std::vector<LLViewerObject*> chain;
+        chain.push_back(root);
+        for (LLViewerObject::const_child_list_t::const_iterator c = root->getChildren().begin();
+             c != root->getChildren().end(); ++c)
+        {
+            if (*c) chain.push_back(*c);
+        }
+
+        // Every script in the whole linkset, with the link it sits in -- which
+        // is the script map as well as the way to open one.
+        LLSD found = LLSD::emptyArray();
+        std::vector<std::pair<LLUUID, LLUUID> > openable;   // task, item
+        std::vector<std::string> names;
+        S32 waiting = 0;
+        for (size_t i = 0; i < chain.size(); ++i)
+        {
+            LLInventoryObject::object_list_t contents;
+            chain[i]->getInventoryContents(contents);
+            if (contents.empty())
+            {
+                chain[i]->requestInventory();
+                ++waiting;
+                continue;
+            }
+            for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
+                 it != contents.end(); ++it)
+            {
+                if (!*it || (*it)->getType() != LLAssetType::AT_LSL_TEXT) continue;
+                LLSD one;
+                one["name"] = safeUtf8((*it)->getName());
+                one["link"] = (S32)i + 1;
+                found.append(one);
+                openable.push_back(std::make_pair(chain[i]->getID(), (*it)->getUUID()));
+                names.push_back(lowered((*it)->getName()));
+            }
+        }
+
+        if (found.size() == 0 && waiting > 0)
+        {
+            LLSD r;
+            r["pending"] = true;
+            r["links_still_loading"] = waiting;
+            r["note"] = "The object's contents are being fetched from the region -- that is a "
+                        "round trip, so nothing can be listed yet. Ask again in a second or two.";
+            recordAction(request_id, fingerprintOf(method, params), "open_script", "ok", r, r);
+            return r;
+        }
+
+        // Narrow by name if they said which.
+        std::vector<size_t> want;
+        const std::string asked = params.has("name") ? lowered(params["name"].asString())
+                                                     : std::string();
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            if (asked.empty() || names[i].find(asked) != std::string::npos) want.push_back(i);
+        }
+
+        if (want.empty())
+        {
+            LLSD r;
+            r["scripts"] = found;
+            if (waiting) r["links_still_loading"] = waiting;
+            r["note"] = found.size()
+                ? "No script in that object matches that name. `scripts` lists what IS in it, "
+                  "with the link each one sits in -- offer those rather than guessing."
+                : "That object contains no scripts at all.";
+            recordAction(request_id, fingerprintOf(method, params), "open_script", "ok", r, r);
+            return r;
+        }
+        if (want.size() > 1)
+        {
+            LLSD r;
+            r["scripts"] = found;
+            r["note"] = "More than one script matches. `scripts` lists them with the link each is "
+                        "in -- ask which, rather than opening one of them.";
+            recordAction(request_id, fingerprintOf(method, params), "open_script", "ok", r, r);
+            return r;
+        }
+
+        LLSD key;
+        key["taskid"] = openable[want[0]].first;
+        key["itemid"] = openable[want[0]].second;
+
+        // **`setObjectID` is not optional, and the key does not do it.**
+        // `LLPreview::mObjectUUID` is commented "set later by setObjectID()" --
+        // it is NOT read from `taskid`. Showing the floater with the key alone
+        // gave a window titled "Script (object out of range)" whose text was
+        // the literal word "Loading...", for ever. Found by looking at the
+        // screen after the tool had already reported `confirmed_on_screen:
+        // true`, which was true and useless: the window was up and empty.
+        // Copied from llpanelobjectinventory.cpp, which is what a double click
+        // in the Contents tab runs.
+        LLLiveLSLEditor* preview = LLFloaterReg::showTypedInstance<LLLiveLSLEditor>(
+            "preview_scriptedit", key, TAKE_FOCUS_NO);
+        if (preview)
+        {
+            // setObjectName wants the OBJECT's name, not the script's -- I
+            // passed the script's first and the window then titled itself after
+            // the script, which reads exactly like the inventory preview it is
+            // not. The viewer's own path passes the selection node's name; the
+            // name cache is the fallback when nothing is selected.
+            std::string obj_name;
+            if (sel.notNull())
+            {
+                LLSelectNode* rn = sel->getFirstRootNode(NULL, true);
+                if (rn && rn->mValid) obj_name = rn->mName;
+            }
+            if (obj_name.empty())
+            {
+                const std::string key_s = openable[want[0]].first.asString();
+                if (mObjectNames.has(key_s)) obj_name = mObjectNames[key_s].asString();
+            }
+            if (!obj_name.empty()) preview->setObjectName(safeUtf8(obj_name));
+            preview->setObjectID(openable[want[0]].first);
+        }
+        LLFloater* f = preview;
+
+        LLSD r;
+        r["opened"] = (f != NULL);
+        r["confirmed_on_screen"] = (f != NULL && f->getVisible());
+        r["script"] = found[(S32)want[0]];
+        r["note"] = (f != NULL)
+            ? "The script is open in its own window. read_scripts can now read it and edit_script "
+              "can write into it -- and **they press Save**, not you: nothing is saved by opening "
+              "it, and nothing runs until they do. Say what you changed and let them read it."
+            : "The script window did not open. Say so rather than going on as though it had.";
+        recordAction(request_id, fingerprintOf(method, params), "open_script",
+                     (f != NULL) ? "ok" : "failed", r, r);
+        return r;
+    }
+
     if (method == "lsl_lookup")
     {
         const std::string request_id = params.has("request_id")
