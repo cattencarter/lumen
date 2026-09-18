@@ -52,7 +52,7 @@
           <combo_box.item label="OpenAI (API key)"    name="openai"    value="openai" />
           <combo_box.item label="Codex (your ChatGPT subscription)" name="codex" value="codex" />
           <combo_box.item label="Claude Code (your Claude subscription)" name="claudecode" value="claudecode" />
-          <combo_box.item label="A model on this computer" name="local" value="local" />
+          <combo_box.item label="Local model" name="local" value="local" />
       </combo_box>
 
       <!-- ============================ Anthropic ============================ -->
