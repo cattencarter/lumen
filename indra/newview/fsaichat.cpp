@@ -1313,22 +1313,30 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
 {
     std::string why;
     if (!mCodex) mCodex.reset(new FSAICodex());
-    if (!mCodex->connected() && !mCodex->connect(why))
+    if (!mCodex->connected())
     {
-        sayNote(why);
-        setBusy(false);
-        return;
+        if (!mCodex->connect(why))
+        {
+            sayNote(why);
+            setBusy(false);
+            return;
+        }
+        // A new socket is a new session: handshake again, ids from zero, and
+        // the old thread id belongs to a conversation this connection has
+        // never heard of.
+        mCodexReady = false;
+        mCodexRpcId = 0;
+        mCodexThread.clear();
     }
 
-    S32 id = 0;
     auto rpc = [&](const std::string& method, const LLSD& params) -> S32
     {
         LLSD m;
         m["jsonrpc"] = "2.0";
-        m["id"] = ++id;
+        m["id"] = ++mCodexRpcId;
         m["method"] = method;
         if (params.isDefined()) m["params"] = params;
-        return mCodex->send(m) ? id : -1;
+        return mCodex->send(m) ? mCodexRpcId : -1;
     };
 
     // **Codex asks before it calls one of our tools, and silence is a
@@ -1366,8 +1374,17 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
     };
 
     // Wait for one particular reply, carrying the stream along meanwhile.
+    //
+    // **It reports WHICH of the two happened.** Both were collapsed into
+    // `false`, and the caller then blamed the background service -- so the
+    // viewer said "Is its background service running?" about a service that
+    // was running, answering, and telling us exactly what was wrong. An error
+    // the server took the trouble to send is the most useful sentence
+    // available, and it was being thrown away.
+    std::string failed_because;
     auto await = [&](S32 want, F32 seconds, LLSD& result) -> bool
     {
+        failed_because.clear();
         const F64 until = LLTimer::getTotalSeconds() + seconds;
         LLSD msg;
         while (LLTimer::getTotalSeconds() < until)
@@ -1378,11 +1395,18 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
                 if (msg.has("id") && msg["id"].asInteger() == want)
                 {
                     result = msg.has("result") ? msg["result"] : LLSD();
-                    return !msg.has("error");
+                    if (!msg.has("error")) return true;
+                    failed_because = msg["error"]["message"].asString();
+                    if (failed_because.empty()) failed_because = "Codex refused that.";
+                    return false;
                 }
                 continue;
             }
-            if (!mCodex->connected()) return false;
+            if (!mCodex->connected())
+            {
+                failed_because = "Codex closed the connection.";
+                return false;
+            }
             llcoro::suspend();
         }
         return false;
@@ -1390,15 +1414,23 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
 
 
 
-    LLSD res;
-    if (!await(rpc("initialize", LLSD().with("clientInfo",
-                   LLSD().with("name", "lumen").with("title", "Lumen")
-                         .with("version", LLVersionInfo::instance().getShortVersion()))),
-               20.f, res))
+    // **Once per connection.** Sending it again is an error, not a no-op:
+    // the app-server answers `Already initialized` and refuses.
+    if (!mCodexReady)
     {
-        sayNote("Codex did not answer. Is its background service running?");
-        setBusy(false);
-        return;
+        LLSD res;
+        if (!await(rpc("initialize", LLSD().with("clientInfo",
+                       LLSD().with("name", "lumen").with("title", "Lumen")
+                             .with("version", LLVersionInfo::instance().getShortVersion()))),
+                   20.f, res))
+        {
+            sayNote(failed_because.empty()
+                    ? "Codex did not answer. Is its background service running?"
+                    : "Codex: " + failed_because);
+            setBusy(false);
+            return;
+        }
+        mCodexReady = true;
     }
 
     // A cached thread carries the model it was started with, so keeping it
@@ -1428,6 +1460,36 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         LLSD cfg;
         cfg["mcp_servers"] = LLSD().with("second_life", server);
 
+        // **Switch off Codex's own plugins for OUR thread, and the reason is
+        // not tidiness.** Asked "hvad er min draw distance", the model called
+        // `cua.getApp("org.firestormviewer...")` three times -- Codex's
+        // COMPUTER-USE plugin, hunting the user's screen for a Firestorm
+        // application that is not running -- and then answered 80 metres from
+        // its own memory of Firestorm. The right tool was sitting beside it
+        // unused. With these off it calls `show_setting` once and answers 128,
+        // which is what the viewer actually holds. Watched, both ways.
+        //
+        // Two reasons, and the second is the bigger one:
+        //   - It answers the wrong question. Lumen is not the Firestorm on
+        //     screen; it IS the viewer, and it can simply be asked.
+        //   - **It drives the user's Mac.** The endpoint is a narrow surface
+        //     with an action log behind it; screen control is neither. Lumen
+        //     asking a provider to read inventory is one thing, and handing it
+        //     the keyboard is another, and nobody agreed to the second.
+        //
+        // Read from the user's own config rather than listed here, so a plugin
+        // that did not exist today is still switched off. Anything from our own
+        // marketplace is left alone -- it is the connector, not a competitor.
+        const std::vector<std::string> plugins = FSAICodex::enabledPlugins();
+        LLSD off;
+        for (size_t i = 0; i < plugins.size(); ++i)
+        {
+            if (plugins[i].size() > 6 &&
+                plugins[i].compare(plugins[i].size() - 6, 6, "@lumen") == 0) continue;
+            off[plugins[i]] = LLSD().with("enabled", false);
+        }
+        if (off.size()) cfg["plugins"] = off;
+
         // **The model is a thread property, not a turn property**, so changing
         // it has to start a new conversation -- checked against the server
         // rather than assumed: `thread/start` echoes back the model it took,
@@ -1440,7 +1502,9 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         LLSD started;
         if (!await(rpc("thread/start", start), 30.f, started))
         {
-            sayNote("Codex would not start a conversation.");
+            sayNote(failed_because.empty()
+                    ? std::string("Codex would not start a conversation.")
+                    : "Codex would not start a conversation -- " + failed_because);
             setBusy(false);
             return;
         }

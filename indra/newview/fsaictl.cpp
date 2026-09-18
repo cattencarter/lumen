@@ -2249,6 +2249,9 @@ namespace
             "nothing and returns `where`, the path through the menus: give it to them exactly as "
             "written. `setting_is_visible` false means the control was not on screen -- say that "
             "rather than claiming it is highlighted.\n"
+            "  **It also returns `value`, what that setting is set to right now**, with `min` and "
+            "`max` where the panel declares a range. So \"what IS my draw distance\" is this "
+            "action too -- do not say you cannot read the number.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
             "\n- new_script: **puts a new, empty script into an object** -- the one thing that "
@@ -6625,7 +6628,30 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             }
 
             const FindEntry& e = sEntries[at];
-            if (!e.ctrl.empty()) r["setting"] = e.ctrl;
+            if (!e.ctrl.empty())
+            {
+                r["setting"] = e.ctrl;
+
+                // **And what it is set to NOW.** Asked "what is my draw
+                // distance", the assistant answered "I can't read the numeric
+                // value through the Second Life tool" -- which was true, and
+                // was our gap rather than its failure: this action resolved
+                // the control and then reported everything about it except
+                // the one number somebody asked for. Reading a setting is
+                // harmless, the value is already in hand, and the alternative
+                // was a whole action for a field.
+                LLControlVariablePtr var = gSavedSettings.getControl(e.ctrl);
+                if (var.isNull()) var = gSavedPerAccountSettings.getControl(e.ctrl);
+                if (var.notNull()) r["value"] = var->getValue();
+
+                std::map<std::string, std::pair<F32, F32> >::const_iterator rg =
+                    sSettingRange.find(e.ctrl);
+                if (rg != sSettingRange.end())
+                {
+                    r["min"] = rg->second.first;
+                    r["max"] = rg->second.second;
+                }
+            }
 
             // **Where it lives decides what to DO**, and that is the point of
             // this action rather than a detail of it. Opening Preferences for

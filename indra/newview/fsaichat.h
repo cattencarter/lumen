@@ -239,6 +239,15 @@ private:
     std::unique_ptr<class FSAICodex> mCodex;
     std::string mCodexThread;
     std::string mCodexModel;   // what that thread was started with
+
+    // **Per CONNECTION, not per turn.** The handshake is once and the request
+    // ids must keep climbing; both were being reset at the top of every turn
+    // on a socket that was deliberately kept open, so the second question of
+    // any session was answered with "Already initialized" and nothing else
+    // ever ran. Reset these wherever the socket is (re)opened, and nowhere
+    // else.
+    bool mCodexReady = false;
+    S32  mCodexRpcId = 0;
     std::vector<boost::signals2::connection> mModelConns;
 
     /** What the turn just cost, and what the window has cost so far. */

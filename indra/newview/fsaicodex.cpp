@@ -30,6 +30,8 @@
 
 #include "fsaicodex.h"
 
+#include "llfile.h"
+
 #include "llbase64.h"
 #include "llsdjson.h"
 #include "llsdserialize.h"
@@ -72,6 +74,30 @@ std::string FSAICodex::cliPath()
     const std::string s = gDirUtilp->getDirDelimiter();
     return home + s + ".codex" + s + "packages" + s + "standalone" + s + "current"
          + s + "bin" + s + "codex";
+}
+
+std::vector<std::string> FSAICodex::enabledPlugins()
+{
+    std::vector<std::string> out;
+    const std::string home = homeDir();
+    if (home.empty()) return out;
+    const std::string s = gDirUtilp->getDirDelimiter();
+
+    llifstream in((home + s + ".codex" + s + "config.toml").c_str());
+    if (!in.is_open()) return out;
+
+    // `[plugins."name@marketplace"]`, and nothing else on the line.
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const size_t a = line.find("[plugins.\"");
+        if (a == std::string::npos) continue;
+        const size_t b = a + 10;
+        const size_t c = line.find('"', b);
+        if (c == std::string::npos || c == b) continue;
+        out.push_back(line.substr(b, c - b));
+    }
+    return out;
 }
 
 bool FSAICodex::socketPresent() { const std::string p = socketPath(); return !p.empty() && gDirUtilp->fileExists(p); }

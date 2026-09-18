@@ -52,6 +52,8 @@
  * that mistake). `poll()` returns what has arrived and nothing more; the
  * caller suspends its coroutine between calls.
  */
+#include <vector>
+
 class FSAICodex
 {
 public:
@@ -63,6 +65,17 @@ public:
     static bool        socketPresent();
     static std::string cliPath();
     static bool        cliInstalled();
+
+    /**
+     * The plugins the user's own Codex has switched on, by name.
+     *
+     * Read from `~/.codex/config.toml` rather than listed here, so a plugin
+     * that did not exist when this was written is still found. Only the
+     * `[plugins."NAME"]` headers are wanted, which is a line match rather than
+     * TOML parsing -- and a file that cannot be read returns nothing, which is
+     * the same as today.
+     */
+    static std::vector<std::string> enabledPlugins();
 
     /** Connect and perform the WebSocket handshake. False sets `why`. */
     bool connect(std::string& why);
