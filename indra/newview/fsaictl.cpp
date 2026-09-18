@@ -2290,8 +2290,30 @@ namespace
             view_props["preset"]=lp;
             LLSD ln; ln["type"]="string";
                 ln["description"]="lighting: one of the user's own saved environment settings, "
-                                  "by name. Find them with inventory search, kind \"settings\".";
+                                  "by name. Find them with inventory search, kind \"settings\". "
+                                  "set_setting / show_setting: the words on the Preferences panel, "
+                                  "like \"draw distance\" or \"music\" -- NOT the internal name.";
             view_props["name"]=ln;
+
+            // <FS:AICtl> set_setting's value, which was missing.
+            //
+            // The action was registered, advertised, dispatched and phrased --
+            // all four lists actions-check compares agreed -- and the assistant
+            // still could not use it, because **the schema is a fifth list that
+            // nothing compares.** Asked to set the draw distance to 64 it
+            // replied that it had "no direct way to specify a numeric value",
+            // which was true and is the only reason this was found.
+            //
+            // Deliberately untyped: a setting may be a number, a boolean or a
+            // string, and naming one type would silently exclude the others.
+            LLSD lv;
+                lv["description"]="set_setting: what to set it to -- a number like 64, true or "
+                                  "false, or text, depending on the setting. The reply says what "
+                                  "the viewer HOLDS afterwards, which is not always what was "
+                                  "asked for: settings clamp, and a value outside the range comes "
+                                  "back changed. Report the value in `now`, never the one you sent.";
+            view_props["value"]=lv;
+            // </FS:AICtl>
             struct { const char* key; const char* desc; } nums[] = {
                 { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
                 { "ambient",        "lighting: fills the shadows, 0 to 3. Under the "
@@ -3289,6 +3311,16 @@ namespace
 {
     std::map<std::string, std::string> sSettingLabels;   // lowercased label -> control
     std::map<std::string, std::string> sSettingPanel;    // control -> panel_preferences_*.xml
+    /**
+     * The range the PANEL allows, where it declares one.
+     *
+     * `gSavedSettings` clamps nothing: asked for a draw distance of 99999 it
+     * stored 99999 and reported success, and the viewer would then try to draw
+     * it. The slider beside that control says `min_val="32" max_val="1024"` --
+     * in the same XUI element the label comes from, so this was being read
+     * half-way and the other half thrown away.
+     */
+    std::map<std::string, std::pair<F32, F32> > sSettingRange;
     std::map<std::string, std::pair<std::string, std::string> > sTabs;  // file -> (tab name, tab label)
     bool sSettingLabelsBuilt = false;
 
@@ -3352,6 +3384,13 @@ namespace
                 {
                     sSettingLabels[lowered(label)] = ctrl;
                     sSettingPanel[ctrl] = name;
+                    std::string lo, hi;
+                    if (node->getAttributeString("min_val", lo)
+                        && node->getAttributeString("max_val", hi))
+                    {
+                        sSettingRange[ctrl] = std::make_pair((F32)atof(lo.c_str()),
+                                                             (F32)atof(hi.c_str()));
+                    }
                 }
                 for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
                 {
@@ -4801,19 +4840,53 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         const LLSD before = var->getValue();
+
+        // Refuse a value the panel itself would not allow.
+        //
+        // Nothing downstream clamps: 99999 was stored and reported as success,
+        // and the viewer would then attempt to draw it. Refusing WITH the range
+        // is better than clamping silently, which would be a wrong answer
+        // wearing the clothes of a right one.
+        std::map<std::string, std::pair<F32, F32> >::const_iterator rng = sSettingRange.find(ctrl);
+        const bool numeric = params["value"].isReal() || params["value"].isInteger();
+        if (rng != sSettingRange.end() && numeric)
+        {
+            const F32 want = (F32)params["value"].asReal();
+            if (want < rng->second.first || want > rng->second.second)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = llformat("%s accepts %g to %g; %g is outside that. "
+                                        "Tell them the range rather than setting it anyway.",
+                                        ctrl.c_str(), rng->second.first, rng->second.second, want);
+                LLSD d; d["setting"] = ctrl; d["min"] = rng->second.first;
+                        d["max"] = rng->second.second; d["current"] = before;
+                e["data"] = d;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
         grp->setUntypedValue(ctrl, params["value"]);
         const LLSD after = var->getValue();
+
+        const bool moved  = (after.asString() != before.asString());
+        const bool wanted = (after.asString() == params["value"].asString());
 
         LLSD r;
         r["setting"] = ctrl;
         r["was"] = before;
         r["now"] = after;
-        r["changed"] = (after.asString() != before.asString());
-        r["note"] = r["changed"].asBoolean()
+        r["changed"] = moved;
+        // **"Did not change" and "was already that" are different answers**, and
+        // conflating them produced a wrong one: asked to set 64 when it was
+        // already 64, the reply said the viewer had refused it.
+        r["note"] = moved
             ? "Read back from the viewer after setting it, so this is what it actually holds -- "
               "not what was asked for."
-            : "The viewer still reports the old value. It may clamp this setting, or refuse the "
-              "type. Tell them it did not change rather than that it did.";
+            : (wanted
+               ? "It was ALREADY set to that. Nothing needed changing -- say so, rather than "
+                 "reporting a failure."
+               : "The viewer still reports the old value, so it refused this one. Tell them it "
+                 "did not change rather than that it did.");
         LL_INFOS("AICtl") << "set_setting: " << ctrl << " " << before << " -> " << after << LL_ENDL;
         recordAction(request_id, fingerprintOf(method, params), "set_setting", "ok", r, r);
         return r;
