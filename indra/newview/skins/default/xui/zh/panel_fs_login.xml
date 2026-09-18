@@ -52,10 +52,9 @@
 			<text name="create_account_text">
 				建立你的帳號
 			</text>
-			<combo_box name="mode_combo" tool_tip="選擇您最熟悉的檢視器樣式，以便根據您的需求進行調整。">
-				<combo_box.item label="混合" name="Hybrid" />
-				<combo_box.item label="文字" name="Text" />
-			</combo_box>
+			<!-- <FS:AICtl> The Mode picker is gone from the English panel, so this
+			     translation could never render   a localised file can CHANGE a node
+			     the base declares, never ADD one. Removed rather than left inert. -->
 		</layout_panel>
 	</layout_stack>
 </panel>

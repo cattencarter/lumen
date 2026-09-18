@@ -7,7 +7,7 @@
  left="1"
  top="1"
  width="540"
- label="Firestorm"
+ label="[APP_NAME]"
  name="firestorm">
  
 <panel.string name="BeamsOffLabel">
@@ -24,7 +24,7 @@
 	</string>
 
 <tab_container
- label="Firestorm Prefs"
+ label="[APP_NAME] Prefs"
  layout="topleft"
  follows="all"
  top="5"
@@ -136,7 +136,7 @@
 		 label="Enable progressive draw distance stepping"
 		 layout="topleft"
 		 name="FSRenderFarClipStepping"
-		 tool_tip="If enabled, Firestorm will use a progressive draw distance stepping after teleporting."
+		 tool_tip="If enabled, [APP_NAME] will use a progressive draw distance stepping after teleporting."
 		 initial_value="true"
 		 top_pad="10"
 		 width="250" />
@@ -822,22 +822,11 @@
          height="20"
          follows="left|top" />
 
-        <button
-         enabled_control="ShowSelectionBeam"
-         left="290"
-         top_delta="-25"
-         follows="left|top"
-         width="130"
-         height="80"
-         name="PhoenixBeamPrev_Phoenix"
-         label=""
-         image_color="SL-White"
-         image_color_disabled="SL-White"
-         scale_image="true"
-         image_selected="beam_phoenix.png"
-         image_unselected="beam_phoenix.png"
-         image_hover_selected="beam_phoenix.png"
-         image_hover_unselected="beam_phoenix.png" />
+        <!-- <FS:AICtl> The Phoenix beam preview is gone, with its two presets
+         (app_settings/beams/Phoenix.xml and beamsColors/Phoenix.xml). It drew
+         Firestorm's emblem as a selection beam   their mark, rendered in world,
+         where other people see it   offered from a button in our Preferences.
+         Eighteen other beam shapes remain. -->
 
         <slider
          enabled_control="ShowSelectionBeam"
@@ -857,7 +846,7 @@
          min_val="0.1"
          show_text="true"
          width="150"
-         tool_tip="Change the scale of the shape used for the Phoenix Shaped Beam" />
+         tool_tip="Change the scale of the shape used for the selection beam" />
 
         <text
          type="string"

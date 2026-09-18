@@ -40,15 +40,9 @@
 								+ 新增更多類比網格
 							</text>
 						</layout_panel>
-						<layout_panel name="mode_selection">
-							<text name="mode_selection_text">
-								模式:
-							</text>
-							<combo_box name="mode_combo" tool_tip="選擇您最熟悉的檢視器樣式，以便根據您的需求進行調整。">
-								<combo_box.item label="混合" name="Hybrid" />
-								<combo_box.item label="文字" name="Text" />
-							</combo_box>
-						</layout_panel>
+			<!-- <FS:AICtl> The Mode picker is gone from the English panel, so this
+			     translation could never render   a localised file can CHANGE a node
+			     the base declares, never ADD one. Removed rather than left inert. -->
 					</layout_stack>
 				</layout_panel>
 			</layout_stack>

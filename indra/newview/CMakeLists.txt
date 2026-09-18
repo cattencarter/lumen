@@ -2205,11 +2205,7 @@ set(viewer_APPSETTINGS_FILES
     app_settings/scriptlibrary_aa.xml
     app_settings/scriptlibrary_ossl.xml
     app_settings/scriptlibrary_preproc.xml
-    app_settings/settings_firestorm.xml
-    app_settings/settings_hybrid.xml
-    app_settings/settings_phoenix.xml
-    app_settings/settings_v3.xml
-    app_settings/settings_text.xml
+    app_settings/settings_lumen.xml
     app_settings/settings.xml
     app_settings/settings_crash_behavior.xml
     app_settings/settings_files.xml

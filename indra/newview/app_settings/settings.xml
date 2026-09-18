@@ -13881,7 +13881,7 @@ Change of this parameter will affect the layout of buttons in notification toast
 			<key>Type</key>
 			<string>String</string>
 			<key>Value</key>
-			<string>https://phoenixviewer.com/app/file-a-jira/?environment=[ENVIRONMENT]</string>
+			<string>https://github.com/cattencarter/lumen/issues/new</string>
 		</map>
 	<key>RevokePermsOnStopAnimation</key>
     <map>

@@ -93,8 +93,6 @@ private:
     void addFavoritesToStartLocation();
     void addUsersToCombo(bool show_server);
     void onSelectUser();
-    void onModeChange(const LLSD& original_value, const LLSD& new_value);
-    void onModeChangeConfirm(const LLSD& original_value, const LLSD& new_value, const LLSD& notification, const LLSD& response);
     void onSelectServer();
     void onLocationSLURL();
     void onUsernameTextChanged();

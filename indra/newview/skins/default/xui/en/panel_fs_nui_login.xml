@@ -49,12 +49,16 @@
       width="970"
       min_width="970"
       height="152">
+  <!-- <FS:AICtl> 125 to 100, the author's call: it was too loud for a strip
+       that is otherwise a name, two fields and a button. `top` moves 10 to 23
+       so the smaller mark keeps the same optical centre in the 152-high band
+       rather than riding high in it. -->
   <icon
-    height="125"
-    width="125"
+    height="100"
+    width="100"
     image_name="login_fs_logo"
     left="0"
-    top="10"
+    top="23"
     name="sl_logo_small" />
 
     <layout_stack
@@ -320,58 +324,20 @@
     + Click to add more grids
     </text>
     </layout_panel>
-    <layout_panel
-      follows="left|top|right"
-      name="mode_selection"
-      width="342"
-      height="66">
-    <text
-      follows="right|top"
-      font="SansSerifLarge"
-      halign="right"
-      valign="center"
-      height="32"
-      name="mode_selection_text"
-      top_pad="5"
-      right="-130"
-      width="75">
-        Mode:
-    </text>
-    <combo_box
-      follows="right|bottom"
-      top_delta="0"
-      left_pad="10"
-      right="-5"
-      height="32"
-      max_chars="128"
-      tool_tip="Select which style of viewer you are most familiar with to set your defaults to appropriately."
-      name="mode_combo"
-      width="120"
-      combo_button.scale_image="true">
-      <combo_box.drop_down_button
-        font="SansSerifLarge"/>
-      <combo_box.item
-        label="Firestorm"
-        name="Firestorm"
-        value="settings_firestorm.xml" />
-      <combo_box.item
-        label="Phoenix"
-        name="Phoenix"
-        value="settings_phoenix.xml" />
-      <combo_box.item
-        label="[VIEWER_GENERATION]"
-        name="V3"
-        value="settings_v3.xml" />
-      <combo_box.item
-        label="Hybrid"
-        name="Hybrid"
-        value="settings_hybrid.xml" />
-      <combo_box.item
-        label="Text"
-        name="Text"
-        value="settings_text.xml" />
-      </combo_box>
-    </layout_panel>
+    <!-- <FS:AICtl> The Mode picker is gone, and the panel holding it with it.
+         It offered Firestorm's interface layouts   Firestorm, Phoenix, Hybrid,
+         Text and a generation label   inside a viewer that is not Firestorm:
+         the same borrowed clothes as shipping their skins. The author:
+         *"vi kan fjerne hele mode delen ogsaa og selvfoelgelig ogsaa hvad der
+         ligger bagved"*.
+
+         The four preset files behind it are deleted and settings_firestorm.xml
+         is renamed settings_lumen.xml, so the settings are simply the
+         settings rather than one of five choices.
+
+         THIS is the panel the viewer actually builds   FSUseLegacyLoginPanel
+         defaults to false   so editing panel_fs_login.xml alone changed
+         nothing on screen. Both are edited now. -->
 
     </layout_stack> <!-- 2nd_row_stack -->
     </layout_panel>  <!-- 2nd_row -->

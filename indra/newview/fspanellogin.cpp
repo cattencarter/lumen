@@ -215,9 +215,10 @@ FSPanelLogin::FSPanelLogin(const LLRect &rect,
 
     reshape(rect.getWidth(), rect.getHeight());
 
-    LLUICtrl& mode_combo = getChildRef<LLUICtrl>("mode_combo");
-    mode_combo.setValue(gSavedSettings.getString("SessionSettingsFile"));
-    mode_combo.setCommitCallback(boost::bind(&FSPanelLogin::onModeChange, this, getChild<LLUICtrl>("mode_combo")->getValue(), _2));
+    // <FS:AICtl> The Mode picker is gone from the login screen; see
+    // panel_fs_login.xml. `getChildRef` asserts on a control that no longer
+    // exists, so this wiring has to go with it rather than be left to find
+    // nothing.
 
     LLLineEditor* password_edit(getChild<LLLineEditor>("password_edit"));
     password_edit->setKeystrokeCallback(onPassKey, this);
@@ -1636,35 +1637,8 @@ void FSPanelLogin::onUsernameTextChanged()
 //    Mode selector    //
 /////////////////////////
 
-void FSPanelLogin::onModeChange(const LLSD& original_value, const LLSD& new_value)
-{
-    // <FS:AO> make sure toolbar settings are reset on mode change
-    if (gSavedSettings.getBOOL("FSToolbarsResetOnModeChange"))
-    {
-        LL_INFOS() << "Clearing toolbar settings." << LL_ENDL;
-        gSavedSettings.setBOOL("ResetToolbarSettings", true);
-    }
-
-    if (original_value.asString() != new_value.asString())
-    {
-        LLNotificationsUtil::add("ModeChange", LLSD(), LLSD(), boost::bind(&FSPanelLogin::onModeChangeConfirm, this, original_value, new_value, _1, _2));
-    }
-}
-
-void FSPanelLogin::onModeChangeConfirm(const LLSD& original_value, const LLSD& new_value, const LLSD& notification, const LLSD& response)
-{
-    S32 option = LLNotificationsUtil::getSelectedOption(notification, response);
-    switch (option)
-    {
-        case 0:
-            gSavedSettings.getControl("SessionSettingsFile")->set(new_value);
-            LLAppViewer::instance()->requestQuit();
-            break;
-        case 1:
-            // revert to original value
-            getChild<LLUICtrl>("mode_combo")->setValue(original_value);
-            break;
-        default:
-            break;
-    }
-}
+// <FS:AICtl> onModeChange and onModeChangeConfirm are gone with the picker
+// that was their only caller. The second one reached for "mode_combo" to put
+// the old value back after a cancelled restart, and that control no longer
+// exists   getChild would have returned a dummy and warned rather than
+// crashing, which is the quiet kind of dead code worth deleting outright.

@@ -1053,7 +1053,10 @@ LLSD FSData::getSystemInfo()
     sysinfo2 += llformat("Packets Lost: %.0f/%.0f (%.1f%%)\n\n", info["PACKETS_LOST"].asReal(), info["PACKETS_IN"].asReal(), info["PACKETS_PCT"].asReal());
 
     sysinfo2 += llformat("RLVa: %s\n", info["RLV_VERSION"].asString().c_str());
-    sysinfo2 += llformat("Mode: %s\n", info["MODE"].asString().c_str());
+    // <FS:AICtl> The Mode picker is gone and getViewerInfo no longer sets
+    // MODE, so this printed an empty field. A SECOND consumer of it, built
+    // by hand here rather than from the AboutSettings template   which is
+    // why grepping the XUI for [MODE] said the job was finished.
     sysinfo2 += llformat("Skin: %s (%s)\n", info["SKIN"].asString().c_str(), info["THEME"].asString().c_str());
     sysinfo2 += llformat("Window Size: %sx%s px\n", info["WINDOW_WIDTH"].asString().c_str(), info["WINDOW_HEIGHT"].asString().c_str());
 #if LL_DARWIN

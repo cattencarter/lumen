@@ -62,7 +62,6 @@ Graphics Card Memory (Budget): [VRAM_BUDGET]
 	<string name="AboutDriver">Windows Graphics Driver Version: [GRAPHICS_DRIVER_VERSION]</string>
 	<string name="AboutOGL">OpenGL Version: [OPENGL_VERSION]</string>
 	<string name="AboutSettings">
-Settings mode: [MODE]
 Viewer Skin: [SKIN] ([THEME])
 Window size: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Font Used: [FONT] ([FONT_SCREEN_DPI] dpi)
@@ -3313,12 +3312,14 @@ Your current position: [AVATAR_POS]
   <string name="font_fonts_noto.xml">Noto Sans</string>
   <string name="font_fonts_celestia_medium_redux.xml">Celestia Medium Redux</string>
   <string name="font_fonts_cascadia_code.xml">Cascadia Code</string>
-  <string name="mode_unknown">Unknown Mode</string>
-  <string name="mode_settings_firestorm.xml">[APP_NAME]</string>
-  <string name="mode_settings_phoenix.xml">Phoenix</string>
-  <string name="mode_settings_v3.xml">[VIEWER_GENERATION]</string>
-  <string name="mode_settings_hybrid.xml">Hybrid</string>
-  <string name="mode_settings_text.xml">Text</string>
+  <!-- <FS:AICtl> The five mode names and "Unknown Mode" are gone with the Mode
+       picker, and so is the "Settings mode:" line that printed one into the
+       viewer-info people paste into support threads. Lumen has one settings
+       file, so the field could only ever say the same thing   and after the
+       rename it said "Unknown Mode", because llappviewer looks the label up as
+       "mode_" + SessionSettingsFile and there was no mode_settings_lumen.xml
+       to find. A field with one possible value is noise; one that says
+       "unknown" is a defect. -->
 
   <string name="Asset_Uploading">Uploading...
 [ASSET_NAME]

@@ -3192,9 +3192,21 @@ bool LLAppViewer::initConfiguration()
         mIsFirstRun = true;
 
         // <FS>
+        // <FS:AICtl> One settings file, and anybody who ran an older build is
+        // pointed back at it. The Mode picker used to choose between five of
+        // Firestorm's layouts; four are deleted and the fifth is renamed, so a
+        // saved `SessionSettingsFile` naming any of them would now load
+        // nothing at all and silently take the viewer's defaults with it.
+        {
+            const std::string session = gSavedSettings.getString("SessionSettingsFile");
+            if (session != "settings_lumen.xml")
+            {
+                gSavedSettings.setString("SessionSettingsFile", "settings_lumen.xml");
+            }
+        }
         if (gSavedSettings.getString("SessionSettingsFile").empty())
         {
-            gSavedSettings.setString("SessionSettingsFile", "settings_firestorm.xml");
+            gSavedSettings.setString("SessionSettingsFile", "settings_lumen.xml");
         }
         // </FS>
 
@@ -3979,17 +3991,11 @@ LLSD LLAppViewer::getViewerInfo() const
     info["BANDWIDTH"] = LLViewerThrottle::getMaxBandwidthKbps();
     info["LOD"] = gSavedSettings.getF32("RenderVolumeLODFactor");
 
-    //[FIRE 3113 : SJ] Added Settingsfile to info
-    std::string mode_name;
-    std::string sessionSettingsFile = gSavedSettings.getString("SessionSettingsFile");
-    if (LLTrans::findString(mode_name, "mode_" + sessionSettingsFile))
-    {
-        info["MODE"] = mode_name;
-    }
-    else
-    {
-        info["MODE"] = LLTrans::getString("mode_unknown");
-    }
+    // <FS:AICtl> The Mode picker is gone, so SessionSettingsFile is always
+    // settings_lumen.xml and there is nothing to report. This looked the label
+    // up as "mode_" + the filename, which after the rename found nothing and
+    // put "Unknown Mode" into the text people paste into support threads.
+    // AboutSettings no longer has a [MODE] line to fill.
 
     // return a URL to the release notes for this viewer, such as:
     // https://releasenotes.secondlife.com/viewer/2.1.0.123456.html

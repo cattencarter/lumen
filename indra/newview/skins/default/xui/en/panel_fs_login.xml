@@ -300,57 +300,19 @@
           tab_stop="false"
           visible="false"  />
     </layout_panel>
-    <layout_panel
-        tab_stop="false"
-        follows="right|bottom"
-        name="mode_selection"
-        width="210"
-        min_width="100"
-        height="80">
-      <text
-          follows="right|bottom"
-          font="SansSerif"
-          font.style="BOLD"
-          font.size="Large"
-          halign="right"
-          height="16"
-          name="mode_selection_text"
-          top="8"
-          right="-15"
-          width="200">
-        SELECT MODE
-      </text>
-      <combo_box
-          follows="right|bottom"
-          top="35"
-          left_pad="10"
-          right="-15"
-          height="23"
-          max_chars="128"
-          tool_tip="Select which style of viewer you are most familiar with to set your defaults to appropriately."
-          name="mode_combo"
-          width="110">
-           <combo_box.item
-            label="Lumen"
-            name="Firestorm"
-            value="settings_firestorm.xml" />
-           <combo_box.item
-            label="Phoenix"
-            name="Phoenix"
-            value="settings_phoenix.xml" />
-           <combo_box.item
-            label="[VIEWER_GENERATION]"
-            name="V3"
-            value="settings_v3.xml" />
-           <combo_box.item
-            label="Hybrid"
-            name="Hybrid"
-            value="settings_hybrid.xml" />
-           <combo_box.item
-            label="Text"
-            name="Text"
-            value="settings_text.xml" />
-        </combo_box>
-    </layout_panel>
+    <!-- <FS:AICtl> The Mode picker is gone, and the layout panel that held it
+         went with it rather than being left empty   an empty panel still
+         reserves its 210 pixels.
+
+         It offered Firestorm's own interface layouts (Firestorm, Phoenix,
+         Hybrid, Text and a generation label) inside a viewer that is not
+         Firestorm, which is the same borrowed clothes as shipping their skins.
+         The author: *"vi kan fjerne hele mode delen ogsaa og selvfoelgelig
+         ogsaa hvad der ligger bagved"*. The four preset files behind it are
+         deleted and settings_firestorm.xml is renamed settings_lumen.xml, so
+         the settings are the settings rather than one of five choices.
+
+         This is the LEGACY panel, used only when FSUseLegacyLoginPanel is on.
+         panel_fs_nui_login.xml is the one normally on screen. -->
   </layout_stack>
 </panel>

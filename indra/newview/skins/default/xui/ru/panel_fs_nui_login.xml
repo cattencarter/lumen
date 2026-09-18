@@ -37,19 +37,11 @@
               <text name="grid_login_text" width="45">Сеть:</text>
               <text name="grid_builder_text" width="300">+ Нажмите чтобы добавить больше сеток</text>
             </layout_panel>
-            <layout_panel name="mode_selection">
-              <text name="mode_selection_text">Режим:</text>
-              <combo_box name="mode_combo" tool_tip="Выберите стиль просмотра, с которым вы наиболее знакомы, чтобы правильно установить значения по умолчанию.">
-              <!--
-              <combo_box.item label="Firestorm" name="Firestorm"/>
-              <combo_box.item label="Phoenix" name="Phoenix"/>
-              <combo_box.item label="[VIEWER_GENERATION]" name="V3"/>
-              <combo_box.item label="Hybrid" name="Hybrid"/>
-              <combo_box.item label="Latency" name="Latency"/>
-              <combo_box.item label="Text" name="Text"/>
-              -->
-              </combo_box>
-            </layout_panel>
+  <!-- <FS:AICtl> The Mode picker is gone from the English panel, so this
+       translation of it could never render   a localised file can CHANGE a
+       node the base declares, never ADD one. Removed anyway rather than
+       left inert: it named settings_firestorm.xml, a file that no longer
+       exists, in a viewer that no longer has modes. -->
           </layout_stack>
         </layout_panel>
       </layout_stack>
