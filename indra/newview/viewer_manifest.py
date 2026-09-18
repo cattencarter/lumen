@@ -1024,7 +1024,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
         #icon_path = os.path.join(self.get_src_prefix(), 'res', 'll_icon.ico')
         #if not os.path.exists(icon_path):
         #    icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'secondlife.ico')
-        icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'firestorm_icon.ico')
+        icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'lumen_icon.ico')
         # </FS:TJ>
 
         # In CI, defer Velopack packaging to the sign step where Azure credentials
@@ -2062,7 +2062,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
         # Icon path for macOS
         # <FS:TJ> Use Firestorms icon path
         #icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'secondlife.icns')
-        icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'firestorm_icon.icns')
+        icon_path = os.path.join(self.get_src_prefix(), self.icon_path(), 'lumen_icon.icns')
         # </FS:TJ>
 
         # The main executable inside Contents/MacOS/ is named after the channel
@@ -2176,7 +2176,7 @@ class LinuxManifest(ViewerManifest):
         self.path("licenses-linux.txt","licenses.txt")
         self.path("VivoxAUP.txt")
         self.path("LGPL-license.txt")
-        self.path("res/firestorm_icon.png","firestorm_icon.png")
+        self.path("res/lumen_icon.png","lumen_icon.png")
         with self.prefix("linux_tools"):
             self.path("client-readme.txt","README-linux.txt")
             self.path("FIRESTORM_DESKTOPINSTALL.txt","FIRESTORM_DESKTOPINSTALL.txt")
