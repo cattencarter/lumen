@@ -3486,6 +3486,31 @@ namespace
     std::map<std::string, S32> sWordDf;   // word -> how many places use it
     bool sSettingLabelsBuilt = false;
 
+    /**
+     * Select every tab that contains this view, at any depth.
+     *
+     * **Preferences is tabs inside tabs.** `panel_preferences_graphics1.xml`
+     * is itself a `tab_container` -- General, Rendering and more -- so
+     * selecting only the outer tab left "Fullscreen Mode" on a page nobody was
+     * looking at while Graphics sat open showing General. Found by asking for
+     * all 1618 indexed labels in one sweep and checking which ones did not end
+     * up on screen; eight did not, and this was six of them.
+     *
+     * Walking up from the widget handles nesting of any depth, rather than the
+     * two levels that happen to exist today.
+     */
+    void selectTabsContaining(LLView* w)
+    {
+        LLView* child = w;
+        for (LLView* p = (w ? w->getParent() : NULL); p; child = p, p = p->getParent())
+        {
+            if (LLTabContainer* tc = dynamic_cast<LLTabContainer*>(p))
+            {
+                if (LLPanel* page = dynamic_cast<LLPanel*>(child)) tc->selectTabPanel(page);
+            }
+        }
+    }
+
     /** How to say where this is, to a person. */
     std::string whereOf(const std::string& kind, const std::string& path, const std::string& label)
     {
@@ -3594,6 +3619,19 @@ namespace
         {
             LLXMLNodePtr node = stack.back();
             stack.pop_back();
+
+            // **A widget the XUI hides is not a place anybody can be sent.**
+            // `panel_preferences_graphics1.xml` carries two `visible="false"`
+            // sliders whose labels are their own control names,
+            // `RenderAvatarMaxComplexity` and `RenderAvatarMaxNonImpostors` --
+            // they exist to bind a value, not to be looked at. The whole
+            // subtree goes, since a hidden container hides its children too.
+            std::string vis;
+            if (node->getAttributeString("visible", vis) && (vis == "false" || vis == "0"))
+            {
+                continue;
+            }
+
             std::string ctrl, label;
             if (node->getAttributeString("control_name", ctrl)
                 && node->getAttributeString("label", label)
@@ -3990,7 +4028,27 @@ namespace
                     found.push_back((S32)i);
                 }
             }
-            if (found.size() == 1) return found[0];
+            if (found.size() == 1)
+            {
+                // **An exact label in the MENU BAR beats an identically
+                // labelled checkbox buried in a floater.** "Build" resolved to
+                // `JoystickBuildEnabled` in the Joystick Configuration window,
+                // because an exact control match returned before menus were
+                // ever considered -- and `Build > Build` is what somebody
+                // asking where to build means. Same for "Share", which found a
+                // bulk-permissions checkbox. Narrow on purpose: it needs the
+                // labels to be exactly equal, so it cannot reorder anything a
+                // ranked search would have decided.
+                for (size_t i = 0; i < sEntries.size(); ++i)
+                {
+                    if (sEntries[i].ctrl.empty() && sEntries[i].menubar
+                        && lowered(sEntries[i].label) == want)
+                    {
+                        return (S32)i;
+                    }
+                }
+                return found[0];
+            }
             // An exact label naming several controls is a refusal, not a coin
             // toss: `View People Icons` names four different lists.
             for (size_t i = 0; i < found.size(); ++i) nearRow(near, sEntries[found[i]]);
@@ -5474,12 +5532,18 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
 
             // The tab first, then the filter. Lighting a setting up on a page
             // nobody is looking at is not an answer.
+            // **A tab in the XUI is not always a tab in the build.** ReleaseOS
+            // compiles without OpenSim support, so `Preferences > Opensim` is
+            // in floater_preferences.xml and absent at runtime -- and returning
+            // no `tab` said nothing, where the truth is worth saying.
             std::string tab_label;
+            bool tab_missing = false;
             if (prefs)
             {
                 if (LLTabContainer* tc = prefs->findChild<LLTabContainer>("pref core", true))
                 {
                     if (tc->selectTabByName(e.tab)) tab_label = e.path;
+                    else                            tab_missing = true;
                 }
             }
 
@@ -5494,29 +5558,53 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 checked = true;
                 if (LLView* w = prefs->findChild<LLView>(e.widget, true))
                 {
+                    selectTabsContaining(w);
                     showing = w->isInVisibleChain();
+
+                    // Still hidden means the FILTER is hiding it: Preferences'
+                    // own search does not index every label, and two of these
+                    // are labelled with their control name. **Showing them the
+                    // page the setting is on beats showing them a filtered one
+                    // it is not on**, so drop the filter and look again.
+                    if (!showing)
+                    {
+                        if (LLUICtrl* box = prefs->findChild<LLUICtrl>("search_prefs_edit", true))
+                        {
+                            box->setValue(LLSD(std::string()));
+                            box->onCommit();
+                            filtered = false;
+                        }
+                        selectTabsContaining(w);
+                        showing = w->isInVisibleChain();
+                    }
                 }
             }
 
             r["opened"] = (prefs != NULL);
             if (!tab_label.empty()) r["tab"] = tab_label;
+            if (tab_missing) r["tab_not_in_this_build"] = e.path;
             r["filter_applied"] = filtered;
             r["called"] = e.label;
             r["searched_preferences_for"] = term;
             if (checked) r["setting_is_visible"] = showing;
-            r["note"] = !filtered
-                ? "Preferences was opened but the search box could not be filled, so they will "
-                  "have to look. Say that rather than claiming it is highlighted."
+            r["note"] = tab_missing
+                ? "That setting exists in this viewer's files but the tab it lives on is NOT in "
+                  "this build -- `tab_not_in_this_build` names it. Tell them it is not available "
+                  "here rather than sending them to look for a tab that is not there."
+                : !filtered
+                ? "Preferences is open on the right page with the filter cleared, because "
+                  "filtering to this setting would have hidden it -- Preferences' own search does "
+                  "not index every label. Give them `tab` and `called` so they can spot it."
                 : (!checked || showing
                    ? "Preferences is open ON THE RIGHT TAB, filtered to this setting, and the "
                      "control was found on screen afterwards -- `setting_is_visible` says so "
                      "where it could be checked. `tab` is where it lives; name it, so they learn "
                      "where it is. `called` is what this viewer calls it, which may differ from "
                      "the words they used -- say so if it does."
-                   : "Preferences is open on the right tab, but the setting is NOT visible after "
-                     "filtering -- its own search did not match, so the panel is empty. SAY THAT "
-                     "and give them `tab` plus `called` to find by hand. Do not tell them it is "
-                     "highlighted; it is not.");
+                   : "Preferences is open on the right tab, but the control could NOT be found "
+                     "on screen -- the page may well be showing, it is this one setting that is "
+                     "not. Give them `tab` plus `called` and let them look. Do not say it is "
+                     "highlighted, and do not say the panel is empty: that was never checked.");
             recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
             return r;
         }
