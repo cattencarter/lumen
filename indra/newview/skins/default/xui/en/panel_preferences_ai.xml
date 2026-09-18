@@ -182,7 +182,7 @@
 
       <!-- ============================== Codex ============================== -->
       <panel follows="left|top" layout="topleft" name="p_codex"
-       left="0" top="64" width="520" height="300" background_visible="false">
+       left="0" top="64" width="520" height="330" background_visible="false">
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="4" width="480" height="40" word_wrap="true">
@@ -226,7 +226,20 @@
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="242" width="480" height="40" word_wrap="true">
+         left="20" top="242" width="52" height="16">
+            Thinking
+        </text>
+
+        <combo_box control_name="LumenAICodexEffort" follows="left|top" layout="topleft"
+         left="76" top="238" width="274" height="22" name="effort_codex">
+            <combo_box.item label="low -- fastest, and enough for most questions" name="el" value="low" />
+            <combo_box.item label="medium"                                        name="em" value="medium" />
+            <combo_box.item label="high"                                          name="eh" value="high" />
+            <combo_box.item label="xhigh -- slowest, and the most of your allowance" name="ex" value="xhigh" />
+        </combo_box>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="270" width="480" height="40" word_wrap="true">
             These are the models Codex offered when this list was written. Your ChatGPT plan decides which of them you can actually use, and you can type one that is not here. Changing the model starts a new conversation.
         </text>
       </panel>

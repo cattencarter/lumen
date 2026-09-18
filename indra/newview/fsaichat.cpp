@@ -1437,13 +1437,14 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
     // after the setting changed would go on answering from the old one while
     // the title bar named the new -- the same silent disagreement the title
     // was added to end.
-    const std::string codex_model = gSavedSettings.getString("LumenAICodexModel");
+    const std::string codex_model = gSavedSettings.getString("LumenAICodexModel")
+                                  + "/" + gSavedSettings.getString("LumenAICodexEffort");
     if (!mCodexThread.empty() && codex_model != mCodexModel)
     {
         mCodexThread.clear();
-        sayNote("Switched to " + (codex_model.empty() ? std::string("Codex's own default model")
-                                                      : codex_model)
-                + ". This starts a new conversation.");
+        sayNote("Switched to " + gSavedSettings.getString("LumenAICodexModel")
+                + " (" + gSavedSettings.getString("LumenAICodexEffort")
+                + " reasoning). This starts a new conversation.");
     }
 
     if (mCodexThread.empty())
@@ -1490,6 +1491,14 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         if (off.size()) cfg["plugins"] = off;
 
+        // **How hard it thinks, which the user pays for.** Codex inherits
+        // `model_reasoning_effort` from the user's own config.toml -- `high` on
+        // this machine -- and the turn above burned 27 seconds of it without
+        // calling a single tool. Asking a viewer where a setting lives does not
+        // need that, and the author saw the bill: *"12% of my codex was used"*.
+        const std::string effort = gSavedSettings.getString("LumenAICodexEffort");
+        if (!effort.empty()) cfg["model_reasoning_effort"] = effort;
+
         // **The model is a thread property, not a turn property**, so changing
         // it has to start a new conversation -- checked against the server
         // rather than assumed: `thread/start` echoes back the model it took,
@@ -1497,7 +1506,21 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         // whatever Codex would have picked itself.
         LLSD start;
         start["config"] = cfg;
-        if (!codex_model.empty()) start["model"] = codex_model;
+        const std::string want_model = gSavedSettings.getString("LumenAICodexModel");
+        if (!want_model.empty()) start["model"] = want_model;
+
+        // **Lumen's own prompt, which this path was sending to nobody.**
+        // Anthropic and OpenAI both get `fullSystemPrompt()`; Codex got
+        // nothing, so the model ran as Codex's ordinary coding agent with no
+        // idea it was inside a Second Life viewer -- which is why every answer
+        // called it Firestorm and recited a menu path out of training data.
+        //
+        // Measured on the author's own question, same model, same tools:
+        //   without   27.6s, ZERO tool calls, an answer naming a file on his disk
+        //   with      13.5s, one `show_setting`, the right tab and the real value
+        // `developerInstructions` rather than `baseInstructions`, so Codex's own
+        // conventions for calling tools stay intact and ours sit on top.
+        start["developerInstructions"] = fullSystemPrompt();
 
         LLSD started;
         if (!await(rpc("thread/start", start), 30.f, started))
@@ -1510,6 +1533,21 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         mCodexThread = started["thread"]["id"].asString();
         mCodexModel  = codex_model;
+
+        // **Say which model actually answered, from the server's own reply.**
+        // The author, looking at what a turn had cost: *"with 12% I would
+        // expect astra"* -- and nothing in the viewer could settle it, because
+        // the title bar names the SETTING and this names the THREAD. They are
+        // the same thing until they are not, and `thread/start` echoes back
+        // what it took, so there is no reason to infer it.
+        const std::string got = started["thread"]["model"].asString();
+        const std::string eff = started["thread"]["reasoningEffort"].asString();
+        if (!got.empty() && !want_model.empty() && got != want_model)
+        {
+            sayNote("Codex answered with " + got + ", not the " + want_model
+                    + " that was asked for.");
+        }
+        LL_INFOS("AICtl") << "codex thread: model=" << got << " effort=" << eff << LL_ENDL;
     }
 
     LLSD turn;
