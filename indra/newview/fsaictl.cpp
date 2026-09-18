@@ -3294,23 +3294,49 @@ namespace
     };
 }
 
-// <FS:AICtl> Finding a setting by the words a person would use for it.
+// <FS:AICtl> Finding a setting, and where in this viewer it actually lives.
 //
 // **The obvious lookup does not work, and the author's own example proves it.**
 // "Draw distance" is `RenderFarClip`, whose settings.xml comment reads
 // "Distance of far clip plane from camera (meters)" -- so searching names and
 // comments misses the single most likely question. The words a person uses are
-// the **label on the Preferences panel**, and that lives in the XUI:
+// the **label in the interface**, and that lives in the XUI:
 //
 //     <slider control_name="RenderFarClip" ... label="Draw distance" ...
 //
-// So the panels are read once and a label -> control map built from them. Only
-// panel_preferences_*.xml, which is nineteen small files rather than the six
-// hundred and ninety that define the whole interface.
+// This read only `panel_preferences_*.xml` at first, which answered "set my
+// draw distance" and could not answer "where do I change my hover height".
+// Measured across the whole skin, 2026-09-18, rather than guessed at:
+//
+//     labelled controls in panel_preferences_*      503
+//     labelled controls in every other XUI file     236   (183 of them new)
+//     settings reachable from a MENU label          156   (97 of them new)
+//     distinct controls bound anywhere in the XUI  1010
+//
+// **Menus carry no `control_name` at all** -- not one, across 155 files. What
+// they carry is `ToggleControl`/`CheckControl` with the setting as a
+// `parameter`, which is why a menu can answer both halves for a checkbox and
+// only the "where" half for everything else.
+//
+// **And some things have no setting behind them anywhere.** Hover height is the
+// case that forced this: the slider in `floater_edit_hover_height.xml` is
+// `name="HoverHeightSlider"` with NO `control_name`, wired in C++. The setting
+// exists (`AvatarHoverOffsetZ`) and nothing in the interface connects those
+// words to it. So "where do I find it" and "set it to X" genuinely do not cover
+// the same ground, and the tools say so instead of pretending otherwise.
 namespace
 {
-    std::map<std::string, std::string> sSettingLabels;   // lowercased label -> control
-    std::map<std::string, std::string> sSettingPanel;    // control -> panel_preferences_*.xml
+    /** Where a control can be changed, and how to say that to a person. */
+    struct SettingHome
+    {
+        std::string file;   // the XUI file it was found in
+        std::string kind;   // "preferences" | "floater" | "menu"
+        std::string where;  // "Preferences > Graphics", "Quick Preferences", "Avatar > Fly"
+        std::string tab;    // the Preferences tab's NAME, for selectTabByName; empty elsewhere
+    };
+
+    std::map<std::string, std::vector<std::string> > sSettingLabels;   // lowercased label -> control(s)
+    std::map<std::string, SettingHome> sSettingHome;                   // control -> where it lives
     /**
      * The range the PANEL allows, where it declares one.
      *
@@ -3321,7 +3347,9 @@ namespace
      * half-way and the other half thrown away.
      */
     std::map<std::string, std::pair<F32, F32> > sSettingRange;
-    std::map<std::string, std::pair<std::string, std::string> > sTabs;  // file -> (tab name, tab label)
+    /** A place in the menus with these words and nothing to set. */
+    std::map<std::string, std::string> sMenuOnly;                      // lowercased label -> menu path
+    std::map<std::string, std::pair<std::string, std::string> > sTabs; // file -> (tab name, tab label)
     bool sSettingLabelsBuilt = false;
 
     /**
@@ -3356,6 +3384,197 @@ namespace
         }
     }
 
+    /**
+     * Remember a label, keeping EVERY distinct control it names.
+     *
+     * This used to be one map assigned into, so a repeated label silently kept
+     * whichever file was read last. Measured in the preference panels alone,
+     * **six labels name more than one control** and `play sound uuid:` names
+     * **seven** -- so "set ambient to 0.5" was a coin toss between the audio
+     * level and an auto-unmute checkbox, decided by directory order and
+     * reported as success. A tie that cannot be broken is a refusal here, the
+     * same rule the ambiguous-item refusal follows.
+     */
+    void noteLabel(const std::string& label, const std::string& ctrl)
+    {
+        if (label.empty() || ctrl.empty()) return;
+        std::vector<std::string>& v = sSettingLabels[lowered(label)];
+        if (std::find(v.begin(), v.end(), ctrl) == v.end()) v.push_back(ctrl);
+    }
+
+    /** First writer wins, which is what makes the order files are read a precedence. */
+    void noteHome(const std::string& ctrl, const SettingHome& home)
+    {
+        if (ctrl.empty() || home.where.empty() || sSettingHome.count(ctrl)) return;
+        sSettingHome[ctrl] = home;
+    }
+
+    void noteRange(const std::string& ctrl, LLXMLNodePtr node)
+    {
+        std::string lo, hi;
+        if (!sSettingRange.count(ctrl)
+            && node->getAttributeString("min_val", lo)
+            && node->getAttributeString("max_val", hi))
+        {
+            sSettingRange[ctrl] = std::make_pair((F32)atof(lo.c_str()), (F32)atof(hi.c_str()));
+        }
+    }
+
+    /** Every control_name/label pair in one panel or floater. */
+    void scanPanel(const std::string& dir, const std::string& file, bool is_preferences)
+    {
+        LLXMLNodePtr root;
+        if (!LLXMLNode::parseFile(dir + gDirUtilp->getDirDelimiter() + file, root, NULL)) return;
+
+        SettingHome home;
+        home.file = file;
+        home.kind = is_preferences ? "preferences" : "floater";
+        if (is_preferences)
+        {
+            // A preference panel the container does not show is still worth
+            // reading for its labels; it simply has no tab to name.
+            std::map<std::string, std::pair<std::string, std::string> >::const_iterator
+                tb = sTabs.find(file);
+            if (tb != sTabs.end())
+            {
+                home.tab   = tb->second.first;
+                home.where = "Preferences > " + tb->second.second;
+            }
+        }
+        else
+        {
+            std::string title;
+            root->getAttributeString("title", title);
+            if (!title.empty()) home.where = "the " + title + " window";
+        }
+
+        std::vector<LLXMLNodePtr> stack(1, root);
+        while (!stack.empty())
+        {
+            LLXMLNodePtr node = stack.back();
+            stack.pop_back();
+            std::string ctrl, label;
+            if (node->getAttributeString("control_name", ctrl)
+                && node->getAttributeString("label", label)
+                && !ctrl.empty() && !label.empty())
+            {
+                noteLabel(label, ctrl);
+                noteRange(ctrl, node);
+                noteHome(ctrl, home);
+            }
+            for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
+            {
+                stack.push_back(c);
+            }
+        }
+    }
+
+    /**
+     * How a person OPENS this menu, which the XUI does not say anywhere.
+     *
+     * A context menu's file knows its own items and not the gesture that
+     * summons it, so this is a small hand-written table and cannot be anything
+     * else. **A file that is not in it is not reported as a menu home at all**
+     * -- "I cannot find that in this viewer's menus" is true, where an invented
+     * path is not, and that is the whole reason this feature exists.
+     */
+    bool menuOpening(const std::string& file, std::string& prefix)
+    {
+        prefix.clear();
+        if (file == "menu_viewer.xml")           return true;   // the menu bar names itself
+        if (file == "menu_login.xml")            return true;
+        if (file == "menu_avatar_self.xml")      { prefix = "Right-click yourself";              return true; }
+        if (file == "menu_avatar_other.xml")     { prefix = "Right-click the other person";      return true; }
+        if (file == "menu_attachment_self.xml")  { prefix = "Right-click something you wear";    return true; }
+        if (file == "menu_attachment_other.xml") { prefix = "Right-click what they are wearing"; return true; }
+        if (file == "menu_object.xml")           { prefix = "Right-click the object";            return true; }
+        if (file == "menu_land.xml")             { prefix = "Right-click the ground";            return true; }
+        if (file == "menu_inventory.xml")        { prefix = "Right-click the inventory item";    return true; }
+        // Read out of llviewermenu.cpp and llnetmap.cpp rather than guessed:
+        // these three are genuinely right-click menus on a named piece of
+        // chrome, and between them they toggle 45 settings that live nowhere
+        // else. The gear-button menus (radar options, chat options) are left
+        // out -- a button is not a gesture I can describe without checking
+        // which window and which tab, and a wrong instruction is the thing
+        // this whole feature exists to avoid.
+        if (file == "menu_hide_navbar.xml")      { prefix = "Right-click the navigation bar at the top"; return true; }
+        if (file == "menu_topinfobar.xml")       { prefix = "Right-click the bar at the very top";       return true; }
+        if (file == "menu_mini_map.xml")         { prefix = "Right-click the mini-map";                  return true; }
+        return false;
+    }
+
+    /** The setting a menu item toggles, if it toggles one. */
+    std::string menuControl(LLXMLNodePtr item)
+    {
+        for (LLXMLNodePtr c = item->getFirstChild(); c.notNull(); c = c->getNextSibling())
+        {
+            std::string fn, param;
+            if (c->getAttributeString("function", fn)
+                && (fn == "CheckControl" || fn == "ToggleControl")
+                && c->getAttributeString("parameter", param)
+                && !param.empty()
+                && param.find(',') == std::string::npos)
+            {
+                return param;
+            }
+        }
+        return std::string();
+    }
+
+    /** One menu file, building the path down as it goes. */
+    void scanMenu(const std::string& dir, const std::string& file)
+    {
+        std::string prefix;
+        if (!menuOpening(file, prefix)) return;
+
+        LLXMLNodePtr root;
+        if (!LLXMLNode::parseFile(dir + gDirUtilp->getDirDelimiter() + file, root, NULL)) return;
+
+        std::vector<std::pair<LLXMLNodePtr, std::string> > stack;
+        stack.push_back(std::make_pair(root, prefix));
+        while (!stack.empty())
+        {
+            LLXMLNodePtr node = stack.back().first;
+            const std::string path = stack.back().second;
+            stack.pop_back();
+
+            std::string label;
+            node->getAttributeString("label", label);
+
+            std::string here = path;
+            if (!label.empty())
+            {
+                here = path.empty() ? label : path + " > " + label;
+            }
+
+            const bool is_item = node->hasName("menu_item_check") || node->hasName("menu_item_call");
+            if (is_item && !label.empty())
+            {
+                const std::string ctrl = menuControl(node);
+                if (!ctrl.empty())
+                {
+                    noteLabel(label, ctrl);
+                    SettingHome home;
+                    home.file  = file;
+                    home.kind  = "menu";
+                    home.where = here;
+                    noteHome(ctrl, home);
+                }
+                else if (!sMenuOnly.count(lowered(label)))
+                {
+                    // Real words, a real place, and nothing to set. This is the
+                    // only answer hover height has.
+                    sMenuOnly[lowered(label)] = here;
+                }
+            }
+
+            for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
+            {
+                stack.push_back(std::make_pair(c, here));
+            }
+        }
+    }
+
     void buildSettingLabels()
     {
         if (sSettingLabelsBuilt) return;
@@ -3363,52 +3582,57 @@ namespace
         buildTabMap();
 
         const std::string dir = gDirUtilp->getExpandedFilename(LL_PATH_SKINS, "default", "xui", "en");
-        LLDirIterator it(dir, "panel_preferences_*.xml");
-        std::string name;
-        S32 files = 0;
-        while (it.next(name))
-        {
-            LLXMLNodePtr root;
-            if (!LLXMLNode::parseFile(dir + gDirUtilp->getDirDelimiter() + name, root, NULL)) continue;
-            ++files;
 
-            std::vector<LLXMLNodePtr> stack(1, root);
-            while (!stack.empty())
+        // **The order these are read in IS the precedence**, because the first
+        // writer of a home keeps it. 156 controls are bound in more than one
+        // file -- RenderFarClip in five -- so something has to decide, and
+        // Preferences is the answer a person can act on.
+        //
+        // *Quick Preferences needed no special case, checked rather than
+        // assumed.* It is a shortcut surface, so the worry was that it would
+        // claim settings whose real home is elsewhere; in fact it declares
+        // three `control_name`s in its XUI and all three are in Preferences
+        // too, so Preferences wins them on order alone. The rest of that panel
+        // is built in C++ and is not in the XUI at all.
+        std::vector<std::string> prefs, others, menus;
+        {
+            LLDirIterator it(dir, "*.xml");
+            std::string name;
+            while (it.next(name))
             {
-                LLXMLNodePtr node = stack.back();
-                stack.pop_back();
-                std::string ctrl, label;
-                if (node->getAttributeString("control_name", ctrl)
-                    && node->getAttributeString("label", label)
-                    && !ctrl.empty() && !label.empty())
-                {
-                    sSettingLabels[lowered(label)] = ctrl;
-                    sSettingPanel[ctrl] = name;
-                    std::string lo, hi;
-                    if (node->getAttributeString("min_val", lo)
-                        && node->getAttributeString("max_val", hi))
-                    {
-                        sSettingRange[ctrl] = std::make_pair((F32)atof(lo.c_str()),
-                                                             (F32)atof(hi.c_str()));
-                    }
-                }
-                for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
-                {
-                    stack.push_back(c);
-                }
+                if (name.compare(0, 18, "panel_preferences_") == 0) prefs.push_back(name);
+                else if (name.compare(0, 5, "menu_") == 0)          menus.push_back(name);
+                else                                                others.push_back(name);
             }
         }
-        LL_INFOS("AICtl") << "settings: " << sSettingLabels.size()
-                          << " labelled controls from " << files << " preference panel(s)" << LL_ENDL;
+        for (std::vector<std::string>::const_iterator f = prefs.begin();  f != prefs.end();  ++f) scanPanel(dir, *f, true);
+        for (std::vector<std::string>::const_iterator f = others.begin(); f != others.end(); ++f) scanPanel(dir, *f, false);
+        for (std::vector<std::string>::const_iterator f = menus.begin();  f != menus.end();  ++f) scanMenu(dir, *f);
+
+        LL_INFOS("AICtl") << "settings: " << sSettingLabels.size() << " labels naming "
+                          << sSettingHome.size() << " controls with a known home, plus "
+                          << sMenuOnly.size() << " menu items that set nothing -- from "
+                          << prefs.size() << " preference panels, " << others.size()
+                          << " other files and " << menus.size() << " menu files" << LL_ENDL;
+    }
+
+    /** Fill one candidate row, saying where it lives when that is known. */
+    void nearRow(LLSD& near, const std::string& label, const std::string& ctrl)
+    {
+        LLSD one;
+        one["label"]   = label;
+        one["setting"] = ctrl;
+        std::map<std::string, SettingHome>::const_iterator h = sSettingHome.find(ctrl);
+        if (h != sSettingHome.end()) one["where"] = h->second.where;
+        near.append(one);
     }
 
     /**
      * The control somebody means, and every near miss if it is not obvious.
      *
      * Tries an exact label, then a label containing the words, then the control
-     * name itself, then the settings comment. Returns "" and fills `near` when
-     * it cannot decide -- refusing with candidates rather than guessing, the
-     * same rule the ambiguous-item refusal follows.
+     * name itself. Returns "" and fills `near` when it cannot decide -- refusing
+     * with candidates rather than guessing.
      */
     std::string findSetting(const std::string& query, LLSD& near)
     {
@@ -3416,17 +3640,53 @@ namespace
         const std::string want = lowered(query);
         near = LLSD::emptyArray();
 
-        std::map<std::string, std::string>::const_iterator exact = sSettingLabels.find(want);
-        if (exact != sSettingLabels.end()) return exact->second;
-
-        std::vector<std::string> hits;
-        for (const auto& kv : sSettingLabels)
+        std::map<std::string, std::vector<std::string> >::const_iterator
+            exact = sSettingLabels.find(want);
+        if (exact != sSettingLabels.end())
         {
-            if (kv.first.find(want) != std::string::npos || want.find(kv.first) != std::string::npos)
+            if (exact->second.size() == 1) return exact->second[0];
+            // An exact label naming several controls is a refusal, not a coin
+            // toss: `View People Icons` names four different lists.
+            for (std::vector<std::string>::const_iterator c = exact->second.begin();
+                 c != exact->second.end(); ++c)
             {
-                hits.push_back(kv.second);
-                LLSD one; one["label"] = kv.first; one["setting"] = kv.second;
-                near.append(one);
+                nearRow(near, want, *c);
+            }
+            return std::string();
+        }
+
+        // **A label matched inside the QUERY has to be a whole word, and not a
+        // tiny one.** Asking "hover height" returned `wmiColorFilterBaseG`,
+        // `...I` and `...R` as near matches, because the Post-process window
+        // labels three fields `R`, `G` and `I` and every one of those letters
+        // appears somewhere in "hover height". Harmless in the preference
+        // panels, where no label is one character; not harmless now that every
+        // floater is read.
+        std::set<std::string> seen;
+        std::vector<std::string> hits;
+        for (std::map<std::string, std::vector<std::string> >::const_iterator
+                 kv = sSettingLabels.begin(); kv != sSettingLabels.end(); ++kv)
+        {
+            bool match = (kv->first.find(want) != std::string::npos);
+            if (!match && kv->first.size() >= 3)
+            {
+                for (size_t at = want.find(kv->first);
+                     at != std::string::npos;
+                     at = want.find(kv->first, at + 1))
+                {
+                    const size_t end = at + kv->first.size();
+                    const bool lhs = (at == 0) || !isalnum((unsigned char)want[at - 1]);
+                    const bool rhs = (end >= want.size()) || !isalnum((unsigned char)want[end]);
+                    if (lhs && rhs) { match = true; break; }
+                }
+            }
+            if (!match) continue;
+            for (std::vector<std::string>::const_iterator c = kv->second.begin();
+                 c != kv->second.end(); ++c)
+            {
+                if (!seen.insert(*c).second) continue;
+                hits.push_back(*c);
+                nearRow(near, kv->first, *c);
             }
         }
         if (hits.size() == 1) return hits[0];
@@ -3435,6 +3695,32 @@ namespace
         if (gSavedSettings.controlExists(query)) return query;
         if (gSavedPerAccountSettings.controlExists(query)) return query;
         return std::string();
+    }
+
+    /**
+     * A place in the menus with these words and nothing to set.
+     *
+     * Only ever consulted when no control was found, so the worst it can
+     * replace is "I cannot find that" -- and **two matches means silence**,
+     * because pointing somebody at one of two menus is worse than saying so.
+     */
+    std::string findMenuPath(const std::string& query)
+    {
+        buildSettingLabels();
+        const std::string want = lowered(query);
+
+        std::map<std::string, std::string>::const_iterator exact = sMenuOnly.find(want);
+        if (exact != sMenuOnly.end()) return exact->second;
+
+        std::string only;
+        for (std::map<std::string, std::string>::const_iterator kv = sMenuOnly.begin();
+             kv != sMenuOnly.end(); ++kv)
+        {
+            if (kv->first.find(want) == std::string::npos) continue;
+            if (!only.empty()) return std::string();
+            only = kv->second;
+        }
+        return only;
     }
 }
 
@@ -4759,6 +5045,49 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         // teaches where it lives, where setting it for them does not.
         if (method == "show_setting")
         {
+            LLSD near;
+            const std::string ctrl = findSetting(what, near);
+
+            // **Where it lives decides what to DO**, and that is the point of
+            // this action rather than a detail of it. Opening Preferences for
+            // something whose home is a menu puts a contradiction on the
+            // screen: the wrong window open, and a sentence naming somewhere
+            // else. Hover height is exactly that case.
+            std::map<std::string, SettingHome>::const_iterator home =
+                ctrl.empty() ? sSettingHome.end() : sSettingHome.find(ctrl);
+            const bool in_prefs = (home != sSettingHome.end()
+                                   && home->second.kind == "preferences"
+                                   && !home->second.tab.empty());
+
+            LLSD r;
+            r["searched_for"] = what;
+            if (!ctrl.empty()) r["setting"] = ctrl;
+            if (near.size()) r["near_matches"] = near;
+
+            if (!in_prefs)
+            {
+                const std::string where = (home != sSettingHome.end())
+                                        ? home->second.where : findMenuPath(what);
+                if (!where.empty())
+                {
+                    r["opened"] = false;
+                    r["filter_applied"] = false;
+                    r["where"] = where;
+                    r["note"] = ctrl.empty()
+                        ? "This is NOT a preference and nothing was opened. `where` is its place "
+                          "in this viewer's own menus, read out of the interface rather than "
+                          "remembered -- give it to them exactly as written. There is no setting "
+                          "behind it, so set_setting cannot change it; they do it there."
+                        : "This is NOT in Preferences and nothing was opened. `where` is where it "
+                          "lives in this viewer, read out of the interface rather than remembered "
+                          "-- give it to them exactly as written. set_setting can also change it.";
+                    recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
+                    return r;
+                }
+                // Nothing anywhere. Preferences still opens, so they can look --
+                // but the note must not imply anything was found.
+            }
+
             LLFloaterReg::showInstance("preferences");
             LLFloater* prefs = LLFloaterReg::findInstance("preferences");
             bool filtered = false;
@@ -4771,42 +5100,37 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                     filtered = true;
                 }
             }
-            LLSD near; const std::string ctrl = findSetting(what, near);
 
             // The tab first, then the filter. Lighting a setting up on a page
             // nobody is looking at is not an answer.
             std::string tab_label;
-            if (prefs && !ctrl.empty())
+            if (prefs && in_prefs)
             {
-                std::map<std::string, std::string>::const_iterator pf = sSettingPanel.find(ctrl);
-                if (pf != sSettingPanel.end())
+                if (LLTabContainer* tc = prefs->findChild<LLTabContainer>("pref core", true))
                 {
-                    std::map<std::string, std::pair<std::string, std::string> >::const_iterator
-                        tb = sTabs.find(pf->second);
-                    if (tb != sTabs.end())
+                    if (tc->selectTabByName(home->second.tab))
                     {
-                        if (LLTabContainer* tc = prefs->findChild<LLTabContainer>("pref core", true))
-                        {
-                            if (tc->selectTabByName(tb->second.first)) tab_label = tb->second.second;
-                        }
+                        tab_label = home->second.where;
                     }
                 }
             }
 
-            LLSD r;
             r["opened"] = (prefs != NULL);
             if (!tab_label.empty()) r["tab"] = tab_label;
-            r["searched_for"] = what;
             r["filter_applied"] = filtered;
-            if (!ctrl.empty()) r["setting"] = ctrl;
-            if (near.size()) r["near_matches"] = near;
-            r["note"] = filtered
-                ? "Preferences is open ON THE RIGHT TAB with that typed into its search box, so "
-                  "the setting is highlighted and the rest hidden. `tab` is the tab it is on -- "
-                  "name it, so they learn where it lives. The viewer cannot confirm they can "
-                  "actually see it, so say it is open rather than that they can see it."
-                : "Preferences was opened but the search box could not be filled, so they will "
-                  "have to look. Say that rather than claiming it is highlighted.";
+            r["note"] = !in_prefs
+                ? "Nothing in this viewer's Preferences, other windows or menus carries those "
+                  "words. Preferences is open with them typed into its search box so they can "
+                  "look, but SAY IT WAS NOT FOUND -- do not invent a menu path, because they "
+                  "cannot tell a wrong one from a right one except by hunting for a menu that "
+                  "is not there."
+                : (filtered
+                   ? "Preferences is open ON THE RIGHT TAB with that typed into its search box, so "
+                     "the setting is highlighted and the rest hidden. `tab` is where it lives -- "
+                     "name it, so they learn where it is. The viewer cannot confirm they can "
+                     "actually see it, so say it is open rather than that they can see it."
+                   : "Preferences was opened but the search box could not be filled, so they will "
+                     "have to look. Say that rather than claiming it is highlighted.");
             recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, r);
             return r;
         }
@@ -4817,11 +5141,30 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
         if (ctrl.empty())
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = near.size()
-                ? "More than one setting matches \"" + what + "\". Ask which, or use show_setting."
-                : "No setting matches \"" + what + "\" in this viewer. Do NOT invent a menu path; "
-                  "show_setting opens Preferences so they can look.";
-            if (near.size()) e["data"] = near;
+            // **"There is no such setting" and "there is no setting behind it"
+            // are different answers.** Hover height is real, has a place in the
+            // menus, and cannot be set from here -- and saying only "no setting
+            // matches" would send somebody looking for something they already
+            // have.
+            const std::string where = near.size() ? std::string() : findMenuPath(what);
+            if (near.size())
+            {
+                e["message"] = "More than one setting matches \"" + what + "\". Ask which, or use "
+                               "show_setting.";
+                e["data"] = near;
+            }
+            else if (!where.empty())
+            {
+                e["message"] = "\"" + what + "\" is not a setting this viewer can change from here, "
+                               "but it IS in the interface, at: " + where + ". Tell them that path "
+                               "exactly -- it was read out of this viewer's menus, not remembered.";
+                LLSD d; d["where"] = where; e["data"] = d;
+            }
+            else
+            {
+                e["message"] = "No setting matches \"" + what + "\" in this viewer. Do NOT invent a "
+                               "menu path; show_setting opens Preferences so they can look.";
+            }
             LLSD w; w["__error"] = e; return w;
         }
         if (!params.has("value"))
