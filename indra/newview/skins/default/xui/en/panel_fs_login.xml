@@ -10,10 +10,10 @@
     bg_opaque_color="0.063 0.063 0.094 1"
     background_opaque="true"
     width="1024">
-  <panel.string
-     name="real_url" translate="false">
-     https://phoenixviewer.com/app/loginV3/
-  </panel.string>
+  <!-- <FS:AICtl> A dead "real_url" naming Firestorm's splash lived here. The
+       only reader of that string is llfloatertos.cpp, which takes it from
+       floater_tos.xml (secondlife.com/app/tos/); nothing ever asked the LOGIN
+       panel for one. Removed rather than repointed. -->
   <string name="reg_in_client_url" translate="false">
     http://secondlife.eniac15.lindenlab.com/reg-in-client/
   </string>

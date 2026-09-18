@@ -173,7 +173,7 @@
     <key>Type</key>
     <string>String</string>
     <key>Value</key>
-    <string>http://phoenixviewer.com/app/fsdata/grids.xml</string>
+    <string />
   </map>
   <key>FSPrimfeedViewerApiKey</key>
   <map>
@@ -195,7 +195,7 @@
     <key>Type</key>
     <string>String</string>
     <key>Value</key>
-    <string>https://phoenixviewer.com/app/fsdata/fs_grid_builder.html</string>
+    <string />
   </map>
   <key>LastConnectedGrid</key>
   <map>
@@ -25109,7 +25109,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Type</key>
       <string>String</string>
       <key>Value</key>
-      <string>https://phoenixviewer.com/app/loginV3/secondlifegrid.xml</string>
+      <string>https://status.secondlifegrid.net/history.rss</string>
     </map>
     <key>FSIgnoreAdHocSessions</key>
     <map>

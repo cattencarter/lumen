@@ -62,7 +62,13 @@ const std::string  GRID_LOGIN_IDENTIFIER_TYPES = "login_identifier_types";
 const std::string GRID_SLURL_BASE = "slurl_base";
 const std::string GRID_APP_SLURL_BASE = "app_slurl_base";
 
-const std::string DEFAULT_LOGIN_PAGE = "https://phoenixviewer.com/app/loginV3/";
+// <FS:AICtl> Linden Lab's own splash, not Firestorm's.
+//
+// This is only a FALLBACK: FSPanelLogin loads Lumen's local start page
+// and returns before the grid's loginpage is read, unless somebody sets
+// LumenUseStockLoginPage. It still should not be their server, and it
+// became reachable when app_settings/grids.xml stopped naming one.
+const std::string DEFAULT_LOGIN_PAGE = "https://viewer-splash.secondlife.com/";
 
 const std::string MAIN_GRID_LOGIN_URI = "https://login.agni.lindenlab.com/cgi-bin/login.cgi";
 

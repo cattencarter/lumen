@@ -1,31 +1,17 @@
 <llsd>
     <map>
-        <key>localhost:9000</key>
-        <map>
-        <key>LastModified</key>
-            <date>2024-05-28T12:00:00Z</date>
-        <key>grid_login_id</key>
-            <string>localhost:9000</string>
-        <key>gridname</key>
-            <string>localhost</string>
-        <key>gridnick</key>
-            <string>localhost</string>
-        <key>login_identifier_types</key>
-            <array>
-                <string>agent</string>
-                <string>account</string>
-            </array>
-        <key>loginpage</key>
-            <undef />
-        <key>loginuri</key>
-            <array>
-                <string>http://localhost:9000</string>
-            </array>
-        <key>name</key>
-            <string>localhost:9000</string>
-        <key>slurl_base</key>
-            <string>hop://localhost:9000/</string>
-        </map>        
+        <!-- <FS:AICtl> Agni and Aditi, and nothing else.
+
+             localhost:9000 was an OpenSim development grid, and this build sets
+             OPENSIM=OFF, so it could never be logged into. Firestorm's own
+             OpenSim grid list was downloaded from their servers into
+             grids.remote.xml   that whole path is inside #ifdef OPENSIM, so it
+             was already dead here and GridListDownloadURL fetches nothing.
+
+             Both remaining grids also named phoenixviewer.com/app/loginV3/ as
+             their loginpage. Lumen shows its own local start page, so that was
+             a fallback rather than what anybody saw, but it was still their
+             server in our settings file. Undefined now. -->
         <key>util.aditi.lindenlab.com</key>
         <map>
         <key>LastModified</key>
@@ -43,7 +29,7 @@
                 <string>agent</string>
             </array>
         <key>loginpage</key>
-            <string>http://phoenixviewer.com/app/loginV3/</string>
+            <undef />
         <key>loginuri</key>
             <array>
                 <string>https://login.aditi.lindenlab.com/cgi-bin/login.cgi</string>
@@ -76,7 +62,7 @@
             <string>agent</string>
         </array>
         <key>loginpage</key>
-        <string>http://phoenixviewer.com/app/loginV3/</string>
+        <undef />
         <key>loginuri</key>
         <array>
             <string>https://login.agni.lindenlab.com/cgi-bin/login.cgi</string>
