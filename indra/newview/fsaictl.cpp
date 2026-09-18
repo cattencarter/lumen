@@ -65,6 +65,10 @@
 #include "llselectmgr.h"
 #include "llsyntaxid.h"
 #include "llpreviewscript.h"
+#include "llfloaterperms.h"
+#include "llinventorydefines.h"
+#include "llviewerassettype.h"
+#include "rlvlocks.h"
 #include "llsdserialize.h"
 #include "llviewerobjectlist.h"
 #include "fspose.h"
@@ -1652,6 +1656,7 @@ namespace
             if (action == "inspect_object") return "inspect_object";
             if (action == "lsl_lookup")    return "lsl_lookup";
             if (action == "open_script")   return "open_script";
+            if (action == "new_script")    return "new_script";
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -2168,7 +2173,7 @@ namespace
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
               "set_setting", "show_setting", "open_window", "inspect_object", "lsl_lookup",
-              "open_script" };
+              "open_script", "new_script" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -2246,6 +2251,14 @@ namespace
             "rather than claiming it is highlighted.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
+            "\n- new_script: **puts a new, empty script into an object** -- the one thing that "
+            "used to need them to go through the Contents tab by hand. Then call open_script and "
+            "write into it. `name` names it; the object comes from what they have selected unless "
+            "`object_id` says otherwise. Two honest things to pass on: the script has to reach "
+            "the region before it can be opened, so wait a second; and it arrives holding Linden "
+            "Lab's default script, which is ALREADY RUNNING -- the object will greet anyone who "
+            "touches it until your version is saved over it. Nothing YOU write runs until they "
+            "press Save.\n"
             "\n- open_script: **opens a script that lives INSIDE an object**, so they do not "
             "have to find and open it first. Leave `object_id` out and it uses what they have "
             "selected; `name` picks one when there are several, and without it the reply lists "
@@ -5837,6 +5850,111 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     //
     // A task inventory is asynchronous (Findings 19), so this reports pending
     // and is asked again -- the same shape as worn_by, for the same reason.
+    // <FS:AICtl> Put a new, empty script into an object.
+    //
+    // Sonnet found this gap by running into it and said so plainly rather than
+    // inventing a way round: *"I don't actually have a way to create a
+    // brand-new script from scratch inside an object's contents."* It was
+    // right, and the answer was a missing action rather than a better
+    // description.
+    //
+    // **Does this cross Decisions 89?** Nearly, and the distinction is worth
+    // being exact about. A new script is Linden Lab's own template and it DOES
+    // run the moment it exists -- it says "Hello, Avatar!" on touch. So this
+    // does put running code in the world without anybody pressing Save.
+    // What it does not do, and what that rule is actually protecting, is put
+    // **code the model wrote** into the world unreviewed: everything the
+    // assistant writes still goes through edit_script and still waits for the
+    // person to save it. Creating the script is what the Contents tab's New
+    // Script button does, and it is undone by deleting it.
+    if (method == "new_script")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+
+        LLViewerObject* object = NULL;
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        if (params.has("object_id") && params["object_id"].asUUID().notNull())
+        {
+            object = gObjectList.findObject(params["object_id"].asUUID());
+        }
+        else if (sel.notNull())
+        {
+            object = sel->getFirstRootObject(true);
+        }
+        if (!object)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
+                           "the object first.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!object->permModify())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That object does not allow modification, so nothing can be put in it. "
+                           "Say that plainly -- it is the object's permissions, not a failure.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The RLV cases the viewer's own New Script button checks, copied
+        // rather than reasoned about: a locked attachment, and a linkset the
+        // avatar is sitting on while unsit or sittp is restricted.
+        if (rlv_handler_t::isEnabled())
+        {
+            if (gRlvAttachmentLocks.isLockedAttachment(object->getRootEdit())
+                || ((gRlvHandler.hasBehaviour(RLV_BHVR_UNSIT)
+                     || gRlvHandler.hasBehaviour(RLV_BHVR_SITTP))
+                    && isAgentAvatarValid() && gAgentAvatarp->isSitting()
+                    && gAgentAvatarp->getRoot() == object->getRootEdit()))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction is stopping a script being added to that "
+                               "object right now.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
+        LLPermissions perm;
+        perm.init(gAgent.getID(), gAgent.getID(), LLUUID::null, LLUUID::null);
+        perm.initMasks(PERM_ALL, PERM_ALL,
+                       LLFloaterPerms::getEveryonePerms("Scripts"),
+                       LLFloaterPerms::getGroupPerms("Scripts"),
+                       PERM_MOVE | LLFloaterPerms::getNextOwnerPerms("Scripts"));
+        std::string desc;
+        LLViewerAssetType::generateDescriptionFor(LLAssetType::AT_LSL_TEXT, desc);
+
+        const std::string name = params.has("name") && !params["name"].asString().empty()
+                               ? params["name"].asString() : std::string("New Script");
+
+        LLPointer<LLViewerInventoryItem> item =
+            new LLViewerInventoryItem(LLUUID::null, LLUUID::null, perm, LLUUID::null,
+                                      LLAssetType::AT_LSL_TEXT, LLInventoryType::IT_LSL,
+                                      name, desc, LLSaleInfo::DEFAULT,
+                                      LLInventoryItemFlags::II_FLAGS_NONE, time_corrected());
+        object->saveScript(item, true, true);
+
+        LLSD r;
+        r["created"] = name;
+        r["in_object"] = object->getID();
+        // The viewer's own comment on this path: the creation has to round-trip
+        // to the region before the script can be opened. So this cannot hand
+        // back a window, and says so instead of pretending.
+        r["note"] = "A new script called \"" + name + "\" was put into that object. It has to "
+                    "reach the region before it can be opened, so call open_script in a second "
+                    "or two and then write into it with edit_script. **It already contains "
+                    "Linden Lab's default script and that default is running** -- say so, because "
+                    "the object will greet anybody who touches it until they save yours over it. "
+                    "Nothing YOU write runs until they press Save.";
+        recordAction(request_id, fingerprintOf(method, params), "new_script", "ok", r, r);
+        return r;
+    }
+
     if (method == "open_script")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -9583,8 +9701,15 @@ if (method == "camera")
                 // "preview_script" is a script in inventory; "preview_scriptedit"
                 // is one inside an object, which is where most scripting happens
                 // and where saving needs the object and the rights to it.
-                one["where"] = (std::string(kind) == "preview_script")
-                             ? "inventory" : "inside an object";
+                // **Ask the window what it IS, do not infer it from which list
+                // it turned up in.** A script created in an object and opened
+                // with open_script reported `where: "inventory"`, which is a
+                // wrong answer to a question that decides whether saving is
+                // even possible. `LLLiveLSLEditor` is the task-script editor;
+                // the type cannot be grouped wrongly the way a registry list
+                // can.
+                one["where"] = dynamic_cast<LLLiveLSLEditor*>(f)
+                             ? "inside an object" : "inventory";
 
                 std::string text;
                 if (LLTextEditor* ed = f->findChild<LLTextEditor>("Script Editor"))

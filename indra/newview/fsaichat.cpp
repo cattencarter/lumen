@@ -418,6 +418,7 @@ namespace
             if (action == "inspect_object") return "Looking at that object";
             if (action == "lsl_lookup")    return "Checking the LSL reference";
             if (action == "open_script")   return "Opening the script";
+            if (action == "new_script")    return "Adding a script";
         }
 
         return action.empty() ? group : (group + "." + action);
