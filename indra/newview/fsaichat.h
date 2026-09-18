@@ -238,6 +238,7 @@ private:
     void runCodexTurn(const std::string& user_text);
     std::unique_ptr<class FSAICodex> mCodex;
     std::string mCodexThread;
+    std::string mCodexModel;   // what that thread was started with
     std::vector<boost::signals2::connection> mModelConns;
 
     /** What the turn just cost, and what the window has cost so far. */

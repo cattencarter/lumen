@@ -116,7 +116,23 @@ public:
     // LLPanel declares this virtual; the floater calls it when the panel is
     // shown, which is exactly when the saved-key status needs recomputing.
     void refresh() override;
-    std::string codexStatus();
+    // What Codex needs next, and the command that provides it. A sentence
+    // alone made the panel a wall of prose with a shell command buried in it;
+    // the command is separate so the panel can put it somewhere copyable.
+    struct CodexState
+    {
+        std::string text;
+        std::string command;    // empty when there is nothing left to run
+        bool        ready = false;
+    };
+    CodexState codexStatus();
+
+    // **A button that changes nothing visible is a button that looks broken.**
+    // The author pressed Check while Codex was already ready, the status was
+    // redrawn identically, and nothing on screen said it had run. Stamping the
+    // time is the smallest thing that distinguishes "checked, still fine" from
+    // "the button does nothing".
+    std::string mCodexCheckedAt;
     boost::signals2::connection mProviderConn;
 
 private:

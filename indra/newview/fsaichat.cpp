@@ -78,6 +78,26 @@ namespace
     const std::string OPENAI_URL_DEFAULT    = "https://api.openai.com/v1/chat/completions";
 
     /**
+     * Which setting holds the model for this provider.
+     *
+     * Six places picked this by hand, in three different spellings of the same
+     * conditional -- and two of them were already WRONG: `provider == OPENAI ?
+     * OpenAIModel : AnthropicModel` shows the Anthropic model when the provider
+     * is a local server, so the title bar named a model that was never asked
+     * for. Nothing errored; the window simply said something untrue, which is
+     * the failure this project keeps meeting.
+     *
+     * One place to ask, so a fifth provider is one line rather than a sweep.
+     */
+    std::string modelSetting(const std::string& provider)
+    {
+        if (provider == FSAIKeys::OPENAI) return "LumenAIOpenAIModel";
+        if (provider == FSAIKeys::LOCAL)  return "LumenAILocalModel";
+        if (provider == FSAIKeys::CODEX)  return "LumenAICodexModel";
+        return "LumenAIAnthropicModel";
+    }
+
+    /**
      * Where the provider lives -- settable, because the dialect is not the
      * vendor.
      *
@@ -864,7 +884,8 @@ bool FSAIChatFloater::postBuild()
     // A control signal cannot miss. The moment the value changes, the title
     // changes, with nothing in between to depend on.
     static const char* const kWatch[] = {
-        "LumenAIProvider", "LumenAIAnthropicModel", "LumenAIOpenAIModel" };
+        "LumenAIProvider", "LumenAIAnthropicModel", "LumenAIOpenAIModel",
+        "LumenAILocalModel", "LumenAICodexModel" };
     for (size_t i = 0; i < LL_ARRAY_SIZE(kWatch); ++i)
     {
         if (LLControlVariablePtr c = gSavedSettings.getControl(kWatch[i]))
@@ -918,8 +939,7 @@ void FSAIChatFloater::refreshKeyNotice()
     // believed, because a header that says "OpenAI . gpt-4o" looks like a fact
     // about the request rather than a memory of one. Say it again when it
     // changes.
-    const std::string model = gSavedSettings.getString(
-        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
     const std::string now = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
     if (!mAnnounced.empty() && now != mAnnounced)
     {
@@ -1099,8 +1119,7 @@ void FSAIChatFloater::sayHeader()
     if (!mTranscript) return;
 
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const std::string model = gSavedSettings.getString(
-        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
 
     // **Nothing printed.** This used to stamp "Anthropic . claude-haiku-4-5" at
     // the top of the transcript, which was the only way to see which model was
@@ -1209,8 +1228,7 @@ static std::string shortModel(const std::string& m)
 void FSAIChatFloater::refreshTitle()
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const std::string model = gSavedSettings.getString(
-        provider == FSAIKeys::OPENAI ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
     setTitle(model.empty() ? std::string("Assistant")
                            : "Assistant \xc2\xb7 " + shortModel(model));
 }
@@ -1383,6 +1401,19 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         return;
     }
 
+    // A cached thread carries the model it was started with, so keeping it
+    // after the setting changed would go on answering from the old one while
+    // the title bar named the new -- the same silent disagreement the title
+    // was added to end.
+    const std::string codex_model = gSavedSettings.getString("LumenAICodexModel");
+    if (!mCodexThread.empty() && codex_model != mCodexModel)
+    {
+        mCodexThread.clear();
+        sayNote("Switched to " + (codex_model.empty() ? std::string("Codex's own default model")
+                                                      : codex_model)
+                + ". This starts a new conversation.");
+    }
+
     if (mCodexThread.empty())
     {
         // **Register the viewer as an MCP server for THIS THREAD.** Codex
@@ -1397,14 +1428,24 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         LLSD cfg;
         cfg["mcp_servers"] = LLSD().with("second_life", server);
 
+        // **The model is a thread property, not a turn property**, so changing
+        // it has to start a new conversation -- checked against the server
+        // rather than assumed: `thread/start` echoes back the model it took,
+        // and a later `turn/start` carries no model at all. Empty means
+        // whatever Codex would have picked itself.
+        LLSD start;
+        start["config"] = cfg;
+        if (!codex_model.empty()) start["model"] = codex_model;
+
         LLSD started;
-        if (!await(rpc("thread/start", LLSD().with("config", cfg)), 30.f, started))
+        if (!await(rpc("thread/start", start), 30.f, started))
         {
             sayNote("Codex would not start a conversation.");
             setBusy(false);
             return;
         }
         mCodexThread = started["thread"]["id"].asString();
+        mCodexModel  = codex_model;
     }
 
     LLSD turn;
@@ -1455,6 +1496,19 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         else if (method == "turn/completed" || method == "turn/failed")
         {
+            break;
+        }
+        // **A turn can fail without either of those.** A model name Codex does
+        // not have comes back as a bare `error` notification carrying the
+        // provider's own 400, and nothing here was listening for it -- so the
+        // window sat on "Thinking..." for the full five minutes and then said
+        // Codex had finished without saying anything. Watched happening, on a
+        // deliberately wrong model name, before this branch existed.
+        else if (method == "error")
+        {
+            std::string why = msg["params"]["error"]["message"].asString();
+            if (why.size() > 300) why = why.substr(0, 300);
+            sayNote(why.empty() ? "Codex reported an error." : "Codex: " + why);
             break;
         }
         else if (method == "account/rateLimits/updated")
@@ -1510,9 +1564,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         mHistoryProvider = provider;
     }
 
-    const std::string model = gSavedSettings.getString(
-        is_local ? "LumenAILocalModel"
-                 : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
 
     // **Say which model is about to answer, here, where it is actually read.**
     //
@@ -2357,9 +2409,7 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
     // A local server speaks OpenAI's dialect; only the address differs.
     const bool is_local  = (provider == FSAIKeys::LOCAL);
     const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
-    const std::string model = gSavedSettings.getString(
-        is_local ? "LumenAILocalModel"
-                 : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
 
     LLCoros::instance().launch("FSAIAutoRespond",
         [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()

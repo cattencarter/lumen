@@ -31,6 +31,7 @@
 #include "fsaikeys.h"
 
 #include "llbutton.h"
+#include "llclipboard.h"
 #include "llcombobox.h"
 #include "llfloaterreg.h"
 #include "lllineeditor.h"
@@ -246,6 +247,43 @@ bool FSPanelPreferenceAIKeys::postBuild()
 
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+    syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
+
+    // Copy the command rather than ask somebody to retype a curl line with a
+    // pipe in it. Read from the panel, not from codexStatus(), so the button
+    // can never copy something different from what is on screen.
+    if (LLButton* cb = findChild<LLButton>("codex_copy"))
+    {
+        cb->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            LLLineEditor* ce = findChild<LLLineEditor>("codex_command");
+            if (!ce) return;
+            const LLWString w = utf8str_to_wstring(ce->getText());
+            LLClipboard::instance().copyToClipboard(w, 0, static_cast<S32>(w.length()));
+        });
+    }
+
+    // **Nothing else notices that Codex has been installed.** The status is
+    // read when the panel is built, so without this the person follows the
+    // instructions, comes back, and is still told to install it -- which reads
+    // as the instructions having failed.
+    if (LLButton* rb = findChild<LLButton>("codex_recheck"))
+    {
+        rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            char when[16] = "";
+            const time_t now = time(NULL);
+            struct tm lt;
+#if LL_WINDOWS
+            localtime_s(&lt, &now);
+#else
+            localtime_r(&now, &lt);
+#endif
+            strftime(when, sizeof(when), "%H:%M:%S", &lt);
+            mCodexCheckedAt = when;
+            refresh();
+        });
+    }
 
     if (LLButton* mem = findChild<LLButton>("memory_btn"))
     {
@@ -305,6 +343,7 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
 
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+    syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
 
     refresh();
 }
@@ -324,8 +363,30 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
  * choosing Codex today cannot answer a message. Offering it without that
  * sentence would be a tool claiming what it cannot do.
  */
-std::string FSPanelPreferenceAIKeys::codexStatus()
+/**
+ * What Codex is doing, and the one command that moves it forward.
+ *
+ * The author asked for something friendlier than a paragraph: *"hvis man
+ * vaelger det og det ikke er installeret, kan der saa komme en guide til hvad
+ * man skal gore og hvad det kraever?"* -- so this returns a COMMAND as well as
+ * a sentence, and the panel puts that command somewhere it can be selected and
+ * copied rather than retyped from a wall of prose.
+ *
+ * **Four states, not three.** Being signed in is a separate condition from
+ * being installed, and it was missing: a fresh install has the binary and the
+ * daemon and no ChatGPT account behind it, so the panel would have said Lumen
+ * could talk to Codex and the first message would have failed with an
+ * authentication error nowhere near the thing that was wrong.
+ *
+ * Each command was checked against `codex --help` on this machine rather than
+ * remembered -- `login`, `app-server daemon`, and `doctor` are all real
+ * subcommands. A confidently wrong command is worse than none, because the
+ * person cannot tell our mistake from their own.
+ */
+FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
 {
+    CodexState st;
+
     // **`getOSUserDir()` is NOT the home directory.** On macOS it is
     // ~/Library/Application Support/Lumen, so the first version of this check
     // looked for Codex inside the viewer's own data folder and reported "not
@@ -337,30 +398,51 @@ std::string FSPanelPreferenceAIKeys::codexStatus()
     if (!env_home || !*env_home) env_home = getenv("USERPROFILE");   // Windows
     if (!env_home || !*env_home)
     {
-        return "Codex: cannot tell, because this system reports no home directory.";
+        st.text = "Codex: cannot tell, because this system reports no home directory.";
+        return st;
     }
     const std::string home(env_home);
     const std::string sep  = gDirUtilp->getDirDelimiter();
-    const std::string cli  = home + sep + ".codex" + sep + "packages" + sep + "standalone"
-                           + sep + "current" + sep + "bin" + sep + "codex";
-    const std::string sock = home + sep + ".codex" + sep + "app-server-control"
-                           + sep + "app-server-control.sock";
+    const std::string dot  = home + sep + ".codex" + sep;
+    const std::string cli  = dot + "packages" + sep + "standalone" + sep + "current"
+                           + sep + "bin" + sep + "codex";
+    const std::string auth = dot + "auth.json";
+    const std::string sock = dot + "app-server-control" + sep + "app-server-control.sock";
 
     if (!gDirUtilp->fileExists(cli))
     {
-        return "Codex is not installed. It is OpenAI's own command-line tool, and it lets "
-               "Lumen use your ChatGPT subscription instead of a paid API key. Install it "
-               "with:  curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+        st.text = "Step 1 of 3 -- Codex is not installed.\n"
+                  "It is OpenAI's own command-line tool, and it is what lets Lumen use your "
+                  "ChatGPT subscription instead of a paid API key. Open Terminal, paste the "
+                  "command below and press Return, then come back here and click Check again.";
+        st.command = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+        return st;
+    }
+    if (!gDirUtilp->fileExists(auth))
+    {
+        st.text = "Step 2 of 3 -- Codex is installed but not signed in.\n"
+                  "It needs your own ChatGPT account. This command opens a browser window "
+                  "where you sign in; Lumen never sees the password and never stores it.";
+        st.command = "codex login";
+        return st;
     }
     if (!gDirUtilp->fileExists(sock))
     {
-        return "Codex is installed, but its background service is not running. Start it with:  "
-               "codex app-server daemon start";
+        st.text = "Step 3 of 3 -- Codex is installed and signed in, but its background "
+                  "service is not running. Lumen talks to that service, so it has to be "
+                  "started before the Assistant can answer.";
+        st.command = "codex app-server daemon start";
+        return st;
     }
-    return "Codex is installed and running, and Lumen can talk to it -- including the viewer's "
-           "own tools, which it reaches over the same endpoint any other assistant uses. Your "
-           "ChatGPT account pays for this, so there is no API key and no separate bill; your "
-           "plan's limits apply instead.";
+
+    st.ready = true;
+    st.text  = "Ready. Codex is installed, signed in and running, and Lumen can reach it -- "
+               "including the viewer's own tools, over the same endpoint any other assistant "
+               "uses. Your ChatGPT account pays for this, so there is no API key and no "
+               "separate bill; your plan's limits apply instead.\n"
+               "If the Assistant will not answer, `codex doctor` in Terminal checks the "
+               "whole installation.";
+    return st;
 }
 
 void FSPanelPreferenceAIKeys::refresh()
@@ -376,9 +458,25 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");
     if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
+    const CodexState codex = codexStatus();
     if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
     {
-        cs->setText(codexStatus());
+        cs->setText(mCodexCheckedAt.empty()
+                    ? codex.text
+                    : codex.text + "\n\n(Checked at " + mCodexCheckedAt + ".)");
+    }
+    // The command is in a read-only editor rather than the paragraph, so it can
+    // be selected with a mouse by somebody who does not trust a Copy button --
+    // and it disappears entirely when there is nothing left to do, instead of
+    // sitting there inviting a command that would undo a working setup.
+    if (LLLineEditor* ce = findChild<LLLineEditor>("codex_command"))
+    {
+        ce->setText(codex.command);
+        ce->setVisible(!codex.command.empty());
+    }
+    if (LLButton* cb = findChild<LLButton>("codex_copy"))
+    {
+        cb->setVisible(!codex.command.empty());
     }
 
     for (Row& row : mRows)

@@ -190,7 +190,44 @@
         </text>
 
         <text type="string" follows="left|top" layout="topleft" name="codex_status"
-         left="20" top="52" width="480" height="70" word_wrap="true">
+         left="20" top="48" width="480" height="96" word_wrap="true">
+        </text>
+
+        <!-- The command gets the WHOLE width and the buttons go underneath.
+             Sharing a row with them clipped it: the field showed
+             `curl -fsSL https://chatgpt.com/codex/install.sh |` with the
+             trailing `sh` off the end, so anybody reading rather than clicking
+             Copy would have run half a command and got a pipe waiting for
+             input. Copy was always right; what was on screen was not. -->
+        <line_editor follows="left|top" layout="topleft" name="codex_command"
+         left="20" top="150" width="480" height="22" enabled="false"
+         font="Monospace" max_length_bytes="200" visible="false">
+        </line_editor>
+
+        <button follows="left|top" layout="topleft" name="codex_copy"
+         left="358" top="178" width="56" height="22" label="Copy" visible="false" />
+
+        <button follows="left|top" layout="topleft" name="codex_recheck"
+         left="422" top="178" width="78" height="22" label="Check again" />
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="214" width="52" height="16">
+            Model
+        </text>
+
+        <combo_box control_name="LumenAICodexModel" follows="left|top" layout="topleft"
+         left="76" top="210" width="274" height="22"
+         name="model_codex" allow_text_entry="true" max_chars="80">
+            <combo_box.item label="gpt-5.6-luna (the default here)" name="cl"  value="gpt-5.6-luna" />
+            <combo_box.item label="gpt-5.6-sol"                     name="cs"  value="gpt-5.6-sol" />
+            <combo_box.item label="gpt-5.6-terra"                   name="ct"  value="gpt-5.6-terra" />
+            <combo_box.item label="gpt-6-astra"                     name="ca"  value="gpt-6-astra" />
+            <combo_box.item label="gpt-5.5"                         name="c55" value="gpt-5.5" />
+        </combo_box>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="242" width="480" height="40" word_wrap="true">
+            These are the models Codex offered when this list was written. Your ChatGPT plan decides which of them you can actually use, and you can type one that is not here. Changing the model starts a new conversation.
         </text>
       </panel>
 
