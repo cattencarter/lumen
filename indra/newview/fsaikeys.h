@@ -57,6 +57,7 @@ namespace FSAIKeys
     // changing one orphans whatever a user already saved.
     extern const std::string ANTHROPIC;
     extern const std::string OPENAI;
+    extern const std::string LOCAL;
 
     // Every provider we offer, in the order the panel shows them.
     const std::vector<std::string>& providers();

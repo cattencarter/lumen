@@ -98,6 +98,10 @@ namespace
      */
     std::string providerUrl(bool is_openai)
     {
+        if (gSavedSettings.getString("LumenAIProvider") == FSAIKeys::LOCAL)
+        {
+            return gSavedSettings.getString("LumenAILocalURL");
+        }
         const std::string set = gSavedSettings.getString(
             is_openai ? "LumenAIOpenAIURL" : "LumenAIAnthropicURL");
         if (!set.empty()) return set;
@@ -1258,12 +1262,22 @@ void FSAIChatFloater::onSend()
 void FSAIChatFloater::runTurn(const std::string& user_text)
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const bool is_openai = (provider == FSAIKeys::OPENAI);
+    // A local server speaks OpenAI's dialect; only the address differs.
+    const bool is_local  = (provider == FSAIKeys::LOCAL);
+    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
 
+    // **A local model needs no key**, so requiring one would lock out the one
+    // provider that costs nothing.
     const std::string key = FSAIKeys::get(provider);
-    if (key.empty())
+    if (key.empty() && !is_local)
     {
         sayNote("No " + FSAIKeys::displayName(provider) + " key is saved. Preferences > AI.");
+        setBusy(false);
+        return;
+    }
+    if (is_local && gSavedSettings.getString("LumenAILocalURL").empty())
+    {
+        sayNote("No address is set for the local model. Preferences > AI.");
         setBusy(false);
         return;
     }
@@ -1283,7 +1297,8 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     }
 
     const std::string model = gSavedSettings.getString(
-        is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+        is_local ? "LumenAILocalModel"
+                 : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
 
     // **Say which model is about to answer, here, where it is actually read.**
     //
@@ -2125,9 +2140,12 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
     }
 
     const std::string system = autoRespondPrompt(memory, first_time, owner, call_them);
-    const bool is_openai = (provider == FSAIKeys::OPENAI);
+    // A local server speaks OpenAI's dialect; only the address differs.
+    const bool is_local  = (provider == FSAIKeys::LOCAL);
+    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
     const std::string model = gSavedSettings.getString(
-        is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
+        is_local ? "LumenAILocalModel"
+                 : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
 
     LLCoros::instance().launch("FSAIAutoRespond",
         [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()

@@ -71,6 +71,16 @@ namespace FSAIKeys
 {
     const std::string ANTHROPIC = "anthropic";
     const std::string OPENAI    = "openai";
+    /**
+     * A model running on this computer, speaking OpenAI's dialect.
+     *
+     * Its own choice rather than a field under OpenAI, on the author's point:
+     * pointing at Ollama is not "using OpenAI", and a box that says *leave this
+     * empty to use OpenAI* under a provider named "(API key)" contradicts
+     * itself. It needs no key, it has its own address and model, and nothing
+     * it sends leaves the machine.
+     */
+    const std::string LOCAL     = "local";
 
     const std::vector<std::string>& providers()
     {
@@ -82,6 +92,7 @@ namespace FSAIKeys
     {
         if (provider == ANTHROPIC) return "Anthropic";
         if (provider == OPENAI)    return "OpenAI";
+        if (provider == LOCAL)     return "the local model";
         return provider;
     }
 
@@ -359,6 +370,7 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
     if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");
     if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");
+    if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
     if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
     {
