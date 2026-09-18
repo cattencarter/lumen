@@ -1180,6 +1180,26 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     const std::string model = gSavedSettings.getString(
         is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel");
 
+    // **Say which model is about to answer, here, where it is actually read.**
+    //
+    // refreshKeyNotice() already announced a change -- but it hangs on a FOCUS
+    // event, so it only fires if the user happens to click back into this
+    // window afterwards. Change the model and send straight away and the
+    // header goes on naming the old one, which is worse than saying nothing:
+    // it reads as a fact about the request rather than a memory of an older
+    // one. The author, having switched: *"lige nu staar der stadig haiku"*.
+    //
+    // This is the send path. Nothing can use a model without passing through
+    // it, so nothing can be answered by a model the transcript did not name.
+    {
+        const std::string now = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+        if (!mAnnounced.empty() && now != mAnnounced)
+        {
+            sayNote("Now using " + now + ".");
+        }
+        mAnnounced = now;
+    }
+
     setBusy(true, "Thinking...");
 
     // Across the whole turn, however many provider calls it takes.

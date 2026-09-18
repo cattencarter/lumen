@@ -3550,16 +3550,53 @@ namespace
     LLSD lslDidYouMean(const std::string& name)
     {
         const LLSD& s = lslSyntax();
-        if (!s.has("functions")) return LLSD::emptyArray();
-
         std::vector<std::pair<size_t, std::string> > best;
-        for (LLSD::map_const_iterator f = s["functions"].beginMap();
-             f != s["functions"].endMap(); ++f)
+
+        // Functions by shared prefix.
+        if (s.has("functions"))
         {
-            size_t n = 0;
-            while (n < name.size() && n < f->first.size()
-                   && tolower((unsigned char)name[n]) == tolower((unsigned char)f->first[n])) ++n;
-            if (n >= 6) best.push_back(std::make_pair(n, f->first));   // past "llSetL"
+            for (LLSD::map_const_iterator f = s["functions"].beginMap();
+                 f != s["functions"].endMap(); ++f)
+            {
+                size_t n = 0;
+                while (n < name.size() && n < f->first.size()
+                       && tolower((unsigned char)name[n]) == tolower((unsigned char)f->first[n])) ++n;
+                if (n >= 6) best.push_back(std::make_pair(n, f->first));   // past "llSetL"
+            }
+        }
+
+        // **And constants, because the answer is often not a function at all.**
+        // Asked to spin a child prim, the assistant reached for `llSetLinkOmega`.
+        // That does not exist -- and the right answer is `PRIM_OMEGA`, passed to
+        // llSetLinkPrimitiveParamsFast, which a prefix search over function
+        // names could never surface. Match the distinctive TAIL of the name
+        // instead: "Omega" finds PRIM_OMEGA, "Texture" finds PRIM_TEXTURE.
+        std::string tail;
+        for (size_t i = name.size(); i > 0; --i)
+        {
+            if (isupper((unsigned char)name[i - 1])) { tail = name.substr(i - 1); break; }
+        }
+        if (tail.size() >= 4)
+        {
+            std::string up;
+            for (size_t i = 0; i < tail.size(); ++i) up += (char)toupper((unsigned char)tail[i]);
+            static const char* const kTables[] = { "constants", "events" };
+            for (size_t t = 0; t < LL_ARRAY_SIZE(kTables); ++t)
+            {
+                if (!s.has(kTables[t])) continue;
+                for (LLSD::map_const_iterator c = s[kTables[t]].beginMap();
+                     c != s[kTables[t]].endMap(); ++c)
+                {
+                    std::string cu;
+                    for (size_t i = 0; i < c->first.size(); ++i)
+                        cu += (char)toupper((unsigned char)c->first[i]);
+                    if (cu.size() > up.size()
+                        && cu.compare(cu.size() - up.size(), up.size(), up) == 0)
+                    {
+                        best.push_back(std::make_pair(5 + tail.size(), c->first));
+                    }
+                }
+            }
         }
         std::sort(best.begin(), best.end());
         std::reverse(best.begin(), best.end());
