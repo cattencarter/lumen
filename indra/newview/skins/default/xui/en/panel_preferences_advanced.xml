@@ -108,32 +108,13 @@
      top_delta="40"
      width="250" />
 
-    <!-- <FS:AICtl> Without this there is NO way to switch the endpoint on but a
-         command-line flag, and that flag deliberately does not persist, so every
-         ordinary launch had it off. The connector then appears in the host with
-         nothing in it, and the assistant can only say it has no tools. -->
-    <text
-     name="LumenAssistantText"
-     follows="top|left"
-     layout="topleft"
-     left="30"
-     right="-1"
-     word_wrap="true"
-     top_pad="25"
-     height="30">
-        Let an AI assistant use this viewer. It listens on this computer only (127.0.0.1) and nothing about your session leaves the machine.
-    </text>
-    <check_box
-     control_name="FSAIControlEnabled"
-     follows="top|left"
-     height="16"
-     label="Allow an AI assistant to control this viewer (requires restart)"
-     layout="topleft"
-     left="30"
-     name="FSAIControlEnabled"
-     top_pad="5"
-     width="400" />
-    <!-- </FS:AICtl> -->
+    <!-- <FS:AICtl> The endpoint switch moved to Preferences > AI, on the
+         Assistant tab. The author: "I would prefer a none under providers
+         instead of having ai setting in two places". It was put here
+         originally because Privacy is a nested tab_container and Advanced
+         is flat   but the AI panel has since grown tabs of its own and
+         carries them fine, so the reason no longer holds and the setting
+         belongs with the rest of them. -->
 
     <button
      top="40"

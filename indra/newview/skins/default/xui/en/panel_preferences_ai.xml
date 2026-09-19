@@ -48,12 +48,28 @@
 
       <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
        left="20" top="32" width="300" height="22" name="provider">
+          <combo_box.item label="None" name="none" value="none" />
           <combo_box.item label="Anthropic (API key)" name="anthropic" value="anthropic" />
           <combo_box.item label="OpenAI (API key)"    name="openai"    value="openai" />
           <combo_box.item label="Codex (your ChatGPT subscription)" name="codex" value="codex" />
           <combo_box.item label="Claude Code (your Claude subscription)" name="claudecode" value="claudecode" />
           <combo_box.item label="Local model" name="local" value="local" />
       </combo_box>
+
+      <panel follows="left|top" layout="topleft" name="p_none"
+       left="0" top="64" width="520" height="300" background_visible="false">
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="4" width="480" height="60" word_wrap="true">
+            The assistant is off. Lumen works as an ordinary Second Life viewer, and the Assistant window will tell you to come back here rather than trying to answer.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft"
+         left="20" top="72" width="480" height="76" word_wrap="true">
+            Pick one above when you want it. Codex and Claude Code use a subscription you may already pay for; Anthropic and OpenAI want an API key and bill you per message; a local model runs on this computer and sends nothing anywhere.
+        </text>
+
+      </panel>
 
       <!-- ============================ Anthropic ============================ -->
       <panel follows="left|top" layout="topleft" name="p_anthropic"
@@ -319,66 +335,84 @@
 
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="14" width="480" height="14" font="SansSerifBold">
+          Other applications
+      </text>
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="34" width="480" height="40" word_wrap="true">
+          Claude Desktop and the ChatGPT app can drive this viewer too, instead of the window inside it. Lumen listens on this computer only (127.0.0.1); nothing about your session leaves the machine because of this.
+      </text>
+
+      <check_box
+       control_name="FSAIControlEnabled"
+       follows="left|top"
+       layout="topleft"
+       left="30" top="80" width="440" height="16"
+       label="Let another application control this viewer (requires restart)"
+       name="FSAIControlEnabled" />
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="112" width="480" height="14" font="SansSerifBold">
           Memory
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="34" width="480" height="26" word_wrap="true">
+       left="20" top="132" width="480" height="26" word_wrap="true">
           What the assistant should already know about you, without being told each time.
       </text>
 
       <button follows="left|top" layout="topleft"
-       left="20" top="66" width="140" height="22"
+       left="20" top="164" width="140" height="22"
        label="Memory..." name="memory_btn" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="106" width="480" height="14" font="SansSerifBold">
+       left="20" top="204" width="480" height="14" font="SansSerifBold">
           While you are away
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="126" width="480" height="26" word_wrap="true">
+       left="20" top="224" width="480" height="26" word_wrap="true">
           Ask the assistant: "answer my IMs until I get back". Tell it when you return and it stops.
       </text>
 
       <check_box control_name="LumenAIAutoRespondFriendsOnly" follows="left|top" layout="topleft"
-       left="20" top="160" width="480" height="16"
+       left="20" top="258" width="480" height="16"
        name="auto_respond_friends"
        label="Only answer people on my friends list" />
 
       <spinner control_name="LumenAIAutoRespondMinutes" follows="left|top" layout="topleft"
-       left="20" top="184" width="200" height="20"
+       left="20" top="282" width="200" height="20"
        name="auto_respond_minutes"
        label="Stop after" label_width="60"
        min_val="0" max_val="1440" increment="15" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="187" width="280" height="16">
+       left="226" top="285" width="280" height="16">
           minutes (0 = no limit)
       </text>
 
       <spinner control_name="LumenAIAutoRespondMaxPerPerson" follows="left|top" layout="topleft"
-       left="20" top="210" width="200" height="20"
+       left="20" top="308" width="200" height="20"
        name="auto_respond_per_person"
        label="At most" label_width="60"
        min_val="1" max_val="50" increment="1" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="213" width="280" height="16">
+       left="226" top="311" width="280" height="16">
           replies to any one person
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="242" width="120" height="16">
+       left="20" top="340" width="120" height="16">
           Also answer to
       </text>
 
       <line_editor control_name="LumenAIAutoRespondNames" follows="left|top" layout="topleft"
-       left="130" top="239" width="260" height="20"
+       left="130" top="337" width="260" height="20"
        name="auto_respond_names" max_length_bytes="255" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="266" width="480" height="26" word_wrap="true">
+       left="20" top="364" width="480" height="26" word_wrap="true">
           Nicknames people use for you in chat, separated by commas. Needed when your display name is not what anyone types.
       </text>
 

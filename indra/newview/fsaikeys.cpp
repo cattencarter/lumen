@@ -74,6 +74,7 @@ namespace
 
 namespace FSAIKeys
 {
+    const std::string NONE      = "none";
     const std::string ANTHROPIC = "anthropic";
     const std::string OPENAI    = "openai";
     /**
@@ -97,6 +98,7 @@ namespace FSAIKeys
 
     std::string displayName(const std::string& provider)
     {
+        if (provider == NONE)      return "no assistant";
         if (provider == ANTHROPIC) return "Anthropic";
         if (provider == OPENAI)    return "OpenAI";
         if (provider == LOCAL)     return "the local model";
@@ -653,6 +655,7 @@ void FSPanelPreferenceAIKeys::refresh()
     // skifte indhold afhaengigt af hvad der er valgt i Use?"* -- one can, and
     // the three panels sit at the same position so only one is ever on screen.
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (LLPanel* p = findChild<LLPanel>("p_none"))      p->setVisible(provider == "none");
     if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
     if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");
     if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");

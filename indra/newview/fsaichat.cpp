@@ -1906,6 +1906,16 @@ void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
 void FSAIChatFloater::runTurn(const std::string& user_text)
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
+
+    // <FS:AICtl> "None" is a real choice, so it gets a real answer rather than
+    // falling through to a missing-key message about a provider nobody picked.
+    if (provider.empty() || provider == FSAIKeys::NONE)
+    {
+        sayNote("No assistant is chosen. Preferences > AI, and pick one under Use.");
+        setBusy(false);
+        return;
+    }
+
     // A local server speaks OpenAI's dialect; only the address differs.
     const bool is_local  = (provider == FSAIKeys::LOCAL);
     const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;

@@ -55,6 +55,9 @@ namespace FSAIKeys
 {
     // Provider ids. These are also the keys in the protected store, so
     // changing one orphans whatever a user already saved.
+    // <FS:AICtl> No assistant. Not a provider that fails, a provider that
+    // is honestly absent   so the viewer is an ordinary viewer and says so.
+    extern const std::string NONE;
     extern const std::string ANTHROPIC;
     extern const std::string OPENAI;
     extern const std::string LOCAL;
