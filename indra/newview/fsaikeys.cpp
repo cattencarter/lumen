@@ -606,8 +606,9 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
     {
         st.text = "Step 1 of 3 -- Codex is not installed.\n"
                   "It is OpenAI's own command-line tool, and it is what lets Lumen use your "
-                  "ChatGPT subscription instead of a paid API key. Open Terminal, paste the "
-                  "command below and press Return, then come back here and click Check again.";
+                  "ChatGPT subscription instead of a paid API key.\n"
+                  "Press \"Set it up for me...\" and Lumen does it, step by step. The command "
+                  "below is the same thing by hand, for anybody who would rather see what runs.";
         st.command = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
         return st;
     }
@@ -656,18 +657,19 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
     {
         st.text = "Step 1 of 2 -- Claude Code is not installed.\n"
                   "It is Anthropic's own command-line tool, and it is what lets Lumen use "
-                  "your Claude subscription instead of a paid API key. Open Terminal, paste "
-                  "the command below and press Return.";
+                  "your Claude subscription instead of a paid API key.\n"
+                  "Press \"Set it up for me...\" and Lumen does it. The command below is "
+                  "the same thing by hand.";
         st.command = "npm install -g @anthropic-ai/claude-code";
         return st;
     }
 
     st.ready = true;
-    st.text  = "Installed. If it has not been signed in yet, run  claude auth login  in "
-               "Terminal once -- that opens a browser and uses your own Claude account; "
-               "Lumen never sees the password.\n"
-               "Press Check again to try it for real: that asks Claude Code a question "
-               "through the viewer's own tools and says what came back.";
+    st.text  = "Installed. If it has not been signed in yet, press \"Set it up for me...\" "
+               "and Lumen opens the browser for you; you sign in with your own Claude "
+               "account and Lumen never sees the password.\n"
+               "Press Test to try it for real: that asks Claude Code a question through "
+               "the viewer's own tools and says what came back.";
     return st;
 }
 
