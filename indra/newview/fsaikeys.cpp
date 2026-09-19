@@ -304,16 +304,6 @@ bool FSPanelPreferenceAIKeys::postBuild()
             {
                 // A filesystem check, so it answers at once and the popup can
                 // simply report what refresh() is about to show.
-                char when[16] = "";
-                const time_t now = time(NULL);
-                struct tm lt;
-#if LL_WINDOWS
-                localtime_s(&lt, &now);
-#else
-                localtime_r(&now, &lt);
-#endif
-                strftime(when, sizeof(when), "%H:%M:%S", &lt);
-                mCodexCheckedAt = when;
                 const CodexState st = codexStatus();
                 refresh();
                 say(st.ready, st.ready ? "Codex is installed, signed in and running."
@@ -631,16 +621,13 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
 
     if (!FSAIClaude::installed())
     {
-        st.text = "Not set up yet. Claude Code is Anthropic's own small helper program, "
-                  "and it is what lets Lumen use the Claude subscription you already pay "
-                  "for instead of a paid API key.";
+        // No prose: nothing reads it. The button appearing is the whole message,
+        // and the Test popup writes its own.
         return st;
     }
 
     st.ready = true;
-    st.text  = "Installed. Press Test to try it for real: that asks Claude Code a "
-               "question through the viewer's own tools and says what came back. If it "
-               "says not signed in, \"Set it up for me...\" opens the browser.";
+
     return st;
 }
 
@@ -662,12 +649,14 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
     const CodexState codex = codexStatus();
-    if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
-    {
-        cs->setText(mCodexCheckedAt.empty()
-                    ? codex.text
-                    : codex.text + "\n\n(Checked at " + mCodexCheckedAt + ".)");
-    }
+    // <FS:AICtl> No standing status line. The author: *"when it's all set up we
+    // just remove the button. no need to tell it's not set up"* -- and he is
+    // right: the button being there IS the message, and a paragraph repeating
+    // it in words is one more thing to read before doing the only thing on
+    // offer. The box below is left for the transient "Asking..." while a test
+    // is in flight, because a button that goes quiet for twenty seconds looks
+    // broken.
+    if (LLTextBox* cs = findChild<LLTextBox>("codex_status")) cs->setText(std::string());
     // <FS:AICtl> No command, and no Copy button. The author, looking at the
     // panel: *"this can all go, including the copy button and then we just
     // place 'set it up for me' at the top. we can put the manual steps on the
@@ -683,12 +672,7 @@ void FSPanelPreferenceAIKeys::refresh()
 
     const CodexState claude = claudeStatus();
     if (LLButton* b = findChild<LLButton>("claude_setup")) b->setVisible(!claude.ready);
-    if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
-    {
-        cs->setText(mClaudeCheckedAt.empty()
-                    ? claude.text
-                    : claude.text + "\n\n(Checked at " + mClaudeCheckedAt + ".)");
-    }
+    if (LLTextBox* cs = findChild<LLTextBox>("claude_status")) cs->setText(std::string());
 
     for (Row& row : mRows)
     {

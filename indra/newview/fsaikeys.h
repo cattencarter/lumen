@@ -147,8 +147,6 @@ public:
     // redrawn identically, and nothing on screen said it had run. Stamping the
     // time is the smallest thing that distinguishes "checked, still fine" from
     // "the button does nothing".
-    std::string mCodexCheckedAt;
-    std::string mClaudeCheckedAt;
     boost::signals2::connection mProviderConn;
 
 private:
