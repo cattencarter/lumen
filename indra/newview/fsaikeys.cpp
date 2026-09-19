@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "fsaikeys.h"
+#include "llnotificationsutil.h"
 #include "fsaictl.h"
 #include "fsaichat.h"
 #include "fsaiclaude.h"
@@ -295,66 +296,124 @@ bool FSPanelPreferenceAIKeys::postBuild()
     // that proves the CLI runs, that it is signed in, and that the tools are
     // reachable, which is three separate things a user would otherwise
     // discover one failure at a time.
-    if (LLButton* rb = findChild<LLButton>("claude_recheck"))
+
+    // <FS:AICtl> One Test button for every provider, beside the list.
+    //
+    // It replaces three differently named buttons in three panels, and it adds
+    // the two that never had one at all   Anthropic and OpenAI, which are
+    // exactly where a wrong value is likeliest and stays silent until the
+    // Assistant fails later, one layer away from the cause.
+    //
+    // What "test" MEANS differs, and that is the reason this dispatches rather
+    // than doing one thing: Codex and Claude Code are separate PROGRAMS, so
+    // theirs is a check of the installation; the other three are services, so
+    // theirs is a real request that costs a few tokens. A test that spends
+    // nothing has not proved a key works.
+    //
+    // The answer arrives in a popup. The panel text still carries the detail,
+    // but a button whose only effect is a paragraph changing somewhere else
+    // reads as a button that did nothing   the author: *"a small confirm popup
+    // if all is ok"*.
+    if (LLButton* tb = findChild<LLButton>("test_btn"))
     {
-        rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        tb->setCommitCallback([this](LLUICtrl*, const LLSD&)
         {
-            LLTextBox* out = findChild<LLTextBox>("claude_status");
-            if (!FSAIClaude::installed())
+            const std::string provider = gSavedSettings.getString("LumenAIProvider");
+
+            if (provider == FSAIKeys::CODEX)
             {
+                // A filesystem check, so it answers at once and the popup can
+                // simply report what refresh() is about to show.
+                char when[16] = "";
+                const time_t now = time(NULL);
+                struct tm lt;
+#if LL_WINDOWS
+                localtime_s(&lt, &now);
+#else
+                localtime_r(&now, &lt);
+#endif
+                strftime(when, sizeof(when), "%H:%M:%S", &lt);
+                mCodexCheckedAt = when;
+                const CodexState st = codexStatus();
                 refresh();
+                say(st.ready, st.ready ? "Codex is installed, signed in and running."
+                                       : st.text);
                 return;
             }
-            if (out) out->setText(std::string(
-                "Asking Claude Code... this takes a few seconds."));
 
-            const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
-            // The LIVE port, not the setting: it is picked at random each start.
-            const U16 port = FSAIControl::instance().port();
-            LLHandle<LLPanel> h = getHandle();
-            LLCoros::instance().launch("FSAIClaudeTest", [h, model, port]()
+            if (provider == FSAIKeys::CLAUDECODE)
             {
-                FSAIClaude cc;
-                std::string why, said;
-                bool ok = false;
-
-                if (!cc.start("Call the second_life viewer tool with action=status and "
-                              "reply with ONLY the session_check value, nothing else.",
-                              std::string(), model, std::string(), port, why))
+                if (!FSAIClaude::installed())
                 {
-                    said = why;
+                    refresh();
+                    say(false, "Claude Code is not installed on this computer.");
+                    return;
                 }
-                else
+                busy("Asking Claude Code... this takes a few seconds.");
+
+                const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
+                // The LIVE port: it is picked at random each start.
+                const U16 port = FSAIControl::instance().port();
+                LLHandle<LLPanel> h = getHandle();
+                LLCoros::instance().launch("FSAIClaudeTest", [h, model, port]()
                 {
-                    const F64 until = LLTimer::getTotalSeconds() + 120.0;
-                    LLSD msg;
-                    while (LLTimer::getTotalSeconds() < until)
+                    FSAIClaude cc;
+                    std::string why, said;
+                    bool ok = false;
+
+                    if (!cc.start("Call the second_life viewer tool with action=status and "
+                                  "reply with ONLY the session_check value, nothing else.",
+                                  std::string(), model, std::string(), port, why))
                     {
-                        if (!cc.poll(msg))
-                        {
-                            if (!cc.running() && !cc.poll(msg)) break;
-                            llcoro::suspend();
-                            continue;
-                        }
-                        if (msg["type"].asString() != "result") continue;
-                        ok   = !msg["is_error"].asBoolean();
-                        said = msg["result"].asString();
-                        break;
+                        said = why;
                     }
-                    if (said.empty()) said = "Claude Code did not answer.";
-                    cc.stop();
-                }
+                    else
+                    {
+                        const F64 until = LLTimer::getTotalSeconds() + 120.0;
+                        LLSD msg;
+                        while (LLTimer::getTotalSeconds() < until)
+                        {
+                            if (!cc.poll(msg))
+                            {
+                                if (!cc.running() && !cc.poll(msg)) break;
+                                llcoro::suspend();
+                                continue;
+                            }
+                            if (msg["type"].asString() != "result") continue;
+                            ok   = !msg["is_error"].asBoolean();
+                            said = msg["result"].asString();
+                            break;
+                        }
+                        if (said.empty()) said = "Claude Code did not answer.";
+                        cc.stop();
+                    }
 
-                LLPanel* p = h.get();
+                    FSPanelPreferenceAIKeys* p =
+                        dynamic_cast<FSPanelPreferenceAIKeys*>(h.get());
+                    if (!p) return;
+                    if (said.size() > 220) said = said.substr(0, 220);
+                    p->say(ok,
+                        ok ? "Claude Code ran, is signed in, and reached the viewer's own "
+                             "tools. It answered with this session's check value: " + said
+                           : said + "\n\nIf it says not logged in, run  claude auth login  "
+                             "in Terminal once.");
+                    p->refresh();
+                });
+                return;
+            }
+
+            // Anthropic, OpenAI, a local model: one real request.
+            busy("Asking " + FSAIKeys::displayName(provider) + "...");
+            LLHandle<LLPanel> h = getHandle();
+            FSAIChatFloater::testProvider(provider,
+                [h, provider](bool ok, const std::string& detail)
+            {
+                FSPanelPreferenceAIKeys* p =
+                    dynamic_cast<FSPanelPreferenceAIKeys*>(h.get());
                 if (!p) return;
-                LLTextBox* t = p->findChild<LLTextBox>("claude_status");
-                if (!t) return;
-                if (said.size() > 220) said = said.substr(0, 220);
-                t->setText(ok
-                    ? "It works. Claude Code ran, is signed in, and reached the viewer's "
-                      "own tools -- it answered with this session's check value: " + said
-                    : "It did not work: " + said
-                      + "\n\nIf it says not logged in, run  claude auth login  in Terminal once.");
+                p->say(ok, ok ? FSAIKeys::displayName(provider) + " answered."
+                              : detail);
+                p->refresh();
             });
         });
     }
@@ -370,23 +429,6 @@ bool FSPanelPreferenceAIKeys::postBuild()
         });
     }
 
-    if (LLButton* rb = findChild<LLButton>("codex_recheck"))
-    {
-        rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
-        {
-            char when[16] = "";
-            const time_t now = time(NULL);
-            struct tm lt;
-#if LL_WINDOWS
-            localtime_s(&lt, &now);
-#else
-            localtime_r(&now, &lt);
-#endif
-            strftime(when, sizeof(when), "%H:%M:%S", &lt);
-            mCodexCheckedAt = when;
-            refresh();
-        });
-    }
 
     // **The local panel could not tell you whether it worked.** Two typed
     // fields, no feedback, and the first sign of a wrong address or a wrong
@@ -397,63 +439,6 @@ bool FSPanelPreferenceAIKeys::postBuild()
     // bare starte naar man vaelger model som en test?"* It answers "is this
     // right", AND it leaves the server's prompt cache warm, so the ~20 seconds
     // of prompt processing is spent here instead of on their first question.
-    if (LLButton* lt = findChild<LLButton>("local_test"))
-    {
-        lt->setCommitCallback([this](LLUICtrl*, const LLSD&)
-        {
-            LLLineEditor* u = findChild<LLLineEditor>("url_local");
-            LLLineEditor* m = findChild<LLLineEditor>("model_local");
-            const std::string url   = u ? trimmed(u->getText()) : std::string();
-            const std::string model = m ? trimmed(m->getText()) : std::string();
-            LLTextBox* out = findChild<LLTextBox>("local_status");
-            if (url.empty() || model.empty())
-            {
-                if (out) out->setText(std::string(
-                    "Fill in both the address and the model name first."));
-                return;
-            }
-            if (out) out->setText(std::string(
-                "Asking " + model + "... the first time takes about twenty seconds, "
-                "because the viewer's tool descriptions have to be read before it can "
-                "answer anything."));
-
-            // The panel can be closed while this is in flight, so the reply is
-            // delivered through a handle rather than to a captured `this`.
-            LLHandle<LLPanel> h = getHandle();
-            FSAIChatFloater::warmLocal(url, model,
-                [h, model](bool ok, F64 secs, const std::string& detail)
-            {
-                LLPanel* p = h.get();
-                if (!p) return;
-                LLTextBox* t = p->findChild<LLTextBox>("local_status");
-                if (!t) return;
-                if (ok && secs < 2.0)
-                {
-                    // **"answered in 0 seconds" reads as a bug**, and it is the
-                    // commonest case: press it twice and the server still has
-                    // the prefix cached, so there is nothing to warm.
-                    t->setText(model + " answered at once -- it was already warm. "
-                               "The Assistant's first question will be quick. "
-                               "Nothing left the machine.");
-                }
-                else if (ok)
-                {
-                    t->setText(llformat(
-                        "%s answered in %.0f seconds and is warm now, so the Assistant's "
-                        "first question will be quick. Nothing left the machine.",
-                        model.c_str(), secs));
-                }
-                else
-                {
-                    t->setText("Could not use " + model + " -- "
-                               + (detail.empty()
-                                  ? std::string("Check that Ollama or LM Studio is running, "
-                                                "and that the address ends in /v1/chat/completions.")
-                                  : detail));
-                }
-            });
-        });
-    }
 
     if (LLButton* mem = findChild<LLButton>("memory_btn"))
     {
@@ -554,6 +539,33 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
  * subcommands. A confidently wrong command is worse than none, because the
  * person cannot tell our mistake from their own.
  */
+void FSPanelPreferenceAIKeys::say(bool ok, const std::string& detail)
+{
+    // "It works" is the whole message on success. The detail is for the case
+    // that needs acting on, and a paragraph of reassurance nobody reads is how
+    // a popup becomes something people dismiss without looking.
+    LLSD args;
+    args["MESSAGE"] = ok ? "It works." + (detail.empty() ? std::string()
+                                                         : "\n\n" + detail)
+                         : "It did not work.\n\n" + detail;
+    LLNotificationsUtil::add("GenericAlertOK", args);
+}
+
+void FSPanelPreferenceAIKeys::busy(const std::string& text)
+{
+    // Every provider panel has its own status line, so the waiting message goes
+    // to whichever one is on screen rather than to a name chosen here.
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    const char* which = (provider == FSAIKeys::CODEX)      ? "codex_status"
+                      : (provider == FSAIKeys::CLAUDECODE) ? "claude_status"
+                      : (provider == FSAIKeys::LOCAL)      ? "local_status"
+                      : NULL;
+    if (which)
+    {
+        if (LLTextBox* t = findChild<LLTextBox>(which)) t->setText(text);
+    }
+}
+
 FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
 {
     CodexState st;
@@ -657,6 +669,8 @@ void FSPanelPreferenceAIKeys::refresh()
     // skifte indhold afhaengigt af hvad der er valgt i Use?"* -- one can, and
     // the three panels sit at the same position so only one is ever on screen.
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    // Nothing to test when nothing is chosen.
+    if (LLButton* tb = findChild<LLButton>("test_btn")) tb->setVisible(provider != "none");
     if (LLPanel* p = findChild<LLPanel>("p_none"))      p->setVisible(provider == "none");
     if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
     if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");

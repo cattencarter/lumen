@@ -193,6 +193,26 @@ public:
                           std::function<void(bool ok, F64 seconds,
                                              const std::string& detail)> report);
 
+    /**
+     * Ask a provider one real question and say whether it answered.
+     *
+     * <FS:AICtl> One Test button beside the provider list needs one entry
+     * point, and the dialect knowledge already lives here rather than in
+     * Preferences   which key goes in which header, which shape the body
+     * takes, where the system prompt belongs. Putting the test in the panel
+     * would have been a second copy of all three.
+     *
+     * Anthropic, OpenAI and a local model only. Codex and Claude Code are
+     * separate PROGRAMS, so their test is a check of the installation and
+     * stays where that check already is.
+     *
+     * It costs a few tokens on a paid provider, which is the point: a test
+     * that does not spend anything has not proved the key works.
+     */
+    static void testProvider(const std::string& provider,
+                             std::function<void(bool ok,
+                                                const std::string& detail)> report);
+
 private:
     void onFocusReceived() override;
 

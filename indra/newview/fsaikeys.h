@@ -129,6 +129,16 @@ public:
         std::string command;    // empty when there is nothing left to run
         bool        ready = false;
     };
+    /**
+     * The Test button's answer, as a popup.
+     *
+     * <FS:AICtl> Public because the asynchronous tests call it back through an
+     * LLHandle once the panel may already be gone.
+     */
+    void say(bool ok, const std::string& detail);
+    /** What the panel shows WHILE a test is in flight. */
+    void busy(const std::string& text);
+
     CodexState codexStatus();
     CodexState claudeStatus();
 

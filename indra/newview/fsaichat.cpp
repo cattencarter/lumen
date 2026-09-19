@@ -1055,6 +1055,103 @@ void FSAIChatFloater::warmLocalModel()
     warmLocal(url, model, NULL);
 }
 
+void FSAIChatFloater::testProvider(const std::string& provider,
+                                   std::function<void(bool, const std::string&)> report)
+{
+    const bool is_local  = (provider == FSAIKeys::LOCAL);
+    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
+
+    const std::string model = gSavedSettings.getString(
+        is_local  ? "LumenAILocalModel"
+                  : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
+    const std::string url = is_local ? gSavedSettings.getString("LumenAILocalURL")
+                                     : providerUrl(is_openai);
+    // A local model needs no key; everything else is useless without one.
+    const std::string key = is_local ? std::string() : FSAIKeys::get(provider);
+
+    if (model.empty())
+    {
+        report(false, "No model name is set. Fill it in above and try again.");
+        return;
+    }
+    if (is_local && url.empty())
+    {
+        report(false, "No address is set for the local model.");
+        return;
+    }
+    if (!is_local && key.empty())
+    {
+        report(false, "No " + FSAIKeys::displayName(provider) + " key is saved. "
+                      "Paste one above, press OK, then test again.");
+        return;
+    }
+
+    LLCoros::instance().launch("FSAITest", [=]()
+    {
+        LLSD headers, body;
+        body["model"] = model;
+
+        if (is_openai)
+        {
+            if (!key.empty()) headers["Authorization"] = "Bearer " + key;
+            LLSD msgs = LLSD::emptyArray();
+            msgs.append(LLSD().with("role", "user").with("content", "Reply with the single word: ok"));
+            body["messages"] = msgs;
+            body["max_tokens"] = 4;
+        }
+        else
+        {
+            headers["x-api-key"]         = key;
+            headers["anthropic-version"] = ANTHROPIC_API_VERSION;
+            LLSD msgs = LLSD::emptyArray();
+            msgs.append(LLSD().with("role", "user").with("content", "Reply with the single word: ok"));
+            body["messages"]   = msgs;
+            body["max_tokens"] = 4;
+        }
+
+        std::string err;
+        const LLSD reply = postJson(url, body, headers, err);
+
+        std::string detail;
+        bool ok = false;
+
+        if (!err.empty())
+        {
+            detail = err;
+        }
+        else if (reply.has("error"))
+        {
+            // The provider answered and refused, which is the useful case: a
+            // wrong key, an unknown model, no credit. Say what IT said rather
+            // than a sentence of our own about what it might have meant.
+            const LLSD& e = reply["error"];
+            detail = e.has("message") ? e["message"].asString() : "the provider returned an error";
+        }
+        else
+        {
+            // **A reply is not the same as the right reply.** A local server
+            // with a different model loaded answers perfectly and answers as
+            // something else, so the echoed name is checked rather than the
+            // status code   the same trap this panel already met once.
+            const std::string said = reply.has("model") ? reply["model"].asString() : std::string();
+            if (is_local && !said.empty() && said.find(model) == std::string::npos)
+            {
+                detail = "It answered, but as '" + said + "' rather than '" + model
+                       + "'. That server loads whatever it has; the name above is "
+                         "not the one running.";
+            }
+            else
+            {
+                ok = true;
+            }
+        }
+
+        // Called straight, not marshalled: LLCoros runs these on the main
+        // thread, which is what warmLocal above relies on too.
+        report(ok, detail);
+    });
+}
+
 void FSAIChatFloater::warmLocal(const std::string& url, const std::string& model,
                                 std::function<void(bool, F64, const std::string&)> report)
 {

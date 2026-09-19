@@ -46,6 +46,15 @@
           Use
       </text>
 
+      <!-- <FS:AICtl> ONE Test button, beside the list rather than three
+           differently named ones buried in three panels: "Check again" for
+           Codex, "Check again" for Claude Code, "Test and warm up" for a local
+           model, and nothing at all for the two that take an API key   which
+           were the two where a wrong value is likeliest and silent.
+           Hidden only for None, which has nothing to test. -->
+      <button follows="left|top" layout="topleft" name="test_btn"
+       left="332" top="32" width="80" height="22" label="Test" />
+
       <combo_box control_name="LumenAIProvider" follows="left|top" layout="topleft"
        left="20" top="32" width="300" height="22" name="provider">
           <combo_box.item label="None" name="none" value="none" />
@@ -187,8 +196,6 @@
         <button follows="left|top" layout="topleft" name="claude_copy"
          left="358" top="178" width="56" height="22" label="Copy" visible="false" />
 
-        <button follows="left|top" layout="topleft" name="claude_recheck"
-         left="422" top="178" width="78" height="22" label="Check again" />
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="214" width="52" height="16">
@@ -238,8 +245,6 @@
             Whatever name that server knows the model by. A small local model handles the viewer&apos;s own tools well. Writing scripts is different: a small one will often produce LSL that looks right, compiles, and quietly does the wrong thing. Use Anthropic or OpenAI for scripts.
         </text>
 
-        <button follows="left|top" layout="topleft" name="local_test"
-         left="20" top="214" width="120" height="22" label="Test and warm up" />
 
         <text type="string" follows="left|top" layout="topleft" name="local_status"
          left="20" top="244" width="480" height="54" word_wrap="true">
@@ -284,8 +289,6 @@
          left="20" top="178" width="150" height="22"
          label="Set it up for me..." />
 
-        <button follows="left|top" layout="topleft" name="codex_recheck"
-         left="422" top="178" width="78" height="22" label="Check again" />
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="214" width="52" height="16">
