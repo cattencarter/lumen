@@ -263,31 +263,11 @@ bool FSPanelPreferenceAIKeys::postBuild()
     // Copy the command rather than ask somebody to retype a curl line with a
     // pipe in it. Read from the panel, not from codexStatus(), so the button
     // can never copy something different from what is on screen.
-    if (LLButton* cb = findChild<LLButton>("codex_copy"))
-    {
-        cb->setCommitCallback([this](LLUICtrl*, const LLSD&)
-        {
-            LLLineEditor* ce = findChild<LLLineEditor>("codex_command");
-            if (!ce) return;
-            const LLWString w = utf8str_to_wstring(ce->getText());
-            LLClipboard::instance().copyToClipboard(w, 0, static_cast<S32>(w.length()));
-        });
-    }
 
     // **Nothing else notices that Codex has been installed.** The status is
     // read when the panel is built, so without this the person follows the
     // instructions, comes back, and is still told to install it -- which reads
     // as the instructions having failed.
-    if (LLButton* cb = findChild<LLButton>("claude_copy"))
-    {
-        cb->setCommitCallback([this](LLUICtrl*, const LLSD&)
-        {
-            LLLineEditor* ce = findChild<LLLineEditor>("claude_command");
-            if (!ce) return;
-            const LLWString w = utf8str_to_wstring(ce->getText());
-            LLClipboard::instance().copyToClipboard(w, 0, static_cast<S32>(w.length()));
-        });
-    }
     // **It runs a real turn, because the panel says it does.** The first
     // version of this button only stamped the time and redrew, under a line
     // promising it would "try it for real" -- a claim the code did not back,
@@ -419,7 +399,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
     }
 
     // <FS:AICtl> Opens the guided window. Everything it does could be done
-    // from the command below, and for a lot of people that is the harder path
+    // by hand from the website, and for a lot of people that is the harder path
     // rather than the safer one.
     if (LLButton* sb = findChild<LLButton>("codex_setup"))
     {
@@ -604,27 +584,23 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
 
     if (!gDirUtilp->fileExists(cli))
     {
-        st.text = "Step 1 of 3 -- Codex is not installed.\n"
-                  "It is OpenAI's own command-line tool, and it is what lets Lumen use your "
-                  "ChatGPT subscription instead of a paid API key.\n"
-                  "Press \"Set it up for me...\" and Lumen does it, step by step. The command "
-                  "below is the same thing by hand, for anybody who would rather see what runs.";
+        st.text = "Not set up yet. Codex is OpenAI's own small helper program, and it is "
+                  "what lets Lumen use the ChatGPT subscription you already pay for instead "
+                  "of a paid API key.";
         st.command = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
         return st;
     }
     if (!gDirUtilp->fileExists(auth))
     {
-        st.text = "Step 2 of 3 -- Codex is installed but not signed in.\n"
-                  "It needs your own ChatGPT account. This command opens a browser window "
-                  "where you sign in; Lumen never sees the password and never stores it.";
+        st.text = "Almost. Codex is installed but not signed in to your ChatGPT "
+                  "account yet.";
         st.command = "codex login";
         return st;
     }
     if (!gDirUtilp->fileExists(sock))
     {
-        st.text = "Step 3 of 3 -- Codex is installed and signed in, but its background "
-                  "service is not running. Lumen talks to that service, so it has to be "
-                  "started before the Assistant can answer.";
+        st.text = "Almost. Codex is installed and signed in, but it is not running "
+                  "yet.";
         st.command = "codex app-server daemon start";
         return st;
     }
@@ -655,21 +631,16 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
 
     if (!FSAIClaude::installed())
     {
-        st.text = "Step 1 of 2 -- Claude Code is not installed.\n"
-                  "It is Anthropic's own command-line tool, and it is what lets Lumen use "
-                  "your Claude subscription instead of a paid API key.\n"
-                  "Press \"Set it up for me...\" and Lumen does it. The command below is "
-                  "the same thing by hand.";
-        st.command = "npm install -g @anthropic-ai/claude-code";
+        st.text = "Not set up yet. Claude Code is Anthropic's own small helper program, "
+                  "and it is what lets Lumen use the Claude subscription you already pay "
+                  "for instead of a paid API key.";
         return st;
     }
 
     st.ready = true;
-    st.text  = "Installed. If it has not been signed in yet, press \"Set it up for me...\" "
-               "and Lumen opens the browser for you; you sign in with your own Claude "
-               "account and Lumen never sees the password.\n"
-               "Press Test to try it for real: that asks Claude Code a question through "
-               "the viewer's own tools and says what came back.";
+    st.text  = "Installed. Press Test to try it for real: that asks Claude Code a "
+               "question through the viewer's own tools and says what came back. If it "
+               "says not signed in, \"Set it up for me...\" opens the browser.";
     return st;
 }
 
@@ -697,35 +668,26 @@ void FSPanelPreferenceAIKeys::refresh()
                     ? codex.text
                     : codex.text + "\n\n(Checked at " + mCodexCheckedAt + ".)");
     }
-    // The command is in a read-only editor rather than the paragraph, so it can
-    // be selected with a mouse by somebody who does not trust a Copy button --
-    // and it disappears entirely when there is nothing left to do, instead of
-    // sitting there inviting a command that would undo a working setup.
-    if (LLLineEditor* ce = findChild<LLLineEditor>("codex_command"))
-    {
-        ce->setText(codex.command);
-        ce->setVisible(!codex.command.empty());
-    }
-    if (LLButton* cb = findChild<LLButton>("codex_copy"))
-    {
-        cb->setVisible(!codex.command.empty());
-    }
+    // <FS:AICtl> No command, and no Copy button. The author, looking at the
+    // panel: *"this can all go, including the copy button and then we just
+    // place 'set it up for me' at the top. we can put the manual steps on the
+    // webpage."*
+    //
+    // Which is right, and the shell command was the last thing here written for
+    // a reader who already knows what a command line is. The window does it;
+    // the website carries the by-hand version for anybody who would rather see
+    // what runs. A panel that offers both is a panel that asks somebody to
+    // choose between two things they cannot tell apart.
+
+    if (LLButton* b = findChild<LLButton>("codex_setup")) b->setVisible(!codex.ready);
 
     const CodexState claude = claudeStatus();
+    if (LLButton* b = findChild<LLButton>("claude_setup")) b->setVisible(!claude.ready);
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
     {
         cs->setText(mClaudeCheckedAt.empty()
                     ? claude.text
                     : claude.text + "\n\n(Checked at " + mClaudeCheckedAt + ".)");
-    }
-    if (LLLineEditor* ce = findChild<LLLineEditor>("claude_command"))
-    {
-        ce->setText(claude.command);
-        ce->setVisible(!claude.command.empty());
-    }
-    if (LLButton* cb = findChild<LLButton>("claude_copy"))
-    {
-        cb->setVisible(!claude.command.empty());
     }
 
     for (Row& row : mRows)

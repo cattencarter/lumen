@@ -184,26 +184,21 @@
             Claude Code is Anthropic&apos;s own command-line tool. It signs in with your Claude account, so there is no API key and no separate bill.
         </text>
 
+        <button follows="left|top" layout="topleft" name="claude_setup"
+         left="165" top="44" width="190" height="24"
+         label="Set it up for me..." />
+
         <text type="string" follows="left|top" layout="topleft" name="claude_status"
-         left="20" top="48" width="480" height="92" word_wrap="true">
+         left="20" top="80" width="480" height="92" word_wrap="true">
         </text>
 
-        <line_editor follows="left|top" layout="topleft" name="claude_command"
-         left="20" top="150" width="480" height="22" enabled="false"
-         font="Monospace" max_length_bytes="200" visible="false">
-        </line_editor>
 
         <!-- <FS:AICtl> Claude Code needs installing too, and its old advice was
              the WORSE of the two: `npm install -g`, which needs Node.js. The
              author asked the obvious question   "doesn't claude code require
              any kind of installation" and it does. Same guided window, and
              the native installer rather than npm. -->
-        <button follows="left|top" layout="topleft" name="claude_setup"
-         left="20" top="178" width="150" height="22"
-         label="Set it up for me..." />
 
-        <button follows="left|top" layout="topleft" name="claude_copy"
-         left="358" top="178" width="56" height="22" label="Copy" visible="false" />
 
 
         <text type="string" follows="left|top" layout="topleft"
@@ -269,8 +264,12 @@
             Codex is OpenAI's own command-line tool. It signs in with your ChatGPT account, so there is no API key and no separate bill.
         </text>
 
+        <button follows="left|top" layout="topleft" name="codex_setup"
+         left="165" top="44" width="190" height="24"
+         label="Set it up for me..." />
+
         <text type="string" follows="left|top" layout="topleft" name="codex_status"
-         left="20" top="48" width="480" height="96" word_wrap="true">
+         left="20" top="80" width="480" height="96" word_wrap="true">
         </text>
 
         <!-- The command gets the WHOLE width and the buttons go underneath.
@@ -279,13 +278,7 @@
              trailing `sh` off the end, so anybody reading rather than clicking
              Copy would have run half a command and got a pipe waiting for
              input. Copy was always right; what was on screen was not. -->
-        <line_editor follows="left|top" layout="topleft" name="codex_command"
-         left="20" top="150" width="480" height="22" enabled="false"
-         font="Monospace" max_length_bytes="200" visible="false">
-        </line_editor>
 
-        <button follows="left|top" layout="topleft" name="codex_copy"
-         left="358" top="178" width="56" height="22" label="Copy" visible="false" />
 
         <!-- <FS:AICtl> The way in for somebody who has never opened Terminal.
 
@@ -294,9 +287,6 @@
              longer the ONLY way, which is what the author objected to: those
              steps assume a reader who knows what a command line is, and the
              people this is for have only ever used the ChatGPT app. -->
-        <button follows="left|top" layout="topleft" name="codex_setup"
-         left="20" top="178" width="150" height="22"
-         label="Set it up for me..." />
 
 
         <text type="string" follows="left|top" layout="topleft"
