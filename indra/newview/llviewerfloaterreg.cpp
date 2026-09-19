@@ -123,6 +123,7 @@
 #include "llfloaterperms.h"
 #include "llfloaterpostprocess.h"
 #include "fsaichat.h" // <FS:AICtl>
+#include "fsaisetup.h" // <FS:AICtl>
 #include "fsaimemory.h" // <FS:AICtl>
 #include "llfloaterpreference.h"
 #include "llfloaterpreferencesgraphicsadvanced.h"
@@ -550,6 +551,7 @@ void LLViewerFloaterReg::registerFloaters()
     // <FS:AICtl> the in-viewer assistant
     LLFloaterReg::add("ai_chat", "floater_ai_chat.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAIChatFloater>);
     LLFloaterReg::add("ai_memory", "floater_ai_memory.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAIMemoryFloater>);
+    LLFloaterReg::add("ai_setup", "floater_ai_setup.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAISetupFloater>);
     // </FS:AICtl>
     // LLFloaterReg::add("prefs_graphics_advanced", "floater_preferences_graphics_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceGraphicsAdvanced>);
     LLFloaterReg::add("prefs_view_advanced", "floater_preferences_view_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceViewAdvanced>);

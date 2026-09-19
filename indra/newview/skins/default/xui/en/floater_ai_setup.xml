@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- <FS:AICtl> Setting Codex up FOR the user rather than telling them how.
+
+     Every word here is written for somebody whose only experience of this is
+     the ChatGPT app. No "terminal", no "command", no "install script", no
+     "daemon" — those are our words, not theirs, and a person who does not
+     recognise them cannot tell a normal step from a step that has gone wrong.
+
+     What IS named plainly is where the download comes from, because Lumen
+     fetching and running something from the internet is a thing the person is
+     entitled to know before they press the button. -->
+<floater
+ legacy_header_height="18"
+ can_minimize="false"
+ can_close="true"
+ can_resize="false"
+ height="428"
+ layout="topleft"
+ name="floater_ai_setup"
+ help_topic="floater_ai_setup"
+ save_rect="true"
+ single_instance="true"
+ title="Use your ChatGPT subscription"
+ width="540">
+
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="16" top="26" width="508" height="44" word_wrap="true">
+        Lumen can use the ChatGPT subscription you already pay for, instead of asking you for a paid API key. Three things have to happen first, and Lumen can do all three for you.
+    </text>
+
+    <!-- step 1 -->
+    <text type="string" follows="left|top" layout="topleft"
+     left="16" top="82" width="52" height="16" name="mark_1">
+        [    ]
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="82" width="330" height="16" name="title_1"
+     text_color="EmphasisColor">
+        1. Get the program that does the talking
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="102" width="330" height="44" word_wrap="true">
+        Lumen downloads this from OpenAI, at chatgpt.com. It is about 230 MB and you only ever do it once.
+    </text>
+    <button follows="top|right" layout="topleft"
+     left="414" top="82" width="110" height="24"
+     label="Do this" name="do_1" />
+
+    <!-- step 2 -->
+    <text type="string" follows="left|top" layout="topleft"
+     left="16" top="160" width="52" height="16" name="mark_2">
+        [    ]
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="160" width="330" height="16" name="title_2"
+     text_color="EmphasisColor">
+        2. Sign in with your ChatGPT account
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="180" width="330" height="58" word_wrap="true">
+        Your web browser opens and you sign in the way you always do. You type your password into OpenAI's own page. Lumen never sees it and never keeps it.
+    </text>
+    <button follows="top|right" layout="topleft"
+     left="414" top="160" width="110" height="24"
+     label="Do this" name="do_2" />
+
+    <!-- step 3 -->
+    <text type="string" follows="left|top" layout="topleft"
+     left="16" top="252" width="52" height="16" name="mark_3">
+        [    ]
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="252" width="330" height="16" name="title_3"
+     text_color="EmphasisColor">
+        3. Switch it on
+    </text>
+    <text type="string" follows="left|top" layout="topleft"
+     left="72" top="272" width="330" height="44" word_wrap="true">
+        It has to be running for Lumen to reach it. This takes a moment and happens quietly.
+    </text>
+    <button follows="top|right" layout="topleft"
+     left="414" top="252" width="110" height="24"
+     label="Do this" name="do_3" />
+
+    <!-- summary -->
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="16" top="330" width="508" height="58" word_wrap="true"
+     name="summary">
+        Do the steps in order. Each one checks itself when it finishes.
+    </text>
+
+    <button follows="right|bottom" layout="topleft"
+     left="444" top="396" width="80" height="22"
+     label="Close" name="close_btn" />
+
+</floater>

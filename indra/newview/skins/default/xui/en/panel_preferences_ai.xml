@@ -257,6 +257,17 @@
         <button follows="left|top" layout="topleft" name="codex_copy"
          left="358" top="178" width="56" height="22" label="Copy" visible="false" />
 
+        <!-- <FS:AICtl> The way in for somebody who has never opened Terminal.
+
+             The copyable command and Check again stay, because they are the
+             right tool for anybody who would rather see what runs. They are no
+             longer the ONLY way, which is what the author objected to: those
+             steps assume a reader who knows what a command line is, and the
+             people this is for have only ever used the ChatGPT app. -->
+        <button follows="left|top" layout="topleft" name="codex_setup"
+         left="20" top="178" width="150" height="22"
+         label="Set it up for me..." />
+
         <button follows="left|top" layout="topleft" name="codex_recheck"
          left="422" top="178" width="78" height="22" label="Check again" />
 

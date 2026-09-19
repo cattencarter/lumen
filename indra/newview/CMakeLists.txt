@@ -111,6 +111,7 @@ set(viewer_SOURCE_FILES
     fsaiclaude.cpp
     fsaictl.cpp
     fsaikeys.cpp
+    fsaisetup.cpp
     fsassetblacklist.cpp
     fsavatarrenderpersistence.cpp
     fsavatarsearchmenu.cpp
@@ -979,6 +980,7 @@ set(viewer_HEADER_FILES
     fsaiclaude.h
     fsaictl.h
     fsaikeys.h
+    fsaisetup.h
     fsassetblacklist.h
     fsavatarrenderpersistence.h
     fsavatarsearchmenu.h

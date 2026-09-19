@@ -355,6 +355,17 @@ bool FSPanelPreferenceAIKeys::postBuild()
         });
     }
 
+    // <FS:AICtl> Opens the guided window. Everything it does could be done
+    // from the command below, and for a lot of people that is the harder path
+    // rather than the safer one.
+    if (LLButton* sb = findChild<LLButton>("codex_setup"))
+    {
+        sb->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            LLFloaterReg::showInstance("ai_setup");
+        });
+    }
+
     if (LLButton* rb = findChild<LLButton>("codex_recheck"))
     {
         rb->setCommitCallback([this](LLUICtrl*, const LLSD&)
