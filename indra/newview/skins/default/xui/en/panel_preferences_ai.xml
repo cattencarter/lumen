@@ -333,86 +333,74 @@
      label="Assistant"
      name="tab-assistant" >
 
+      <!-- <FS:AICtl> There is no switch for the endpoint, here or anywhere.
+           Lumen is a standalone viewer and nothing outside it may drive it.
+           The socket still exists, because Codex and Claude Code are separate
+           programs that reach the tools through it   but it listens only while
+           one of those two is the chosen provider, on a port picked at random,
+           and it is not a feature anybody is offered. -->
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="14" width="480" height="14" font="SansSerifBold">
-          Other applications
-      </text>
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="34" width="480" height="40" word_wrap="true">
-          Claude Desktop and the ChatGPT app can drive this viewer too, instead of the window inside it. Lumen listens on this computer only (127.0.0.1); nothing about your session leaves the machine because of this.
-      </text>
-
-      <check_box
-       control_name="FSAIControlEnabled"
-       follows="left|top"
-       layout="topleft"
-       left="30" top="80" width="440" height="16"
-       label="Let another application control this viewer (requires restart)"
-       name="FSAIControlEnabled" />
-
-      <text type="string" follows="left|top" layout="topleft"
-       left="20" top="112" width="480" height="14" font="SansSerifBold">
           Memory
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="132" width="480" height="26" word_wrap="true">
+       left="20" top="34" width="480" height="26" word_wrap="true">
           What the assistant should already know about you, without being told each time.
       </text>
 
       <button follows="left|top" layout="topleft"
-       left="20" top="164" width="140" height="22"
+       left="20" top="66" width="140" height="22"
        label="Memory..." name="memory_btn" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="204" width="480" height="14" font="SansSerifBold">
+       left="20" top="106" width="480" height="14" font="SansSerifBold">
           While you are away
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="224" width="480" height="26" word_wrap="true">
+       left="20" top="126" width="480" height="26" word_wrap="true">
           Ask the assistant: "answer my IMs until I get back". Tell it when you return and it stops.
       </text>
 
       <check_box control_name="LumenAIAutoRespondFriendsOnly" follows="left|top" layout="topleft"
-       left="20" top="258" width="480" height="16"
+       left="20" top="160" width="480" height="16"
        name="auto_respond_friends"
        label="Only answer people on my friends list" />
 
       <spinner control_name="LumenAIAutoRespondMinutes" follows="left|top" layout="topleft"
-       left="20" top="282" width="200" height="20"
+       left="20" top="184" width="200" height="20"
        name="auto_respond_minutes"
        label="Stop after" label_width="60"
        min_val="0" max_val="1440" increment="15" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="285" width="280" height="16">
+       left="226" top="187" width="280" height="16">
           minutes (0 = no limit)
       </text>
 
       <spinner control_name="LumenAIAutoRespondMaxPerPerson" follows="left|top" layout="topleft"
-       left="20" top="308" width="200" height="20"
+       left="20" top="210" width="200" height="20"
        name="auto_respond_per_person"
        label="At most" label_width="60"
        min_val="1" max_val="50" increment="1" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="311" width="280" height="16">
+       left="226" top="213" width="280" height="16">
           replies to any one person
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="340" width="120" height="16">
+       left="20" top="242" width="120" height="16">
           Also answer to
       </text>
 
       <line_editor control_name="LumenAIAutoRespondNames" follows="left|top" layout="topleft"
-       left="130" top="337" width="260" height="20"
+       left="130" top="239" width="260" height="20"
        name="auto_respond_names" max_length_bytes="255" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="364" width="480" height="26" word_wrap="true">
+       left="20" top="266" width="480" height="26" word_wrap="true">
           Nicknames people use for you in chat, separated by commas. Needed when your display name is not what anyone types.
       </text>
 

@@ -2528,7 +2528,7 @@ FSAIControl::~FSAIControl()
  * Subscribe to the message and chat streams whether or not the socket is up.
  *
  * `subscribe()` used to be reached only from `tick()`, which returns early
- * without a pump -- and there is no pump when `FSAIControlEnabled` is off. So
+ * without a pump -- and there is no pump when the endpoint is not listening. So
  * with the endpoint switched off **nothing was ever subscribed**, and
  * `read_messages` and `read_chat` returned an empty list for the in-viewer
  * assistant. Not an error: an empty list, which reads as "nobody has written
@@ -2747,10 +2747,23 @@ bool FSAIControl::startInternal()
     // use the assistant: they are told what this viewer is before they use it.
     showDisclaimerWhenLoggedIn();
 
-    if (!gSavedSettings.getBOOL("FSAIControlEnabled"))
+    // <FS:AICtl> Lumen is a standalone viewer. Nothing outside it may drive it,
+    // and there is no setting offering that any more. The author: *"I don't want
+    // other apps drive the viewer, only if requested to from inside the viewer
+    // (like codex and code)"*.
+    //
+    // The socket survives because two PROVIDERS need it, not because anybody
+    // else may use it: Codex and Claude Code are separate programs, and they
+    // reach the viewer's tools as MCP clients over this very endpoint. Everything
+    // else -- Anthropic, OpenAI, a local model -- runs in process through
+    // handleRequest and needs no socket at all. So it listens exactly when the
+    // chosen provider is one of those two, and not otherwise.
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (provider != "codex" && provider != "claudecode")
     {
-        LL_INFOS("AICtl") << "Disabled by setting; not listening. The read streams are "
-                             "subscribed anyway -- they are not the socket." << LL_ENDL;
+        LL_INFOS("AICtl") << "Provider '" << provider << "' runs in process; not "
+                             "listening. The read streams are subscribed anyway -- "
+                             "they are not the socket." << LL_ENDL;
         listenForStreams();
         return false;
     }
@@ -2759,6 +2772,21 @@ bool FSAIControl::startInternal()
     // defend against software already running as this user — it would only be
     // a step for the user to complete for no protection they did not have. Set
 
+    // A port picked at random each start, rather than a fixed, documented 8787.
+    //
+    // Being unadvertised is not the same as being closed: while the old port was
+    // constant, anything on this machine could find it, and Claude Desktop did
+    // exactly that by design. Codex and Claude Code are TOLD the number by us,
+    // so they do not need it to be predictable, and nothing else has a way to
+    // learn it short of scanning.
+    //
+    // Honest about the size of that: this is not authentication, and a local
+    // program determined to find an open loopback port will. It raises the floor
+    // from "documented and waiting" to "has to go looking", which is the whole
+    // claim.
+    //
+    // FSAIControlPort survives as a developer override: 0, the default, means
+    // pick one. It is in no panel.
     mPort = static_cast<U16>(gSavedSettings.getU32("FSAIControlPort"));
 
     // Our own pump, deliberately not gServicePump. That one is serviced only
@@ -2774,8 +2802,21 @@ bool FSAIControl::startInternal()
     mSessionCheck = LLUUID::generateNewID().asString().substr(0, 6);
     LL_INFOS("AICtl") << "session check is " << mSessionCheck << LL_ENDL;
 
-    LLHTTPNode* root = LLIOHTTPServer::createSafe(
-        gAPRPoolp, *mPump, mPort, AICTL_BIND_ADDRESS);
+    LLHTTPNode* root = NULL;
+    if (mPort == 0)
+    {
+        // The ephemeral range, sampled rather than walked, so two viewers
+        // started together do not queue up on the same first free port.
+        for (int tries = 0; tries < 40 && !root; ++tries)
+        {
+            mPort = (U16)(49152 + (ll_rand(16000)));
+            root = LLIOHTTPServer::createSafe(gAPRPoolp, *mPump, mPort, AICTL_BIND_ADDRESS);
+        }
+    }
+    else
+    {
+        root = LLIOHTTPServer::createSafe(gAPRPoolp, *mPump, mPort, AICTL_BIND_ADDRESS);
+    }
     if (!root)
     {
         // createSafe has already warned. Most likely the port is in use, which

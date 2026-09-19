@@ -1572,8 +1572,7 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         // `codex mcp add`, so nothing is written into the user's own Codex
         // configuration: Lumen's threads have it, the rest of Codex does not.
         LLSD server;
-        server["url"] = llformat("http://127.0.0.1:%d/mcp",
-                                 gSavedSettings.getU32("FSAIControlPort"));
+        server["url"] = llformat("http://127.0.0.1:%d/mcp", (int)FSAIControl::instance().port());
         LLSD cfg;
         cfg["mcp_servers"] = LLSD().with("second_life", server);
 
@@ -1810,7 +1809,7 @@ void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
 
     std::string why;
     if (!mClaude->start(user_text, fullSystemPrompt(), model, mClaudeSession,
-                        (U16)gSavedSettings.getU32("FSAIControlPort"), why))
+                        FSAIControl::instance().port(), why))
     {
         sayNote(why);
         setBusy(false);
@@ -1914,6 +1913,23 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         sayNote("No assistant is chosen. Preferences > AI, and pick one under Use.");
         setBusy(false);
         return;
+    }
+
+    // <FS:AICtl> Codex and Claude Code are separate programs and reach the
+    // viewer's tools over the endpoint, so it has to be listening before a turn
+    // rather than only from startup: the provider can be changed at any moment,
+    // and requiring a restart to make a freshly chosen one work is exactly the
+    // kind of silent nothing this project keeps writing down.
+    if (provider == FSAIKeys::CODEX || provider == FSAIKeys::CLAUDECODE)
+    {
+        if (!FSAIControl::instance().isRunning() && !FSAIControl::instance().start())
+        {
+            sayNote("Lumen could not open the local connection that "
+                    + FSAIKeys::displayName(provider) + " needs. Try again, or "
+                    "pick a different provider in Preferences > AI.");
+            setBusy(false);
+            return;
+        }
     }
 
     // A local server speaks OpenAI's dialect; only the address differs.

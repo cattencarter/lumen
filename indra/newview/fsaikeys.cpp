@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "fsaikeys.h"
+#include "fsaictl.h"
 #include "fsaichat.h"
 #include "fsaiclaude.h"
 #include "llcoros.h"
@@ -308,7 +309,8 @@ bool FSPanelPreferenceAIKeys::postBuild()
                 "Asking Claude Code... this takes a few seconds."));
 
             const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
-            const U16 port = (U16)gSavedSettings.getU32("FSAIControlPort");
+            // The LIVE port, not the setting: it is picked at random each start.
+            const U16 port = FSAIControl::instance().port();
             LLHandle<LLPanel> h = getHandle();
             LLCoros::instance().launch("FSAIClaudeTest", [h, model, port]()
             {
