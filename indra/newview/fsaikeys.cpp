@@ -659,6 +659,32 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
     return st;
 }
 
+// <FS:AICtl> A heartbeat, and the narrowest one that works. See the header.
+//
+// Three stat calls a second, and only while this panel is the one on screen.
+// The comparison is what keeps it honest: refresh() clears the status line, so
+// calling it every tick would wipe the "Asking..." a test in flight leaves
+// there. It runs when the answer CHANGED, which is the only moment there is
+// anything new to draw.
+void FSPanelPreferenceAIKeys::draw()
+{
+    if (mWatch.getElapsedTimeF32() > 1.f)
+    {
+        mWatch.reset();
+        const std::string provider = gSavedSettings.getString("LumenAIProvider");
+        if (provider == FSAIKeys::CODEX || provider == FSAIKeys::CLAUDECODE)
+        {
+            const bool ready = (provider == FSAIKeys::CODEX) ? codexStatus().ready
+                                                             : claudeStatus().ready;
+            if (ready != mWasReady)
+            {
+                refresh();      // which re-seeds mWasReady
+            }
+        }
+    }
+    LLPanelPreference::draw();
+}
+
 void FSPanelPreferenceAIKeys::refresh()
 {
     // **Show what was chosen and nothing else.** The panel used to show every
@@ -710,6 +736,12 @@ void FSPanelPreferenceAIKeys::refresh()
 
     const CodexState claude = claudeStatus();
     setupOrModel("claude", claude.ready);
+
+    // Seeded here rather than in draw(), so that switching provider -- which
+    // calls refresh() -- cannot look like a provider that just became ready.
+    mWasReady = (provider == FSAIKeys::CODEX)      ? codex.ready
+              : (provider == FSAIKeys::CLAUDECODE) ? claude.ready
+              : false;
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status")) cs->setText(std::string());
 
     for (Row& row : mRows)

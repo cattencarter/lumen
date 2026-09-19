@@ -30,6 +30,7 @@
 
 #include "llpanel.h"
 #include "llfloaterpreference.h"
+#include "llframetimer.h"
 
 #include <string>
 #include <vector>
@@ -120,6 +121,22 @@ public:
     // LLPanel declares this virtual; the floater calls it when the panel is
     // shown, which is exactly when the saved-key status needs recomputing.
     void refresh() override;
+    /**
+     * Notice that a provider became usable while the panel is on screen.
+     *
+     * <FS:AICtl> The setup window ticked its last step and the panel behind it
+     * went on offering "Set it up for me...", because nothing told it to look
+     * again; only pressing Test did, which is a step nobody should have to know
+     * to take. The author saw it immediately.
+     *
+     * The cure is the one this project keeps arriving at -- bind the fact to
+     * where the fact changes, never to a step somebody might take. Here it
+     * changes in two places, our own setup window and a Terminal we do not
+     * control, so the only thing covering both is to look. Once a second, and
+     * `refresh()` runs only when the answer actually changed, so the transient
+     * "Asking..." a test leaves on screen is not wiped by a heartbeat.
+     */
+    void draw() override;
     // What Codex needs next, and the command that provides it. A sentence
     // alone made the panel a wall of prose with a shell command buried in it;
     // the command is separate so the panel can put it somewhere copyable.
@@ -175,6 +192,10 @@ private:
      * first is what makes the display honest.
      */
     void syncModelCombo(LLComboBox* combo, const std::string& setting);
+
+    /** See draw(). Seeded by refresh(), so switching provider never trips it. */
+    LLFrameTimer mWatch;
+    bool         mWasReady = false;
 };
 
 #endif // FS_AIKEYS_H
