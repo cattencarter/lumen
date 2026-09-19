@@ -24,8 +24,8 @@
  width="540">
 
     <text type="string" follows="left|top|right" layout="topleft"
-     left="16" top="26" width="508" height="44" word_wrap="true">
-        Lumen can use the ChatGPT subscription you already pay for, instead of asking you for a paid API key. Three things have to happen first, and Lumen can do all three for you.
+     left="16" top="26" width="508" height="44" word_wrap="true" name="intro">
+        [INTRO]
     </text>
 
     <!-- step 1 -->
@@ -36,11 +36,11 @@
     <text type="string" follows="left|top" layout="topleft"
      left="72" top="82" width="330" height="16" name="title_1"
      text_color="EmphasisColor">
-        1. Get the program that does the talking
+        [T1]
     </text>
     <text type="string" follows="left|top" layout="topleft"
-     left="72" top="102" width="330" height="44" word_wrap="true">
-        Lumen downloads this from OpenAI, at chatgpt.com. It is about 230 MB and you only ever do it once.
+     left="72" top="102" width="330" height="44" word_wrap="true" name="desc_1">
+        [D1]
     </text>
     <button follows="top|right" layout="topleft"
      left="414" top="82" width="110" height="24"
@@ -54,11 +54,11 @@
     <text type="string" follows="left|top" layout="topleft"
      left="72" top="160" width="330" height="16" name="title_2"
      text_color="EmphasisColor">
-        2. Sign in with your ChatGPT account
+        [T2]
     </text>
     <text type="string" follows="left|top" layout="topleft"
-     left="72" top="180" width="330" height="58" word_wrap="true">
-        Your web browser opens and you sign in the way you always do. You type your password into OpenAI's own page. Lumen never sees it and never keeps it.
+     left="72" top="180" width="330" height="58" word_wrap="true" name="desc_2">
+        [D2]
     </text>
     <button follows="top|right" layout="topleft"
      left="414" top="160" width="110" height="24"
@@ -75,7 +75,7 @@
         3. Switch it on
     </text>
     <text type="string" follows="left|top" layout="topleft"
-     left="72" top="272" width="330" height="44" word_wrap="true">
+     left="72" top="272" width="330" height="44" word_wrap="true" name="desc_3">
         It has to be running for Lumen to reach it. This takes a moment and happens quietly.
     </text>
     <button follows="top|right" layout="topleft"

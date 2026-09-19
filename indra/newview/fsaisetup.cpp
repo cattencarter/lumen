@@ -14,6 +14,13 @@
 #include "llbutton.h"
 #include "lltextbox.h"
 #include "lldir.h"
+#include "llviewercontrol.h"
+#include "fsaikeys.h"
+#include "fsaiclaude.h"
+#include "fsaictl.h"
+#include "llcoros.h"
+#include "lleventcoro.h"
+#include "lltimer.h"
 
 namespace
 {
@@ -25,17 +32,31 @@ namespace
      * feature. LLProcess runs an executable, not a command line, so without a
      * shell the `| sh` would arrive as two more arguments to curl.
      */
-    const char* command(int step)
+    const char* command(const std::string& provider, int step)
     {
+        const bool codex = (provider == FSAIKeys::CODEX);
         switch (step)
         {
-            // OpenAI's own installer, from OpenAI's own domain. Named in the
-            // window before the button is pressed.
-            case 0: return "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
-            // Opens the user's browser. The password is typed into OpenAI's
-            // page, never into Lumen, and never passes through this process.
-            case 1: return "\"$HOME/.codex/packages/standalone/current/bin/codex\" login";
-            case 2: return "\"$HOME/.codex/packages/standalone/current/bin/codex\" app-server daemon start";
+            case 0:
+                // Both are the vendor's OWN installer, from the vendor's own
+                // domain, named in the window before the button is pressed.
+                //
+                // Claude Code's is the NATIVE installer rather than
+                // `npm install -g @anthropic-ai/claude-code`, which the panel
+                // used to print. That needs Node.js, which somebody whose only
+                // experience of this is the ChatGPT app does not have and
+                // should not have to get: the whole step would become "first
+                // install a thing you have never heard of".
+                return codex ? "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+                             : "curl -fsSL https://claude.ai/install.sh | bash";
+            case 1:
+                // Opens the user's browser. The password is typed into the
+                // vendor's page, never into Lumen.
+                return codex
+                    ? "\"$HOME/.codex/packages/standalone/current/bin/codex\" login"
+                    : "claude auth login";
+            case 2:
+                return "\"$HOME/.codex/packages/standalone/current/bin/codex\" app-server daemon start";
             default: return "";
         }
     }
@@ -46,6 +67,12 @@ namespace
 }
 
 FSAISetupFloater::FSAISetupFloater(const LLSD& key) : LLFloater(key) {}
+
+/** Claude Code needs no background service, so it stops after two. */
+int FSAISetupFloater::steps() const
+{
+    return (mProvider == FSAIKeys::CODEX) ? 3 : 2;
+}
 
 FSAISetupFloater::~FSAISetupFloater()
 {
@@ -71,8 +98,16 @@ std::string FSAISetupFloater::codexDir()
  * window must never rely on having watched it happen. This is also why there
  * is no "current step" stored anywhere: the state is the three files.
  */
-bool FSAISetupFloater::done(EStep step)
+bool FSAISetupFloater::done(EStep step) const
 {
+    if (mProvider != FSAIKeys::CODEX)
+    {
+        // Claude Code.
+        if (step == STEP_INSTALL) return FSAIClaude::installed();
+        if (step == STEP_SIGNIN)  return mProved;   // see the header
+        return true;                                // no third step
+    }
+
     const std::string dir = codexDir();
     if (dir.empty()) return false;
     const std::string sep = gDirUtilp->getDirDelimiter();
@@ -108,10 +143,24 @@ bool FSAISetupFloater::postBuild()
     return true;
 }
 
-void FSAISetupFloater::onOpen(const LLSD&)
+void FSAISetupFloater::onOpen(const LLSD& key)
 {
+    // Which provider, from whoever opened it. Codex unless told otherwise, so
+    // an old call site cannot silently become a Claude Code window.
+    mProvider = key.has("provider") ? key["provider"].asString() : FSAIKeys::CODEX;
+    mProved = false;
     mFailed = false;
     mNote.clear();
+    refresh();
+}
+
+void FSAISetupFloater::signedIn(bool ok)
+{
+    mProved = ok;
+    mFailed = !ok;
+    mNote   = ok ? std::string()
+                 : "It installed, but signing in did not take. Try step 2 again "
+                   "   the browser window has to be finished before it counts.";
     refresh();
 }
 
@@ -130,7 +179,7 @@ void FSAISetupFloater::run(EStep step)
     LLProcess::Params p;
     p.executable = "/bin/sh";
     p.args.add("-c");
-    p.args.add(command(step));
+    p.args.add(command(mProvider, step));
     // NOT autokill: see the destructor. A download or a browser sign-in that
     // is killed halfway leaves the user worse off than never having started.
     p.autokill = false;
@@ -164,6 +213,49 @@ void FSAISetupFloater::draw()
             mRunning = STEP_COUNT;
             refresh();
         }
+        else if (mProc && !mProc->isRunning()
+                 && mProvider != FSAIKeys::CODEX && mRunning == STEP_SIGNIN)
+        {
+            // `claude auth login` has exited, and there is no file to look at:
+            // Claude Code keeps its credentials in the macOS keychain. So the
+            // step is proved the only honest way, by asking it a real question
+            // through the viewer's own tools and seeing an answer come back.
+            mRunning = STEP_COUNT;
+            mNote = "Checking...";
+            refresh();
+
+            const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
+            const U16 port = FSAIControl::instance().port();
+            LLHandle<LLFloater> h = getHandle();
+            LLCoros::instance().launch("FSAISetupClaude", [h, model, port]()
+            {
+                FSAIClaude cc;
+                std::string why;
+                bool ok = false;
+                if (cc.start("Reply with the single word: ok", std::string(),
+                             model, std::string(), port, why))
+                {
+                    const F64 until = LLTimer::getTotalSeconds() + 120.0;
+                    LLSD msg;
+                    while (LLTimer::getTotalSeconds() < until)
+                    {
+                        if (!cc.poll(msg))
+                        {
+                            if (!cc.running() && !cc.poll(msg)) break;
+                            llcoro::suspend();
+                            continue;
+                        }
+                        if (msg["type"].asString() != "result") continue;
+                        ok = !msg["is_error"].asBoolean();
+                        break;
+                    }
+                    cc.stop();
+                }
+                FSAISetupFloater* f = dynamic_cast<FSAISetupFloater*>(h.get());
+                if (!f) return;
+                f->signedIn(ok);
+            });
+        }
         else if (mProc && !mProc->isRunning())
         {
             // It exited without the thing appearing. Do NOT read an exit code
@@ -192,7 +284,9 @@ void FSAISetupFloater::draw()
 
 void FSAISetupFloater::refresh()
 {
-    const bool all = done(STEP_INSTALL) && done(STEP_SIGNIN) && done(STEP_START);
+    const int  n   = steps();
+    bool all = true;
+    for (int i = 0; i < n; ++i) all = all && done((EStep)i);
 
     for (int i = 0; i < STEP_COUNT; ++i)
     {
@@ -203,6 +297,16 @@ void FSAISetupFloater::refresh()
         bool ready = !ok && (mRunning == STEP_COUNT);
         for (int j = 0; j < i && ready; ++j) ready = done((EStep)j);
 
+        // A step this provider does not have is hidden rather than ticked:
+        // Claude Code needs no background service, and a greyed third row
+        // reads as something that failed.
+        const bool applies = (i < n);
+        for (const char* w : { "mark_%d", "title_%d", "desc_%d", "do_%d" })
+        {
+            if (LLView* v = findChild<LLView>(llformat(w, i + 1))) v->setVisible(applies);
+        }
+        if (!applies) continue;
+
         if (LLTextBox* m = findChild<LLTextBox>(llformat("mark_%d", i + 1)))
         {
             m->setText(std::string(ok ? "[done]" : running ? "[ ... ]" : "[    ]"));
@@ -212,6 +316,46 @@ void FSAISetupFloater::refresh()
             b->setEnabled(ready);
             b->setLabel(std::string(ok ? "Done" : running ? "Working..." : "Do this"));
         }
+    }
+
+    // The wording is the whole product for this window, and the two providers
+    // are not the same story: one is a 230 MB download and a background
+    // service, the other is a small program and nothing else.
+    const bool codex = (mProvider == FSAIKeys::CODEX);
+    setTitle(codex ? "Use your ChatGPT subscription" : "Use your Claude subscription");
+    if (LLTextBox* t = findChild<LLTextBox>("intro"))
+    {
+        t->setText(std::string(codex
+            ? "Lumen can use the ChatGPT subscription you already pay for, instead of "
+              "asking you for a paid API key. Three things have to happen first, and "
+              "Lumen can do all three for you."
+            : "Lumen can use the Claude subscription you already pay for, instead of "
+              "asking you for a paid API key. Two things have to happen first, and "
+              "Lumen can do both for you."));
+    }
+    if (LLTextBox* t = findChild<LLTextBox>("title_1"))
+        t->setText(std::string("1. Get the program that does the talking"));
+    if (LLTextBox* t = findChild<LLTextBox>("desc_1"))
+    {
+        t->setText(std::string(codex
+            ? "Lumen downloads this from OpenAI, at chatgpt.com. It is about 230 MB and "
+              "you only ever do it once."
+            : "Lumen downloads this from Anthropic, at claude.ai. You only ever do it "
+              "once."));
+    }
+    if (LLTextBox* t = findChild<LLTextBox>("title_2"))
+    {
+        t->setText(std::string(codex ? "2. Sign in with your ChatGPT account"
+                                     : "2. Sign in with your Claude account"));
+    }
+    if (LLTextBox* t = findChild<LLTextBox>("desc_2"))
+    {
+        t->setText(std::string(codex
+            ? "Your web browser opens and you sign in the way you always do. You type "
+              "your password into OpenAI's own page. Lumen never sees it and never keeps it."
+            : "Your web browser opens and you sign in the way you always do. You type "
+              "your password into Anthropic's own page. Lumen never sees it and never "
+              "keeps it. When you come back, Lumen asks it a question to make sure."));
     }
 
     if (LLTextBox* s = findChild<LLTextBox>("summary"))

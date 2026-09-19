@@ -425,7 +425,17 @@ bool FSPanelPreferenceAIKeys::postBuild()
     {
         sb->setCommitCallback([](LLUICtrl*, const LLSD&)
         {
-            LLFloaterReg::showInstance("ai_setup");
+            LLFloaterReg::showInstance("ai_setup",
+                LLSD().with("provider", FSAIKeys::CODEX));
+        });
+    }
+
+    if (LLButton* sb = findChild<LLButton>("claude_setup"))
+    {
+        sb->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            LLFloaterReg::showInstance("ai_setup",
+                LLSD().with("provider", FSAIKeys::CLAUDECODE));
         });
     }
 

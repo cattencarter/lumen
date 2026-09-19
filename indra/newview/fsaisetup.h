@@ -40,15 +40,34 @@ public:
     ~FSAISetupFloater() override;
 
     bool postBuild() override;
+    /** The asynchronous Claude Code check reports here. */
+    void signedIn(bool ok);
     void onOpen(const LLSD& key) override;
     void draw() override;
 
 private:
-    /** The three things that have to be true, in the order they become true. */
+    /** The things that have to be true, in the order they become true.
+     *  Codex needs all three; Claude Code needs no background service and
+     *  stops after two. */
     enum EStep { STEP_INSTALL = 0, STEP_SIGNIN, STEP_START, STEP_COUNT };
 
-    /** Is this step already satisfied? Read off the filesystem, never remembered. */
-    static bool done(EStep step);
+    /** Which provider this window is setting up: FSAIKeys::CODEX or CLAUDECODE. */
+    std::string mProvider;
+    /** How many of the three apply to it. */
+    int steps() const;
+
+    /**
+     * Is this step already satisfied?
+     *
+     * Read off the filesystem for everything it CAN be read for. The one
+     * exception is Claude Code being signed in: it keeps its credentials in
+     * the macOS keychain rather than in a file, so there is nothing to stat.
+     * Guessing from the keychain's item name would be reading an
+     * implementation detail of somebody else's program, so instead that step
+     * is proved the only honest way   by asking Claude Code a real question
+     * and seeing it answer, which is stronger evidence than any file.
+     */
+    bool done(EStep step) const;
     /** Where Codex keeps its things. Empty when the system reports no home. */
     static std::string codexDir();
 
@@ -62,6 +81,8 @@ private:
     LLFrameTimer  mSince;                   // how long the current step has run
     bool          mFailed   = false;
     std::string   mNote;
+    /** Claude Code answered since this window opened. See done(). */
+    bool          mProved   = false;
 };
 
 #endif // FS_AISETUP_H

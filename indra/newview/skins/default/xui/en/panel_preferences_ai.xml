@@ -193,6 +193,15 @@
          font="Monospace" max_length_bytes="200" visible="false">
         </line_editor>
 
+        <!-- <FS:AICtl> Claude Code needs installing too, and its old advice was
+             the WORSE of the two: `npm install -g`, which needs Node.js. The
+             author asked the obvious question   "doesn't claude code require
+             any kind of installation" and it does. Same guided window, and
+             the native installer rather than npm. -->
+        <button follows="left|top" layout="topleft" name="claude_setup"
+         left="20" top="178" width="150" height="22"
+         label="Set it up for me..." />
+
         <button follows="left|top" layout="topleft" name="claude_copy"
          left="358" top="178" width="56" height="22" label="Copy" visible="false" />
 
