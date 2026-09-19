@@ -135,6 +135,8 @@ public:
      * <FS:AICtl> Public because the asynchronous tests call it back through an
      * LLHandle once the panel may already be gone.
      */
+    /** Show the setup button OR the model row for this provider, never both. */
+    void setupOrModel(const std::string& who, bool ready);
     void say(bool ok, const std::string& detail);
     /** What the panel shows WHILE a test is in flight. */
     void busy(const std::string& text);

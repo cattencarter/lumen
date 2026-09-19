@@ -185,7 +185,7 @@
         </text>
 
         <button follows="left|top" layout="topleft" name="claude_setup"
-         left="165" top="44" width="190" height="24"
+         left="165" top="206" width="190" height="24"
          label="Set it up for me..." />
 
         <text type="string" follows="left|top" layout="topleft" name="claude_status"
@@ -202,7 +202,7 @@
 
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="214" width="52" height="16">
+         left="20" top="214" width="52" height="16" name="claude_lbl_model">
             Model
         </text>
 
@@ -215,7 +215,7 @@
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="242" width="480" height="54" word_wrap="true">
+         left="20" top="242" width="480" height="54" word_wrap="true" name="claude_models_note">
             These are Claude Code&apos;s own aliases, so each keeps meaning the newest model of that line. You can type a full model name instead. Changing the model starts a new conversation.
         </text>
       </panel>
@@ -265,7 +265,7 @@
         </text>
 
         <button follows="left|top" layout="topleft" name="codex_setup"
-         left="165" top="44" width="190" height="24"
+         left="165" top="206" width="190" height="24"
          label="Set it up for me..." />
 
         <text type="string" follows="left|top" layout="topleft" name="codex_status"
@@ -290,7 +290,7 @@
 
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="214" width="52" height="16">
+         left="20" top="214" width="52" height="16" name="codex_lbl_model">
             Model
         </text>
 
@@ -305,7 +305,7 @@
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="242" width="52" height="16">
+         left="20" top="242" width="52" height="16" name="codex_lbl_effort">
             Thinking
         </text>
 
@@ -318,7 +318,7 @@
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="270" width="480" height="40" word_wrap="true">
+         left="20" top="270" width="480" height="40" word_wrap="true" name="codex_models_note">
             These are the models Codex offered when this list was written. Your ChatGPT plan decides which of them you can actually use, and you can type one that is not here. Changing the model starts a new conversation.
         </text>
       </panel>

@@ -519,6 +519,34 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
  * subcommands. A confidently wrong command is worse than none, because the
  * person cannot tell our mistake from their own.
  */
+/**
+ * Show the setup button OR the model row, never both.
+ *
+ * They sit at the same position, so the swap reads as one thing becoming
+ * another rather than as a panel rearranging itself.
+ */
+void FSPanelPreferenceAIKeys::setupOrModel(const std::string& who, bool ready)
+{
+    if (LLButton* b = findChild<LLButton>(who + "_setup")) b->setVisible(!ready);
+
+    const char* rest[] = { "_lbl_model", "_lbl_effort", "_models_note" };
+    for (const char* suffix : rest)
+    {
+        if (LLView* v = findChild<LLView>(who + suffix)) v->setVisible(ready);
+    }
+    // The combo's own name is NOT its control_name -- `model_codex` bound to
+    // LumenAICodexModel. Reaching for the setting name found nothing, silently,
+    // and the row stayed on screen while the label beside it vanished.
+    if (LLView* v = findChild<LLView>(who == "codex" ? "model_codex" : "model_claude"))
+    {
+        v->setVisible(ready);
+    }
+    if (who == "codex")
+    {
+        if (LLView* v = findChild<LLView>("effort_codex")) v->setVisible(ready);
+    }
+}
+
 void FSPanelPreferenceAIKeys::say(bool ok, const std::string& detail)
 {
     // "It works" is the whole message on success. The detail is for the case
@@ -668,10 +696,20 @@ void FSPanelPreferenceAIKeys::refresh()
     // what runs. A panel that offers both is a panel that asks somebody to
     // choose between two things they cannot tell apart.
 
-    if (LLButton* b = findChild<LLButton>("codex_setup")) b->setVisible(!codex.ready);
+    // <FS:AICtl> The button and the model row occupy the same place, and only
+    // one of them is ever there. The author: *"don't show the part about the
+    // model and these are claude code's own aliases etc until the set up is
+    // complete, then replace the set it up for me button with the drop down
+    // and text."*
+    //
+    // Which is the right order: choosing a model is a question for somebody who
+    // HAS one, and putting it in front of somebody who has not installed the
+    // program yet is asking them to decide something they cannot act on. One
+    // thing at a time, and the thing they can do is the thing on screen.
+    setupOrModel("codex", codex.ready);
 
     const CodexState claude = claudeStatus();
-    if (LLButton* b = findChild<LLButton>("claude_setup")) b->setVisible(!claude.ready);
+    setupOrModel("claude", claude.ready);
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status")) cs->setText(std::string());
 
     for (Row& row : mRows)
