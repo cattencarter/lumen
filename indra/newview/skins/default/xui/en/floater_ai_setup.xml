@@ -18,7 +18,7 @@
  layout="topleft"
  name="floater_ai_setup"
  help_topic="floater_ai_setup"
- save_rect="true"
+ positioning="centered"
  single_instance="true"
  title="Use your ChatGPT subscription"
  width="540">
