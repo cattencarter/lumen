@@ -424,6 +424,14 @@ namespace
      */
     std::string humanAction(const std::string& group, const std::string& action)
     {
+        if (group == "build")
+        {
+            if (action == "rez")    return "Making an object";
+            if (action == "set")    return "Changing the object";
+            if (action == "remove") return "Removing the object";
+            if (action == "link")   return "Linking the objects";
+            if (action == "unlink") return "Unlinking the object";
+        }
         if (group == "inventory")
         {
             if (action == "search")           return "Searching inventory";

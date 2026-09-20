@@ -75,6 +75,10 @@
 #include "lllogchat.h"
 #include "llimagepng.h"
 #include "llsnapshotmodel.h"
+#include "llsnapshotlivepreview.h"
+#include "lltoolplacer.h"
+#include "lltooldraganddrop.h"
+#include "fscommon.h"
 #include "llviewerwindow.h"
 #include "llviewertexture.h"
 #include "llviewertexturelist.h"
@@ -1590,6 +1594,15 @@ namespace
      */
     std::string groupAction(const std::string& group, const std::string& action)
     {
+        if (group == "build")
+        {
+            if (action == "rez")    return "rez_object";
+            if (action == "set")    return "set_object";
+            if (action == "remove") return "remove_object";
+            if (action == "link")   return "link_objects";
+            if (action == "unlink") return "unlink_objects";
+            return std::string();
+        }
         if (group == "inventory")
         {
             if (action == "search")          return "search_inventory";
@@ -2504,6 +2517,83 @@ namespace
         view_schema["required"]=view_req;
         view["inputSchema"]=view_schema;
         tools.append(view);
+
+        // ---- build ----------------------------------------------------------
+        //
+        // <Lumen> The first tool surface that makes something OTHER PEOPLE can
+        // see and that stays there. Camera and lighting are local; a pose goes
+        // through the simulator and ends. A rezzed prim sits on somebody's land
+        // until it is returned or deleted, so this group carries guards none of
+        // the others needed -- chiefly refusing where building is not allowed,
+        // rather than letting the simulator reject it and leaving the assistant
+        // to guess why.
+        static const char* const build_actions[] =
+            { "rez", "set", "remove", "link", "unlink" };
+        LLSD build;
+        build["name"] = "build";
+        build["description"] =
+            "Make and change objects in the world. Pick one with `action`:\n"
+            "- rez: put a new prim on the ground in front of the user. `shape` chooses what "
+            "(box, sphere, cylinder, cone, torus, prism; box if you do not say). `distance` is "
+            "how far in front, in metres, default 2.\n"
+            "- set: change what is selected -- `name`, `description`, `size` (metres, one number "
+            "for a cube or three for x/y/z), `colour` (a name like \"red\", or three numbers "
+            "0-1), `position` and `rotation`.\n"
+            "- remove: `take: true` puts it in inventory, otherwise it is deleted.\n"
+            "- link / unlink: join what is selected into one object, or take it apart. Linking "
+            "needs at least two selected.\n"
+            "\n"
+            "**This is the one group that changes the world for everybody**, so it refuses "
+            "rather than guesses: on land where the user may not build it says so and does "
+            "nothing. Tell the user which parcel a thing was rezzed on -- the answer says -- "
+            "because an object left on somebody else's land can be returned without warning.\n"
+            "Rez only what was actually asked for. Never rez something to find out whether "
+            "rezzing works.";
+        LLSD build_props;
+        build_props["action"] = actionProperty(build_actions, LL_ARRAY_SIZE(build_actions),
+                                               "What to do. Required.");
+        {
+            LLSD bsh; bsh["type"]="string";
+                bsh["description"]="rez: box, sphere, cylinder, cone, torus or prism. Box if omitted.";
+            LLSD bds; bds["type"]="number";
+                bds["description"]="rez: how far in front of the user to put it, in metres. "
+                                   "Default 2, at most 10 -- beyond that it is out of sight and "
+                                   "of reach.";
+            LLSD bit; bit["type"]="string";
+                bit["description"]="rez: the name of an OBJECT in inventory to rez, instead of "
+                                   "making a new prim. Find it with inventory / search first.";
+            LLSD bcf; bcf["type"]="string";
+                bcf["description"]="rez: a no-copy object leaves inventory when rezzed, so it is "
+                                   "refused until this carries the item's exact name.";
+            build_props["item"]=bit; build_props["confirm"]=bcf;
+            LLSD bnm; bnm["type"]="string"; bnm["description"]="set: the object's new name.";
+            LLSD bde; bde["type"]="string"; bde["description"]="set: the object's new description.";
+            LLSD bsz; bsz["type"]="array";
+                bsz["description"]="set: size in metres. One number makes a cube, three give "
+                                   "x, y and z. Second Life allows 0.01 to 64.";
+            LLSD bco; bco["type"]="array";
+                bco["description"]="set: colour as three numbers 0-1, red green blue.";
+            LLSD bcn; bcn["type"]="string";
+                bcn["description"]="set: a colour by name instead of numbers -- red, green, blue, "
+                                   "white, black, yellow, orange, purple, pink, grey, brown.";
+            LLSD bpo; bpo["type"]="array";
+                bpo["description"]="set: where to put it, as x, y, z in the region.";
+            LLSD bro; bro["type"]="array";
+                bro["description"]="set: rotation in degrees, as x, y, z.";
+            LLSD btk; btk["type"]="boolean";
+                btk["description"]="remove: true takes it into inventory instead of deleting it.";
+            build_props["shape"]=bsh;   build_props["distance"]=bds;
+            build_props["name"]=bnm;    build_props["description"]=bde;
+            build_props["size"]=bsz;    build_props["colour"]=bco;
+            build_props["colour_name"]=bcn;
+            build_props["position"]=bpo; build_props["rotation"]=bro;
+            build_props["take"]=btk;    build_props["request_id"]=srq;
+        }
+        LLSD build_schema; build_schema["type"]="object"; build_schema["properties"]=build_props;
+        LLSD build_req = LLSD::emptyArray(); build_req.append("action");
+        build_schema["required"]=build_req;
+        build["inputSchema"]=build_schema;
+        tools.append(build);
 
         return tools;
     }
@@ -4681,6 +4771,33 @@ void LumenAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
 
     LL_INFOS("AICtl") << "worn_by: " << items.size() << " attachment(s) for " << who << LL_ENDL;
     sWornReplies[who] = result;
+}
+
+/**
+ * Make the Snapshot window's preview retake itself.
+ *
+ * <Lumen> The author, using it: *"when I take a snapshot and adjust the light
+ * it doesn't refresh the snapshot, but it claims it does."*
+ *
+ * The frame loop already calls LLFloaterSnapshot::update() every frame, but
+ * that only retakes a preview somebody has marked dirty. Moving the CAMERA
+ * marks it; changing the ENVIRONMENT does not -- which is exactly why framing
+ * looks live and lighting looked broken.
+ *
+ * So the light really did change and the picture really was stale, and the
+ * assistant, reading "the light is now sunset", told the truth about the world
+ * and nonsense about what was on screen. Marking the preview here makes the
+ * claim true rather than softening it.
+ */
+static void lumenRefreshSnapshotPreview()
+{
+    for (LLSnapshotLivePreview* preview : LLSnapshotLivePreview::sList)
+    {
+        if (preview)
+        {
+            preview->updateSnapshot(true);
+        }
+    }
 }
 
 LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
@@ -6925,6 +7042,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         return r;
     }
 
+
     if (method == "lighting")
     {
         // Before anything touches the environment.
@@ -6974,6 +7092,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             env.setManualEnvironment(LLEnvironment::ENV_LOCAL, item->getAssetUUID());
             env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL);
             env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+            lumenRefreshSnapshotPreview();
 
             LLSD result;
             result["lighting"] = item->getName();
@@ -7004,6 +7123,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL,
                                        LLEnvironment::TRANSITION_INSTANT);
             env.updateEnvironment(LLEnvironment::TRANSITION_INSTANT, true);
+            lumenRefreshSnapshotPreview();
 
             LLSD result;
             result["lighting"] = "region";
@@ -7243,6 +7363,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             env.setEnvironment(LLEnvironment::ENV_LOCAL, edit);
             env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL, LLEnvironment::TRANSITION_FAST);
             env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+            lumenRefreshSnapshotPreview();
 
             LLSD result;
             result["lighting"] = "adjusted";
@@ -7273,6 +7394,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         env.setManualEnvironment(LLEnvironment::ENV_LOCAL, sky);
         env.setSelectedEnvironment(LLEnvironment::ENV_LOCAL);
         env.updateEnvironment(LLEnvironment::TRANSITION_FAST, true);
+        lumenRefreshSnapshotPreview();
 
         LLSD result;
         result["lighting"] = preset;
@@ -10153,6 +10275,435 @@ if (method == "camera")
             ? mMessages.read(since, limit)
             : mChat.read(since, limit);
         result["subscribed"] = mSubscribed;
+        return result;
+    }
+
+
+    // ---- build: rez ---------------------------------------------------------
+    //
+    // <Lumen> The first thing here that makes an object OTHER PEOPLE can see
+    // and that outlives the call. Everything else is local, or passes through
+    // the simulator and ends. A prim stays until somebody removes it, so the
+    // guards below refuse rather than let the simulator reject it and leave
+    // the assistant guessing why nothing appeared.
+    if (method == "rez_object")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Not logged in yet, so there is nowhere to put anything.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The parcel's own rule, asked BEFORE anything is sent. Building where
+        // it is not allowed fails somewhere in the simulator and arrives back
+        // as silence, which is this project's least useful failure.
+        if (!LLViewerParcelMgr::getInstance()->allowAgentBuild())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Building is not allowed on this parcel, so nothing was made. "
+                           "Tell the user plainly -- they need to move somewhere that permits "
+                           "it, a sandbox or their own land.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        static const struct { const char* name; LLPCode code; } kShapes[] = {
+            { "box",      LL_PCODE_CUBE     }, { "cube",   LL_PCODE_CUBE     },
+            { "sphere",   LL_PCODE_SPHERE   }, { "ball",   LL_PCODE_SPHERE   },
+            { "cylinder", LL_PCODE_CYLINDER }, { "cone",   LL_PCODE_CONE     },
+            { "torus",    LL_PCODE_TORUS    }, { "ring",   LL_PCODE_TORUS    },
+            { "prism",    LL_PCODE_PRISM    }, { "pyramid", LL_PCODE_PYRAMID },
+        };
+        std::string want = params.has("shape") ? params["shape"].asString() : "box";
+        LLStringUtil::toLower(want);
+        LLPCode pcode = LL_PCODE_CUBE;
+        bool known = want.empty();
+        for (const auto& s : kShapes)
+        {
+            if (want == s.name) { pcode = s.code; known = true; break; }
+        }
+        if (!known)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "I do not know the shape \"" + want + "\". Use box, sphere, "
+                           "cylinder, cone, torus, prism or pyramid.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        F32 distance = params.has("distance") ? (F32)params["distance"].asReal() : 2.f;
+        if (distance < 0.5f) distance = 0.5f;
+        if (distance > 10.f) distance = 10.f;   // beyond this it is out of sight and out of reach
+
+        // In front of the avatar, flattened so that looking at the sky still
+        // puts the thing on the ground, then dropped to the land height there.
+        LLVector3 at = gAgent.getAtAxis();
+        at.mV[VZ] = 0.f;
+        if (at.magVecSquared() < 0.0001f) at = LLVector3(1.f, 0.f, 0.f);
+        at.normalize();
+        LLVector3 target = gAgent.getPositionAgent() + at * distance;
+        target.mV[VZ] = LLWorld::getInstance()->resolveLandHeightAgent(target) + 0.5f;
+
+        // --- from inventory, if an item was named ---------------------------
+        //
+        // <Lumen> The author: *"it should be able to rez things from inventory
+        // too"*. That is the commoner thing by far -- people rez what they own
+        // far more often than they build from raw prims.
+        //
+        // LLToolDragAndDrop::dropObject does this for a drag, and cannot be
+        // called: it is protected AND reads the drag's own state (mLastHitPos,
+        // mCargo*). So the RezObject message is sent here, which turns out to
+        // be the better shape anyway -- `BypassRaycast` lets us give the exact
+        // spot, where the prim path has to go through a screen point and so
+        // depends on where the camera happens to be looking.
+        if (params.has("item") && !params["item"].asString().empty())
+        {
+            LLSD lookup;
+            lookup["name"] = params["item"];
+            if (params.has("item_id")) lookup["item_id"] = params["item_id"];
+            LLSD err;
+            const LLUUID item_id = resolveItem(lookup, err);
+            if (item_id.isNull()) { LLSD w; w["__error"] = err; return w; }
+
+            LLViewerInventoryItem* item = gInventory.getItem(item_id);
+            if (!item)
+            {
+                LLSD e; e["code"] = -32602; e["message"] = "That item is gone from inventory.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (item->getType() != LLAssetType::AT_OBJECT)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "Only an object can be rezzed on the ground. \"" + item->getName()
+                             + "\" is a " + LLAssetType::lookupHumanReadable(item->getType())
+                             + ". To put clothing on, use inventory / wear.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            // A no-copy object LEAVES inventory when it is rezzed. That is the
+            // same irreversible shape delete and give already guard, so it
+            // takes the same named confirmation rather than a cheerful yes.
+            const bool copyable = item->getPermissions().allowCopyBy(gAgent.getID());
+            if (!copyable)
+            {
+                const std::string confirm = params.has("confirm")
+                                          ? params["confirm"].asString() : std::string();
+                if (confirm != item->getName())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "\"" + item->getName() + "\" is no-copy, so rezzing it takes "
+                                   "it OUT of inventory -- if it is then returned or deleted it "
+                                   "is gone. Ask the user whether to go ahead, and call again "
+                                   "with confirm set to the item's exact name.";
+                    LLSD d; d["item"] = item->getName(); d["no_copy"] = true; e["data"] = d;
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+
+            LLViewerRegion* regionp = gAgent.getRegion();
+            if (!regionp)
+            {
+                LLSD e; e["code"] = -32000; e["message"] = "No region yet.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
+            LLMessageSystem* msg = gMessageSystem;
+            msg->newMessageFast(_PREHASH_RezObject);
+            msg->nextBlockFast(_PREHASH_AgentData);
+            msg->addUUIDFast(_PREHASH_AgentID,   gAgent.getID());
+            msg->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+            msg->addUUIDFast(_PREHASH_GroupID,   FSCommon::getGroupForRezzing());
+
+            msg->nextBlock("RezData");
+            msg->addUUIDFast(_PREHASH_FromTaskID, LLUUID::null);
+            // true: use the ray we give rather than raycasting from the camera,
+            // which is what frees this path from where the user is looking.
+            msg->addU8Fast(_PREHASH_BypassRaycast, (U8) true);
+            msg->addVector3Fast(_PREHASH_RayStart, target + LLVector3(0.f, 0.f, 2.f));
+            msg->addVector3Fast(_PREHASH_RayEnd,   target);
+            msg->addUUIDFast(_PREHASH_RayTargetID, LLUUID::null);
+            msg->addBOOLFast(_PREHASH_RayEndIsIntersection, false);
+            msg->addBOOLFast(_PREHASH_RezSelected, true);
+            msg->addBOOLFast(_PREHASH_RemoveItem, !copyable);
+            pack_permissions_slam(msg, item->getFlags(), item->getPermissions());
+
+            msg->nextBlockFast(_PREHASH_InventoryData);
+            item->packMessage(msg);
+            msg->sendReliable(regionp->getHost());
+
+            LLSelectMgr::getInstance()->deselectAll();
+
+            std::string parcel;
+            if (LLParcel* pcl = LLViewerParcelMgr::getInstance()->getAgentParcel())
+            {
+                parcel = pcl->getName();
+            }
+            LLSD result;
+            result["rezzed"]  = item->getName();
+            result["from"]    = "inventory";
+            result["no_copy"] = !copyable;
+            result["parcel"]  = parcel;
+            result["note"]    = "Asked the simulator to rez \"" + item->getName() + "\" about "
+                              + llformat("%.1f", distance) + "m in front"
+                              + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
+                              + ". It should appear in a moment, selected. Do not claim it is "
+                                "there -- say it was asked for."
+                              + (copyable ? "" : " It was no-copy, so it has LEFT inventory: say "
+                                                 "so, and that taking it back is how they keep it.");
+            recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                         fingerprintOf("rez_object", params), "rez_object", "ok", result, LLSD());
+            return result;
+        }
+
+        // addObject() raycasts from a SCREEN point -- it is the mouse's path,
+        // and there is no other. So the spot has to be visible. Projecting
+        // without clamping is deliberate: clamped, an off-screen target comes
+        // back pinned to the edge and the prim lands somewhere nobody asked
+        // for, which is worse than refusing.
+        LLCoordGL screen;
+        if (!LLViewerCamera::getInstance()->projectPosAgentToScreen(target, screen, false))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That spot is not on screen, and a new object can only be placed "
+                           "somewhere the camera can see. Ask the user to face the place they "
+                           "want it, or use camera / reset first.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The public path, which is what a mouse-up on the Create tool runs.
+        // `sObjectType` is static and shared with the user's own Build tool, so
+        // it is put back: an assistant that silently changes which shape their
+        // next click would make is a small, baffling side effect.
+        //
+        // `CreateToolCopySelection` is checked too, because placeObject honours
+        // it -- with that on, this would DUPLICATE whatever is selected instead
+        // of making the shape asked for, and report success either way.
+        const LLPCode was = LLToolPlacer::getObjectType();
+        const bool copy_mode = gSavedSettings.getBOOL("CreateToolCopySelection");
+        if (copy_mode) gSavedSettings.setBOOL("CreateToolCopySelection", false);
+        LLToolPlacer::setObjectType(pcode);
+
+        LLToolPlacer placer;
+        const bool placed = placer.placeObject(screen.mX, screen.mY, MASK_NONE);
+
+        LLToolPlacer::setObjectType(was);
+        if (copy_mode) gSavedSettings.setBOOL("CreateToolCopySelection", true);
+
+        if (!placed)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The viewer refused to place it there. Usually that means the spot "
+                           "is on an avatar or an attachment, or too far from the user.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        std::string parcel;
+        if (LLParcel* p = LLViewerParcelMgr::getInstance()->getAgentParcel())
+        {
+            parcel = p->getName();
+        }
+
+        LLSD result;
+        result["rezzed"]  = want.empty() ? std::string("box") : want;
+        result["parcel"]  = parcel;
+        result["where"]   = llformat("%.1f metres in front", distance);
+        // Deliberately not claiming it exists. The object is created by the
+        // SIMULATOR in answer to a message; this call only sent the message.
+        // Confirming would mean waiting for the object update, which is the
+        // same two-round-trip shape as a notecard (Findings 19).
+        result["note"]    = "Asked the simulator to make a " + want + " about " +
+                            llformat("%.1f", distance) + "m in front"
+                            + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
+                            + ". It should appear in a moment, selected and ready to change "
+                              "with `set`. Do not claim it is there -- say it was asked for, "
+                              "and use inspect_object if you need to be sure. **Tell the user "
+                              "which parcel it is on**: an object left on somebody else's land "
+                              "can be returned without warning.";
+        recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                     fingerprintOf("rez_object", params), "rez_object", "ok", result, LLSD());
+        return result;
+    }
+
+
+    // ---- build: set, remove, link, unlink -----------------------------------
+    if (method == "set_object" || method == "remove_object"
+        || method == "link_objects" || method == "unlink_objects")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        const S32 count = sel.notNull() ? sel->getRootObjectCount() : 0;
+        if (count == 0)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing is selected, so there is nothing to change. `rez` leaves "
+                           "the new object selected; otherwise the user selects it by clicking "
+                           "it with the build tools open. Do not guess at an object.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD result;
+        result["selected"] = count;
+
+        if (method == "link_objects" || method == "unlink_objects")
+        {
+            const bool linking = (method == "link_objects");
+            if (linking && count < 2)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Linking needs at least two objects selected; only one is.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (linking) LLSelectMgr::getInstance()->sendLink();
+            else         LLSelectMgr::getInstance()->sendDelink();
+            result["note"] = linking
+                ? "Asked the simulator to link the selection into one object."
+                : "Asked the simulator to take the selection apart.";
+        }
+        else if (method == "remove_object")
+        {
+            const bool take = params.has("take") && params["take"].asBoolean();
+            if (take)
+            {
+                // Taking is the menu's own path, because it has to decide which
+                // folder and how to name it, and getting that wrong loses things.
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Taking an object into inventory is not built yet. Deleting is: "
+                               "call remove without `take`, which sends it to the Trash where it "
+                               "can be recovered.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLSelectMgr::getInstance()->selectDelete();
+            result["note"] = "Sent the selection to the Trash. It is recoverable from there; "
+                             "nothing was purged.";
+        }
+        else // set_object
+        {
+            LLSD changed = LLSD::emptyArray();
+
+            if (params.has("name") && !params["name"].asString().empty())
+            {
+                LLSelectMgr::getInstance()->selectionSetObjectName(params["name"].asString());
+                changed.append("name");
+            }
+            if (params.has("description"))
+            {
+                LLSelectMgr::getInstance()->selectionSetObjectDescription(
+                    params["description"].asString());
+                changed.append("description");
+            }
+
+            // Colour, by name or by three numbers. The names are the ones people
+            // actually say; anything else is refused rather than guessed at,
+            // because a wrong colour looks like the tool working.
+            LLColor4 colour;
+            bool have_colour = false;
+            if (params.has("colour_name") && !params["colour_name"].asString().empty())
+            {
+                static const struct { const char* n; F32 r, g, b; } kNamed[] = {
+                    {"red",1.f,0.f,0.f},      {"green",0.f,1.f,0.f},   {"blue",0.f,0.f,1.f},
+                    {"white",1.f,1.f,1.f},    {"black",0.f,0.f,0.f},   {"yellow",1.f,1.f,0.f},
+                    {"orange",1.f,0.55f,0.f}, {"purple",0.5f,0.f,0.5f},{"pink",1.f,0.6f,0.8f},
+                    {"grey",0.5f,0.5f,0.5f},  {"gray",0.5f,0.5f,0.5f}, {"brown",0.45f,0.25f,0.1f},
+                };
+                std::string want = params["colour_name"].asString();
+                LLStringUtil::toLower(want);
+                for (const auto& c : kNamed)
+                {
+                    if (want == c.n) { colour = LLColor4(c.r, c.g, c.b, 1.f); have_colour = true; break; }
+                }
+                if (!have_colour)
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "I do not know the colour \"" + want + "\". Use red, green, "
+                                   "blue, white, black, yellow, orange, purple, pink, grey or "
+                                   "brown, or give `colour` as three numbers 0-1.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+            else if (params.has("colour") && params["colour"].isArray()
+                     && params["colour"].size() >= 3)
+            {
+                colour = LLColor4((F32)params["colour"][0].asReal(),
+                                  (F32)params["colour"][1].asReal(),
+                                  (F32)params["colour"][2].asReal(), 1.f);
+                have_colour = true;
+            }
+            if (have_colour)
+            {
+                LLSelectMgr::getInstance()->selectionSetColor(colour);
+                changed.append("colour");
+            }
+
+            // Size, position and rotation all go through one update message, so
+            // they are applied to the objects first and sent once.
+            U32 flags = 0;
+            LLViewerObject* obj = sel->getFirstRootObject();
+            if (obj)
+            {
+                if (params.has("size") && params["size"].isArray() && params["size"].size() >= 1)
+                {
+                    const LLSD& sz = params["size"];
+                    F32 x = (F32)sz[0].asReal();
+                    F32 y = (sz.size() >= 3) ? (F32)sz[1].asReal() : x;
+                    F32 z = (sz.size() >= 3) ? (F32)sz[2].asReal() : x;
+                    // Second Life's own limits. Out of range is refused rather
+                    // than clamped: clamping reports success for a size nobody
+                    // asked for, which is the lie this project keeps removing.
+                    const F32 lo = 0.01f, hi = 64.f;
+                    if (x < lo || y < lo || z < lo || x > hi || y > hi || z > hi)
+                    {
+                        LLSD e; e["code"] = -32602;
+                        e["message"] = "Second Life allows 0.01 to 64 metres on a side; that size "
+                                       "is outside it, so nothing was changed.";
+                        LLSD w; w["__error"] = e; return w;
+                    }
+                    obj->setScale(LLVector3(x, y, z), true);
+                    flags |= UPD_SCALE;
+                    changed.append("size");
+                }
+                if (params.has("position") && params["position"].isArray()
+                    && params["position"].size() >= 3)
+                {
+                    obj->setPositionParent(LLVector3((F32)params["position"][0].asReal(),
+                                                     (F32)params["position"][1].asReal(),
+                                                     (F32)params["position"][2].asReal()));
+                    flags |= UPD_POSITION;
+                    changed.append("position");
+                }
+                if (params.has("rotation") && params["rotation"].isArray()
+                    && params["rotation"].size() >= 3)
+                {
+                    LLQuaternion q;
+                    q.setEulerAngles((F32)(params["rotation"][0].asReal() * DEG_TO_RAD),
+                                     (F32)(params["rotation"][1].asReal() * DEG_TO_RAD),
+                                     (F32)(params["rotation"][2].asReal() * DEG_TO_RAD));
+                    obj->setRotation(q);
+                    flags |= UPD_ROTATION;
+                    changed.append("rotation");
+                }
+                if (flags) LLSelectMgr::getInstance()->sendMultipleUpdate(flags);
+            }
+
+            if (changed.size() == 0)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "Nothing to change. Give at least one of name, description, "
+                               "size, colour, colour_name, position or rotation.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            result["changed"] = changed;
+            result["note"] = "Sent the change to the simulator. Say what was changed rather "
+                             "than that it now looks a certain way -- the object is updated "
+                             "by the server and this call only asked.";
+        }
+
+        recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                     fingerprintOf(method, params), method, "ok", result, LLSD());
         return result;
     }
 
