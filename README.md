@@ -43,10 +43,15 @@ Built versions are on the
 
 ## Building
 
-Everything needed to build Lumen — toolchain checks, this repository, the build
-variables and the build itself — is one command in the tooling repository:
+Everything needed to build Lumen — toolchain checks, the build variables and
+the build itself — is one command:
 
-**https://github.com/cattencarter/lumen**
+```sh
+lumen/scripts/bootstrap-mac.sh
+```
+
+It reports what is missing rather than installing anything behind your back.
+`--check` inspects and changes nothing; `--no-build` stops after setup.
 
 Firestorm's own per-platform notes still describe the viewer underneath and are
 kept here unchanged: [Windows](doc/building_windows.md) ·
@@ -54,15 +59,32 @@ kept here unchanged: [Windows](doc/building_windows.md) ·
 at Firestorm's wiki or their self-compilers group, those are Firestorm's
 resources for Firestorm's viewer — they are not a support route for this one.
 
+## What is ours, and where
+
+Everything Lumen adds lives under **`lumen/`** — the scripts, the icon, the
+licence covering them. Everything else in this tree is Firestorm's and Linden
+Lab's, and is left as it was found.
+
+| | |
+|---|---|
+| `lumen/scripts/` | build, release and live-check scripts |
+| `lumen/assets/` | the icon and its iconset |
+| `indra/newview/fsai*`, `lumenfolders.*`, `lumen_bridge.lsltxt` | the assistant itself |
+
 ## Contributing
 
 Issues and pull requests belong here. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
-LGPL 2.1, inherited from Firestorm and from Linden Lab's Second Life viewer.
-The copyright notices throughout the source belong to their authors and are
-deliberately left intact.
+**The viewer is LGPL 2.1**, inherited from Firestorm and from Linden Lab's
+Second Life viewer. The copyright notices throughout the source belong to their
+authors and are deliberately left intact.
+
+**`lumen/scripts/` and `lumen/assets/` are MIT** — see
+[lumen/LICENSE](lumen/LICENSE). Two licences in one repository because the
+viewer arrived under one and our own tooling was written under another; the
+boundary is the `lumen/` directory and nothing else.
 
 Second Life is a trademark of Linden Research, Inc. Lumen is not affiliated
 with Linden Research or with the Phoenix Firestorm Project.

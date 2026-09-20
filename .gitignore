@@ -134,3 +134,16 @@ checks.json
 # <FS:AICtl> autobuild's virtualenv. Local to each machine; its scripts hardcode
 # absolute paths, so it cannot be shared or moved -- rebuild it in place instead.
 .venv/
+
+# <FS:AICtl> Lumen. Things that sit beside the source without being part of it.
+#
+# `internal/` is the private working-documents repository, symlinked in as
+# CLAUDE.md and docs/. It is kept out by .gitignore AND by living in another
+# repository, because publication should not depend on anyone remembering a
+# deletion step -- and `docs` is listed without a trailing slash as well,
+# since a symlink is not a directory and the slash form misses it.
+fs-build-variables/
+internal/
+CLAUDE.md
+docs/
+docs
