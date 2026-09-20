@@ -147,3 +147,6 @@ internal/
 CLAUDE.md
 docs/
 docs
+
+# Built disk images. 400+ MB; they belong on a release, never in git.
+*.dmg
