@@ -14,7 +14,7 @@
 # So: no secrets, no signing, no packaging, no upload. None of the 34 is needed
 # to find out whether the code compiles.
 #
-# MANUAL ONLY, ON PURPOSE. lumen-viewer is private, so Actions minutes are
+# MANUAL ONLY, ON PURPOSE. the repository is private, so Actions minutes are
 # metered, and Windows bills at **twice** the rate of Linux. A viewer build is
 # long. Running this per-push would spend the monthly allowance in a few days
 # for an answer that changes rarely, so it is `workflow_dispatch` and stays

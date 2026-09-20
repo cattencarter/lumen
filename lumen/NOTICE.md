@@ -11,7 +11,7 @@ Three things it does **not** cover, and it is worth being exact about which:
 ## The viewer source is LGPL 2.1, not MIT
 
 Lumen the viewer lives in
-[cattencarter/lumen-viewer](https://github.com/cattencarter/lumen-viewer). It is
+[cattencarter/lumen](https://github.com/cattencarter/lumen). It is
 a derivative of the Phoenix Firestorm Viewer, which is a derivative of the
 Second Life viewer, and both are under the **GNU Lesser General Public License,
 version 2.1**. That is inherited, not chosen — a derivative cannot be
