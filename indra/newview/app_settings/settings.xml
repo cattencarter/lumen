@@ -14693,7 +14693,18 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <string>sonnet</string>
   </map>
-  <key>LumenAIControlPort</key>
+  <key>LumenUpdateCheck</key>
+    <map>
+      <key>Comment</key>
+      <string>Ask GitHub once per session whether a newer Lumen has been released. It only ever tells you; it never downloads or installs anything. Turn it off and the viewer contacts nobody.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+    </map>
+    <key>LumenAIControlPort</key>
     <map>
       <key>Comment</key>
       <string>Developer override for the assistant endpoint port. 0, the default, picks a free one at random each start. Not in any panel: the endpoint is plumbing for Codex and Claude Code, not a feature.</string>

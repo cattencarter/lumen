@@ -38,6 +38,15 @@ class LLUUID;
 // build writing into someone's everyday viewer.
 //const std::string APP_NAME = "Firestorm";
 const std::string APP_NAME = "Lumen";
+
+// Lumen's own release number, shown BESIDE the Firestorm version rather than
+// instead of it. The author's call, and the right one: the 7.2.4 tells you
+// which base you are on, which is useful, while 0.1.0 tells you which Lumen.
+//
+// It is deliberately NOT the viewer version. That string is reported to
+// Linden Lab's servers and compared against LastRunVersion, so it is
+// machinery rather than decoration and is left exactly as it was.
+const std::string LUMEN_VERSION = "0.1.0";
 // </Lumen>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;

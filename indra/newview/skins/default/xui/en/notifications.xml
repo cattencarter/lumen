@@ -15117,6 +15117,16 @@ Ask the Assistant instead: Comm &gt; Assistant. Asking it where to find somethin
        been read, and this one is the only place a user is told their chat may
        leave the machine. Ticking it puts it in Preferences > Notifications
        with every other one, so it can be brought back. -->
+  <!-- <Lumen> A newer release exists. It only ever says so. -->
+  <notification
+   icon="notifytip.tga"
+   name="LumenUpdateAvailable"
+   type="notifytip">
+A new version of Lumen is available ([VERSION]).
+
+[URL]
+  </notification>
+
   <notification
    icon="alertmodal.tga"
    name="LumenAIFirstRun"

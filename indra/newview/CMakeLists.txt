@@ -105,6 +105,7 @@ set(viewer_SOURCE_FILES
     lumenaichat.cpp
     lumenaiindex.cpp
     lumenfolders.cpp
+    lumenupdate.cpp
     lumenainotecache.cpp
     lumenaimemory.cpp
     lumenaicodex.cpp
@@ -974,6 +975,7 @@ set(viewer_HEADER_FILES
     lumenaichat.h
     lumenaiindex.h
     lumenfolders.h
+    lumenupdate.h
     lumenainotecache.h
     lumenaimemory.h
     lumenaicodex.h

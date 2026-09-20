@@ -306,9 +306,14 @@ FSPanelLogin::FSPanelLogin(const LLRect &rect,
     getChild<LLPanel>("start_location_panel")->setDefaultBtn(findChild<LLButton>("connect_btn"));
 
     std::string channel = LLVersionInfo::getInstance()->getChannel();
+    // <Lumen> NOTE: `channel` and `version` here are built and then never
+    // used -- upstream's login panel has no widget for them. Left as found
+    // rather than edited, since editing dead code only adds merge burden.
+    // Where the version IS shown is the About box, via AboutHeader.
     std::string version = llformat("%s (%d)",
                                    LLVersionInfo::getInstance()->getShortVersion().c_str(),
                                    LLVersionInfo::getInstance()->getBuild());
+    // </Lumen>
 
     LLTextBox* forgot_password_text = getChild<LLTextBox>("forgot_password_text");
     forgot_password_text->setClickedCallback(onClickForgotPassword, NULL);

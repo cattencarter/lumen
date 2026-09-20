@@ -298,7 +298,10 @@ using namespace LL;
 
 #include "aoengine.h"
 #include "fsradar.h"
-#include "lumenaictl.h"        // <Lumen>
+// <Lumen>
+#include "lumenaictl.h"
+#include "lumenupdate.h"
+// </Lumen>
 #include "fsassetblacklist.h"
 #include "bugsplatattributes.h"
 
@@ -1447,6 +1450,12 @@ bool LLAppViewer::init()
     // and it reports rather than throws when the port is unavailable, so this
     // call cannot prevent the viewer from starting.
     LumenAIControl::instance().start();
+
+    // <Lumen> Independent of the assistant on purpose: somebody who never
+    // touches the AI still wants to be told when a build with a bad fault in
+    // it has been replaced. It only tells, and `LumenUpdateCheck` turns it off.
+    LumenUpdate::checkWhenLoggedIn();
+    // </Lumen>
     // </Lumen>
 
     // Note: this is where gLocalSpeakerMgr and gActiveSpeakerMgr used to be instantiated.
@@ -3574,7 +3583,8 @@ bool LLAppViewer::initConfiguration()
     // can spot one, and we have no volunteers to protect.
     //gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
     gWindowTitle = std::string("Lumen Viewer ")
-                 + LLVersionInfo::getInstance()->getShortVersion();
+                 + LLVersionInfo::getInstance()->getShortVersion()
+                 + " (" + LUMEN_VERSION + ")";
     // </Lumen>
 #if LL_DEBUG
     gWindowTitle += std::string(" [DEBUG]");
@@ -3930,6 +3940,10 @@ LLSD LLAppViewer::getViewerInfo() const
     // and LLSD doesn't deal with integers wider than int. Use string.
     info["VIEWER_VERSION"] = llsd::array(versionInfo.getMajor(), versionInfo.getMinor(),
                                          versionInfo.getPatch(), stringize(versionInfo.getBuild()));
+    // <Lumen> Our own release number, beside the Firestorm one rather than
+    // instead of it: 7.2.4.262631043 tells you which base, (0.1.0) which Lumen.
+    info["LUMEN_VERSION"] = LUMEN_VERSION;
+    // </Lumen>
     info["VIEWER_VERSION_STR"] = versionInfo.getVersion();
     info["VIEWER_VERSION_LL"] = versionInfo.getLLViewerVersion(); // <FS:PP>
     info["BUILD_DATE"] = __DATE__;
