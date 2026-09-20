@@ -57,12 +57,34 @@ for m in re.finditer(r'static const char\* const \w+_actions\[\] =\s*\{(.*?)\};'
 
 dispatched = set(re.findall(r'method == "([a-z_]+)"', s))
 
+
 # A hand-written length beside a hand-written array is its own failure, and it
 # is invisible to the comparison above: `actionProperty(view_actions, 7, ...)`
 # against an array of eight advertised seven of them, so `lighting` existed,
 # dispatched, and was unreachable by any model. The array is right, the list is
 # right, and the tool surface is still wrong.
 counts = []
+# A SIXTH list, and the one that let `build` through: isGroup() decides whether
+# a tool name is accepted at all, before dispatch is ever reached. A group
+# missing from it is advertised to the model, reached for correctly, and then
+# refused with nothing useful said -- which is what the author saw.
+#
+# Decisions 97 again, one layer further out: a consistency check is only as
+# wide as the thing it compares, and the interesting failure lives in whatever
+# it does not look at.
+ig = s_src[s_src.index("bool isGroup"):]
+ig = ig[:ig.index("}")]
+accepted = set(re.findall(r'name == "([a-z]+)"', ig))
+# scoped to the function that builds the tool list, or an unrelated
+# ["name"] elsewhere in the file is read as a tool.
+tl = s_src[s_src.index("LLSD tools = LLSD::emptyArray();"):s_src.index("return tools;")]
+declared = set(re.findall(r'\w+\["name"\] = "([a-z]+)";', tl))
+for g in sorted(declared - accepted):
+    counts.append("group %s is advertised but isGroup() rejects it "
+                    "(the model reaches for it and is refused)" % g)
+for g in sorted(accepted - declared):
+    counts.append("isGroup() accepts %s but no tool declares it" % g)
+
 for g in re.finditer(r'static const char\* const (\w+)_actions\[\] =\s*\{(.*?)\};', s_src, re.S):
     name, body = g.group(1), g.group(2)
     n = len(re.findall(r'"[a-z_]+"', body))

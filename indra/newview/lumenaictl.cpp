@@ -1680,7 +1680,8 @@ namespace
 
     bool isGroup(const std::string& name)
     {
-        return name == "inventory" || name == "chat" || name == "movement" || name == "viewer";
+        return name == "inventory" || name == "chat" || name == "movement"
+            || name == "viewer"    || name == "build";
     }
 
     /** An enum-of-strings property. */
