@@ -207,7 +207,7 @@
         <panel
          class="panel_preference_firestorm"
          filename="panel_preferences_firestorm.xml"
-         label="[APP_NAME]"
+         label="Extras"
          layout="topleft"
          help_topic="preferences_firestorm_tab"
          name="firestorm" />
