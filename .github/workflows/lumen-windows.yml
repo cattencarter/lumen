@@ -115,3 +115,6 @@ jobs:
             lumen/build-vc*/**/*.log
             lumen/build-vc*/CMakeFiles/CMakeError.log
             lumen/build-vc*/CMakeFiles/CMakeOutput.log
+
+# Re-saved so GitHub registers this workflow: it arrived in the repository's
+# first push, which Actions did not index.
