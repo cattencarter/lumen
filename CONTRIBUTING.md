@@ -2,7 +2,7 @@
 
 Lumen is one person's spare-time project. Issues and pull requests are welcome
 here, on
-[cattencarter/lumen-viewer](https://github.com/cattencarter/lumen-viewer).
+[cattencarter/lumen](https://github.com/cattencarter/lumen).
 
 **Not on Firestorm's tracker.** This viewer is not theirs and its bugs are not
 their problem.
@@ -23,11 +23,10 @@ their problem.
 Two checks run without a viewer and without a build:
 
 ```sh
-scripts/actions-check.py    # the tool surface's lists must all agree
-scripts/bridge-check.py     # the LSL bridge still answers what the viewer asks
+lumen/scripts/actions-check.py    # the tool surface's lists must all agree
+lumen/scripts/bridge-check.py     # the LSL bridge still answers what the viewer asks
 ```
 
-Both live in the [tooling repository](https://github.com/cattencarter/lumen).
 There is no unit-test target: everything else here is checked against a running,
 logged-in viewer, on the **beta grid**, because most of what this code does is
 only observable in a real session.

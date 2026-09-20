@@ -5,10 +5,10 @@
 # that cost a failed run is encoded here, with the reason, so it costs nobody a
 # second one.
 #
-#   scripts/bootstrap-mac.sh              check the toolchain, then clone and build
-#   scripts/bootstrap-mac.sh --check      check only, change nothing
-#   scripts/bootstrap-mac.sh --no-build   set everything up, but stop before building
-#   scripts/bootstrap-mac.sh --package    also build the .dmg installer (see below)
+#   lumen/scripts/bootstrap-mac.sh              check the toolchain, then clone and build
+#   lumen/scripts/bootstrap-mac.sh --check      check only, change nothing
+#   lumen/scripts/bootstrap-mac.sh --no-build   set everything up, but stop before building
+#   lumen/scripts/bootstrap-mac.sh --package    also build the .dmg installer (see below)
 #
 # The .dmg is NOT built by default. Building it drives Finder through AppleScript
 # to lay out the disk image window, which needs a logged-in GUI session and a
@@ -192,7 +192,7 @@ else
     say "autobuild    $("$FORK/.venv/bin/autobuild" --version 2>/dev/null | head -1)"
 fi
 
-[ "$NO_BUILD" -eq 1 ] && { echo; echo "Set up. Build with: scripts/bootstrap-mac.sh"; exit 0; }
+[ "$NO_BUILD" -eq 1 ] && { echo; echo "Set up. Build with: lumen/scripts/bootstrap-mac.sh"; exit 0; }
 
 echo
 echo "Build"

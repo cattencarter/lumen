@@ -16,7 +16,7 @@ it is based on.
 > The Phoenix Firestorm Project has nothing to do with this viewer and does not
 > support it. **Please do not take Lumen's problems to their volunteers, their
 > tracker or their support groups.** Anything wrong here is ours, and it belongs
-> in [this repository's issues](https://github.com/cattencarter/lumen-viewer/issues).
+> in [this repository's issues](https://github.com/cattencarter/lumen/issues).
 >
 > If you want a viewer to live in, use
 > [Firestorm](https://www.firestormviewer.org). Their work is the reason this
