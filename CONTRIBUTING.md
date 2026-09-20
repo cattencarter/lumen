@@ -1,63 +1,33 @@
-# Firestorm Pull Request Guidelines
+# Contributing to Lumen
 
-Thank you for submitting code to Firestorm; we will review it and merge or provide feedback in due course.
-We have written this guide to help you contribute code that meets our needs. It will hopefully reduce the number of iterations required before we can merge the code.
+Lumen is one person's spare-time project. Issues and pull requests are welcome
+here, on
+[cattencarter/lumen-viewer](https://github.com/cattencarter/lumen-viewer).
 
-1. **Descriptive Title**:
-  Use a clear and descriptive title for the PR.
+**Not on Firestorm's tracker.** This viewer is not theirs and its bugs are not
+their problem.
 
-1. **Related Issues**:
-   Reference any related issues or pull requests by including the JIRA number and description in the commit message header (e.g., `[FIRE-12345] When I click, my head falls off` or `[FIRE-12345] prevent click detaching head`).
+## Where the work goes
 
-1. **Description**:
-   Provide a detailed description of the changes. Explain why the changes are necessary and what problem they solve. If a JIRA is associated with the change, there is no need to duplicate that, but we would appreciate a summary and explanation of the fix.
+- The branch is **`ai-control`**. `upstream` is the Phoenix Firestorm
+  repository, and this fork keeps their history so that merging from them
+  stays possible.
+- New behaviour goes in **new files** wherever it can. Every edit to a file
+  Firestorm or Linden Lab owns is a merge conflict waiting to happen, so each
+  one is bracketed by `<FS:AICtl>` comments and kept as small as it can be.
+- Copyright and licence notices in existing files stay exactly as they are.
+  The LGPL requires it, and it is the right thing regardless.
 
-1. **Comment tags (important)**:
-   We use comments to preserve the original upstream (LL) code when making modifications; this allows the person merging future code updates to see both the original code from LL and any new updates and then use those to determine whether the FS-specific changes need to be updated and reviewed.
- If you are modifying LL code, we need the LL code preserved in a comment.
- For example:
+## Before opening a pull request
 
- ```c++
-    int buggy_code = TRUE; 
-    LL_WARN() << "This code is buggy" << LL_ENDL;
- ```
+Two checks run without a viewer and without a build:
 
-Would become:
+```sh
+scripts/actions-check.py    # the tool surface's lists must all agree
+scripts/bridge-check.py     # the LSL bridge still answers what the viewer asks
+```
 
- ```c++
-    // <FS> [FIRE-999] Fix the buggy code 
-    // int buggy_code = TRUE; 
-    // LL_WARN() << "This code is buggy" << LL_ENDL;
-    bool fixed_code = true;
-    LL_DEBUG() << "I fixed this" << LL_ENDL;
-    // </FS>
- ```
-
- Note: You can tag them with your initials, e.g. `<FS:YI>` or a short unique tag (shorter is better)
-
- If you add new code, the same rules apply, but there is nothing to comment out.
- This is done so that when LL updates the original code, we can see what the original code was doing, what their changes do, and how that relates to the changes that we applied on top.
-
- A single line change can use the shorthand `</FS:YI>`:
-
- ```c++
-    bool break_stuff = true;
- ```
-
-Could be fixed as follows:
-
- ```c++
-    bool break_stuff = false; // </FS:Beq> [FIRE-23456] don't break stuff.
- ```
-
- The Comment tags are only required when changing code maintained upstream. If the code you are changing is in an FS-created file, RLV code, OpenSim-only code, etc., then we do not need the comments.
-
- If the code you are changing is already inside an `//<FS>` comment block, then there is no need to add a new block, but do try to make sure that any comments align with the updates you make.
-
-5. **Testing**:
-   Include details on how the changes should be tested. Describe the testing environment and any steps needed to verify the changes.
-
-1. **Documentation**:
-   If the change includes a new feature, it would be beneficial to suggest how we should update the FS Wiki pages to help users understand the feature
-
-Thank you for your contribution!
+Both live in the [tooling repository](https://github.com/cattencarter/lumen).
+There is no unit-test target: everything else here is checked against a running,
+logged-in viewer, on the **beta grid**, because most of what this code does is
+only observable in a real session.
