@@ -145,7 +145,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
   string(REGEX MATCH "-mmacosx-version-min=([^ ]+)" scratch "$ENV{LL_BUILD}")
   set(LUMEN_DEPLOY_TARGET "${CMAKE_MATCH_1}")
-  # <FS:AICtl> fs-build-variables asks for macOS 11, and Xcode 27 refuses to
+  # <Lumen> fs-build-variables asks for macOS 11, and Xcode 27 refuses to
   # target anything below 12.0 -- every target fails at project-generation time,
   # before a line is compiled. Raise the floor here rather than editing the
   # upstream variables clone, which we keep pristine. Drop this when upstream
@@ -170,7 +170,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(LUMEN_LL_BUILD "${LUMEN_LL_BUILD} -Wno-error=deprecated-declarations")
     set(ENV{LL_BUILD} "${LUMEN_LL_BUILD}")
   endif ()
-  # </FS:AICtl>
+  # </Lumen>
   set(CMAKE_OSX_DEPLOYMENT_TARGET "${LUMEN_DEPLOY_TARGET}" CACHE STRING "macOS Deploy Target" FORCE)
   message(STATUS "CMAKE_OSX_DEPLOYMENT_TARGET = '${CMAKE_OSX_DEPLOYMENT_TARGET}'")
 
@@ -198,7 +198,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "")
   set(CMAKE_XCODE_ATTRIBUTE_DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING YES)
   set(CMAKE_XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION NO)
-  # <FS:AICtl> arm64 by default on macOS, not universal.
+  # <Lumen> arm64 by default on macOS, not universal.
   # The Intel slice doubled the wall clock of every build and bought exactly one
   # supported configuration. Lumen is useless without a host application to drive
   # it, and the ChatGPT desktop app is arm64-only (checked 2026-09-14 against the
@@ -215,7 +215,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   endif()
   set(CMAKE_OSX_ARCHITECTURES "${LUMEN_OSX_ARCH}" CACHE STRING "macOS Build Arch" FORCE)
   message(STATUS "Lumen: building for ${CMAKE_OSX_ARCHITECTURES}")
-  # </FS:AICtl>
+  # </Lumen>
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 # Default deploy grid

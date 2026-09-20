@@ -939,7 +939,7 @@
           parameter="fs_discord"/>
       </menu_item_call>
         <menu_item_separator/>
-        <!-- <FS:AICtl> the in-viewer assistant -->
+        <!-- <Lumen> the in-viewer assistant -->
         <menu_item_check
          name="Assistant"
          label="Assistant...">
@@ -950,7 +950,7 @@
              function="Floater.Toggle"
              parameter="ai_chat" />
         </menu_item_check>
-        <!-- </FS:AICtl> -->
+        <!-- </Lumen> -->
         <menu_item_check
          name="Conversation Log..."
          label="Conversation Log...">

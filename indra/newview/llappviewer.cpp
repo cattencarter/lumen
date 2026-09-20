@@ -298,7 +298,7 @@ using namespace LL;
 
 #include "aoengine.h"
 #include "fsradar.h"
-#include "fsaictl.h"        // <FS:AICtl>
+#include "lumenaictl.h"        // <Lumen>
 #include "fsassetblacklist.h"
 #include "bugsplatattributes.h"
 
@@ -1441,13 +1441,13 @@ bool LLAppViewer::init()
     // Create IO Pump to use for HTTP Requests.
     gServicePump = new LLPumpIO(gAPRPoolp);
 
-    // <FS:AICtl> The local control endpoint. Here because it needs the service
+    // <Lumen> The local control endpoint. Here because it needs the service
     // pump, which has just been created, and the settings, which are already
     // loaded. It does nothing unless the user has enabled it and set a token,
     // and it reports rather than throws when the port is unavailable, so this
     // call cannot prevent the viewer from starting.
-    FSAIControl::instance().start();
-    // </FS:AICtl>
+    LumenAIControl::instance().start();
+    // </Lumen>
 
     // Note: this is where gLocalSpeakerMgr and gActiveSpeakerMgr used to be instantiated.
 
@@ -2004,10 +2004,10 @@ void LLAppViewer::flushLFSIO()
 
 bool LLAppViewer::cleanup()
 {
-    // <FS:AICtl> Refuse further requests before anything it might
+    // <Lumen> Refuse further requests before anything it might
     // touch is torn down. The pump owns the socket itself.
-    FSAIControl::instance().stop();
-    // </FS:AICtl>
+    LumenAIControl::instance().stop();
+    // </Lumen>
 
 #if LL_VELOPACK
     // Apply any pending Velopack update before shutdown
@@ -3087,7 +3087,7 @@ bool LLAppViewer::initConfiguration()
         return false;
     }
 
-    // <FS:AICtl> The remote settings-defaults override is gone with the rest of
+    // <Lumen> The remote settings-defaults override is gone with the rest of
     // FSData. This loaded fsdata_defaults.<version>.xml   a file downloaded from
     // phoenixviewer.com and keyed by viewer version   straight into the Global
     // control group AS DEFAULTS, so their server could change what any setting
@@ -3189,7 +3189,7 @@ bool LLAppViewer::initConfiguration()
         mIsFirstRun = true;
 
         // <FS>
-        // <FS:AICtl> One settings file, and anybody who ran an older build is
+        // <Lumen> One settings file, and anybody who ran an older build is
         // pointed back at it. The Mode picker used to choose between five of
         // Firestorm's layouts; four are deleted and the fifth is renamed, so a
         // saved `SessionSettingsFile` naming any of them would now load
@@ -3567,7 +3567,7 @@ bool LLAppViewer::initConfiguration()
     //
     // Set the name of the window
     //
-    // <FS:AICtl> The window says what this viewer is called; the channel says
+    // <Lumen> The window says what this viewer is called; the channel says
     // what it reports to Second Life. They are not the same job. The channel
     // stays plain "Lumen" -- no "-private-Mac" suffix, which is Firestorm's
     // convention for marking self-compiled builds so their support volunteers
@@ -3575,7 +3575,7 @@ bool LLAppViewer::initConfiguration()
     //gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
     gWindowTitle = std::string("Lumen Viewer ")
                  + LLVersionInfo::getInstance()->getShortVersion();
-    // </FS:AICtl>
+    // </Lumen>
 #if LL_DEBUG
     gWindowTitle += std::string(" [DEBUG]");
 #endif
@@ -3988,7 +3988,7 @@ LLSD LLAppViewer::getViewerInfo() const
     info["BANDWIDTH"] = LLViewerThrottle::getMaxBandwidthKbps();
     info["LOD"] = gSavedSettings.getF32("RenderVolumeLODFactor");
 
-    // <FS:AICtl> The Mode picker is gone, so SessionSettingsFile is always
+    // <Lumen> The Mode picker is gone, so SessionSettingsFile is always
     // settings_lumen.xml and there is nothing to report. This looked the label
     // up as "mode_" + the filename, which after the rename found nothing and
     // put "Unknown Mode" into the text people paste into support threads.
@@ -5477,7 +5477,7 @@ void LLAppViewer::purgeCacheImmediate()
 
 std::string LLAppViewer::getSecondLifeTitle() const
 {
-    // <FS:AICtl> No "_x64". It is shown to the user as the heading on the
+    // <Lumen> No "_x64". It is shown to the user as the heading on the
     // login screen, where it read "Lumen_x64", and it distinguished a 64-bit
     // build from a 32-bit one at a time when both existed. Only 64-bit does
     // now, so it told nobody anything and looked like a filename.
@@ -5486,7 +5486,7 @@ std::string LLAppViewer::getSecondLifeTitle() const
     // initAppDirs() above. That one is not cosmetic: changing it moves every
     // existing user's settings and cache somewhere they are not.
     return LLTrans::getString("APP_NAME") + " Viewer";
-    // </FS:AICtl>
+    // </Lumen>
 }
 
 std::string LLAppViewer::getWindowTitle() const

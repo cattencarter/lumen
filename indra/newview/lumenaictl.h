@@ -1,5 +1,5 @@
 /**
- * @file fsaictl.h
+ * @file lumenaictl.h
  * @brief A local control endpoint, so an assistant can drive the viewer.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AICTL_H
-#define FS_AICTL_H
+#ifndef LUMEN_AICTL_H
+#define LUMEN_AICTL_H
 
 #include "llsingleton.h"
 #include "llsd.h"
@@ -46,10 +46,10 @@ class LLPumpIO;
  * reads. An endpoint inside the program holding someone's Second Life
  * credentials is opt-in.
  */
-class FSAIControl : public LLSingleton<FSAIControl>
+class LumenAIControl : public LLSingleton<LumenAIControl>
 {
-    LLSINGLETON(FSAIControl);
-    ~FSAIControl();
+    LLSINGLETON(LumenAIControl);
+    ~LumenAIControl();
 
 public:
     /**
@@ -111,7 +111,7 @@ public:
      */
     std::string handleRequest(const std::string& body);
 
-    // <FS:AICtl> worn_by and creator links.
+    // <Lumen> worn_by and creator links.
     //
     // A reply from the in-world bridge arrives later, over HTTP, so it is
     // parked until the caller asks again (Findings 19). profileLink is here
@@ -122,7 +122,7 @@ public:
     static void beginWornRequest(const LLUUID& who);
     static bool takeWornReply(const LLUUID& who, LLSD& out);
     static void finishWornReply(const LLUUID& who, const LLSD& data);
-    // </FS:AICtl>
+    // </Lumen>
 
 
 private:
@@ -358,4 +358,4 @@ private:
     LLPumpIO*   mPump;
 };
 
-#endif // FS_AICTL_H
+#endif // LUMEN_AICTL_H

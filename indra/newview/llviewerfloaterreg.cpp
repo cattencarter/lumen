@@ -122,9 +122,9 @@
 #include "fsfloaterperformance.h"
 #include "llfloaterperms.h"
 #include "llfloaterpostprocess.h"
-#include "fsaichat.h" // <FS:AICtl>
-#include "fsaisetup.h" // <FS:AICtl>
-#include "fsaimemory.h" // <FS:AICtl>
+#include "lumenaichat.h" // <Lumen>
+#include "lumenaisetup.h" // <Lumen>
+#include "lumenaimemory.h" // <Lumen>
 #include "llfloaterpreference.h"
 #include "llfloaterpreferencesgraphicsadvanced.h"
 #include "llfloaterpreferenceviewadvanced.h"
@@ -548,11 +548,11 @@ void LLViewerFloaterReg::registerFloaters()
     LLFloaterReg::add("perms_default", "floater_perms_default.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPermsDefault>);
     LLFloaterReg::add("places", "floater_places.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterSidePanelContainer>);
     LLFloaterReg::add("preferences", "floater_preferences.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreference>);
-    // <FS:AICtl> the in-viewer assistant
-    LLFloaterReg::add("ai_chat", "floater_ai_chat.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAIChatFloater>);
-    LLFloaterReg::add("ai_memory", "floater_ai_memory.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAIMemoryFloater>);
-    LLFloaterReg::add("ai_setup", "floater_ai_setup.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<FSAISetupFloater>);
-    // </FS:AICtl>
+    // <Lumen> the in-viewer assistant
+    LLFloaterReg::add("ai_chat", "floater_ai_chat.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAIChatFloater>);
+    LLFloaterReg::add("ai_memory", "floater_ai_memory.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAIMemoryFloater>);
+    LLFloaterReg::add("ai_setup", "floater_ai_setup.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAISetupFloater>);
+    // </Lumen>
     // LLFloaterReg::add("prefs_graphics_advanced", "floater_preferences_graphics_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceGraphicsAdvanced>);
     LLFloaterReg::add("prefs_view_advanced", "floater_preferences_view_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceViewAdvanced>);
     LLFloaterReg::add("prefs_proxy", "floater_preferences_proxy.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceProxy>);

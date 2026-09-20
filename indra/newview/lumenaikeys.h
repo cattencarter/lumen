@@ -1,5 +1,5 @@
 /**
- * @file fsaikeys.h
+ * @file lumenaikeys.h
  * @brief AI provider API keys, kept in the viewer's protected store.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AIKEYS_H
-#define FS_AIKEYS_H
+#ifndef LUMEN_AIKEYS_H
+#define LUMEN_AIKEYS_H
 
 #include "llpanel.h"
 #include "llfloaterpreference.h"
@@ -52,11 +52,11 @@ class LLComboBox;
  * sitting in a file anyone is asked to attach to a bug report. The user is
  * told as much in the panel rather than left to assume better.
  */
-namespace FSAIKeys
+namespace LumenAIKeys
 {
     // Provider ids. These are also the keys in the protected store, so
     // changing one orphans whatever a user already saved.
-    // <FS:AICtl> No assistant. Not a provider that fails, a provider that
+    // <Lumen> No assistant. Not a provider that fails, a provider that
     // is honestly absent   so the viewer is an ordinary viewer and says so.
     extern const std::string NONE;
     extern const std::string ANTHROPIC;
@@ -105,10 +105,10 @@ namespace FSAIKeys
  * the undo, which is how every other preference here already behaves. That is
  * also why there is no confirmation dialogue for Clear.
  */
-class FSPanelPreferenceAIKeys : public LLPanelPreference
+class LumenPanelPreferenceAIKeys : public LLPanelPreference
 {
 public:
-    FSPanelPreferenceAIKeys();
+    LumenPanelPreferenceAIKeys();
 
     bool postBuild() override;
     void apply() override;
@@ -124,7 +124,7 @@ public:
     /**
      * Notice that a provider became usable while the panel is on screen.
      *
-     * <FS:AICtl> The setup window ticked its last step and the panel behind it
+     * <Lumen> The setup window ticked its last step and the panel behind it
      * went on offering "Set it up for me...", because nothing told it to look
      * again; only pressing Test did, which is a step nobody should have to know
      * to take. The author saw it immediately.
@@ -149,7 +149,7 @@ public:
     /**
      * The Test button's answer, as a popup.
      *
-     * <FS:AICtl> Public because the asynchronous tests call it back through an
+     * <Lumen> Public because the asynchronous tests call it back through an
      * LLHandle once the panel may already be gone.
      */
     /** Show the setup button OR the model row for this provider, never both. */
@@ -198,4 +198,4 @@ private:
     bool         mWasReady = false;
 };
 
-#endif // FS_AIKEYS_H
+#endif // LUMEN_AIKEYS_H

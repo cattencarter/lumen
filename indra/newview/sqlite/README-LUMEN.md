@@ -1,6 +1,6 @@
 # SQLite, vendored for Windows only
 
-`fsainotecache.cpp` caches notecard text in SQLite. **macOS ships libsqlite3 in
+`lumenainotecache.cpp` caches notecard text in SQLite. **macOS ships libsqlite3 in
 the SDK and Linux has it everywhere**, so on those two it is one linker flag and
 these files are not compiled at all. Windows ships nothing, so the include fails
 and the build stops — which is the first failure the Windows port was expected

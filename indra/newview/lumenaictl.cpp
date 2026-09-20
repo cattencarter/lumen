@@ -1,5 +1,5 @@
 /**
- * @file fsaictl.cpp
+ * @file lumenaictl.cpp
  * @brief A local control endpoint, so an assistant can drive the viewer.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -27,16 +27,16 @@
  */
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaictl.h"
-#include "fsaichat.h"
-#include "fsaikeys.h"
-#include "fsaiindex.h"
+#include "lumenaictl.h"
+#include "lumenaichat.h"
+#include "lumenaikeys.h"
+#include "lumenaiindex.h"
 #include "llenvironment.h"
 #include "llsettingssky.h"
 #include "llvirtualtrackball.h"
 #include "rlvactions.h"
 #include "llviewercamera.h"
-#include "fsainotecache.h"
+#include "lumenainotecache.h"
 
 #include "llagent.h"
 #include "llvoavatar.h"
@@ -106,13 +106,13 @@
 #include "llviewercontrol.h"
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
-#include "fslslbridge.h"   // <FS:AICtl> worn_by
-#include "llavatarpropertiesprocessor.h"  // <FS:AICtl> profile
-#include "lldiriterator.h"                 // <FS:AICtl> settings lookup
-#include "llfloaterpreference.h"           // <FS:AICtl> settings lookup
-#include "llsearcheditor.h"                // <FS:AICtl> settings lookup
-#include "lltabcontainer.h"                // <FS:AICtl> settings lookup
-#include "apr_base64.h"      // <FS:AICtl> the bridge base64-encodes anything a person wrote
+#include "fslslbridge.h"   // <Lumen> worn_by
+#include "llavatarpropertiesprocessor.h"  // <Lumen> profile
+#include "lldiriterator.h"                 // <Lumen> settings lookup
+#include "llfloaterpreference.h"           // <Lumen> settings lookup
+#include "llsearcheditor.h"                // <Lumen> settings lookup
+#include "lltabcontainer.h"                // <Lumen> settings lookup
+#include "apr_base64.h"      // <Lumen> the bridge base64-encodes anything a person wrote
 #include "llversioninfo.h"
 
 #include <boost/json.hpp>
@@ -171,7 +171,7 @@ namespace
      *
      * It declares CONTENT_TYPE_TEXT so that LLIOHTTPServer hands over the raw
      * request body instead of trying to parse it as LLSD XML; the JSON is
-     * parsed in FSAIControl. Replies go through extendedResult, which is the
+     * parsed in LumenAIControl. Replies go through extendedResult, which is the
      * one response path that preserves the headers it is given, so the
      * Content-Type can be application/json without changing llmessage.
      */
@@ -203,7 +203,7 @@ namespace
         return false;
     }
 
-    class FSAICtlNode : public LLHTTPNode
+    class LumenAICtlNode : public LLHTTPNode
     {
     public:
         EHTTPNodeContentType getContentType() const override
@@ -232,7 +232,7 @@ namespace
 
                 const std::string body = input.asString();
                 const std::string reply =
-                    FSAIControl::instance().handleRequest(body);
+                    LumenAIControl::instance().handleRequest(body);
 
                 if (reply.empty())
                 {
@@ -306,7 +306,7 @@ namespace
     const size_t READ_LIMIT_MAX   = 200;
 }
 
-void FSAIControl::Stream::append(const LLSD& data)
+void LumenAIControl::Stream::append(const LLSD& data)
 {
     Event e;
     e.seq  = mNextSeq++;
@@ -320,7 +320,7 @@ void FSAIControl::Stream::append(const LLSD& data)
     }
 }
 
-LLSD FSAIControl::Stream::read(U64 since, size_t limit) const
+LLSD LumenAIControl::Stream::read(U64 since, size_t limit) const
 {
     LLSD entries = LLSD::emptyArray();
 
@@ -393,7 +393,7 @@ namespace
     const S32 NOTECARD_FETCH_BUDGET = 200;
 }
 
-std::string FSAIControl::fingerprintOf(const std::string& tool, const LLSD& args)
+std::string LumenAIControl::fingerprintOf(const std::string& tool, const LLSD& args)
 {
     // The caller's own bookkeeping must not change the fingerprint. If it did,
     // a retry carrying a freshly minted request_id would look like a different
@@ -407,7 +407,7 @@ std::string FSAIControl::fingerprintOf(const std::string& tool, const LLSD& args
     return tool + "\n" + llsdToJsonString(copy);
 }
 
-bool FSAIControl::recallAction(const std::string& request_id, LLSD& out) const
+bool LumenAIControl::recallAction(const std::string& request_id, LLSD& out) const
 {
     if (request_id.empty())
     {
@@ -427,7 +427,7 @@ bool FSAIControl::recallAction(const std::string& request_id, LLSD& out) const
     return false;
 }
 
-bool FSAIControl::recallRecent(const std::string& fingerprint, F64 window, LLSD& out) const
+bool LumenAIControl::recallRecent(const std::string& fingerprint, F64 window, LLSD& out) const
 {
     // A window of zero is a tool saying it would rather do the thing twice than
     // refuse to do it a second time on purpose. say is one of those.
@@ -453,7 +453,7 @@ bool FSAIControl::recallRecent(const std::string& fingerprint, F64 window, LLSD&
     return false;
 }
 
-void FSAIControl::recordAction(const std::string& request_id, const std::string& fingerprint,
+void LumenAIControl::recordAction(const std::string& request_id, const std::string& fingerprint,
                                const std::string& tool, const std::string& outcome,
                                const LLSD& result, const LLSD& summary)
 {
@@ -474,7 +474,7 @@ void FSAIControl::recordAction(const std::string& request_id, const std::string&
     }
 }
 
-LLSD FSAIControl::actionLog(size_t limit) const
+LLSD LumenAIControl::actionLog(size_t limit) const
 {
     LLSD entries = LLSD::emptyArray();
 
@@ -894,7 +894,7 @@ namespace
             if (LLAvatarNameCache::get(creator, &av))
             {
                 out["creator_name"] = av.getUserName();
-                out["creator_link"] = FSAIControl::profileLink(creator);
+                out["creator_link"] = LumenAIControl::profileLink(creator);
             }
             // Not cached: the id is still exact, and creatorName() below asks
             // for it so the next call has a name to show.
@@ -2447,7 +2447,7 @@ namespace
                                   "like \"draw distance\" or \"music\" -- NOT the internal name.";
             view_props["name"]=ln;
 
-            // <FS:AICtl> set_setting's value, which was missing.
+            // <Lumen> set_setting's value, which was missing.
             //
             // The action was registered, advertised, dispatched and phrased --
             // all four lists actions-check compares agreed -- and the assistant
@@ -2465,7 +2465,7 @@ namespace
                                   "asked for: settings clamp, and a value outside the range comes "
                                   "back changed. Report the value in `now`, never the one you sent.";
             view_props["value"]=lv;
-            // </FS:AICtl>
+            // </Lumen>
             struct { const char* key; const char* desc; } nums[] = {
                 { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
                 { "ambient",        "lighting: fills the shadows, 0 to 3. Under the "
@@ -2509,7 +2509,7 @@ namespace
     }
 }
 
-FSAIControl::FSAIControl()
+LumenAIControl::LumenAIControl()
 :   mRunning(false),
     mPort(0),
     mPump(NULL),
@@ -2519,7 +2519,7 @@ FSAIControl::FSAIControl()
 {
 }
 
-FSAIControl::~FSAIControl()
+LumenAIControl::~LumenAIControl()
 {
     stop();
 }
@@ -2550,19 +2550,19 @@ FSAIControl::~FSAIControl()
  * now somewhere else. Five metres of slack so it does not twitch after every
  * step, against a stop distance of three.
  */
-void FSAIControl::keepFollowing()
+void LumenAIControl::keepFollowing()
 {
     if (mFollowListenerUp)
     {
         return;
     }
     LLEventPumps::instance().obtain("mainloop").listen(
-        "FSAIControlFollow",
+        "LumenAIControlFollow",
         [this](const LLSD&)
         {
             if (mFollowing.isNull())
             {
-                LLEventPumps::instance().obtain("mainloop").stopListening("FSAIControlFollow");
+                LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlFollow");
                 mFollowListenerUp = false;
                 return false;
             }
@@ -2611,11 +2611,11 @@ void FSAIControl::keepFollowing()
  * login with the flag already set -- so it costs one comparison per frame for
  * a few seconds and nothing afterwards.
  */
-void FSAIControl::showDisclaimerWhenLoggedIn()
+void LumenAIControl::showDisclaimerWhenLoggedIn()
 {
     if (mDisclaimerListenerUp) return;
 
-    LLEventPumps::instance().obtain("mainloop").listen("FSAIControlDisclaimer",
+    LLEventPumps::instance().obtain("mainloop").listen("LumenAIControlDisclaimer",
         [this](const LLSD&)
         {
             if (!LLStartUp::getStartupState()
@@ -2632,21 +2632,21 @@ void FSAIControl::showDisclaimerWhenLoggedIn()
             LLNotificationsUtil::add("LumenAIFirstRun");
 
             LLEventPumps::instance().obtain("mainloop")
-                .stopListening("FSAIControlDisclaimer");
+                .stopListening("LumenAIControlDisclaimer");
             mDisclaimerListenerUp = false;
             return false;
         });
     mDisclaimerListenerUp = true;
 }
 
-void FSAIControl::listenForStreams()
+void LumenAIControl::listenForStreams()
 {
     if (mSubscribed || mStreamListenerUp)
     {
         return;
     }
     LLEventPumps::instance().obtain("mainloop").listen(
-        "FSAIControlStreams",
+        "LumenAIControlStreams",
         [this](const LLSD&)
         {
             // LLIMModel is not ready on the first frames, so this retries until
@@ -2655,7 +2655,7 @@ void FSAIControl::listenForStreams()
             if (mSubscribed)
             {
                 LLEventPumps::instance().obtain("mainloop")
-                    .stopListening("FSAIControlStreams");
+                    .stopListening("LumenAIControlStreams");
                 mStreamListenerUp = false;
             }
             return false;
@@ -2663,7 +2663,7 @@ void FSAIControl::listenForStreams()
     mStreamListenerUp = true;
 }
 
-void FSAIControl::subscribe()
+void LumenAIControl::subscribe()
 {
     if (mSubscribed)
     {
@@ -2677,11 +2677,11 @@ void FSAIControl::subscribe()
     try
     {
         mMessageConnection = LLIMModel::instance().addNewMsgCallback(
-            boost::bind(&FSAIControl::onInstantMessage, this, _1));
+            boost::bind(&LumenAIControl::onInstantMessage, this, _1));
 
         mChatConnection = LLNotificationsUI::LLNotificationManager::instance()
             .getChatHandler()->addNewChatCallback(
-                boost::bind(&FSAIControl::onNearbyChat, this, _1));
+                boost::bind(&LumenAIControl::onNearbyChat, this, _1));
 
         mSubscribed = true;
         LL_INFOS("AICtl") << "Subscribed to the message and nearby chat streams." << LL_ENDL;
@@ -2692,7 +2692,7 @@ void FSAIControl::subscribe()
     }
 }
 
-void FSAIControl::onInstantMessage(const LLSD& data)
+void LumenAIControl::onInstantMessage(const LLSD& data)
 {
     // One signal carries one-to-one IM, group chat and ad-hoc conference;
     // session_type tells them apart. Stored as the viewer reports it, plus a
@@ -2704,20 +2704,20 @@ void FSAIControl::onInstantMessage(const LLSD& data)
     // subscription rather than opening its own: this one already exists, is
     // already retried until the message system is up, and sees exactly the
     // traffic the responder cares about. It declines almost everything.
-    FSAIAutoResponder::instance().consider(data);
+    LumenAIAutoResponder::instance().consider(data);
 }
 
-void FSAIControl::onNearbyChat(const LLSD& data)
+void LumenAIControl::onNearbyChat(const LLSD& data)
 {
     mChat.append(data);
 
     // The auto-responder sees local chat too, and declines almost all of it:
     // only when it has been armed for local chat AND somebody says the
     // avatar's name.
-    FSAIAutoResponder::instance().considerChat(data);
+    LumenAIAutoResponder::instance().considerChat(data);
 }
 
-bool FSAIControl::start()
+bool LumenAIControl::start()
 {
     try
     {
@@ -2735,7 +2735,7 @@ bool FSAIControl::start()
     }
 }
 
-bool FSAIControl::startInternal()
+bool LumenAIControl::startInternal()
 {
     if (mRunning)
     {
@@ -2747,7 +2747,7 @@ bool FSAIControl::startInternal()
     // use the assistant: they are told what this viewer is before they use it.
     showDisclaimerWhenLoggedIn();
 
-    // <FS:AICtl> Lumen is a standalone viewer. Nothing outside it may drive it,
+    // <Lumen> Lumen is a standalone viewer. Nothing outside it may drive it,
     // and there is no setting offering that any more. The author: *"I don't want
     // other apps drive the viewer, only if requested to from inside the viewer
     // (like codex and code)"*.
@@ -2785,9 +2785,9 @@ bool FSAIControl::startInternal()
     // from "documented and waiting" to "has to go looking", which is the whole
     // claim.
     //
-    // FSAIControlPort survives as a developer override: 0, the default, means
+    // LumenAIControlPort survives as a developer override: 0, the default, means
     // pick one. It is in no panel.
-    mPort = static_cast<U16>(gSavedSettings.getU32("FSAIControlPort"));
+    mPort = static_cast<U16>(gSavedSettings.getU32("LumenAIControlPort"));
 
     // Our own pump, deliberately not gServicePump. That one is serviced only
     // by LLMessageSystem::checkAllMessages, which does not run until the
@@ -2827,11 +2827,11 @@ bool FSAIControl::startInternal()
         return false;
     }
 
-    root->addNode(AICTL_PATH, new FSAICtlNode());
+    root->addNode(AICTL_PATH, new LumenAICtlNode());
 
     // Service it every frame. Without this the chain never accepts.
     LLEventPumps::instance().obtain("mainloop").listen(
-        "FSAIControl", boost::bind(&FSAIControl::tick, this, _1));
+        "LumenAIControl", boost::bind(&LumenAIControl::tick, this, _1));
 
     mRunning = true;
 
@@ -2840,11 +2840,11 @@ bool FSAIControl::startInternal()
     return true;
 }
 
-void FSAIControl::stop()
+void LumenAIControl::stop()
 {
     if (mRunning)
     {
-        LLEventPumps::instance().obtain("mainloop").stopListening("FSAIControl");
+        LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControl");
     }
     mRunning = false;
 
@@ -2853,7 +2853,7 @@ void FSAIControl::stop()
     mPump = NULL;
 }
 
-bool FSAIControl::tick(const LLSD&)
+bool LumenAIControl::tick(const LLSD&)
 {
     if (!mPump)
     {
@@ -2893,7 +2893,7 @@ bool FSAIControl::tick(const LLSD&)
 }
 
 
-std::string FSAIControl::handleRequest(const std::string& body)
+std::string LumenAIControl::handleRequest(const std::string& body)
 {
 
     boost::json::value parsed;
@@ -3039,15 +3039,15 @@ namespace
 
 
 
-void FSAIControl::noteObjectName(const LLUUID& object_id, const std::string& name)
+void LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& name)
 {
     // Called from the message path for every object anything asks about, so it
     // must be cheap and must not care whether we are running.
-    if (!FSAIControl::instanceExists() || object_id.isNull())
+    if (!LumenAIControl::instanceExists() || object_id.isNull())
     {
         return;
     }
-    LLSD& cache = FSAIControl::instance().mObjectNames;
+    LLSD& cache = LumenAIControl::instance().mObjectNames;
     // Bounded: a busy region has thousands of objects and this is a
     // convenience, not a database. Oldest naming wins until it is cleared.
     if (cache.size() > 2000)
@@ -3057,24 +3057,24 @@ void FSAIControl::noteObjectName(const LLUUID& object_id, const std::string& nam
     cache[object_id.asString()] = name;
 }
 
-void FSAIControl::suppressAutoOpen(const std::string& name)
+void LumenAIControl::suppressAutoOpen(const std::string& name)
 {
-    if (!FSAIControl::instanceExists() || name.empty())
+    if (!LumenAIControl::instanceExists() || name.empty())
     {
         return;
     }
-    FSAIControl::instance().mSuppressOpen[name] = LLSD((F64)LLTimer::getTotalSeconds());
+    LumenAIControl::instance().mSuppressOpen[name] = LLSD((F64)LLTimer::getTotalSeconds());
 }
 
-bool FSAIControl::consumeAutoOpenSuppression(const std::string& name, LLAssetType::EType type)
+bool LumenAIControl::consumeAutoOpenSuppression(const std::string& name, LLAssetType::EType type)
 {
     // Called for every item added to inventory, so it must be cheap and must
     // never claim something it did not register.
-    if (type != LLAssetType::AT_NOTECARD || !FSAIControl::instanceExists() || name.empty())
+    if (type != LLAssetType::AT_NOTECARD || !LumenAIControl::instanceExists() || name.empty())
     {
         return false;
     }
-    LLSD& pending = FSAIControl::instance().mSuppressOpen;
+    LLSD& pending = LumenAIControl::instance().mSuppressOpen;
     if (!pending.has(name))
     {
         return false;
@@ -3094,7 +3094,7 @@ bool FSAIControl::consumeAutoOpenSuppression(const std::string& name, LLAssetTyp
     return true;
 }
 
-bool FSAIControl::startNotecardFetch(LLViewerInventoryItem* item)
+bool LumenAIControl::startNotecardFetch(LLViewerInventoryItem* item)
 {
     if (!item)
     {
@@ -3112,7 +3112,7 @@ bool FSAIControl::startNotecardFetch(LLViewerInventoryItem* item)
     // nothing survived the session.
     {
         std::string cached;
-        if (FSAINoteCache::instance().get(item->getUUID(), item->getAssetUUID(), cached))
+        if (LumenAINoteCache::instance().get(item->getUUID(), item->getAssetUUID(), cached))
         {
             LLSD done;
             done["status"]     = "ready";
@@ -3151,19 +3151,19 @@ bool FSAIControl::startNotecardFetch(LLViewerInventoryItem* item)
                                    LLUUID::null,
                                    item->getUUID(), item->getAssetUUID(),
                                    item->getType(),
-                                   &FSAIControl::onNotecardLoaded,
+                                   &LumenAIControl::onNotecardLoaded,
                                    (void*)new LLUUID(item->getUUID()),
                                    true);
     return true;
 }
 
-void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType type,
+void LumenAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType type,
                                    void* user_data, S32 status, LLExtStat)
 {
     // user_data is ours, allocated when the fetch was started. Take it back
     // whatever happens below, or it leaks on every failed read.
     std::unique_ptr<LLUUID> item_id(static_cast<LLUUID*>(user_data));
-    if (!item_id || !FSAIControl::instanceExists())
+    if (!item_id || !LumenAIControl::instanceExists())
     {
         return;
     }
@@ -3173,7 +3173,7 @@ void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType ty
     {
         entry["status"] = "failed";
         entry["error"]  = "The notecard's contents could not be fetched from Second Life.";
-        FSAIControl::instance().mNotecards[item_id->asString()] = entry;
+        LumenAIControl::instance().mNotecards[item_id->asString()] = entry;
         return;
     }
 
@@ -3201,7 +3201,7 @@ void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType ty
             {
                 entry["status"] = "failed";
                 entry["error"] = "The notecard could not be parsed.";
-                FSAIControl::instance().mNotecards[item_id->asString()] = entry;
+                LumenAIControl::instance().mNotecards[item_id->asString()] = entry;
                 return;
             }
         }
@@ -3221,7 +3221,7 @@ void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType ty
         entry["error"] = "The notecard could not be read.";
     }
 
-    FSAIControl::instance().mNotecards[item_id->asString()] = entry;
+    LumenAIControl::instance().mNotecards[item_id->asString()] = entry;
 
     // Keep it, so the next session does not pay for this fetch again. Only on
     // success: caching a failure would turn a transient server problem into a
@@ -3231,7 +3231,7 @@ void FSAIControl::onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType ty
         const LLUUID id(item_id->asString());
         if (LLViewerInventoryItem* item = gInventory.getItem(id))
         {
-            FSAINoteCache::instance().put(id, item->getAssetUUID(),
+            LumenAINoteCache::instance().put(id, item->getAssetUUID(),
                                           item->getName(), entry["text"].asString());
         }
     }
@@ -3286,20 +3286,20 @@ static LLFloater* frontmostScriptWindow(std::string* title_out = NULL)
     return best;
 }
 
-void FSAIControl::setPhotoGaze(bool on, const LLVector3d& camera_pos, const std::string& mode)
+void LumenAIControl::setPhotoGaze(bool on, const LLVector3d& camera_pos, const std::string& mode)
 {
     mPhotoGaze     = on;
     mPhotoEye      = camera_pos;
     mPhotoGazeMode = mode;
 }
 
-bool FSAIControl::photoGaze(LLVector3& world_dir_out)
+bool LumenAIControl::photoGaze(LLVector3& world_dir_out)
 {
     if (!instanceExists())
     {
         return false;   // never construct the endpoint from the camera loop
     }
-    FSAIControl& me = instance();
+    LumenAIControl& me = instance();
     if (!me.mPhotoGaze || !isAgentAvatarValid())
     {
         return false;
@@ -3391,7 +3391,7 @@ namespace
     }
 }
 
-// <FS:AICtl> A creator's name, as something the user can click.
+// <Lumen> A creator's name, as something the user can click.
 //
 // The Assistant transcript parses secondlife:/// links (floater_ai_chat.xml,
 // parse_urls), and the viewer draws this one as the person's NAME and opens
@@ -3403,7 +3403,7 @@ namespace
 // a finished string to repeat. The model never assembles one, so it cannot
 // invent a profile that does not exist; the worst it can do is fail to use it,
 // which degrades to today's plain text.
-// <FS:AICtl> `profile`: what somebody has published about themselves.
+// <Lumen> `profile`: what somebody has published about themselves.
 //
 // Second Life holds this on its own servers, so it is right on any machine and
 // survives a reinstall -- unlike the chat logs, which answered a question about
@@ -3487,7 +3487,7 @@ namespace
     };
 }
 
-// <FS:AICtl> The LSL a model cannot be trusted to remember.
+// <Lumen> The LSL a model cannot be trusted to remember.
 //
 // **This is the one thing on the whole object/scripting list that a model
 // genuinely cannot do**, and the author's transcript is the proof. Asked for a
@@ -3750,7 +3750,7 @@ namespace
     }
 }
 
-// <FS:AICtl> Finding a setting, and where in this viewer it actually lives.
+// <Lumen> Finding a setting, and where in this viewer it actually lives.
 //
 // **The obvious lookup does not work, and the author's own example proves it.**
 // "Draw distance" is `RenderFarClip`, whose settings.xml comment reads
@@ -4567,7 +4567,7 @@ namespace
     }
 }
 
-std::string FSAIControl::profileLink(const LLUUID& agent_id)
+std::string LumenAIControl::profileLink(const LLUUID& agent_id)
 {
     if (agent_id.isNull())
     {
@@ -4576,17 +4576,17 @@ std::string FSAIControl::profileLink(const LLUUID& agent_id)
     return "secondlife:///app/agent/" + agent_id.asString() + "/about";
 }
 
-bool FSAIControl::wornRequestPending(const LLUUID& who)
+bool LumenAIControl::wornRequestPending(const LLUUID& who)
 {
     return sWornPending.count(who) > 0;
 }
 
-void FSAIControl::beginWornRequest(const LLUUID& who)
+void LumenAIControl::beginWornRequest(const LLUUID& who)
 {
     sWornPending.insert(who);
 }
 
-bool FSAIControl::takeWornReply(const LLUUID& who, LLSD& out)
+bool LumenAIControl::takeWornReply(const LLUUID& who, LLSD& out)
 {
     std::map<LLUUID, LLSD>::iterator it = sWornReplies.find(who);
     if (it == sWornReplies.end()) return false;
@@ -4595,7 +4595,7 @@ bool FSAIControl::takeWornReply(const LLUUID& who, LLSD& out)
     return true;
 }
 
-void FSAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
+void LumenAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
 {
     sWornPending.erase(who);
 
@@ -4683,7 +4683,7 @@ void FSAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
     sWornReplies[who] = result;
 }
 
-LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
+LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 {
     // ---- MCP ----------------------------------------------------------
     if (method == "initialize")
@@ -4971,16 +4971,16 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             // as it had `limit` matches (Findings 21), so with 65,621 items it
             // returned whichever hundred sat earliest in the tree rather than
             // the hundred anyone wanted -- "wear my black skirt" was a lottery.
-            // FSAIIndex scores every match and only then cuts. See Findings 60.
+            // LumenAIIndex scores every match and only then cuts. See Findings 60.
             // "the newest UNA one" is a question the viewer could always
             // answer -- Item Properties has always shown an Acquired date --
             // and the assistant said it had no way to check, because we never
             // returned it. Now it is on every item, and sortable.
-            FSAIIndex::Order order = FSAIIndex::BY_BEST;
+            LumenAIIndex::Order order = LumenAIIndex::BY_BEST;
             const std::string sort = params.has("sort") ? lowered(params["sort"].asString())
                                                         : std::string();
-            if (sort == "newest") order = FSAIIndex::BY_NEWEST;
-            else if (sort == "oldest") order = FSAIIndex::BY_OLDEST;
+            if (sort == "newest") order = LumenAIIndex::BY_NEWEST;
+            else if (sort == "oldest") order = LumenAIIndex::BY_OLDEST;
 
             // The index is built once and worn state changes constantly, so
             // the worn set is gathered here, live, and handed down. It comes
@@ -5009,7 +5009,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                                 // by the names of the clothes. So count the
                                 // fits mentioned and take the commonest.
                                 const std::string fit =
-                                    FSAIIndex::fitInName(lowered(real->getName()));
+                                    LumenAIIndex::fitInName(lowered(real->getName()));
                                 if (!fit.empty())
                                 {
                                     ++fit_votes[fit];
@@ -5043,11 +5043,11 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
             }
 
             size_t total = 0;
-            const std::vector<FSAIIndex::Hit> hits =
-                FSAIIndex::instance().search(query, kindFromWord(kind), creator_id,
+            const std::vector<LumenAIIndex::Hit> hits =
+                LumenAIIndex::instance().search(query, kindFromWord(kind), creator_id,
                                              (size_t)limit, total, order, &worn_now,
                                              prefer_fit, &spelling, &prefer_fit_used);
-            for (const FSAIIndex::Hit& h : hits)
+            for (const LumenAIIndex::Hit& h : hits)
             {
                 if (LLViewerInventoryItem* item = gInventory.getItem(h.id))
                 {
@@ -5863,7 +5863,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // replay and the sitting rules, so they share a branch. Adding a verb here
     // and forgetting this line means the handler is written, compiled, and
     // never reached -- "Method not found" for code that plainly exists.
-    // <FS:AICtl> What this object actually is, in one call.
+    // <Lumen> What this object actually is, in one call.
     //
     // **The selection is the whole point.** ChatGPT's forty-item list for
     // object and script understanding puts "selected object context" at number
@@ -5880,7 +5880,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     // **One call, not eight.** A model wants the structure, the faces and the
     // permissions together, and asking eight questions is eight round trips
     // through a socket that runs on the frame loop.
-    // <FS:AICtl> Open a script that lives INSIDE an object.
+    // <Lumen> Open a script that lives INSIDE an object.
     //
     // The author, after watching the assistant ask him to open a script window
     // before it could help: *"jeg synes stadig godt man burde kunne sige, kan
@@ -5894,7 +5894,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
     //
     // A task inventory is asynchronous (Findings 19), so this reports pending
     // and is asked again -- the same shape as worn_by, for the same reason.
-    // <FS:AICtl> Put a new, empty script into an object.
+    // <Lumen> Put a new, empty script into an object.
     //
     // Sonnet found this gap by running into it and said so plainly rather than
     // inventing a way round: *"I don't actually have a way to create a
@@ -6345,7 +6345,7 @@ LLSD FSAIControl::dispatch(const std::string& method, const LLSD& params)
                 r["permissions"] = perm;
                 if (p.getGroup().notNull()) r["group_owned"] = p.isGroupOwned();
                 r["creator_id"] = p.getCreator();
-                r["creator_link"] = FSAIControl::profileLink(p.getCreator());
+                r["creator_link"] = LumenAIControl::profileLink(p.getCreator());
                 S32 asked = 0;
                 const std::string cn = creatorName(p.getCreator(), asked);
                 if (!cn.empty()) r["creator_name"] = cn;
@@ -9676,11 +9676,11 @@ if (method == "camera")
         if (on)
         {
             const std::string provider = gSavedSettings.getString("LumenAIProvider");
-            if (!FSAIKeys::has(provider))
+            if (!LumenAIKeys::has(provider))
             {
                 LLSD e; e["code"] = -32000;
                 e["message"] =
-                    "There is no " + FSAIKeys::displayName(provider) + " key saved, so the "
+                    "There is no " + LumenAIKeys::displayName(provider) + " key saved, so the "
                     "viewer cannot answer for them. Unlike every other tool, this one needs "
                     "one: answering while they are away means the viewer calls a provider "
                     "itself, with nobody at the keyboard, so there is no host to borrow. Tell "
@@ -9720,7 +9720,7 @@ if (method == "camera")
             }
         }
 
-        FSAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called);
+        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called);
 
         LLSD result;
         result["answering_while_away"] = on;
@@ -10165,7 +10165,7 @@ if (method == "camera")
     return wrapper;
 }
 
-LLSD FSAIControl::toolStatus() const
+LLSD LumenAIControl::toolStatus() const
 {
     // Deliberately reports what is true now rather than a static capability
     // list: whether a thing can be done depends on how far login has got.

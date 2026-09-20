@@ -54,19 +54,19 @@
 
 static const std::string FS_BRIDGE_FOLDER = "#LSL Bridge";
 static const std::string FS_BRIDGE_CONTAINER_FOLDER = "Landscaping";
-// <FS:AICtl> Ours starts at 1.0, and MUST match VERSION in lumen_bridge.lsltxt
+// <Lumen> Ours starts at 1.0, and MUST match VERSION in lumen_bridge.lsltxt
 // -- the viewer compares the version the script announces against this name to
 // decide whether the bridge it is talking to is the one it built.
 static const U32 FS_BRIDGE_MAJOR_VERSION = 1;
 static const U32 FS_BRIDGE_MINOR_VERSION = 4;
-// </FS:AICtl>
+// </Lumen>
 static const U32 FS_MAX_MINOR_VERSION = 99;
-// <FS:AICtl> Our script, written fresh against the same command vocabulary
+// <Lumen> Our script, written fresh against the same command vocabulary
 // (Decisions 112). Firestorm's EBEDD1D2-....lsltxt is still in fs_resources and
 // still shipped -- it is unmodified upstream, and removing it would be an edit
 // to their tree for no gain.
 static const std::string UPLOAD_SCRIPT_CURRENT = "lumen_bridge.lsltxt";
-// </FS:AICtl>
+// </Lumen>
 static const std::string FS_STATE_ATTRIBUTE = "state=";
 static const std::string FS_ERROR_ATTRIBUTE = "error=";
 
@@ -1323,7 +1323,7 @@ void FSLSLBridgeScriptCallback::fire(const LLUUID& inv_item)
 
             LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<LLScriptAssetUpload>(obj->getID(), inv_item, LLScriptAssetUpload::MONO, true, LLUUID::null, buffer,
                 [](LLUUID, LLUUID, LLUUID, LLSD response) {
-                    // <FS:AICtl> Say whether the script COMPILED.
+                    // <Lumen> Say whether the script COMPILED.
                     //
                     // The server answers a script upload with `compiled` and,
                     // when it is false, `errors` -- which is how the script
@@ -1359,7 +1359,7 @@ void FSLSLBridgeScriptCallback::fire(const LLUUID& inv_item)
                     {
                         LL_INFOS("FSLSLBridge") << "Bridge script compiled." << LL_ENDL;
                     }
-                    // </FS:AICtl>
+                    // </Lumen>
                     FSLSLBridge::getInstance()->setTimerResult(FSLSLBridge::SCRIPT_UPLOAD_FINISHED);
                 }, nullptr));
             LLViewerAssetUpload::EnqueueInventoryUpload(url, uploadInfo);
@@ -1427,7 +1427,7 @@ std::string FSLSLBridgeScriptCallback::prepUploadFile(std::string &aBuffer)
         LL_WARNS("FSLSLBridge") << "Invalid bridge script" << LL_ENDL;
         return std::string();
     }
-    // <FS:AICtl> Only the FIRST occurrence is replaced, so a second one -- even
+    // <Lumen> Only the FIRST occurrence is replaced, so a second one -- even
     // inside a comment -- silently steals the substitution and the script
     // announces the placeholder verbatim. The viewer then rejects its own
     // bridge and rebuilds it in a loop. Cheap to detect, invisible otherwise.
@@ -1437,7 +1437,7 @@ std::string FSLSLBridgeScriptCallback::prepUploadFile(std::string &aBuffer)
                                    "only the first is substituted, so the bridge will announce "
                                    "the placeholder and be rejected in a loop." << LL_ENDL;
     }
-    // </FS:AICtl>
+    // </Lumen>
     aBuffer.replace(pos, bridgekey.length(), FSLSLBridge::getInstance()->getBridgeFolder().asString());
 
     LLFILE *fpOut = LLFile::fopen(fNew, "wt");
@@ -1733,7 +1733,7 @@ void FSLSLBridge::cleanUpOldVersions()
 {
     std::string mProcessingName;
 
-    // <FS:AICtl> Sweep the Firestorm-named bridges Lumen itself created before
+    // <Lumen> Sweep the Firestorm-named bridges Lumen itself created before
     // Decisions 112. detachOtherBridges() already takes one OFF the avatar --
     // anything in the folder that is not the current bridge is detached -- but
     // nothing deletes it, so without this the user keeps "#Firestorm LSL Bridge
@@ -1747,7 +1747,7 @@ void FSLSLBridge::cleanUpOldVersions()
             cleanUpBridgeFolder(llformat("%s%d.%d", FS_BRIDGE_LEGACY_NAME.c_str(), i, j));
         }
     }
-    // </FS:AICtl>
+    // </Lumen>
 
     for (S32 i = 1; i <= FS_BRIDGE_MAJOR_VERSION; i++)
     {

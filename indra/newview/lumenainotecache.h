@@ -1,5 +1,5 @@
 /**
- * @file fsainotecache.h
+ * @file lumenainotecache.h
  * @brief Notecard text kept between sessions, so a search is not a minute long.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AINOTECACHE_H
-#define FS_AINOTECACHE_H
+#ifndef LUMEN_AINOTECACHE_H
+#define LUMEN_AINOTECACHE_H
 
 #include "llsingleton.h"
 #include "lluuid.h"
@@ -55,10 +55,10 @@ struct sqlite3;
  * person, in plain text, written without asking. Notecard bodies are less
  * sensitive than that.
  */
-class FSAINoteCache : public LLSingleton<FSAINoteCache>
+class LumenAINoteCache : public LLSingleton<LumenAINoteCache>
 {
-    LLSINGLETON(FSAINoteCache);
-    ~FSAINoteCache();
+    LLSINGLETON(LumenAINoteCache);
+    ~LumenAINoteCache();
 
 public:
     /**
@@ -108,4 +108,4 @@ private:
     bool exec(const char* sql);
 };
 
-#endif // FS_AINOTECACHE_H
+#endif // LUMEN_AINOTECACHE_H

@@ -1,6 +1,6 @@
 <llsd>
     <map>
-        <!-- <FS:AICtl> Agni and Aditi, and nothing else.
+        <!-- <Lumen> Agni and Aditi, and nothing else.
 
              localhost:9000 was an OpenSim development grid, and this build sets
              OPENSIM=OFF, so it could never be logged into. Firestorm's own

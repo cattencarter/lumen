@@ -101,7 +101,7 @@ void LLViewerHelp::showTopic(const std::string& topic)
     // <FS:Beq> allow external browser for help topics
     auto url = getURL(topic);
 
-    // <FS:AICtl> Never send this viewer's users to Firestorm's wiki.
+    // <Lumen> Never send this viewer's users to Firestorm's wiki.
     //
     // The author found the ? button doing exactly that FROM THE AI TAB, whose
     // topic slug is one Firestorm never had, so it offered their page about a
@@ -121,7 +121,7 @@ void LLViewerHelp::showTopic(const std::string& topic)
         LLNotificationsUtil::add("LumenNoHelpPages");
         return;
     }
-    // </FS:AICtl>
+    // </Lumen>
     if ( LLWeb::useExternalBrowser(url) )
     {
         LLWeb::loadURLExternal(url);

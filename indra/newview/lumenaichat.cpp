@@ -1,5 +1,5 @@
 /**
- * @file fsaichat.cpp
+ * @file lumenaichat.cpp
  * @brief Somewhere to command the assistant, inside the viewer.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,18 +28,18 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaichat.h"
+#include "lumenaichat.h"
 
 #include "llui.h"
 #include "llviewerchat.h"
 #include "lluiimage.h"
 
-#include "fsaictl.h"
-#include "fsaikeys.h"
-#include "fsaicodex.h"
-#include "fsaiclaude.h"
+#include "lumenaictl.h"
+#include "lumenaikeys.h"
+#include "lumenaicodex.h"
+#include "lumenaiclaude.h"
 #include "llversioninfo.h"
-#include "fsaimemory.h"
+#include "lumenaimemory.h"
 
 #include "llbutton.h"
 #include "fsnearbychathub.h"
@@ -92,10 +92,10 @@ namespace
      */
     std::string modelSetting(const std::string& provider)
     {
-        if (provider == FSAIKeys::OPENAI) return "LumenAIOpenAIModel";
-        if (provider == FSAIKeys::LOCAL)  return "LumenAILocalModel";
-        if (provider == FSAIKeys::CODEX)  return "LumenAICodexModel";
-        if (provider == FSAIKeys::CLAUDECODE) return "LumenAIClaudeCodeModel";
+        if (provider == LumenAIKeys::OPENAI) return "LumenAIOpenAIModel";
+        if (provider == LumenAIKeys::LOCAL)  return "LumenAILocalModel";
+        if (provider == LumenAIKeys::CODEX)  return "LumenAICodexModel";
+        if (provider == LumenAIKeys::CLAUDECODE) return "LumenAIClaudeCodeModel";
         return "LumenAIAnthropicModel";
     }
 
@@ -122,7 +122,7 @@ namespace
      */
     std::string providerUrl(bool is_openai)
     {
-        if (gSavedSettings.getString("LumenAIProvider") == FSAIKeys::LOCAL)
+        if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::LOCAL)
         {
             return gSavedSettings.getString("LumenAILocalURL");
         }
@@ -273,14 +273,14 @@ namespace
             req["params"] = params;
         }
 
-        const std::string reply = FSAIControl::instance().handleRequest(jsonString(req));
+        const std::string reply = LumenAIControl::instance().handleRequest(jsonString(req));
         bool ok = false;
         const LLSD parsed = jsonParse(reply, ok);
-        // <FS:AICtl> Remember every creator this result named, so the reply can
+        // <Lumen> Remember every creator this result named, so the reply can
         // be made clickable without the model having to cooperate. See
         // linkifyKnownNames().
         if (ok) { rememberProfileLinks(parsed); }
-        // </FS:AICtl>
+        // </Lumen>
         return ok ? parsed : LLSD();
     }
 
@@ -516,7 +516,7 @@ namespace
     {
         if (!reply.has("usage") || !reply["usage"].isMap())
         {
-            LL_WARNS("FSAIChat") << "No usage block in the reply; token counts "
+            LL_WARNS("LumenAIChat") << "No usage block in the reply; token counts "
                                     "and any cache figures will be missing." << LL_ENDL;
             return;
         }
@@ -526,7 +526,7 @@ namespace
         // away; this is the record to check afterwards when the question is
         // "did the cache actually do anything". Numbers only -- no message
         // content goes near the log.
-        LL_INFOS("FSAIChat") << "usage " << ll_pretty_print_sd(u) << LL_ENDL;
+        LL_INFOS("LumenAIChat") << "usage " << ll_pretty_print_sd(u) << LL_ENDL;
 
         if (is_openai)
         {
@@ -619,7 +619,7 @@ namespace
     /** The standing prompt, plus whatever the person told us to remember. */
     std::string fullSystemPrompt()
     {
-        const std::string memory = FSAIMemory::get();
+        const std::string memory = LumenAIMemory::get();
         if (memory.empty())
         {
             return systemPrompt();
@@ -739,7 +739,7 @@ namespace
         // viewer's own networking is wrong whether or not it has yet.
         static const LLCore::HttpRequest::policy_t ai_policy =
             LLCore::HttpRequest::createPolicyClass();
-        LLCoreHttpUtil::HttpCoroutineAdapter adapter("FSAIChat", ai_policy);
+        LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenAIChat", ai_policy);
         // Serialised and posted RAW, not via postJsonAndSuspend.
         //
         // That function logs the whole request body at WARNING, unconditionally
@@ -877,17 +877,17 @@ namespace
 
 // ---------------------------------------------------------------------------
 
-FSAIChatFloater::FSAIChatFloater(const LLSD& key)
+LumenAIChatFloater::LumenAIChatFloater(const LLSD& key)
 :   LLFloater(key)
 {
 }
 
-FSAIChatFloater::~FSAIChatFloater()
+LumenAIChatFloater::~LumenAIChatFloater()
 {
     for (size_t i = 0; i < mModelConns.size(); ++i) mModelConns[i].disconnect();
 }
 
-bool FSAIChatFloater::postBuild()
+bool LumenAIChatFloater::postBuild()
 {
     // **Follow the SETTING, not a focus event.**
     //
@@ -908,7 +908,7 @@ bool FSAIChatFloater::postBuild()
         if (LLControlVariablePtr c = gSavedSettings.getControl(kWatch[i]))
         {
             mModelConns.push_back(
-                c->getSignal()->connect(boost::bind(&FSAIChatFloater::refreshTitle, this)));
+                c->getSignal()->connect(boost::bind(&LumenAIChatFloater::refreshTitle, this)));
         }
     }
     refreshTitle();
@@ -945,11 +945,11 @@ bool FSAIChatFloater::postBuild()
  * exactly that came back to the same sentence, with nothing to say it was no
  * longer true. Doing what a message tells you to do must visibly change it.
  */
-void FSAIChatFloater::refreshKeyNotice()
+void LumenAIChatFloater::refreshKeyNotice()
 {
     refreshTitle();
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const bool have = FSAIKeys::has(provider);
+    const bool have = LumenAIKeys::has(provider);
 
     // The header is written once, when the window opens, so changing the model
     // in Preferences afterwards left it naming the old one -- and it was
@@ -957,7 +957,7 @@ void FSAIChatFloater::refreshKeyNotice()
     // about the request rather than a memory of one. Say it again when it
     // changes.
     const std::string model = gSavedSettings.getString(modelSetting(provider));
-    const std::string now = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+    const std::string now = LumenAIKeys::displayName(provider) + " \xc2\xb7 " + model;
     if (!mAnnounced.empty() && now != mAnnounced)
     {
         sayNote("Now using " + now + ".");
@@ -970,25 +970,25 @@ void FSAIChatFloater::refreshKeyNotice()
     // yet. Put one in Preferences > AI", which sends somebody looking for a
     // thing that does not exist. The author, immediately: *"den naevner codex
     // key? men det er der vel ikke noget der hedder"*. There is not.
-    const bool needs_key = (provider == FSAIKeys::ANTHROPIC || provider == FSAIKeys::OPENAI);
+    const bool needs_key = (provider == LumenAIKeys::ANTHROPIC || provider == LumenAIKeys::OPENAI);
     if (!needs_key)
     {
         mSaidNoKey = false;
     }
     else if (!have && !mSaidNoKey)
     {
-        sayNote("There is no " + FSAIKeys::displayName(provider) + " key saved yet. "
+        sayNote("There is no " + LumenAIKeys::displayName(provider) + " key saved yet. "
                 "Put one in Preferences > AI -- this line will change when it is saved.");
         mSaidNoKey = true;
     }
     else if (have && mSaidNoKey)
     {
-        sayNote(FSAIKeys::displayName(provider) + " key found. Go ahead.");
+        sayNote(LumenAIKeys::displayName(provider) + " key found. Go ahead.");
         mSaidNoKey = false;
     }
 }
 
-void FSAIChatFloater::onFocusReceived()
+void LumenAIChatFloater::onFocusReceived()
 {
     LLFloater::onFocusReceived();
     // Coming back from Preferences is a focus change, not an open, so onOpen
@@ -996,7 +996,7 @@ void FSAIChatFloater::onFocusReceived()
     refreshKeyNotice();
 }
 
-void FSAIChatFloater::onOpen(const LLSD& key)
+void LumenAIChatFloater::onOpen(const LLSD& key)
 {
     LLFloater::onOpen(key);
 
@@ -1040,9 +1040,9 @@ void FSAIChatFloater::onOpen(const LLSD& key)
  * would be machinery talking, and if it fails the next real turn simply pays
  * the 19 seconds it would have paid anyway.
  */
-void FSAIChatFloater::warmLocalModel()
+void LumenAIChatFloater::warmLocalModel()
 {
-    if (gSavedSettings.getString("LumenAIProvider") != FSAIKeys::LOCAL) return;
+    if (gSavedSettings.getString("LumenAIProvider") != LumenAIKeys::LOCAL) return;
 
     const std::string url = gSavedSettings.getString("LumenAILocalURL");
     const std::string model = gSavedSettings.getString("LumenAILocalModel");
@@ -1055,11 +1055,11 @@ void FSAIChatFloater::warmLocalModel()
     warmLocal(url, model, NULL);
 }
 
-void FSAIChatFloater::testProvider(const std::string& provider,
+void LumenAIChatFloater::testProvider(const std::string& provider,
                                    std::function<void(bool, const std::string&)> report)
 {
-    const bool is_local  = (provider == FSAIKeys::LOCAL);
-    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
+    const bool is_local  = (provider == LumenAIKeys::LOCAL);
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
 
     const std::string model = gSavedSettings.getString(
         is_local  ? "LumenAILocalModel"
@@ -1067,7 +1067,7 @@ void FSAIChatFloater::testProvider(const std::string& provider,
     const std::string url = is_local ? gSavedSettings.getString("LumenAILocalURL")
                                      : providerUrl(is_openai);
     // A local model needs no key; everything else is useless without one.
-    const std::string key = is_local ? std::string() : FSAIKeys::get(provider);
+    const std::string key = is_local ? std::string() : LumenAIKeys::get(provider);
 
     if (model.empty())
     {
@@ -1081,12 +1081,12 @@ void FSAIChatFloater::testProvider(const std::string& provider,
     }
     if (!is_local && key.empty())
     {
-        report(false, "No " + FSAIKeys::displayName(provider) + " key is saved. "
+        report(false, "No " + LumenAIKeys::displayName(provider) + " key is saved. "
                       "Paste one above, press OK, then test again.");
         return;
     }
 
-    LLCoros::instance().launch("FSAITest", [=]()
+    LLCoros::instance().launch("LumenAITest", [=]()
     {
         LLSD headers, body;
         body["model"] = model;
@@ -1152,11 +1152,11 @@ void FSAIChatFloater::testProvider(const std::string& provider,
     });
 }
 
-void FSAIChatFloater::warmLocal(const std::string& url, const std::string& model,
+void LumenAIChatFloater::warmLocal(const std::string& url, const std::string& model,
                                 std::function<void(bool, F64, const std::string&)> report)
 {
     const std::string system = fullSystemPrompt();
-    LLCoros::instance().launch("FSAIWarm", [url, model, system, report]()
+    LLCoros::instance().launch("LumenAIWarm", [url, model, system, report]()
     {
         LLSD body;
         body["model"] = model;
@@ -1264,7 +1264,7 @@ namespace
 
 }
 
-void FSAIChatFloater::sayUser(const std::string& text)
+void LumenAIChatFloater::sayUser(const std::string& text)
 {
     if (!mTranscript) return;
 
@@ -1273,7 +1273,7 @@ void FSAIChatFloater::sayUser(const std::string& text)
     mTranscript->appendText(text, false, bodyStyle());
 }
 
-void FSAIChatFloater::sayAssistant(const std::string& text)
+void LumenAIChatFloater::sayAssistant(const std::string& text)
 {
     if (!mTranscript || text.empty()) return;
 
@@ -1310,7 +1310,7 @@ void FSAIChatFloater::sayAssistant(const std::string& text)
     mTranscript->appendText(linkifyKnownNames(body), false, bodyStyle());
 }
 
-void FSAIChatFloater::setActivity(const std::string& what)
+void LumenAIChatFloater::setActivity(const std::string& what)
 {
     // Deliberately not also written into the transcript. This is transient --
     // what is happening now, not what was said -- and having it in both places
@@ -1322,7 +1322,7 @@ void FSAIChatFloater::setActivity(const std::string& what)
     }
 }
 
-void FSAIChatFloater::sayHeader()
+void LumenAIChatFloater::sayHeader()
 {
     if (!mTranscript) return;
 
@@ -1339,11 +1339,11 @@ void FSAIChatFloater::sayHeader()
     // `mAnnounced` is still set, because it is what makes a LATER change worth
     // announcing: the note in the transcript records which model answered which
     // turn, and that is a different question from which one is current.
-    mAnnounced = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+    mAnnounced = LumenAIKeys::displayName(provider) + " \xc2\xb7 " + model;
     refreshTitle();
 }
 
-void FSAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
+void LumenAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
                                bool caching_expected)
 {
     if (calls == 0)
@@ -1433,7 +1433,7 @@ static std::string shortModel(const std::string& m)
  * *"det kraever at man lukker og aabner assistent vinduet for at se det"*.
  * A title is always on screen and always current.
  */
-void FSAIChatFloater::refreshTitle()
+void LumenAIChatFloater::refreshTitle()
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     const std::string model = gSavedSettings.getString(modelSetting(provider));
@@ -1441,13 +1441,13 @@ void FSAIChatFloater::refreshTitle()
                            : "Assistant \xc2\xb7 " + shortModel(model));
 }
 
-void FSAIChatFloater::sayNote(const std::string& text)
+void LumenAIChatFloater::sayNote(const std::string& text)
 {
     if (!mTranscript) return;
     mTranscript->appendText("\n" + text, true, dimStyle());
 }
 
-void FSAIChatFloater::setBusy(bool busy, const std::string& note)
+void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 {
     mBusy = busy;
 
@@ -1458,7 +1458,7 @@ void FSAIChatFloater::setBusy(bool busy, const std::string& note)
     setActivity(busy ? (note.empty() ? std::string("Working") : note) : std::string());
 }
 
-void FSAIChatFloater::onClear()
+void LumenAIChatFloater::onClear()
 {
     mMessages = LLSD::emptyArray();
     mHistoryProvider.clear();
@@ -1470,7 +1470,7 @@ void FSAIChatFloater::onClear()
     sayHeader();
 }
 
-void FSAIChatFloater::onSend()
+void LumenAIChatFloater::onSend()
 {
     if (mBusy || !mInput)
     {
@@ -1489,16 +1489,16 @@ void FSAIChatFloater::onSend()
     // The floater may be closed while this is in flight, so the coroutine
     // holds a handle and checks it rather than capturing `this` raw.
     LLHandle<LLFloater> handle = getHandle();
-    LLCoros::instance().launch("FSAIChatTurn", [handle, text]()
+    LLCoros::instance().launch("LumenAIChatTurn", [handle, text]()
     {
-        if (FSAIChatFloater* self = dynamic_cast<FSAIChatFloater*>(handle.get()))
+        if (LumenAIChatFloater* self = dynamic_cast<LumenAIChatFloater*>(handle.get()))
         {
             const std::string who = gSavedSettings.getString("LumenAIProvider");
-            if (who == FSAIKeys::CODEX)
+            if (who == LumenAIKeys::CODEX)
             {
                 self->runCodexTurn(text);
             }
-            else if (who == FSAIKeys::CLAUDECODE)
+            else if (who == LumenAIKeys::CLAUDECODE)
             {
                 self->runClaudeCodeTurn(text);
             }
@@ -1522,10 +1522,10 @@ void FSAIChatFloater::onSend()
  * `poll()` never blocks, and this suspends between polls, so a thinking model
  * does not freeze the viewer.
  */
-void FSAIChatFloater::runCodexTurn(const std::string& user_text)
+void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
 {
     std::string why;
-    if (!mCodex) mCodex.reset(new FSAICodex());
+    if (!mCodex) mCodex.reset(new LumenAICodex());
     if (!mCodex->connected())
     {
         if (!mCodex->connect(why))
@@ -1669,7 +1669,7 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         // `codex mcp add`, so nothing is written into the user's own Codex
         // configuration: Lumen's threads have it, the rest of Codex does not.
         LLSD server;
-        server["url"] = llformat("http://127.0.0.1:%d/mcp", (int)FSAIControl::instance().port());
+        server["url"] = llformat("http://127.0.0.1:%d/mcp", (int)LumenAIControl::instance().port());
         LLSD cfg;
         cfg["mcp_servers"] = LLSD().with("second_life", server);
 
@@ -1693,7 +1693,7 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
         // Read from the user's own config rather than listed here, so a plugin
         // that did not exist today is still switched off. Anything from our own
         // marketplace is left alone -- it is the connector, not a competitor.
-        const std::vector<std::string> plugins = FSAICodex::enabledPlugins();
+        const std::vector<std::string> plugins = LumenAICodex::enabledPlugins();
         LLSD off;
         for (size_t i = 0; i < plugins.size(); ++i)
         {
@@ -1882,9 +1882,9 @@ void FSAIChatFloater::runCodexTurn(const std::string& user_text)
  * being built on -- told a colour in one call and asked for it in the next, it
  * answered, same session.
  */
-void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
+void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
 {
-    if (!FSAIClaude::installed())
+    if (!LumenAIClaude::installed())
     {
         sayNote("Claude Code is not installed. Preferences > AI.");
         setBusy(false);
@@ -1902,11 +1902,11 @@ void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
     }
     mClaudeModel = model;
 
-    if (!mClaude) mClaude.reset(new FSAIClaude());
+    if (!mClaude) mClaude.reset(new LumenAIClaude());
 
     std::string why;
     if (!mClaude->start(user_text, fullSystemPrompt(), model, mClaudeSession,
-                        FSAIControl::instance().port(), why))
+                        LumenAIControl::instance().port(), why))
     {
         sayNote(why);
         setBusy(false);
@@ -1999,30 +1999,30 @@ void FSAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
     setBusy(false);
 }
 
-void FSAIChatFloater::runTurn(const std::string& user_text)
+void LumenAIChatFloater::runTurn(const std::string& user_text)
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
 
-    // <FS:AICtl> "None" is a real choice, so it gets a real answer rather than
+    // <Lumen> "None" is a real choice, so it gets a real answer rather than
     // falling through to a missing-key message about a provider nobody picked.
-    if (provider.empty() || provider == FSAIKeys::NONE)
+    if (provider.empty() || provider == LumenAIKeys::NONE)
     {
         sayNote("No assistant is chosen. Preferences > AI, and pick one under Use.");
         setBusy(false);
         return;
     }
 
-    // <FS:AICtl> Codex and Claude Code are separate programs and reach the
+    // <Lumen> Codex and Claude Code are separate programs and reach the
     // viewer's tools over the endpoint, so it has to be listening before a turn
     // rather than only from startup: the provider can be changed at any moment,
     // and requiring a restart to make a freshly chosen one work is exactly the
     // kind of silent nothing this project keeps writing down.
-    if (provider == FSAIKeys::CODEX || provider == FSAIKeys::CLAUDECODE)
+    if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
     {
-        if (!FSAIControl::instance().isRunning() && !FSAIControl::instance().start())
+        if (!LumenAIControl::instance().isRunning() && !LumenAIControl::instance().start())
         {
             sayNote("Lumen could not open the local connection that "
-                    + FSAIKeys::displayName(provider) + " needs. Try again, or "
+                    + LumenAIKeys::displayName(provider) + " needs. Try again, or "
                     "pick a different provider in Preferences > AI.");
             setBusy(false);
             return;
@@ -2030,15 +2030,15 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     }
 
     // A local server speaks OpenAI's dialect; only the address differs.
-    const bool is_local  = (provider == FSAIKeys::LOCAL);
-    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
+    const bool is_local  = (provider == LumenAIKeys::LOCAL);
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
 
     // **A local model needs no key**, so requiring one would lock out the one
     // provider that costs nothing.
-    const std::string key = FSAIKeys::get(provider);
+    const std::string key = LumenAIKeys::get(provider);
     if (key.empty() && !is_local)
     {
-        sayNote("No " + FSAIKeys::displayName(provider) + " key is saved. Preferences > AI.");
+        sayNote("No " + LumenAIKeys::displayName(provider) + " key is saved. Preferences > AI.");
         setBusy(false);
         return;
     }
@@ -2056,7 +2056,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     {
         if (!mHistoryProvider.empty())
         {
-            sayNote("Switched to " + FSAIKeys::displayName(provider)
+            sayNote("Switched to " + LumenAIKeys::displayName(provider)
                   + ", so this is a new conversation.");
         }
         mMessages = LLSD::emptyArray();
@@ -2077,7 +2077,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
     // This is the send path. Nothing can use a model without passing through
     // it, so nothing can be answered by a model the transcript did not name.
     {
-        const std::string now = FSAIKeys::displayName(provider) + " \xc2\xb7 " + model;
+        const std::string now = LumenAIKeys::displayName(provider) + " \xc2\xb7 " + model;
         if (!mAnnounced.empty() && now != mAnnounced)
         {
             sayNote("Now using " + now + ".");
@@ -2166,7 +2166,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 
         if (!error.empty())
         {
-            sayNote("The " + FSAIKeys::displayName(provider) + " request failed -- " + error);
+            sayNote("The " + LumenAIKeys::displayName(provider) + " request failed -- " + error);
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
             setBusy(false);
@@ -2323,7 +2323,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
         is_local ? "Ask me again in smaller steps -- and for writing scripts, a "
                    "larger model is worth the switch; a small local one goes round "
                    "in circles on them."
-      : (provider == FSAIKeys::CODEX)
+      : (provider == LumenAIKeys::CODEX)
                  ? "Ask me again, more specifically, rather than spending more of "
                    "your Codex allowance on this."
                  : "Ask me again, more specifically, rather than letting this run "
@@ -2335,7 +2335,7 @@ void FSAIChatFloater::runTurn(const std::string& user_text)
 }
 
 // ---------------------------------------------------------------------------
-//  FSAIAutoResponder -- answering while you are away
+//  LumenAIAutoResponder -- answering while you are away
 // ---------------------------------------------------------------------------
 
 namespace
@@ -2517,7 +2517,7 @@ namespace
                  "the third person, or referring to yourself as something separate, reads as "
                  "nonsense.\n"
                  "**Write as " + owner + " would write.**\n";
-            if (!FSAIAutoResponder::instance().note().empty())
+            if (!LumenAIAutoResponder::instance().note().empty())
             {
                 // They said something on the way out. On the first reply that
                 // is an instruction, not a hint -- the earlier wording was "if
@@ -2568,7 +2568,7 @@ namespace
         {
             p += "\nWhat they have told you about themselves:\n" + who + "\n";
         }
-        const std::string note = FSAIAutoResponder::instance().note();
+        const std::string note = LumenAIAutoResponder::instance().note();
         if (!note.empty())
         {
             p += "\nWhat " + owner + " said as they left. This takes precedence over "
@@ -2580,11 +2580,11 @@ namespace
     }
 }
 
-FSAIAutoResponder::FSAIAutoResponder()
+LumenAIAutoResponder::LumenAIAutoResponder()
 {
 }
 
-void FSAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
+void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
                             const std::vector<std::string>& also_called)
 {
     mExtraNames = on ? also_called : std::vector<std::string>();
@@ -2606,7 +2606,7 @@ void FSAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool loc
                                 + "]") : std::string()) << LL_ENDL;
 }
 
-bool FSAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) const
+bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) const
 {
     if (!mArmed)
     {
@@ -2664,7 +2664,7 @@ bool FSAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) con
     return true;
 }
 
-void FSAIAutoResponder::considerChat(const LLSD& data)
+void LumenAIAutoResponder::considerChat(const LLSD& data)
 {
     if (!mArmed || !mLocalChat)
     {
@@ -2803,7 +2803,7 @@ void FSAIAutoResponder::considerChat(const LLSD& data)
             /*speak_aloud*/ true, data["message"].asString());
 }
 
-void FSAIAutoResponder::consider(const LLSD& data)
+void LumenAIAutoResponder::consider(const LLSD& data)
 {
     if (!mIMs)
     {
@@ -2827,12 +2827,12 @@ void FSAIAutoResponder::consider(const LLSD& data)
  * -- never agreeing to anything, never repeating itself, the counters -- would
  * end up enforced in one of them and not the other.
  */
-void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
+void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
                                 const LLUUID& session_id, bool speak_aloud,
                                 const std::string& latest)
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const std::string key      = FSAIKeys::get(provider);
+    const std::string key      = LumenAIKeys::get(provider);
     if (key.empty())
     {
         return;                                  // nothing to answer with
@@ -2920,11 +2920,11 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
 
     const std::string system = autoRespondPrompt(memory, first_time, owner, call_them);
     // A local server speaks OpenAI's dialect; only the address differs.
-    const bool is_local  = (provider == FSAIKeys::LOCAL);
-    const bool is_openai = (provider == FSAIKeys::OPENAI) || is_local;
+    const bool is_local  = (provider == LumenAIKeys::LOCAL);
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
     const std::string model = gSavedSettings.getString(modelSetting(provider));
 
-    LLCoros::instance().launch("FSAIAutoRespond",
+    LLCoros::instance().launch("LumenAIAutoRespond",
         [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()
     {
         LLSD body;
@@ -3031,6 +3031,6 @@ void FSAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& from,
                               << (error.empty() ? "" : (": " + error)) << LL_ENDL;
         }
 
-        FSAIAutoResponder::instance().mInFlight.erase(from_id);
+        LumenAIAutoResponder::instance().mInFlight.erase(from_id);
     });
 }

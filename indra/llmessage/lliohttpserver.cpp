@@ -993,7 +993,7 @@ LLHTTPNode& LLIOHTTPServer::create(
     return factory->getRootNode();
 }
 
-// <FS:AICtl>
+// <Lumen>
 // static
 LLHTTPNode* LLIOHTTPServer::createSafe(
     apr_pool_t* pool, LLPumpIO& pump, U16 port, const char* bind_address)
@@ -1030,7 +1030,7 @@ LLHTTPNode* LLIOHTTPServer::createSafe(
 
     return &factory->getRootNode();
 }
-// </FS:AICtl>
+// </Lumen>
 
 // static
 void LLIOHTTPServer::setTimingCallback(timing_callback_t callback,

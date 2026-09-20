@@ -38,8 +38,8 @@ fi
 
 if [ "${1:-}" != "--no-launch" ]; then
     echo "Starting the viewer with the endpoint enabled on port $port..."
-    "$bin" --set FSAIControlEnabled TRUE \
-           --set FSAIControlPort "$port" >/dev/null 2>&1 &
+    "$bin" --set LumenAIControlEnabled TRUE \
+           --set LumenAIControlPort "$port" >/dev/null 2>&1 &
     echo "  pid $!"
     echo
     echo "Waiting for it to listen (the viewer takes a while to get going)..."

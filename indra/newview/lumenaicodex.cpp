@@ -1,5 +1,5 @@
 /**
- * @file fsaicodex.cpp
+ * @file lumenaicodex.cpp
  * @brief A WebSocket-over-unix-socket client for OpenAI's Codex app-server.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,7 +28,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaicodex.h"
+#include "lumenaicodex.h"
 
 #include "llfile.h"
 
@@ -59,7 +59,7 @@ namespace
     }
 }
 
-std::string FSAICodex::socketPath()
+std::string LumenAICodex::socketPath()
 {
     const std::string home = homeDir();
     if (home.empty()) return std::string();
@@ -67,7 +67,7 @@ std::string FSAICodex::socketPath()
     return home + s + ".codex" + s + "app-server-control" + s + "app-server-control.sock";
 }
 
-std::string FSAICodex::cliPath()
+std::string LumenAICodex::cliPath()
 {
     const std::string home = homeDir();
     if (home.empty()) return std::string();
@@ -76,7 +76,7 @@ std::string FSAICodex::cliPath()
          + s + "bin" + s + "codex";
 }
 
-std::vector<std::string> FSAICodex::enabledPlugins()
+std::vector<std::string> LumenAICodex::enabledPlugins()
 {
     std::vector<std::string> out;
     const std::string home = homeDir();
@@ -100,13 +100,13 @@ std::vector<std::string> FSAICodex::enabledPlugins()
     return out;
 }
 
-bool FSAICodex::socketPresent() { const std::string p = socketPath(); return !p.empty() && gDirUtilp->fileExists(p); }
-bool FSAICodex::cliInstalled()  { const std::string p = cliPath();    return !p.empty() && gDirUtilp->fileExists(p); }
+bool LumenAICodex::socketPresent() { const std::string p = socketPath(); return !p.empty() && gDirUtilp->fileExists(p); }
+bool LumenAICodex::cliInstalled()  { const std::string p = cliPath();    return !p.empty() && gDirUtilp->fileExists(p); }
 
-FSAICodex::FSAICodex() : mFd(-1), mUpgraded(false) {}
-FSAICodex::~FSAICodex() { close(); }
+LumenAICodex::LumenAICodex() : mFd(-1), mUpgraded(false) {}
+LumenAICodex::~LumenAICodex() { close(); }
 
-void FSAICodex::close()
+void LumenAICodex::close()
 {
 #if !LL_WINDOWS
     if (mFd >= 0) ::close(mFd);
@@ -116,7 +116,7 @@ void FSAICodex::close()
     mUpgraded = false;
 }
 
-bool FSAICodex::connect(std::string& why)
+bool LumenAICodex::connect(std::string& why)
 {
 #if LL_WINDOWS
     why = "Codex is not available on Windows in this viewer yet.";
@@ -159,7 +159,7 @@ bool FSAICodex::connect(std::string& why)
 }
 
 #if !LL_WINDOWS
-bool FSAICodex::handshake(std::string& why)
+bool LumenAICodex::handshake(std::string& why)
 {
     // A random 16-byte key, as the protocol requires. The server's
     // Sec-WebSocket-Accept is deliberately NOT verified: it defends against a
@@ -206,7 +206,7 @@ bool FSAICodex::handshake(std::string& why)
     return true;
 }
 
-bool FSAICodex::send(const LLSD& message)
+bool LumenAICodex::send(const LLSD& message)
 {
     if (mFd < 0) return false;
 
@@ -249,7 +249,7 @@ bool FSAICodex::send(const LLSD& message)
     return true;
 }
 
-bool FSAICodex::drain()
+bool LumenAICodex::drain()
 {
     char buf[16384];
     for (;;)
@@ -264,7 +264,7 @@ bool FSAICodex::drain()
     }
 }
 
-bool FSAICodex::frame(std::string& payload)
+bool LumenAICodex::frame(std::string& payload)
 {
     // Server frames are never masked, which keeps this short.
     for (;;)
@@ -296,7 +296,7 @@ bool FSAICodex::frame(std::string& payload)
     }
 }
 
-bool FSAICodex::poll(LLSD& out)
+bool LumenAICodex::poll(LLSD& out)
 {
     if (mFd < 0) return false;
     if (!drain()) return false;
@@ -311,9 +311,9 @@ bool FSAICodex::poll(LLSD& out)
     return true;
 }
 #else
-bool FSAICodex::handshake(std::string&) { return false; }
-bool FSAICodex::send(const LLSD&)       { return false; }
-bool FSAICodex::drain()                 { return false; }
-bool FSAICodex::frame(std::string&)     { return false; }
-bool FSAICodex::poll(LLSD&)             { return false; }
+bool LumenAICodex::handshake(std::string&) { return false; }
+bool LumenAICodex::send(const LLSD&)       { return false; }
+bool LumenAICodex::drain()                 { return false; }
+bool LumenAICodex::frame(std::string&)     { return false; }
+bool LumenAICodex::poll(LLSD&)             { return false; }
 #endif

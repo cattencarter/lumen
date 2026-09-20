@@ -1,5 +1,5 @@
 /**
- * @file fsaiindex.cpp
+ * @file lumenaiindex.cpp
  * @brief A searchable picture of the inventory, so the best match wins.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,7 +28,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaiindex.h"
+#include "lumenaiindex.h"
 
 #include "llinventorymodel.h"
 #include "llinventoryobserver.h"
@@ -90,7 +90,7 @@ namespace
  * 65,621 entries on each would be worse than the problem being solved. The cost
  * is paid once, on the next search that actually needs it.
  */
-class FSAIIndex::Watcher : public LLInventoryObserver
+class LumenAIIndex::Watcher : public LLInventoryObserver
 {
 public:
     void changed(U32 mask) override
@@ -100,18 +100,18 @@ public:
         if (mask & (LLInventoryObserver::LABEL | LLInventoryObserver::ADD
                     | LLInventoryObserver::REMOVE | LLInventoryObserver::STRUCTURE))
         {
-            FSAIIndex::instance().invalidate();
+            LumenAIIndex::instance().invalidate();
         }
     }
 };
 
-FSAIIndex::FSAIIndex()
+LumenAIIndex::LumenAIIndex()
 {
     mWatcher = new Watcher();
     gInventory.addObserver(mWatcher);
 }
 
-FSAIIndex::~FSAIIndex()
+LumenAIIndex::~LumenAIIndex()
 {
     if (mWatcher)
     {
@@ -136,7 +136,7 @@ FSAIIndex::~FSAIIndex()
     }
 }
 
-void FSAIIndex::build()
+void LumenAIIndex::build()
 {
     LLTimer timer;
 
@@ -196,11 +196,11 @@ void FSAIIndex::build()
 
     mBuilt = true;
 
-    LL_INFOS("FSAIIndex") << "Indexed " << mEntries.size() << " items in "
+    LL_INFOS("LumenAIIndex") << "Indexed " << mEntries.size() << " items in "
                           << (S32)(timer.getElapsedTimeF32() * 1000.f) << " ms" << LL_ENDL;
 }
 
-size_t FSAIIndex::size()
+size_t LumenAIIndex::size()
 {
     if (!mBuilt)
     {
@@ -241,7 +241,7 @@ static const char* const BODY_FITS[] = {
  * passed on the way back down, so building 65,000 paths costs each folder once
  * rather than once per item inside it.
  */
-std::string FSAIIndex::folderPathLower(const LLUUID& cat_id,
+std::string LumenAIIndex::folderPathLower(const LLUUID& cat_id,
                                        std::map<LLUUID, std::string>& cache)
 {
     std::vector<LLUUID> chain;
@@ -314,7 +314,7 @@ static S32 editDistance(const std::string& a, const std::string& b, S32 cap)
     return prev[m];
 }
 
-bool FSAIIndex::known(const std::string& w) const
+bool LumenAIIndex::known(const std::string& w) const
 {
     for (const std::string& t : mTokens)
     {
@@ -326,7 +326,7 @@ bool FSAIIndex::known(const std::string& w) const
     return false;
 }
 
-bool FSAIIndex::splitWord(const std::string& w, std::string& a, std::string& b) const
+bool LumenAIIndex::splitWord(const std::string& w, std::string& a, std::string& b) const
 {
     if (w.size() < 6)
     {
@@ -348,7 +348,7 @@ bool FSAIIndex::splitWord(const std::string& w, std::string& a, std::string& b) 
     return false;
 }
 
-std::string FSAIIndex::correctWord(const std::string& word)
+std::string LumenAIIndex::correctWord(const std::string& word)
 {
     if (word.size() < 4)
     {
@@ -461,7 +461,7 @@ static std::string nearFolder(const std::string& path)
  * Returns "" when no body is named, which is not a fault: a third of this
  * inventory names none.
  */
-std::string FSAIIndex::fitInName(const std::string& lname)
+std::string LumenAIIndex::fitInName(const std::string& lname)
 {
     std::string best;
     size_t      best_at = 0;
@@ -495,7 +495,7 @@ std::string FSAIIndex::fitInName(const std::string& lname)
 }
 
 
-S32 FSAIIndex::score(const std::string& lname,
+S32 LumenAIIndex::score(const std::string& lname,
                      const std::vector<std::string>& words,
                      const std::string& whole,
                      const std::string& lfolder)
@@ -606,7 +606,7 @@ S32 FSAIIndex::score(const std::string& lname,
     return s;
 }
 
-std::vector<FSAIIndex::Hit> FSAIIndex::search(const std::string& query,
+std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
                                               LLAssetType::EType kind,
                                               const LLUUID&      creator_id,
                                               size_t             limit,

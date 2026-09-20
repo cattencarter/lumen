@@ -1,5 +1,5 @@
 /**
- * @file fsaiclaude.cpp
+ * @file lumenaiclaude.cpp
  * @brief Drive Claude Code, so the Assistant can run on a Claude subscription.
  *
  * Copyright (C) 2026 Catten Carter
@@ -9,7 +9,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaiclaude.h"
+#include "lumenaiclaude.h"
 
 #include "lldir.h"
 #include "llsdjson.h"
@@ -46,7 +46,7 @@ namespace
     }
 }
 
-std::string FSAIClaude::cliPath()
+std::string LumenAIClaude::cliPath()
 {
     // **A GUI application does not get the user's shell PATH**, so `claude`
     // resolving in Terminal says nothing about whether the viewer can find it.
@@ -71,12 +71,12 @@ std::string FSAIClaude::cliPath()
     return std::string();
 }
 
-bool FSAIClaude::installed()
+bool LumenAIClaude::installed()
 {
     return !cliPath().empty();
 }
 
-bool FSAIClaude::start(const std::string& prompt,
+bool LumenAIClaude::start(const std::string& prompt,
                        const std::string& system,
                        const std::string& model,
                        const std::string& resume,
@@ -160,7 +160,7 @@ bool FSAIClaude::start(const std::string& prompt,
     return true;
 }
 
-bool FSAIClaude::poll(LLSD& out)
+bool LumenAIClaude::poll(LLSD& out)
 {
     if (!mProc) return false;
 
@@ -189,12 +189,12 @@ bool FSAIClaude::poll(LLSD& out)
     return out.isMap();
 }
 
-bool FSAIClaude::running() const
+bool LumenAIClaude::running() const
 {
     return mProc && mProc->isRunning();
 }
 
-void FSAIClaude::stop()
+void LumenAIClaude::stop()
 {
     if (mProc)
     {

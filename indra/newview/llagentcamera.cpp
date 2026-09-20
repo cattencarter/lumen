@@ -26,7 +26,7 @@
 
 #include "llviewerprecompiledheaders.h"
 #include "llagentcamera.h"
-#include "fsaictl.h" // <FS:AICtl>
+#include "lumenaictl.h" // <Lumen>
 
 #include "pipeline.h"
 
@@ -1225,7 +1225,7 @@ void LLAgentCamera::updateLookAt(const S32 mouse_x, const S32 mouse_y)
 
     if (!isAgentAvatarValid()) return;
 
-    // <FS:AICtl> A framed photo owns the gaze.
+    // <Lumen> A framed photo owns the gaze.
     //
     // Everything below points the head along the camera's view axis, nudged by
     // where the mouse sits on screen. Correct for a camera behind you; wrong
@@ -1234,7 +1234,7 @@ void LLAgentCamera::updateLookAt(const S32 mouse_x, const S32 mouse_y)
     // no shot is framed, so ordinary use is untouched.
     {
         LLVector3 photo_target;
-        if (FSAIControl::photoGaze(photo_target))
+        if (LumenAIControl::photoGaze(photo_target))
         {
             // FOCUS, not FREELOOK, and this is the whole fix.
             //
@@ -1250,7 +1250,7 @@ void LLAgentCamera::updateLookAt(const S32 mouse_x, const S32 mouse_y)
             return;
         }
     }
-    // </FS:AICtl>
+    // </Lumen>
 
     LLQuaternion av_inv_rot = ~gAgentAvatarp->mRoot->getWorldRotation();
     LLVector3 root_at = LLVector3::x_axis * gAgentAvatarp->mRoot->getWorldRotation();

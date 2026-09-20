@@ -215,7 +215,7 @@ FSPanelLogin::FSPanelLogin(const LLRect &rect,
 
     reshape(rect.getWidth(), rect.getHeight());
 
-    // <FS:AICtl> The Mode picker is gone from the login screen; see
+    // <Lumen> The Mode picker is gone from the login screen; see
     // panel_fs_login.xml. `getChildRef` asserts on a control that no longer
     // exists, so this wiring has to go with it rather than be left to find
     // nothing.
@@ -879,7 +879,7 @@ void FSPanelLogin::loadLoginPage()
 {
     if (!sInstance) return;
 
-    // <FS:AICtl> Our own start screen, shipped with the viewer.
+    // <Lumen> Our own start screen, shipped with the viewer.
     //
     // What this replaces was fetched from phoenixviewer.com on every launch:
     // Firestorm's blog, Linden news, the blogger network and the destination
@@ -906,7 +906,7 @@ void FSPanelLogin::loadLoginPage()
             LL_WARNS("AppInit") << "Lumen start page not found; using the stock one." << LL_ENDL;
         }
     }
-    // </FS:AICtl>
+    // </Lumen>
 
     LLURI login_page = LLURI(LLGridManager::getInstance()->getLoginPage());
     LLSD params(login_page.queryMap());
@@ -1637,7 +1637,7 @@ void FSPanelLogin::onUsernameTextChanged()
 //    Mode selector    //
 /////////////////////////
 
-// <FS:AICtl> onModeChange and onModeChangeConfirm are gone with the picker
+// <Lumen> onModeChange and onModeChangeConfirm are gone with the picker
 // that was their only caller. The second one reached for "mode_combo" to put
 // the old value back after a cancelled restart, and that control no longer
 // exists   getChild would have returned a dummy and warned rather than

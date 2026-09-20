@@ -1,7 +1,7 @@
 <llsd>
   <array>
 
-    <!-- <FS:AICtl> ONLY Lumen.
+    <!-- <Lumen> ONLY Lumen.
 
          Firestorm's skins shipped here for no better reason than that a fork
          inherits everything: AnsaStorm, MetaHarper, StarLight, StarLight CUI,
@@ -27,7 +27,7 @@
       <key>folder</key>
       <string>lumen</string>
 
-      <!-- <FS:AICtl> One look, not five. The inherited colour schemes were
+      <!-- <Lumen> One look, not five. The inherited colour schemes were
            Firestorm's, credited to their individual authors, and re-offering
            them under this skin's name was neither useful nor quite honest.
            High Contrast was kept for a while as an accessibility feature and

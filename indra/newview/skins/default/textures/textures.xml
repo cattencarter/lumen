@@ -892,7 +892,7 @@ with the same filename but different name
   <texture name="Stop_Animations_Icon" file_name="toolbar_icons/stop_animations.png" preload="true" />
   <texture name="omnifilter" file_name="toolbar_icons/omnifilter.png" preload="true" />
 
-  <!-- <FS:AICtl> Lumen's own previews. The panel looks these up as
+  <!-- <Lumen> Lumen's own previews. The panel looks these up as
        "skin <folder> <theme>", lowercased. -->
   <texture name="skin lumen lumen" file_name="skinspreview/lumen_teal.jpg" preload="true" />
   

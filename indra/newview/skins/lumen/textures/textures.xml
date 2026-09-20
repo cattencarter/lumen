@@ -81,7 +81,7 @@
 	<texture name="Inv_FolderOpen"			file_name="legacy/inv_folder_plain_open.tga" />
 
 	<!-- Firstorm virtual system folders -->
-	<!-- <FS:AICtl> #Lumen is registered as FT_FIRESTORM, so it draws whatever
+	<!-- <Lumen> #Lumen is registered as FT_FIRESTORM, so it draws whatever
 	     Inv_Firestorm* points at. The DEFAULT skin maps those to the generic
 	     system-folder art, which is what an icon audit checked and passed; this
 	     skin overrode them back to Firestorm's emblem, so the user's own #Lumen

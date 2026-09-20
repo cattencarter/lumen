@@ -27,7 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 #include "llviewermessage.h"
 
-#include "fsaictl.h"   // <FS:AICtl>
+#include "lumenaictl.h"   // <Lumen>
 
 // Linden libraries
 #include "llanimationstates.h"
@@ -1428,14 +1428,14 @@ void open_inventory_offer(const uuid_vec_t& objects, const std::string& from_nam
 
         const LLAssetType::EType asset_type = obj->getActualType();
 
-        // <FS:AICtl> A notecard this endpoint is still filling in must not be
+        // <Lumen> A notecard this endpoint is still filling in must not be
         // opened yet: it exists but has no asset for another second, and its
         // preview would tell the user it is missing from the database.
-        if (FSAIControl::consumeAutoOpenSuppression(obj->getName(), asset_type))
+        if (LumenAIControl::consumeAutoOpenSuppression(obj->getName(), asset_type))
         {
             continue;
         }
-        // </FS:AICtl>
+        // </Lumen>
 
         // Either an inventory item or a category.
         const LLInventoryItem* item = dynamic_cast<const LLInventoryItem*>(obj);

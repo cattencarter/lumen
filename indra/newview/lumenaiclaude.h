@@ -1,5 +1,5 @@
 /**
- * @file fsaiclaude.h
+ * @file lumenaiclaude.h
  * @brief Drive Claude Code, so the Assistant can run on a Claude subscription.
  *
  * Copyright (C) 2026 Catten Carter
@@ -7,8 +7,8 @@
  * Licensed under the GNU Lesser General Public License, version 2.1.
  */
 
-#ifndef FS_AICLAUDE_H
-#define FS_AICLAUDE_H
+#ifndef LUMEN_AICLAUDE_H
+#define LUMEN_AICLAUDE_H
 
 #include "llprocess.h"
 #include "llsd.h"
@@ -35,11 +35,11 @@
  * (`HttpHandler` has nothing but `onCompleted`). Here the answer arrives as
  * `content_block_delta` events and can be written into the window as it comes.
  */
-class FSAIClaude
+class LumenAIClaude
 {
 public:
-    FSAIClaude() {}
-    ~FSAIClaude() { stop(); }
+    LumenAIClaude() {}
+    ~LumenAIClaude() { stop(); }
 
     /** Where the CLI is, whether it is there at all. */
     static std::string cliPath();
@@ -69,4 +69,4 @@ private:
     LLProcessPtr mProc;
 };
 
-#endif // FS_AICLAUDE_H
+#endif // LUMEN_AICLAUDE_H

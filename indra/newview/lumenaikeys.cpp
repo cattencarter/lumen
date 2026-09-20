@@ -1,5 +1,5 @@
 /**
- * @file fsaikeys.cpp
+ * @file lumenaikeys.cpp
  * @brief AI provider API keys, kept in the viewer's protected store.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,11 +28,11 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaikeys.h"
+#include "lumenaikeys.h"
 #include "llnotificationsutil.h"
-#include "fsaictl.h"
-#include "fsaichat.h"
-#include "fsaiclaude.h"
+#include "lumenaictl.h"
+#include "lumenaichat.h"
+#include "lumenaiclaude.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
 
@@ -74,7 +74,7 @@ namespace
     }
 }
 
-namespace FSAIKeys
+namespace LumenAIKeys
 {
     const std::string NONE      = "none";
     const std::string ANTHROPIC = "anthropic";
@@ -136,7 +136,7 @@ namespace FSAIKeys
     {
         if (!gSecAPIHandler)
         {
-            LL_WARNS("FSAIKeys") << "No security handler; cannot save a key." << LL_ENDL;
+            LL_WARNS("LumenAIKeys") << "No security handler; cannot save a key." << LL_ENDL;
             return;
         }
 
@@ -155,7 +155,7 @@ namespace FSAIKeys
         // header; it cost a read of llsechandler_basic.cpp to find.
         gSecAPIHandler->syncProtectedMap();
 
-        LL_INFOS("FSAIKeys") << "Saved an API key for " << provider << LL_ENDL;
+        LL_INFOS("LumenAIKeys") << "Saved an API key for " << provider << LL_ENDL;
     }
 
     void clear(const std::string& provider)
@@ -167,7 +167,7 @@ namespace FSAIKeys
         gSecAPIHandler->deleteProtectedData(AI_KEY_STORE, provider);
         gSecAPIHandler->syncProtectedMap();
 
-        LL_INFOS("FSAIKeys") << "Removed the API key for " << provider << LL_ENDL;
+        LL_INFOS("LumenAIKeys") << "Removed the API key for " << provider << LL_ENDL;
     }
 
     std::string hint(const std::string& provider)
@@ -214,12 +214,12 @@ namespace FSAIKeys
 
 // ---------------------------------------------------------------------------
 
-FSPanelPreferenceAIKeys::FSPanelPreferenceAIKeys()
+LumenPanelPreferenceAIKeys::LumenPanelPreferenceAIKeys()
 :   LLPanelPreference()
 {
 }
 
-bool FSPanelPreferenceAIKeys::postBuild()
+bool LumenPanelPreferenceAIKeys::postBuild()
 {
     // Follow the setting itself. Hanging this on the combo's own commit would
     // miss a change made anywhere else -- the same mistake the Assistant
@@ -227,13 +227,13 @@ bool FSPanelPreferenceAIKeys::postBuild()
     if (LLControlVariablePtr c = gSavedSettings.getControl("LumenAIProvider"))
     {
         mProviderConn = c->getSignal()->connect(
-            boost::bind(&FSPanelPreferenceAIKeys::refresh, this));
+            boost::bind(&LumenPanelPreferenceAIKeys::refresh, this));
     }
 
     LLPanelPreference::postBuild();
 
     mRows.clear();
-    for (const std::string& provider : FSAIKeys::providers())
+    for (const std::string& provider : LumenAIKeys::providers())
     {
         Row row;
         row.provider = provider;
@@ -277,7 +277,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
     // reachable, which is three separate things a user would otherwise
     // discover one failure at a time.
 
-    // <FS:AICtl> One Test button for every provider, beside the list.
+    // <Lumen> One Test button for every provider, beside the list.
     //
     // It replaces three differently named buttons in three panels, and it adds
     // the two that never had one at all   Anthropic and OpenAI, which are
@@ -300,7 +300,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
         {
             const std::string provider = gSavedSettings.getString("LumenAIProvider");
 
-            if (provider == FSAIKeys::CODEX)
+            if (provider == LumenAIKeys::CODEX)
             {
                 // A filesystem check, so it answers at once and the popup can
                 // simply report what refresh() is about to show.
@@ -311,9 +311,9 @@ bool FSPanelPreferenceAIKeys::postBuild()
                 return;
             }
 
-            if (provider == FSAIKeys::CLAUDECODE)
+            if (provider == LumenAIKeys::CLAUDECODE)
             {
-                if (!FSAIClaude::installed())
+                if (!LumenAIClaude::installed())
                 {
                     refresh();
                     say(false, "Claude Code is not installed on this computer.");
@@ -323,11 +323,11 @@ bool FSPanelPreferenceAIKeys::postBuild()
 
                 const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
                 // The LIVE port: it is picked at random each start.
-                const U16 port = FSAIControl::instance().port();
+                const U16 port = LumenAIControl::instance().port();
                 LLHandle<LLPanel> h = getHandle();
-                LLCoros::instance().launch("FSAIClaudeTest", [h, model, port]()
+                LLCoros::instance().launch("LumenAIClaudeTest", [h, model, port]()
                 {
-                    FSAIClaude cc;
+                    LumenAIClaude cc;
                     std::string why, said;
                     bool ok = false;
 
@@ -358,8 +358,8 @@ bool FSPanelPreferenceAIKeys::postBuild()
                         cc.stop();
                     }
 
-                    FSPanelPreferenceAIKeys* p =
-                        dynamic_cast<FSPanelPreferenceAIKeys*>(h.get());
+                    LumenPanelPreferenceAIKeys* p =
+                        dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
                     if (!p) return;
                     if (said.size() > 220) said = said.substr(0, 220);
                     p->say(ok,
@@ -373,22 +373,22 @@ bool FSPanelPreferenceAIKeys::postBuild()
             }
 
             // Anthropic, OpenAI, a local model: one real request.
-            busy("Asking " + FSAIKeys::displayName(provider) + "...");
+            busy("Asking " + LumenAIKeys::displayName(provider) + "...");
             LLHandle<LLPanel> h = getHandle();
-            FSAIChatFloater::testProvider(provider,
+            LumenAIChatFloater::testProvider(provider,
                 [h, provider](bool ok, const std::string& detail)
             {
-                FSPanelPreferenceAIKeys* p =
-                    dynamic_cast<FSPanelPreferenceAIKeys*>(h.get());
+                LumenPanelPreferenceAIKeys* p =
+                    dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
                 if (!p) return;
-                p->say(ok, ok ? FSAIKeys::displayName(provider) + " answered."
+                p->say(ok, ok ? LumenAIKeys::displayName(provider) + " answered."
                               : detail);
                 p->refresh();
             });
         });
     }
 
-    // <FS:AICtl> Opens the guided window. Everything it does could be done
+    // <Lumen> Opens the guided window. Everything it does could be done
     // by hand from the website, and for a lot of people that is the harder path
     // rather than the safer one.
     if (LLButton* sb = findChild<LLButton>("codex_setup"))
@@ -396,7 +396,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
         sb->setCommitCallback([](LLUICtrl*, const LLSD&)
         {
             LLFloaterReg::showInstance("ai_setup",
-                LLSD().with("provider", FSAIKeys::CODEX));
+                LLSD().with("provider", LumenAIKeys::CODEX));
         });
     }
 
@@ -405,7 +405,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
         sb->setCommitCallback([](LLUICtrl*, const LLSD&)
         {
             LLFloaterReg::showInstance("ai_setup",
-                LLSD().with("provider", FSAIKeys::CLAUDECODE));
+                LLSD().with("provider", LumenAIKeys::CLAUDECODE));
         });
     }
 
@@ -432,7 +432,7 @@ bool FSPanelPreferenceAIKeys::postBuild()
     return true;
 }
 
-void FSPanelPreferenceAIKeys::syncModelCombo(LLComboBox* combo, const std::string& setting)
+void LumenPanelPreferenceAIKeys::syncModelCombo(LLComboBox* combo, const std::string& setting)
 {
     if (!combo)
     {
@@ -461,7 +461,7 @@ void FSPanelPreferenceAIKeys::syncModelCombo(LLComboBox* combo, const std::strin
     }
 }
 
-void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
+void LumenPanelPreferenceAIKeys::onOpen(const LLSD& key)
 {
     LLPanelPreference::onOpen(key);
 
@@ -525,7 +525,7 @@ void FSPanelPreferenceAIKeys::onOpen(const LLSD& key)
  * They sit at the same position, so the swap reads as one thing becoming
  * another rather than as a panel rearranging itself.
  */
-void FSPanelPreferenceAIKeys::setupOrModel(const std::string& who, bool ready)
+void LumenPanelPreferenceAIKeys::setupOrModel(const std::string& who, bool ready)
 {
     if (LLButton* b = findChild<LLButton>(who + "_setup")) b->setVisible(!ready);
 
@@ -547,7 +547,7 @@ void FSPanelPreferenceAIKeys::setupOrModel(const std::string& who, bool ready)
     }
 }
 
-void FSPanelPreferenceAIKeys::say(bool ok, const std::string& detail)
+void LumenPanelPreferenceAIKeys::say(bool ok, const std::string& detail)
 {
     // "It works" is the whole message on success. The detail is for the case
     // that needs acting on, and a paragraph of reassurance nobody reads is how
@@ -559,14 +559,14 @@ void FSPanelPreferenceAIKeys::say(bool ok, const std::string& detail)
     LLNotificationsUtil::add("GenericAlertOK", args);
 }
 
-void FSPanelPreferenceAIKeys::busy(const std::string& text)
+void LumenPanelPreferenceAIKeys::busy(const std::string& text)
 {
     // Every provider panel has its own status line, so the waiting message goes
     // to whichever one is on screen rather than to a name chosen here.
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const char* which = (provider == FSAIKeys::CODEX)      ? "codex_status"
-                      : (provider == FSAIKeys::CLAUDECODE) ? "claude_status"
-                      : (provider == FSAIKeys::LOCAL)      ? "local_status"
+    const char* which = (provider == LumenAIKeys::CODEX)      ? "codex_status"
+                      : (provider == LumenAIKeys::CLAUDECODE) ? "claude_status"
+                      : (provider == LumenAIKeys::LOCAL)      ? "local_status"
                       : NULL;
     if (which)
     {
@@ -574,7 +574,7 @@ void FSPanelPreferenceAIKeys::busy(const std::string& text)
     }
 }
 
-FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
+LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus()
 {
     CodexState st;
 
@@ -643,11 +643,11 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::codexStatus()
  * guessed at here. A panel that says "signed in" because a file exists is the
  * kind of confident wrong answer this project keeps writing down.
  */
-FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
+LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::claudeStatus()
 {
     CodexState st;
 
-    if (!FSAIClaude::installed())
+    if (!LumenAIClaude::installed())
     {
         // No prose: nothing reads it. The button appearing is the whole message,
         // and the Test popup writes its own.
@@ -659,22 +659,22 @@ FSPanelPreferenceAIKeys::CodexState FSPanelPreferenceAIKeys::claudeStatus()
     return st;
 }
 
-// <FS:AICtl> A heartbeat, and the narrowest one that works. See the header.
+// <Lumen> A heartbeat, and the narrowest one that works. See the header.
 //
 // Three stat calls a second, and only while this panel is the one on screen.
 // The comparison is what keeps it honest: refresh() clears the status line, so
 // calling it every tick would wipe the "Asking..." a test in flight leaves
 // there. It runs when the answer CHANGED, which is the only moment there is
 // anything new to draw.
-void FSPanelPreferenceAIKeys::draw()
+void LumenPanelPreferenceAIKeys::draw()
 {
     if (mWatch.getElapsedTimeF32() > 1.f)
     {
         mWatch.reset();
         const std::string provider = gSavedSettings.getString("LumenAIProvider");
-        if (provider == FSAIKeys::CODEX || provider == FSAIKeys::CLAUDECODE)
+        if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
         {
-            const bool ready = (provider == FSAIKeys::CODEX) ? codexStatus().ready
+            const bool ready = (provider == LumenAIKeys::CODEX) ? codexStatus().ready
                                                              : claudeStatus().ready;
             if (ready != mWasReady)
             {
@@ -685,7 +685,7 @@ void FSPanelPreferenceAIKeys::draw()
     LLPanelPreference::draw();
 }
 
-void FSPanelPreferenceAIKeys::refresh()
+void LumenPanelPreferenceAIKeys::refresh()
 {
     // **Show what was chosen and nothing else.** The panel used to show every
     // provider at once, which is why it was crowded enough that a new block
@@ -703,7 +703,7 @@ void FSPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
     const CodexState codex = codexStatus();
-    // <FS:AICtl> No standing status line. The author: *"when it's all set up we
+    // <Lumen> No standing status line. The author: *"when it's all set up we
     // just remove the button. no need to tell it's not set up"* -- and he is
     // right: the button being there IS the message, and a paragraph repeating
     // it in words is one more thing to read before doing the only thing on
@@ -711,7 +711,7 @@ void FSPanelPreferenceAIKeys::refresh()
     // is in flight, because a button that goes quiet for twenty seconds looks
     // broken.
     if (LLTextBox* cs = findChild<LLTextBox>("codex_status")) cs->setText(std::string());
-    // <FS:AICtl> No command, and no Copy button. The author, looking at the
+    // <Lumen> No command, and no Copy button. The author, looking at the
     // panel: *"this can all go, including the copy button and then we just
     // place 'set it up for me' at the top. we can put the manual steps on the
     // webpage."*
@@ -722,7 +722,7 @@ void FSPanelPreferenceAIKeys::refresh()
     // what runs. A panel that offers both is a panel that asks somebody to
     // choose between two things they cannot tell apart.
 
-    // <FS:AICtl> The button and the model row occupy the same place, and only
+    // <Lumen> The button and the model row occupy the same place, and only
     // one of them is ever there. The author: *"don't show the part about the
     // model and these are claude code's own aliases etc until the set up is
     // complete, then replace the set it up for me button with the drop down
@@ -739,8 +739,8 @@ void FSPanelPreferenceAIKeys::refresh()
 
     // Seeded here rather than in draw(), so that switching provider -- which
     // calls refresh() -- cannot look like a provider that just became ready.
-    mWasReady = (provider == FSAIKeys::CODEX)      ? codex.ready
-              : (provider == FSAIKeys::CLAUDECODE) ? claude.ready
+    mWasReady = (provider == LumenAIKeys::CODEX)      ? codex.ready
+              : (provider == LumenAIKeys::CLAUDECODE) ? claude.ready
               : false;
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status")) cs->setText(std::string());
 
@@ -760,14 +760,14 @@ void FSPanelPreferenceAIKeys::refresh()
         }
         else if (!typed.empty())
         {
-            text = FSAIKeys::looksPlausible(row.provider, typed)
+            text = LumenAIKeys::looksPlausible(row.provider, typed)
                  ? "Will be saved when you click OK."
                  : "Will be saved when you click OK -- but this does not look "
-                   "like a " + FSAIKeys::displayName(row.provider) + " key.";
+                   "like a " + LumenAIKeys::displayName(row.provider) + " key.";
         }
-        else if (FSAIKeys::has(row.provider))
+        else if (LumenAIKeys::has(row.provider))
         {
-            text = "Saved: " + FSAIKeys::hint(row.provider)
+            text = "Saved: " + LumenAIKeys::hint(row.provider)
                  + ". Leave this empty to keep it.";
         }
         else
@@ -779,7 +779,7 @@ void FSPanelPreferenceAIKeys::refresh()
     }
 }
 
-void FSPanelPreferenceAIKeys::onKeyEdited(const std::string& provider)
+void LumenPanelPreferenceAIKeys::onKeyEdited(const std::string& provider)
 {
     for (Row& row : mRows)
     {
@@ -794,7 +794,7 @@ void FSPanelPreferenceAIKeys::onKeyEdited(const std::string& provider)
     refresh();
 }
 
-void FSPanelPreferenceAIKeys::onClear(const std::string& provider)
+void LumenPanelPreferenceAIKeys::onClear(const std::string& provider)
 {
     for (Row& row : mRows)
     {
@@ -811,7 +811,7 @@ void FSPanelPreferenceAIKeys::onClear(const std::string& provider)
     refresh();
 }
 
-void FSPanelPreferenceAIKeys::apply()
+void LumenPanelPreferenceAIKeys::apply()
 {
     LLPanelPreference::apply();
 
@@ -819,7 +819,7 @@ void FSPanelPreferenceAIKeys::apply()
     {
         if (row.pending_clear)
         {
-            FSAIKeys::clear(row.provider);
+            LumenAIKeys::clear(row.provider);
             row.pending_clear = false;
             continue;
         }
@@ -836,7 +836,7 @@ void FSPanelPreferenceAIKeys::apply()
             continue;
         }
 
-        FSAIKeys::set(row.provider, typed);
+        LumenAIKeys::set(row.provider, typed);
 
         // Do not leave the key sitting in a field behind the closed floater.
         row.editor->setText(LLStringUtil::null);
@@ -859,17 +859,17 @@ void FSPanelPreferenceAIKeys::apply()
  * current selection cannot work and exactly one alternative can, which is a
  * state nobody chooses on purpose.
  */
-void FSPanelPreferenceAIKeys::followTheKey()
+void LumenPanelPreferenceAIKeys::followTheKey()
 {
     const std::string chosen = gSavedSettings.getString("LumenAIProvider");
-    if (FSAIKeys::has(chosen))
+    if (LumenAIKeys::has(chosen))
     {
         return;                                   // it can work; leave it alone
     }
 
-    const std::string other = (chosen == FSAIKeys::OPENAI)
-                            ? FSAIKeys::ANTHROPIC : FSAIKeys::OPENAI;
-    if (!FSAIKeys::has(other))
+    const std::string other = (chosen == LumenAIKeys::OPENAI)
+                            ? LumenAIKeys::ANTHROPIC : LumenAIKeys::OPENAI;
+    if (!LumenAIKeys::has(other))
     {
         return;                                   // neither works; nothing to pick
     }
@@ -880,7 +880,7 @@ void FSPanelPreferenceAIKeys::followTheKey()
     gSavedSettings.setString("LumenAIProvider", other);
 }
 
-void FSPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_to_skip)
+void LumenPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_to_skip)
 {
     LLPanelPreference::cancel(settings_to_skip);
 
@@ -897,4 +897,4 @@ void FSPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_to_
     refresh();
 }
 
-static LLPanelInjector<FSPanelPreferenceAIKeys> t_pref_ai_keys("panel_preference_ai");
+static LLPanelInjector<LumenPanelPreferenceAIKeys> t_pref_ai_keys("panel_preference_ai");

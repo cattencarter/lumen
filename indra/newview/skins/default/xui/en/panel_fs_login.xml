@@ -10,7 +10,7 @@
     bg_opaque_color="0.063 0.063 0.094 1"
     background_opaque="true"
     width="1024">
-  <!-- <FS:AICtl> A dead "real_url" naming Firestorm's splash lived here. The
+  <!-- <Lumen> A dead "real_url" naming Firestorm's splash lived here. The
        only reader of that string is llfloatertos.cpp, which takes it from
        floater_tos.xml (secondlife.com/app/tos/); nothing ever asked the LOGIN
        panel for one. Removed rather than repointed. -->
@@ -300,7 +300,7 @@
           tab_stop="false"
           visible="false"  />
     </layout_panel>
-    <!-- <FS:AICtl> The Mode picker is gone, and the layout panel that held it
+    <!-- <Lumen> The Mode picker is gone, and the layout panel that held it
          went with it rather than being left empty   an empty panel still
          reserves its 210 pixels.
 

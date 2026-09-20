@@ -94,7 +94,7 @@ def get_default_platform(dummy):
             }[sys.platform]
 
 DEFAULT_SRCTREE = os.path.dirname(sys.argv[0])
-CHANNEL_VENDOR_BASE = 'Lumen'   # <FS:AICtl> was 'Firestorm'
+CHANNEL_VENDOR_BASE = 'Lumen'   # <Lumen> was 'Firestorm'
 RELEASE_CHANNEL = CHANNEL_VENDOR_BASE + ' Development'
 
 BASE_ARGUMENTS=[

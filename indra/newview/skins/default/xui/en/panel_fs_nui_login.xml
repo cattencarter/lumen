@@ -49,7 +49,7 @@
       width="970"
       min_width="970"
       height="152">
-  <!-- <FS:AICtl> 125 to 100, the author's call: it was too loud for a strip
+  <!-- <Lumen> 125 to 100, the author's call: it was too loud for a strip
        that is otherwise a name, two fields and a button. `top` moves 10 to 23
        so the smaller mark keeps the same optical centre in the 152-high band
        rather than riding high in it. -->
@@ -324,7 +324,7 @@
     + Click to add more grids
     </text>
     </layout_panel>
-    <!-- <FS:AICtl> The Mode picker is gone, and the panel holding it with it.
+    <!-- <Lumen> The Mode picker is gone, and the panel holding it with it.
          It offered Firestorm's interface layouts   Firestorm, Phoenix, Hybrid,
          Text and a generation label   inside a viewer that is not Firestorm:
          the same borrowed clothes as shipping their skins. The author:

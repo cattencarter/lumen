@@ -1,5 +1,5 @@
 /**
- * @file fsainotecache.cpp
+ * @file lumenainotecache.cpp
  * @brief Notecard text kept between sessions, so a search is not a minute long.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,7 +28,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsainotecache.h"
+#include "lumenainotecache.h"
 
 #include "lldir.h"
 #include "lltimer.h"
@@ -58,18 +58,18 @@ namespace
         "  fetched  INTEGER NOT NULL);";
 }
 
-FSAINoteCache::FSAINoteCache()
+LumenAINoteCache::LumenAINoteCache()
 {
     mPath = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, CACHE_FILE);
     open();
 }
 
-FSAINoteCache::~FSAINoteCache()
+LumenAINoteCache::~LumenAINoteCache()
 {
     close();
 }
 
-void FSAINoteCache::close()
+void LumenAINoteCache::close()
 {
     if (mDb)
     {
@@ -78,7 +78,7 @@ void FSAINoteCache::close()
     }
 }
 
-bool FSAINoteCache::exec(const char* sql)
+bool LumenAINoteCache::exec(const char* sql)
 {
     if (!mDb)
     {
@@ -88,7 +88,7 @@ bool FSAINoteCache::exec(const char* sql)
     const int rc = sqlite3_exec(mDb, sql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK)
     {
-        LL_WARNS("FSAINoteCache") << "SQL failed: " << (err ? err : "(no message)") << LL_ENDL;
+        LL_WARNS("LumenAINoteCache") << "SQL failed: " << (err ? err : "(no message)") << LL_ENDL;
         if (err)
         {
             sqlite3_free(err);
@@ -98,7 +98,7 @@ bool FSAINoteCache::exec(const char* sql)
     return true;
 }
 
-bool FSAINoteCache::verifyOrRebuild()
+bool LumenAINoteCache::verifyOrRebuild()
 {
     bool ok = true;
 
@@ -131,7 +131,7 @@ bool FSAINoteCache::verifyOrRebuild()
             const unsigned char* answer = sqlite3_column_text(st, 0);
             if (!answer || std::string((const char*)answer) != "ok")
             {
-                LL_WARNS("FSAINoteCache") << "Integrity check failed: "
+                LL_WARNS("LumenAINoteCache") << "Integrity check failed: "
                                           << (answer ? (const char*)answer : "(null)") << LL_ENDL;
                 ok = false;
             }
@@ -163,7 +163,7 @@ bool FSAINoteCache::verifyOrRebuild()
         }
         if (found != SCHEMA_VERSION)
         {
-            LL_INFOS("FSAINoteCache") << "Schema " << found << ", wanted " << SCHEMA_VERSION
+            LL_INFOS("LumenAINoteCache") << "Schema " << found << ", wanted " << SCHEMA_VERSION
                                       << "; rebuilding." << LL_ENDL;
             ok = false;
         }
@@ -184,7 +184,7 @@ bool FSAINoteCache::verifyOrRebuild()
 
     if (sqlite3_open(mPath.c_str(), &mDb) != SQLITE_OK)
     {
-        LL_WARNS("FSAINoteCache") << "Could not recreate the notecard cache; "
+        LL_WARNS("LumenAINoteCache") << "Could not recreate the notecard cache; "
                                      "searches will fetch from the server as before." << LL_ENDL;
         close();
         return false;
@@ -192,11 +192,11 @@ bool FSAINoteCache::verifyOrRebuild()
     return false;   // caller applies the schema
 }
 
-bool FSAINoteCache::open()
+bool LumenAINoteCache::open()
 {
     if (sqlite3_open(mPath.c_str(), &mDb) != SQLITE_OK)
     {
-        LL_WARNS("FSAINoteCache") << "Could not open " << mPath
+        LL_WARNS("LumenAINoteCache") << "Could not open " << mPath
                                   << "; notecard search will work, slowly." << LL_ENDL;
         close();
         return false;
@@ -232,12 +232,12 @@ bool FSAINoteCache::open()
              "INSERT OR REPLACE INTO meta (k,v) VALUES ('schema','%d');", SCHEMA_VERSION);
     exec(stamp);
 
-    LL_INFOS("FSAINoteCache") << "Notecard cache ready at " << mPath
+    LL_INFOS("LumenAINoteCache") << "Notecard cache ready at " << mPath
                               << " holding " << count() << " cards" << LL_ENDL;
     return true;
 }
 
-bool FSAINoteCache::get(const LLUUID& item_id, const LLUUID& asset_id, std::string& body_out)
+bool LumenAINoteCache::get(const LLUUID& item_id, const LLUUID& asset_id, std::string& body_out)
 {
     if (!mDb)
     {
@@ -270,7 +270,7 @@ bool FSAINoteCache::get(const LLUUID& item_id, const LLUUID& asset_id, std::stri
     return found;
 }
 
-void FSAINoteCache::put(const LLUUID& item_id, const LLUUID& asset_id,
+void LumenAINoteCache::put(const LLUUID& item_id, const LLUUID& asset_id,
                         const std::string& name, const std::string& body)
 {
     if (!mDb)
@@ -296,12 +296,12 @@ void FSAINoteCache::put(const LLUUID& item_id, const LLUUID& asset_id,
 
     if (sqlite3_step(st) != SQLITE_DONE)
     {
-        LL_WARNS("FSAINoteCache") << "Could not store notecard " << item << LL_ENDL;
+        LL_WARNS("LumenAINoteCache") << "Could not store notecard " << item << LL_ENDL;
     }
     sqlite3_finalize(st);
 }
 
-void FSAINoteCache::forget(const LLUUID& item_id)
+void LumenAINoteCache::forget(const LLUUID& item_id)
 {
     if (!mDb)
     {
@@ -319,7 +319,7 @@ void FSAINoteCache::forget(const LLUUID& item_id)
     sqlite3_finalize(st);
 }
 
-S32 FSAINoteCache::count()
+S32 LumenAINoteCache::count()
 {
     if (!mDb)
     {
@@ -339,7 +339,7 @@ S32 FSAINoteCache::count()
     return n;
 }
 
-void FSAINoteCache::clear()
+void LumenAINoteCache::clear()
 {
     if (mDb)
     {

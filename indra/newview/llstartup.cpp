@@ -126,7 +126,7 @@
 #include "llinventorybridge.h"
 #include "llinventorymodel.h"
 #include "llinventorymodelbackgroundfetch.h"
-#include "lumenfolders.h"   // <FS:AICtl>
+#include "lumenfolders.h"   // <Lumen>
 #include "llkeyboard.h"
 #include "llloginhandler.h"         // gLoginHandler, SLURL support
 #include "lllogininstance.h" // Host the login module.
@@ -2837,13 +2837,13 @@ bool idle_startup()
             return false;
         }
 
-        // <FS:AICtl> Rename a leftover "#Firestorm" root folder to "#Lumen"
+        // <Lumen> Rename a leftover "#Firestorm" root folder to "#Lumen"
         // before anything looks inside it. Here because this is the first point
         // where the system folders are known to be ready -- earlier and it
         // finds nothing and silently concludes there is nothing to do, which is
         // the failure it exists to prevent. See lumenfolders.h.
         LumenFolders::migrateRootFolder();
-        // </FS:AICtl>
+        // </Lumen>
 
         LLInventoryModelBackgroundFetch::instance().start();
         LLAppearanceMgr::instance().initCOFID();

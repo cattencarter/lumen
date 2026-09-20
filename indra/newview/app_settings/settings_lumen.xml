@@ -71,7 +71,7 @@
     <integer>0</integer>
   </map>
 
-  <!-- <FS:AICtl> The login-mode presets are loaded AFTER settings.xml and
+  <!-- <Lumen> The login-mode presets are loaded AFTER settings.xml and
        override it, so setting SkinCurrent there alone has no effect: this file
        decides what the default mode actually uses. The other modes (phoenix,
        v3, hybrid, text) keep their own skins. -->

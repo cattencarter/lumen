@@ -1,5 +1,5 @@
 /**
- * @file fsaisetup.h
+ * @file lumenaisetup.h
  * @brief A window that sets Codex up FOR the user, one checked step at a time.
  *
  * Copyright (C) 2026 Catten Carter
@@ -23,8 +23,8 @@
  * runs without a click.
  */
 
-#ifndef FS_AISETUP_H
-#define FS_AISETUP_H
+#ifndef LUMEN_AISETUP_H
+#define LUMEN_AISETUP_H
 
 #include "llfloater.h"
 #include "llprocess.h"
@@ -33,11 +33,11 @@
 class LLButton;
 class LLTextBox;
 
-class FSAISetupFloater : public LLFloater
+class LumenAISetupFloater : public LLFloater
 {
 public:
-    FSAISetupFloater(const LLSD& key);
-    ~FSAISetupFloater() override;
+    LumenAISetupFloater(const LLSD& key);
+    ~LumenAISetupFloater() override;
 
     bool postBuild() override;
     /** The asynchronous Claude Code check reports here. */
@@ -51,7 +51,7 @@ private:
      *  stops after two. */
     enum EStep { STEP_INSTALL = 0, STEP_SIGNIN, STEP_START, STEP_COUNT };
 
-    /** Which provider this window is setting up: FSAIKeys::CODEX or CLAUDECODE. */
+    /** Which provider this window is setting up: LumenAIKeys::CODEX or CLAUDECODE. */
     std::string mProvider;
     /** How many of the three apply to it. */
     int steps() const;
@@ -85,4 +85,4 @@ private:
     bool          mProved   = false;
 };
 
-#endif // FS_AISETUP_H
+#endif // LUMEN_AISETUP_H

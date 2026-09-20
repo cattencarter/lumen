@@ -1,5 +1,5 @@
 /**
- * @file fsaicodex.h
+ * @file lumenaicodex.h
  * @brief Talking to OpenAI's Codex app-server, so the Assistant can run on a
  *        ChatGPT subscription instead of a paid API key.
  *
@@ -26,8 +26,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AI_CODEX_H
-#define FS_AI_CODEX_H
+#ifndef LUMEN_AI_CODEX_H
+#define LUMEN_AI_CODEX_H
 
 #include "llsd.h"
 #include <string>
@@ -54,11 +54,11 @@
  */
 #include <vector>
 
-class FSAICodex
+class LumenAICodex
 {
 public:
-    FSAICodex();
-    ~FSAICodex();
+    LumenAICodex();
+    ~LumenAICodex();
 
     /** Where the daemon listens, whether it is there, and whether Codex is installed. */
     static std::string socketPath();
@@ -98,4 +98,4 @@ private:
     bool        mUpgraded;
 };
 
-#endif // FS_AI_CODEX_H
+#endif // LUMEN_AI_CODEX_H

@@ -46,7 +46,7 @@
           Use
       </text>
 
-      <!-- <FS:AICtl> ONE Test button, beside the list rather than three
+      <!-- <Lumen> ONE Test button, beside the list rather than three
            differently named ones buried in three panels: "Check again" for
            Codex, "Check again" for Claude Code, "Test and warm up" for a local
            model, and nothing at all for the two that take an API key   which
@@ -193,7 +193,7 @@
         </text>
 
 
-        <!-- <FS:AICtl> Claude Code needs installing too, and its old advice was
+        <!-- <Lumen> Claude Code needs installing too, and its old advice was
              the WORSE of the two: `npm install -g`, which needs Node.js. The
              author asked the obvious question   "doesn't claude code require
              any kind of installation" and it does. Same guided window, and
@@ -280,7 +280,7 @@
              input. Copy was always right; what was on screen was not. -->
 
 
-        <!-- <FS:AICtl> The way in for somebody who has never opened Terminal.
+        <!-- <Lumen> The way in for somebody who has never opened Terminal.
 
              The copyable command and Check again stay, because they are the
              right tool for anybody who would rather see what runs. They are no
@@ -335,7 +335,7 @@
      label="Assistant"
      name="tab-assistant" >
 
-      <!-- <FS:AICtl> There is no switch for the endpoint, here or anywhere.
+      <!-- <Lumen> There is no switch for the endpoint, here or anywhere.
            Lumen is a standalone viewer and nothing outside it may drive it.
            The socket still exists, because Codex and Claude Code are separate
            programs that reach the tools through it   but it listens only while

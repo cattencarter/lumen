@@ -59,7 +59,7 @@ public:
      *   for example), use the helper templates below.
      */
 
-    // <FS:AICtl> A server that binds where it is told and survives failure.
+    // <Lumen> A server that binds where it is told and survives failure.
     static LLHTTPNode* createSafe(apr_pool_t* pool, LLPumpIO& pump, U16 port,
                                   const char* bind_address);
     /**< Same as create(), with two differences that matter for a server
@@ -75,7 +75,7 @@ public:
      *
      *   Returns the root node, owned by the pump as in create(), or NULL.
      */
-    // </FS:AICtl>
+    // </Lumen>
 
     static void createPipe(LLPumpIO::chain_t& chain,
             const LLHTTPNode& root, const LLSD& ctx);

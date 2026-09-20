@@ -2,7 +2,7 @@
 """Every action must be registered, advertised, and dispatched.
 
 Three separate lists have to agree, and they are maintained by hand in three
-places in fsaictl.cpp:
+places in lumenaictl.cpp:
 
     groupAction()      maps a group + action to a method   -- registered
     *_actions[]        the enum a host is shown            -- advertised
@@ -43,7 +43,7 @@ has to be checked rather than noticed.
 import re, sys, pathlib
 
 src = pathlib.Path(__file__).resolve().parents[2] / \
-      "indra/newview/fsaictl.cpp"
+      "indra/newview/lumenaictl.cpp"
 s_src = src.read_text(encoding="utf-8", errors="replace")
 s = s_src
 
@@ -79,12 +79,12 @@ for g in re.finditer(r'static const char\* const (\w+)_actions\[\] =\s*\{(.*?)\}
                       % (name, arg))
 
 # A FOURTH list, added after the author saw "chat.read_history" in the
-# assistant's status bar. humanAction() in fsaichat.cpp turns an action into
+# assistant's status bar. humanAction() in lumenaichat.cpp turns an action into
 # the phrase shown while it runs, and its fallback is the raw group.action --
 # chosen deliberately as "honest and ugly beats silent, and a standing reminder
 # to add a phrase". A standing reminder nobody is shown is not one: eight
 # actions had reached the user that way, two of them weeks old.
-chat_src = src.parent / "fsaichat.cpp"
+chat_src = src.parent / "lumenaichat.cpp"
 phrased = set()
 if chat_src.exists():
     hs = chat_src.read_text(encoding="utf-8", errors="replace")
@@ -168,7 +168,7 @@ NARROWING = re.compile(
     r"\b(?:S32|int)\s+\w+\s*=\s*(?!\s*\((?:S32|int)\))[^;]*?\.(?:size|length)\(\)"
     r"(?P<tail>[^;]*);")
 
-ours = sorted(src.parent.glob("fsai*.cpp")) + sorted(src.parent.glob("fsai*.h")) \
+ours = sorted(src.parent.glob("lumenai*.cpp")) + sorted(src.parent.glob("lumenai*.h")) \
      + sorted(src.parent.glob("lumen*.cpp")) + sorted(src.parent.glob("lumen*.h"))
 for f in ours:
     stripped = code_only(f.read_text(encoding="utf-8", errors="replace"))
@@ -190,7 +190,7 @@ if phrased:
         fails.append("advertised but has NO status phrase: %s  "
                      "(the assistant shows the raw name, which reads as debug output)" % a)
 else:
-    fails.append("could not read humanAction() in fsaichat.cpp -- status phrases NOT CHECKED")
+    fails.append("could not read humanAction() in lumenaichat.cpp -- status phrases NOT CHECKED")
 
 for a in sorted(registered - advertised):
     fails.append("registered but NOT advertised: %s  (no model can see it)" % a)

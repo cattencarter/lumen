@@ -822,7 +822,7 @@
          height="20"
          follows="left|top" />
 
-        <!-- <FS:AICtl> The Phoenix beam preview is gone, with its two presets
+        <!-- <Lumen> The Phoenix beam preview is gone, with its two presets
          (app_settings/beams/Phoenix.xml and beamsColors/Phoenix.xml). It drew
          Firestorm's emblem as a selection beam   their mark, rendered in world,
          where other people see it   offered from a button in our Preferences.

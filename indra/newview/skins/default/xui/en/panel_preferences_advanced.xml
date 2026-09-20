@@ -108,7 +108,7 @@
      top_delta="40"
      width="250" />
 
-    <!-- <FS:AICtl> The endpoint switch moved to Preferences > AI, on the
+    <!-- <Lumen> The endpoint switch moved to Preferences > AI, on the
          Assistant tab. The author: "I would prefer a none under providers
          instead of having ai setting in two places". It was put here
          originally because Privacy is a nested tab_container and Advanced

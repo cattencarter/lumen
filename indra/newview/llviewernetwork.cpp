@@ -62,7 +62,7 @@ const std::string  GRID_LOGIN_IDENTIFIER_TYPES = "login_identifier_types";
 const std::string GRID_SLURL_BASE = "slurl_base";
 const std::string GRID_APP_SLURL_BASE = "app_slurl_base";
 
-// <FS:AICtl> Linden Lab's own splash, not Firestorm's.
+// <Lumen> Linden Lab's own splash, not Firestorm's.
 //
 // This is only a FALLBACK: FSPanelLogin loads Lumen's local start page
 // and returns before the grid's loginpage is read, unless somebody sets

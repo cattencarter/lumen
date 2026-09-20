@@ -43,7 +43,7 @@
 			<check_box label="İstifadəçi adını xatırla" name="remember_username_check" />
 			<check_box label="Parolu xatırla" name="remember_check"/>
 		</layout_panel>
-  <!-- <FS:AICtl> The Mode picker is gone from the English panel, so this
+  <!-- <Lumen> The Mode picker is gone from the English panel, so this
        translation of it could never render   a localised file can CHANGE a
        node the base declares, never ADD one. Removed anyway rather than
        left inert: it named settings_firestorm.xml, a file that no longer

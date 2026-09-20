@@ -1,5 +1,5 @@
 /**
- * @file fsaimemory.cpp
+ * @file lumenaimemory.cpp
  * @brief What the assistant should already know about you.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -28,7 +28,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaimemory.h"
+#include "lumenaimemory.h"
 
 #include "llbutton.h"
 #include "lldir.h"
@@ -68,7 +68,7 @@ namespace
     }
 }
 
-namespace FSAIMemory
+namespace LumenAIMemory
 {
     std::string path()
     {
@@ -94,12 +94,12 @@ namespace FSAIMemory
         std::ofstream f(path().c_str(), std::ios::binary | std::ios::trunc);
         if (!f.good())
         {
-            LL_WARNS("FSAIMemory") << "Could not write " << path() << LL_ENDL;
+            LL_WARNS("LumenAIMemory") << "Could not write " << path() << LL_ENDL;
             return;
         }
         f << clipped;
 
-        LL_INFOS("FSAIMemory") << "Memory saved, " << clipped.size() << " bytes" << LL_ENDL;
+        LL_INFOS("LumenAIMemory") << "Memory saved, " << clipped.size() << " bytes" << LL_ENDL;
     }
 
     std::string extractImportable(const std::string& raw)
@@ -168,12 +168,12 @@ namespace FSAIMemory
 
 // ---------------------------------------------------------------------------
 
-FSAIMemoryFloater::FSAIMemoryFloater(const LLSD& key)
+LumenAIMemoryFloater::LumenAIMemoryFloater(const LLSD& key)
 :   LLFloater(key)
 {
 }
 
-bool FSAIMemoryFloater::postBuild()
+bool LumenAIMemoryFloater::postBuild()
 {
     mText  = getChild<LLTextEditor>("memory");
     mCount = getChild<LLTextBox>("count");
@@ -197,18 +197,18 @@ bool FSAIMemoryFloater::postBuild()
     return true;
 }
 
-void FSAIMemoryFloater::onOpen(const LLSD& key)
+void LumenAIMemoryFloater::onOpen(const LLSD& key)
 {
     LLFloater::onOpen(key);
 
     if (mText)
     {
-        mText->setText(FSAIMemory::get());
+        mText->setText(LumenAIMemory::get());
     }
     updateCount();
 }
 
-void FSAIMemoryFloater::updateCount()
+void LumenAIMemoryFloater::updateCount()
 {
     if (!mCount || !mText)
     {
@@ -216,15 +216,15 @@ void FSAIMemoryFloater::updateCount()
     }
 
     const size_t used = mText->getText().size();
-    std::string text = llformat("%zu of %zu characters", used, FSAIMemory::MAX_BYTES);
-    if (used > FSAIMemory::MAX_BYTES)
+    std::string text = llformat("%zu of %zu characters", used, LumenAIMemory::MAX_BYTES);
+    if (used > LumenAIMemory::MAX_BYTES)
     {
         text += "  -- too long; the end will be cut off when you save.";
     }
     mCount->setText(text);
 }
 
-void FSAIMemoryFloater::onImport()
+void LumenAIMemoryFloater::onImport()
 {
     LLFilePicker& picker = LLFilePicker::instance();
     if (!picker.getOpenFile(LLFilePicker::FFLOAD_ALL))
@@ -242,7 +242,7 @@ void FSAIMemoryFloater::onImport()
     std::ostringstream ss;
     ss << f.rdbuf();
 
-    const std::string usable = FSAIMemory::extractImportable(ss.str());
+    const std::string usable = LumenAIMemory::extractImportable(ss.str());
 
     // Into the editor, never straight to disk. An import is a draft: the whole
     // point is that the person trims it to the few hundred words worth paying
@@ -254,11 +254,11 @@ void FSAIMemoryFloater::onImport()
     updateCount();
 }
 
-void FSAIMemoryFloater::onSave()
+void LumenAIMemoryFloater::onSave()
 {
     if (mText)
     {
-        FSAIMemory::set(mText->getText());
+        LumenAIMemory::set(mText->getText());
     }
     closeFloater();
 }

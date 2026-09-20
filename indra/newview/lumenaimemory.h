@@ -1,5 +1,5 @@
 /**
- * @file fsaimemory.h
+ * @file lumenaimemory.h
  * @brief What the assistant should already know about you.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AIMEMORY_H
-#define FS_AIMEMORY_H
+#ifndef LUMEN_AIMEMORY_H
+#define LUMEN_AIMEMORY_H
 
 #include "llfloater.h"
 
@@ -60,7 +60,7 @@ class LLTextBox;
  * in the protected store: it is not a secret, and the person should be able to
  * open it, read it and edit it without going through this window.
  */
-namespace FSAIMemory
+namespace LumenAIMemory
 {
     /** Bytes. Past this the model is paying rent on text it will not use. */
     const size_t MAX_BYTES = 8000;
@@ -92,10 +92,10 @@ namespace FSAIMemory
  * Its own floater rather than more rows on the preferences panel, which is
  * already within thirty pixels of the height the tab container allows.
  */
-class FSAIMemoryFloater : public LLFloater
+class LumenAIMemoryFloater : public LLFloater
 {
 public:
-    FSAIMemoryFloater(const LLSD& key);
+    LumenAIMemoryFloater(const LLSD& key);
 
     bool postBuild() override;
     void onOpen(const LLSD& key) override;
@@ -109,4 +109,4 @@ private:
     void updateCount();
 };
 
-#endif // FS_AIMEMORY_H
+#endif // LUMEN_AIMEMORY_H

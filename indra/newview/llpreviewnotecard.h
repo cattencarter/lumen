@@ -113,14 +113,14 @@ protected:
     bool handleSaveChangesDialog(const LLSD& notification, const LLSD& response);
     bool handleConfirmDeleteDialog(const LLSD& notification, const LLSD& response);
 
-// <FS:AICtl> Made public. The assistant endpoint creates notecards in the same
+// <Lumen> Made public. The assistant endpoint creates notecards in the same
 // two steps the viewer does -- empty item, then upload -- and the viewer opens
 // the new card in between, on an item with no asset yet. Its preview fails and
 // stays on "loading" until something refreshes it, and this is that something.
 public:
     static void finishInventoryUpload(LLUUID itemId, LLUUID newAssetId, LLUUID newItemId);
 protected:
-// </FS:AICtl>
+// </Lumen>
     static void finishTaskUpload(LLUUID itemId, LLUUID newAssetId, LLUUID taskId);
     // <FS:Ansariel> FIRE-13969: Search button
     void onSearchButtonClicked();

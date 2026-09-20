@@ -1,5 +1,5 @@
 /**
- * @file fsaiindex.h
+ * @file lumenaiindex.h
  * @brief A searchable picture of the inventory, so the best match wins.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AIINDEX_H
-#define FS_AIINDEX_H
+#ifndef LUMEN_AIINDEX_H
+#define LUMEN_AIINDEX_H
 
 #include "llsingleton.h"
 #include "lluuid.h"
@@ -61,10 +61,10 @@
  * the process would need invalidating against a world that changed while it was
  * not running.
  */
-class FSAIIndex : public LLSingleton<FSAIIndex>
+class LumenAIIndex : public LLSingleton<LumenAIIndex>
 {
-    LLSINGLETON(FSAIIndex);
-    ~FSAIIndex();
+    LLSINGLETON(LumenAIIndex);
+    ~LumenAIIndex();
 
 public:
     struct Hit
@@ -219,4 +219,4 @@ private:
     Watcher* mWatcher = nullptr;
 };
 
-#endif // FS_AIINDEX_H
+#endif // LUMEN_AIINDEX_H

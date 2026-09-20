@@ -38,7 +38,7 @@ const S32 COMPUTE_STOCK_INFINITE = -1;
 const S32 COMPUTE_STOCK_NOT_EVALUATED = -2;
 
 // <FS:TT> - Firestorm folder name for use by AO, bridge and possibly others
-// <FS:AICtl> Lumen does not put somebody else's name at the top of the user's
+// <Lumen> Lumen does not put somebody else's name at the top of the user's
 // inventory (Decisions 5, 117). The macro keeps its upstream spelling so the
 // five files that use it need no edit and carry no merge burden; only the
 // string changed. A leftover "#Firestorm" folder is renamed in place at login

@@ -10957,7 +10957,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>Value</key>
     <integer>0</integer>
   </map>
-   <!-- <FS:AICtl> Default on. With this off on a Retina display the interface lays
+   <!-- <Lumen> Default on. With this off on a Retina display the interface lays
        out at the wrong scale until the window is resized, and the Log In button
        sits off the right edge, so a new user cannot log in at all. The cost is
        the 3D view rendering at full backing resolution, which is slower; a user
@@ -14570,7 +14570,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
-  <!-- <FS:AICtl> Local control endpoint. Off by default: this is a listening
+  <!-- <Lumen> Local control endpoint. Off by default: this is a listening
        socket inside the program holding the user's credentials. -->
   <key>LumenUseStockLoginPage</key>
     <map>
@@ -14693,7 +14693,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <string>sonnet</string>
   </map>
-  <key>FSAIControlPort</key>
+  <key>LumenAIControlPort</key>
     <map>
       <key>Comment</key>
       <string>Developer override for the assistant endpoint port. 0, the default, picks a free one at random each start. Not in any panel: the endpoint is plumbing for Codex and Claude Code, not a feature.</string>
@@ -14704,7 +14704,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
-  <!-- </FS:AICtl> -->
+  <!-- </Lumen> -->
   <key>FSUseStandaloneGroupFloater</key>
     <map>
       <key>Comment</key>
@@ -15338,7 +15338,7 @@ Change of this parameter will affect the layout of buttons in notification toast
       <integer>1</integer>
       <key>Type</key>
       <string>String</string>
-      <!-- <FS:AICtl> Lumen's own skin by default. It is a copy of the Firestorm
+      <!-- <Lumen> Lumen's own skin by default. It is a copy of the Firestorm
            skin with the orange accent rotated to the teal of the application
            icon, at matched perceived luminance so the interface keeps its
            visual weight. The Firestorm skin is untouched and still selectable. -->

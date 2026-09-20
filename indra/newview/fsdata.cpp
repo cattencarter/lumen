@@ -57,7 +57,7 @@
 #include "rlvhelper.h"
 // [/RLVa:KB]
 
-// <FS:AICtl> Emptied rather than left as an unreachable literal. The code
+// <Lumen> Emptied rather than left as an unreachable literal. The code
 // that used it returns early now, so the string was dead   but a dead
 // string is still IN the binary, and "does this viewer call Firestorm?"
 // should be answerable by looking, not by reading control flow.
@@ -72,7 +72,7 @@ FSData::FSData() :
     mHeaders.insert("User-Agent", LLViewerMedia::getInstance()->getCurrentUserAgent());
     mHeaders.insert("viewer-version", LLVersionInfo::getInstance()->getChannelAndVersionFS());
 
-    // <FS:AICtl> No base URL: nothing is fetched. See startDownload().
+    // <Lumen> No base URL: nothing is fetched. See startDownload().
     mBaseURL = "";
     mFSDataURL = mBaseURL + "/" + "data.xml";
 }
@@ -298,7 +298,7 @@ static void downloadError(LLSD const &aData, std::string const &aURL)
 // call this just before the login screen and after the LLProxy has been setup.
 void FSData::startDownload()
 {
-    // <FS:AICtl> Lumen does not call Firestorm's servers. Author's decision,
+    // <Lumen> Lumen does not call Firestorm's servers. Author's decision,
     // 2026-09-19, after going through what this actually fetched:
     //
     //   data.xml      MOTD, BlockedReleases, their staff flags, an asset
@@ -389,7 +389,7 @@ void FSData::startDownload()
 // call this _after_ the login screen to pick up grid data.
 void FSData::downloadAgents()
 {
-    // <FS:AICtl> agents.xml is Firestorm's own staff list, which drew the
+    // <Lumen> agents.xml is Firestorm's own staff list, which drew the
     // [FIRESTORM][FSDEV][FSSUPP] badges on profiles; assets.xml is the shared
     // asset blocklist. Neither is fetched any more   see startDownload().
     //
@@ -1100,7 +1100,7 @@ LLSD FSData::getSystemInfo()
     sysinfo2 += llformat("Packets Lost: %.0f/%.0f (%.1f%%)\n\n", info["PACKETS_LOST"].asReal(), info["PACKETS_IN"].asReal(), info["PACKETS_PCT"].asReal());
 
     sysinfo2 += llformat("RLVa: %s\n", info["RLV_VERSION"].asString().c_str());
-    // <FS:AICtl> The Mode picker is gone and getViewerInfo no longer sets
+    // <Lumen> The Mode picker is gone and getViewerInfo no longer sets
     // MODE, so this printed an empty field. A SECOND consumer of it, built
     // by hand here rather than from the AboutSettings template   which is
     // why grepping the XUI for [MODE] said the job was finished.

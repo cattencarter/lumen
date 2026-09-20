@@ -1,5 +1,5 @@
 /**
- * @file fsaisetup.cpp
+ * @file lumenaisetup.cpp
  * @brief A window that sets Codex up FOR the user, one checked step at a time.
  *
  * Copyright (C) 2026 Catten Carter
@@ -9,15 +9,15 @@
 
 #include "llviewerprecompiledheaders.h"
 
-#include "fsaisetup.h"
+#include "lumenaisetup.h"
 
 #include "llbutton.h"
 #include "lltextbox.h"
 #include "lldir.h"
 #include "llviewercontrol.h"
-#include "fsaikeys.h"
-#include "fsaiclaude.h"
-#include "fsaictl.h"
+#include "lumenaikeys.h"
+#include "lumenaiclaude.h"
+#include "lumenaictl.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
 #include "lltimer.h"
@@ -34,7 +34,7 @@ namespace
      */
     const char* command(const std::string& provider, int step)
     {
-        const bool codex = (provider == FSAIKeys::CODEX);
+        const bool codex = (provider == LumenAIKeys::CODEX);
         switch (step)
         {
             case 0:
@@ -66,15 +66,15 @@ namespace
     F32 patience(int step) { return (step == 1) ? 300.f : 180.f; }
 }
 
-FSAISetupFloater::FSAISetupFloater(const LLSD& key) : LLFloater(key) {}
+LumenAISetupFloater::LumenAISetupFloater(const LLSD& key) : LLFloater(key) {}
 
 /** Claude Code needs no background service, so it stops after two. */
-int FSAISetupFloater::steps() const
+int LumenAISetupFloater::steps() const
 {
-    return (mProvider == FSAIKeys::CODEX) ? 3 : 2;
+    return (mProvider == LumenAIKeys::CODEX) ? 3 : 2;
 }
 
-FSAISetupFloater::~FSAISetupFloater()
+LumenAISetupFloater::~LumenAISetupFloater()
 {
     // A half-finished install is worse than none, so a running step is NOT
     // killed when the window closes -- `autokill` is false and the process is
@@ -83,7 +83,7 @@ FSAISetupFloater::~FSAISetupFloater()
     mProc.reset();
 }
 
-std::string FSAISetupFloater::codexDir()
+std::string LumenAISetupFloater::codexDir()
 {
     const char* h = getenv("HOME");
     if (!h || !*h) h = getenv("USERPROFILE");
@@ -98,12 +98,12 @@ std::string FSAISetupFloater::codexDir()
  * window must never rely on having watched it happen. This is also why there
  * is no "current step" stored anywhere: the state is the three files.
  */
-bool FSAISetupFloater::done(EStep step) const
+bool LumenAISetupFloater::done(EStep step) const
 {
-    if (mProvider != FSAIKeys::CODEX)
+    if (mProvider != LumenAIKeys::CODEX)
     {
         // Claude Code.
-        if (step == STEP_INSTALL) return FSAIClaude::installed();
+        if (step == STEP_INSTALL) return LumenAIClaude::installed();
         if (step == STEP_SIGNIN)  return mProved;   // see the header
         return true;                                // no third step
     }
@@ -126,7 +126,7 @@ bool FSAISetupFloater::done(EStep step) const
     }
 }
 
-bool FSAISetupFloater::postBuild()
+bool LumenAISetupFloater::postBuild()
 {
     for (int i = 0; i < STEP_COUNT; ++i)
     {
@@ -143,18 +143,18 @@ bool FSAISetupFloater::postBuild()
     return true;
 }
 
-void FSAISetupFloater::onOpen(const LLSD& key)
+void LumenAISetupFloater::onOpen(const LLSD& key)
 {
     // Which provider, from whoever opened it. Codex unless told otherwise, so
     // an old call site cannot silently become a Claude Code window.
-    mProvider = key.has("provider") ? key["provider"].asString() : FSAIKeys::CODEX;
+    mProvider = key.has("provider") ? key["provider"].asString() : LumenAIKeys::CODEX;
     mProved = false;
     mFailed = false;
     mNote.clear();
     refresh();
 }
 
-void FSAISetupFloater::signedIn(bool ok)
+void LumenAISetupFloater::signedIn(bool ok)
 {
     mProved = ok;
     mFailed = !ok;
@@ -164,14 +164,14 @@ void FSAISetupFloater::signedIn(bool ok)
     refresh();
 }
 
-void FSAISetupFloater::onDo(EStep step)
+void LumenAISetupFloater::onDo(EStep step)
 {
     if (mRunning != STEP_COUNT) return;     // one at a time
     run(step);
     refresh();
 }
 
-void FSAISetupFloater::run(EStep step)
+void LumenAISetupFloater::run(EStep step)
 {
     mFailed = false;
     mNote.clear();
@@ -196,7 +196,7 @@ void FSAISetupFloater::run(EStep step)
     mPoll.reset();
 }
 
-void FSAISetupFloater::draw()
+void LumenAISetupFloater::draw()
 {
     // Polling on the frame loop is fine at this rate and needs no timer of its
     // own; the checks are three fileExists calls.
@@ -214,7 +214,7 @@ void FSAISetupFloater::draw()
             refresh();
         }
         else if (mProc && !mProc->isRunning()
-                 && mProvider != FSAIKeys::CODEX && mRunning == STEP_SIGNIN)
+                 && mProvider != LumenAIKeys::CODEX && mRunning == STEP_SIGNIN)
         {
             // `claude auth login` has exited, and there is no file to look at:
             // Claude Code keeps its credentials in the macOS keychain. So the
@@ -225,11 +225,11 @@ void FSAISetupFloater::draw()
             refresh();
 
             const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
-            const U16 port = FSAIControl::instance().port();
+            const U16 port = LumenAIControl::instance().port();
             LLHandle<LLFloater> h = getHandle();
-            LLCoros::instance().launch("FSAISetupClaude", [h, model, port]()
+            LLCoros::instance().launch("LumenAISetupClaude", [h, model, port]()
             {
-                FSAIClaude cc;
+                LumenAIClaude cc;
                 std::string why;
                 bool ok = false;
                 if (cc.start("Reply with the single word: ok", std::string(),
@@ -251,7 +251,7 @@ void FSAISetupFloater::draw()
                     }
                     cc.stop();
                 }
-                FSAISetupFloater* f = dynamic_cast<FSAISetupFloater*>(h.get());
+                LumenAISetupFloater* f = dynamic_cast<LumenAISetupFloater*>(h.get());
                 if (!f) return;
                 f->signedIn(ok);
             });
@@ -282,7 +282,7 @@ void FSAISetupFloater::draw()
     LLFloater::draw();
 }
 
-void FSAISetupFloater::refresh()
+void LumenAISetupFloater::refresh()
 {
     const int  n   = steps();
     bool all = true;
@@ -321,7 +321,7 @@ void FSAISetupFloater::refresh()
     // The wording is the whole product for this window, and the two providers
     // are not the same story: one is a 230 MB download and a background
     // service, the other is a small program and nothing else.
-    const bool codex = (mProvider == FSAIKeys::CODEX);
+    const bool codex = (mProvider == LumenAIKeys::CODEX);
     setTitle(codex ? "Use your ChatGPT subscription" : "Use your Claude subscription");
     if (LLTextBox* t = findChild<LLTextBox>("intro"))
     {

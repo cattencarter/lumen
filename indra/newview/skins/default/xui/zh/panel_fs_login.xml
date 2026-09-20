@@ -52,7 +52,7 @@
 			<text name="create_account_text">
 				建立你的帳號
 			</text>
-			<!-- <FS:AICtl> The Mode picker is gone from the English panel, so this
+			<!-- <Lumen> The Mode picker is gone from the English panel, so this
 			     translation could never render   a localised file can CHANGE a node
 			     the base declares, never ADD one. Removed rather than left inert. -->
 		</layout_panel>

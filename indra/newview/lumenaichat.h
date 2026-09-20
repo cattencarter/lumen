@@ -1,5 +1,5 @@
 /**
- * @file fsaichat.h
+ * @file lumenaichat.h
  * @brief Somewhere to command the assistant, inside the viewer.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
@@ -25,8 +25,8 @@
  * http://www.firestormviewer.org
  * $/LicenseInfo$
  */
-#ifndef FS_AICHAT_H
-#define FS_AICHAT_H
+#ifndef LUMEN_AICHAT_H
+#define LUMEN_AICHAT_H
 
 #include "llfloater.h"
 #include "llsingleton.h"
@@ -53,7 +53,7 @@ class LLButton;
  * configure but a key.
  *
  * **It goes through the same front door.** Every tool call is a JSON-RPC
- * request handed to `FSAIControl::handleRequest`, exactly as Claude Desktop's
+ * request handed to `LumenAIControl::handleRequest`, exactly as Claude Desktop's
  * would be. Not `dispatch()` directly, and not a parallel implementation:
  * that way the idempotency, the ambiguity refusals, the no-copy confirmation
  * and the action log are all inherited rather than reimplemented, and
@@ -92,9 +92,9 @@ class LLButton;
  *    tell an auto-response from a person typing. Two of these talking to each
  *    other therefore stop after a handful of turns rather than never.
  */
-class FSAIAutoResponder : public LLSingleton<FSAIAutoResponder>
+class LumenAIAutoResponder : public LLSingleton<LumenAIAutoResponder>
 {
-    LLSINGLETON(FSAIAutoResponder);
+    LLSINGLETON(LumenAIAutoResponder);
 public:
     /** Offered every incoming instant message. Decides, and usually declines. */
     void consider(const LLSD& data);
@@ -167,11 +167,11 @@ private:
     std::set<LLUUID>      mInFlight;
 };
 
-class FSAIChatFloater : public LLFloater
+class LumenAIChatFloater : public LLFloater
 {
 public:
-    FSAIChatFloater(const LLSD& key);
-    ~FSAIChatFloater() override;
+    LumenAIChatFloater(const LLSD& key);
+    ~LumenAIChatFloater() override;
 
     bool postBuild() override;
     void onOpen(const LLSD& key) override;
@@ -196,7 +196,7 @@ public:
     /**
      * Ask a provider one real question and say whether it answered.
      *
-     * <FS:AICtl> One Test button beside the provider list needs one entry
+     * <Lumen> One Test button beside the provider list needs one entry
      * point, and the dialect knowledge already lives here rather than in
      * Preferences   which key goes in which header, which shape the body
      * takes, where the system prompt belongs. Putting the test in the panel
@@ -277,8 +277,8 @@ private:
     void refreshTitle();
     void runCodexTurn(const std::string& user_text);
     void runClaudeCodeTurn(const std::string& user_text);
-    std::unique_ptr<class FSAICodex> mCodex;
-    std::unique_ptr<class FSAIClaude> mClaude;
+    std::unique_ptr<class LumenAICodex> mCodex;
+    std::unique_ptr<class LumenAIClaude> mClaude;
     std::string mClaudeSession;   // Claude Code holds the conversation
     std::string mClaudeModel;     // what that session was started with
     std::string mCodexThread;
@@ -308,4 +308,4 @@ private:
     void setBusy(bool busy, const std::string& note = std::string());
 };
 
-#endif // FS_AICHAT_H
+#endif // LUMEN_AICHAT_H

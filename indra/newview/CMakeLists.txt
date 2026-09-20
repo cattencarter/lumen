@@ -102,16 +102,16 @@ set(viewer_SOURCE_FILES
     floatermedialists.cpp
     fsareasearch.cpp
     fsareasearchmenu.cpp
-    fsaichat.cpp
-    fsaiindex.cpp
+    lumenaichat.cpp
+    lumenaiindex.cpp
     lumenfolders.cpp
-    fsainotecache.cpp
-    fsaimemory.cpp
-    fsaicodex.cpp
-    fsaiclaude.cpp
-    fsaictl.cpp
-    fsaikeys.cpp
-    fsaisetup.cpp
+    lumenainotecache.cpp
+    lumenaimemory.cpp
+    lumenaicodex.cpp
+    lumenaiclaude.cpp
+    lumenaictl.cpp
+    lumenaikeys.cpp
+    lumenaisetup.cpp
     fsassetblacklist.cpp
     fsavatarrenderpersistence.cpp
     fsavatarsearchmenu.cpp
@@ -971,16 +971,16 @@ set(viewer_HEADER_FILES
     floatermedialists.h
     fsareasearch.h
     fsareasearchmenu.h
-    fsaichat.h
-    fsaiindex.h
+    lumenaichat.h
+    lumenaiindex.h
     lumenfolders.h
-    fsainotecache.h
-    fsaimemory.h
-    fsaicodex.h
-    fsaiclaude.h
-    fsaictl.h
-    fsaikeys.h
-    fsaisetup.h
+    lumenainotecache.h
+    lumenaimemory.h
+    lumenaicodex.h
+    lumenaiclaude.h
+    lumenaictl.h
+    lumenaikeys.h
+    lumenaisetup.h
     fsassetblacklist.h
     fsavatarrenderpersistence.h
     fsavatarsearchmenu.h
@@ -2624,7 +2624,7 @@ endif (WINDOWS)
 # dumped into the target binary and runtime lookup will find the most
 # modern version.
 
-# <FS:AICtl> SQLite on Windows: compile the vendored amalgamation.
+# <Lumen> SQLite on Windows: compile the vendored amalgamation.
 #
 # This is the first thing the Windows port was expected to fail on, and it is
 # not a defect -- it is a platform difference nobody had resolved. macOS has
@@ -2649,15 +2649,15 @@ if (WINDOWS)
                                 COMPILE_FLAGS "/w"
                                 SKIP_PRECOMPILE_HEADERS ON)
 endif (WINDOWS)
-# </FS:AICtl>
+# </Lumen>
 
 target_link_libraries(${VIEWER_BINARY_NAME}
-        # <FS:AICtl> SQLite, for the notecard cache. No new autobuild package:
+        # <Lumen> SQLite, for the notecard cache. No new autobuild package:
         # macOS ships libsqlite3 in the SDK and Linux has it everywhere, so
         # there it is one linker flag. Windows ships nothing, so it compiles
         # the vendored amalgamation instead -- see newview/sqlite/README-LUMEN.md.
         $<$<NOT:$<BOOL:${WINDOWS}>>:sqlite3>
-        # </FS:AICtl>
+        # </Lumen>
         llaudio
         llcharacter
         llimage
@@ -2858,20 +2858,20 @@ if (DARWIN)
   # magically known to CMake -- it's that these names are referenced in the
   # Info-SecondLife.plist file in the configure_file() directive below.
   #set(product "${VIEWER_CHANNEL}")
-  set(product "Lumen")   # <FS:AICtl> names Lumen.app and its executable
-  # <FS:AICtl> This viewer identifies as itself, not as Firestorm. The bundle
+  set(product "Lumen")   # <Lumen> names Lumen.app and its executable
+  # <Lumen> This viewer identifies as itself, not as Firestorm. The bundle
   # name is what macOS shows in the title bar and the menu bar, and the
   # identifier is how the system tells two applications apart, so leaving
   # either alone makes a derivative masquerade as the viewer it came from.
-  set(MACOSX_EXECUTABLE_NAME "Lumen")   # <FS:AICtl>
+  set(MACOSX_EXECUTABLE_NAME "Lumen")   # <Lumen>
   set(MACOSX_BUNDLE_INFO_STRING "Lumen Viewer")
-  set(MACOSX_BUNDLE_ICON_FILE "lumen_icon.icns")   # <FS:AICtl> our own mark, not Firestorm's phoenix
-  set(MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.cattencarter.lumen")   # <FS:AICtl>
+  set(MACOSX_BUNDLE_ICON_FILE "lumen_icon.icns")   # <Lumen> our own mark, not Firestorm's phoenix
+  set(MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.cattencarter.lumen")   # <Lumen>
   set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_NAME "Lumen")
   set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
-  # <FS:AICtl> This is the line the macOS About panel shows, NOT
+  # <Lumen> This is the line the macOS About panel shows, NOT
   # CFBundleGetInfoString, which is legacy and shows nothing. Decisions 57's
   # shape a second time: the visible string comes from a different key than the
   # obvious one, and editing the obvious one changes nothing while looking
