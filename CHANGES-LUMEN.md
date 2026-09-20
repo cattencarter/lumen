@@ -7,7 +7,7 @@ that statement.
 
 Upstream baseline: **`Firestorm_Release_7.2.4.80712`** (commit `10bd3c9f93`).
 All Lumen changes live on the branch `ai-control`, and every edit to a Firestorm
-or Linden Lab file is bracketed by `<FS:AICtl>` comments.
+or Linden Lab file is bracketed by `<Lumen>` comments.
 
 To see the changes exactly:
 
@@ -49,20 +49,7 @@ user's behalf.
 Artwork and interface changes: a new application icon, a local login page, and
 the login panel and strings that go with it.
 
-## On the rename
-
-Lumen is **not** Firestorm and does not present itself as one. It has its own
-name, bundle identifier, icon, settings directory and start page. That is partly
-a legal matter — the LGPL grants the code, not the name or the logo — and partly
-a practical one: a derivative must not sit in the dock looking like Firestorm,
-must not fight it over the same settings, and must never send its users to
-Firestorm's support volunteers with problems that are not theirs.
-
-Firestorm's own copyright notices and licence headers are retained throughout.
-New files carry the project's standard LGPL header.
-
 ## Not affiliated
 
 This project is not affiliated with, endorsed by, or supported by the Phoenix
-Firestorm Project, Inc. Please direct questions about Lumen to this repository,
-never to Firestorm.
+Firestorm Project, Inc. Please do not contact them about it.
