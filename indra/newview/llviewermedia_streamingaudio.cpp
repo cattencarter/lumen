@@ -37,6 +37,13 @@
 
 LLStreamingAudio_MediaPlugins::LLStreamingAudio_MediaPlugins() :
     mMediaPlugin(NULL),
+    // <Lumen>
+    mRetryPending(false),
+    mTriedPlainHttp(false),
+    mDowngraded(false),
+    mEverPlayed(false),
+    mReconnectsLeft(0),
+    // </Lumen>
     mGain(1.0)
 {
     // nothing interesting to do?
@@ -74,14 +81,16 @@ void LLStreamingAudio_MediaPlugins::start(const std::string& url)
             // People label their streams this way, ignore the 'label'.
             snt_url = snt_url.substr(0, pos);
         }
-        mMediaPlugin->loadURI(snt_url);
-        mMediaPlugin->start();
-        LL_INFOS() << "Playing stream..." << LL_ENDL;
+        // <Lumen> a fresh request, so forget what the last one learned
+        resetStreamState();
+        playURL(snt_url, false);
+        // </Lumen>
     }
     else
     {
         LL_INFOS() << "setting stream to NULL"<< LL_ENDL;
         mURL.clear();
+        resetStreamState(); // <Lumen>
         mMediaPlugin->stop();
         delete mMediaPlugin;
         mMediaPlugin = nullptr;
@@ -99,6 +108,7 @@ void LLStreamingAudio_MediaPlugins::stop()
     }
 
     mURL.clear();
+    resetStreamState(); // <Lumen>
 
     // <FS:Ansariel> Stream meta data display
     updateMetadata();
@@ -125,6 +135,8 @@ void LLStreamingAudio_MediaPlugins::update()
 {
     if (mMediaPlugin)
         mMediaPlugin->idle();
+
+    checkStreamHealth(); // <Lumen>
 
     // <FS:Ansariel> Stream meta data display
     updateMetadata();
@@ -206,3 +218,182 @@ void LLStreamingAudio_MediaPlugins::updateMetadata() noexcept
     }
 }
 // </FS:ND>
+
+// <Lumen>
+// The media-plugin path is what Lumen, Megapahit and Linden Lab's own viewer
+// all use for streaming music; only the viewers that license FMOD take a
+// different road.  VLC is the stricter of the two, and until now the viewer
+// threw away everything it learned when a stream would not open: isPlaying()
+// folded MEDIA_ERROR into "stopped", so the play button flicked back and
+// nobody was told why.  These four functions keep that knowledge.
+
+namespace
+{
+    const S32 LUMEN_RECONNECT_ATTEMPTS = 3;
+    const F32 LUMEN_RECONNECT_DELAY    = 3.0f;
+    const F32 LUMEN_DOWNGRADE_DELAY    = 0.25f;
+
+    bool lumen_is_https(const std::string& url)
+    {
+        if (url.size() <= 8)
+        {
+            return false;
+        }
+        std::string head = url.substr(0, 8);
+        LLStringUtil::toLower(head);
+        return head == "https://";
+    }
+}
+
+void LLStreamingAudio_MediaPlugins::resetStreamState()
+{
+    mActiveURL.clear();
+    mRetryURL.clear();
+    mFailureReason.clear();
+    mRetryPending   = false;
+    mTriedPlainHttp = false;
+    mDowngraded     = false;
+    mEverPlayed     = false;
+    mReconnectsLeft = LUMEN_RECONNECT_ATTEMPTS;
+}
+
+void LLStreamingAudio_MediaPlugins::playURL(const std::string& url, bool fresh_plugin)
+{
+    // A plugin that has reported an error will not play again, so a retry
+    // needs a new one.  The first attempt reuses whatever start() lazily made.
+    if (fresh_plugin && mMediaPlugin)
+    {
+        mMediaPlugin->stop();
+        delete mMediaPlugin;
+        mMediaPlugin = nullptr;
+    }
+
+    if (!mMediaPlugin)
+    {
+        mMediaPlugin = initializeMedia("audio/mpeg");
+        if (!mMediaPlugin)
+        {
+            mFailureReason = "the viewer could not start its media plugin";
+            LL_WARNS() << mFailureReason << LL_ENDL;
+            return;
+        }
+        mMediaPlugin->setVolume(llclamp(mGain, 0.f, 1.f));
+    }
+
+    mActiveURL = url;
+    mMediaPlugin->loadURI(url);
+    mMediaPlugin->start();
+    LL_INFOS() << "Playing stream..." << LL_ENDL;
+}
+
+void LLStreamingAudio_MediaPlugins::scheduleRetry(const std::string& url, F32 delay_seconds)
+{
+    mRetryURL     = url;
+    mRetryPending = true;
+    mRetryTimer.setTimerExpirySec(delay_seconds);
+}
+
+void LLStreamingAudio_MediaPlugins::checkStreamHealth()
+{
+    if (mActiveURL.empty())
+    {
+        return;
+    }
+
+    if (mRetryPending)
+    {
+        if (mRetryTimer.hasExpired())
+        {
+            mRetryPending = false;
+            const std::string next = mRetryURL;
+            mRetryURL.clear();
+            playURL(next, true);
+        }
+        return;
+    }
+
+    if (!mMediaPlugin)
+    {
+        return;
+    }
+
+    const LLPluginClassMediaOwner::EMediaStatus status = mMediaPlugin->getStatus();
+
+    if (status == LLPluginClassMediaOwner::MEDIA_PLAYING)
+    {
+        mEverPlayed = true;
+        mFailureReason.clear();
+        mReconnectsLeft = LUMEN_RECONNECT_ATTEMPTS;
+        return;
+    }
+
+    if (status != LLPluginClassMediaOwner::MEDIA_ERROR
+     && status != LLPluginClassMediaOwner::MEDIA_DONE)
+    {
+        return; // still opening, or nothing has happened yet
+    }
+
+    // It stopped without being asked to.
+
+    // The commonest cause in Second Life is a parcel whose music URL says
+    // https for a SHOUTcast server that has never spoken TLS.  FMOD connects
+    // regardless of the scheme, so those parcels play in Firestorm and are
+    // silent here.  Try once without TLS -- and say so in the log, because a
+    // silent downgrade from TLS is not something to do quietly.
+    if (!mTriedPlainHttp && !mEverPlayed && lumen_is_https(mActiveURL))
+    {
+        mTriedPlainHttp = true;
+        const std::string plain = "http://" + mActiveURL.substr(8);
+        LL_WARNS() << "Stream would not open over https: " << mActiveURL
+                   << " -- retrying WITHOUT TLS as " << plain << LL_ENDL;
+        scheduleRetry(plain, LUMEN_DOWNGRADE_DELAY);
+        mDowngraded = true;
+        return;
+    }
+
+    if (mEverPlayed && mReconnectsLeft > 0)
+    {
+        --mReconnectsLeft;
+        LL_WARNS() << "Stream stopped: " << mActiveURL << " -- reconnecting, "
+                   << mReconnectsLeft << " attempt(s) left after this" << LL_ENDL;
+        scheduleRetry(mActiveURL, LUMEN_RECONNECT_DELAY);
+        return;
+    }
+
+    if (mFailureReason.empty())
+    {
+        if (mEverPlayed)
+        {
+            mFailureReason = "the stream stopped and would not start again";
+        }
+        else if (mTriedPlainHttp)
+        {
+            mFailureReason = "that stream would not play over https or http, "
+                             "so the station is probably off the air";
+        }
+        else
+        {
+            mFailureReason = "that stream would not play, so the station is "
+                             "probably off the air or the address is wrong";
+        }
+        mDowngraded = false;
+        LL_WARNS() << "Giving up on " << mActiveURL << ": " << mFailureReason << LL_ENDL;
+    }
+}
+
+std::string LLStreamingAudio_MediaPlugins::getStreamNote() const
+{
+    if (!mFailureReason.empty())
+    {
+        return mFailureReason;
+    }
+
+    if (mDowngraded && mEverPlayed)
+    {
+        return "that server does not support https, so the viewer connected "
+               "over plain http instead";
+    }
+
+    return std::string();
+}
+// </Lumen>

@@ -32,6 +32,7 @@
 #include "stdtypes.h" // from llcommon
 
 #include "llstreamingaudio.h"
+#include "llframetimer.h"
 
 class LLPluginClassMedia;
 
@@ -54,12 +55,36 @@ class LLStreamingAudio_MediaPlugins : public LLStreamingAudioInterface
     LLSD getCurrentMetadata() const noexcept { return mMetadata; }
     // </FS:ND>
 
+    // <Lumen> Why the stream is not playing, in words a person can act on.
+    // Empty when there is nothing worth saying.  See the .cpp for the reasons.
+    std::string getStreamNote() const;
+    // </Lumen>
+
 private:
     LLPluginClassMedia* initializeMedia(const std::string& media_type);
+
+    // <Lumen> a stream that fails must say so, and a wrong scheme must not be fatal
+    void playURL(const std::string& url, bool fresh_plugin);
+    void checkStreamHealth();
+    void scheduleRetry(const std::string& url, F32 delay_seconds);
+    void resetStreamState();
+    // </Lumen>
 
     LLPluginClassMedia *mMediaPlugin;
 
     std::string mURL;
+
+    // <Lumen>
+    std::string  mActiveURL;        // what we actually handed the plugin
+    std::string  mRetryURL;         // what the pending retry will ask for
+    std::string  mFailureReason;    // empty unless we have given up
+    bool         mRetryPending;
+    bool         mTriedPlainHttp;   // this URL has already been downgraded once
+    bool         mDowngraded;       // ...and the downgrade is what is playing
+    bool         mEverPlayed;       // this URL played at least once
+    S32          mReconnectsLeft;
+    LLFrameTimer mRetryTimer;
+    // </Lumen>
 
     // <FS:ND> stream metadata from plugin
     void updateMetadata() noexcept;
