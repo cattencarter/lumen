@@ -77,11 +77,9 @@
 #include "llsnapshotmodel.h"
 #include "llsnapshotlivepreview.h"
 #include "lltoolplacer.h"
+#include "llfloatertools.h"   // <Lumen> is the build panel up? the selection only lives while it is
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
-#include "lltoolmgr.h"        // <Lumen> a new prim is only auto-selected
-#include "lltoolcomp.h"       //   when the current tool is not the pie tool
-#include "lltoolpie.h"
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
 #include "llwindow.h"         //   incBusyCount, balanced when it arrives
 #include "lltooldraganddrop.h"
@@ -2560,8 +2558,9 @@ namespace
             "`set` and `remove` also accept `object_id` directly and select it for you, so "
             "\"delete that\" is one call and not two. **Never ask the user to click an object to "
             "select it** -- find it with look_nearby or inspect_object and pass its id.\n"
-            "- link / unlink: join what is selected into one object, or take it apart. Linking "
-            "needs at least two selected.\n"
+            "- link / unlink: join objects into one, or take one apart. **Right after rezzing, "
+            "just call link with no arguments** -- it joins the prims this assistant made. "
+            "Otherwise pass `object_ids`. Linking needs at least two.\n"
             "\n"
             "**This is the one group that changes the world for everybody**, so it refuses "
             "rather than guesses: on land where the user may not build it says so and does "
@@ -2617,6 +2616,11 @@ namespace
             LLSD bed; bed["type"]="boolean";
                 bed["description"]="select: true also opens the build tools on it, which is what "
                                    "a person means by \"edit that\".";
+            LLSD bids; bids["type"]="array";
+                bids["description"]="link, unlink: the objects to act on, as object_ids. Leave "
+                                    "it out right after rezzing and link joins the prims this "
+                                    "assistant just made.";
+            build_props["object_ids"]=bids;
             build_props["object_id"]=bid; build_props["add"]=bad; build_props["edit"]=bed;
             build_props["take"]=btk;    build_props["request_id"]=srq;
         }
@@ -4830,6 +4834,70 @@ static void lumenRefreshSnapshotPreview()
         }
     }
 }
+
+// <Lumen> Remember the prims this assistant made, so `link` needs no selection.
+//
+// A selection does not survive between two endpoint calls. Watched, 2026-09-21:
+// `select` answers `selected: 1` and the very next call says nothing is
+// selected. It persists only while a build tool is active -- which is why `rez`
+// used to switch the tool, and why the Build window opened on every rez. The
+// author asked the obvious question: *"we don't open the inventory window to
+// wear things"*.
+//
+// `LLViewerObjectList` fires mNewObjectSignal for a newly created object the
+// owner has full rights to, then disconnects every slot. Proven to fire for
+// ours, twice out of two. So the id is recorded here as it arrives, and `link`
+// works from ids rather than from what the interface happens to be holding.
+//
+// It stands aside when anything else is waiting on that signal: the importer
+// and the local-mesh uploader each connect for the length of a job, and the
+// signal drops ALL slots when it fires, so going first would take their object
+// and unhook them.
+namespace
+{
+    boost::signals2::connection sRezWatch;
+    std::vector<std::pair<LLUUID, F64> > sRecentRez;   // id, when
+    const F64 REZ_MEMORY_SECONDS = 600.0;              // ten minutes is long enough
+
+    bool rememberTheThingWeJustRezzed(LLViewerObject* objectp)
+    {
+        if (objectp)
+        {
+            sRecentRez.push_back(std::make_pair(objectp->getID(), LLTimer::getElapsedSeconds()));
+            if (sRecentRez.size() > 64) sRecentRez.erase(sRecentRez.begin());
+            LL_INFOS("AICtl") << "rez: " << objectp->getID() << " arrived; "
+                              << sRecentRez.size() << " remembered" << LL_ENDL;
+        }
+        return false;   // let the viewer apply the user's own build preferences
+    }
+
+    // True when we are the ones listening.
+    bool watchForTheNextRez()
+    {
+        if (sRezWatch.connected()) sRezWatch.disconnect();
+        if (!gObjectList.mNewObjectSignal.empty()) return false;
+        sRezWatch = gObjectList.setNewObjectCallback(&rememberTheThingWeJustRezzed);
+        return true;
+    }
+
+    // The ones still in view, newest last. Anything returned, taken away or
+    // never arrived is dropped rather than reported.
+    std::vector<LLUUID> recentRezStillHere()
+    {
+        std::vector<LLUUID> out;
+        const F64 now = LLTimer::getElapsedSeconds();
+        std::vector<std::pair<LLUUID, F64> > keep;
+        for (const auto& r : sRecentRez)
+        {
+            if (now - r.second > REZ_MEMORY_SECONDS) continue;
+            keep.push_back(r);
+            if (gObjectList.findObject(r.first)) out.push_back(r.first);
+        }
+        sRecentRez.swap(keep);
+        return out;
+    }
+}
+// </Lumen>
 
 LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 {
@@ -10650,18 +10718,16 @@ if (method == "camera")
             FSCommon::sObjectAddMsg++;
             gViewerWindow->getWindow()->incBusyCount();
 
-            // `llviewerobjectlist` selects a newly created object only when the
-            // current tool is not the pie tool -- so with the ordinary cursor
-            // active, nothing would be selected and `link` would have nothing
-            // to work on. The Create tool leaves Translate current for the same
-            // reason; this matches it. Deliberately NOT deselecting first:
-            // selectObjectAndFamily adds, so four rezzes leave four selected
-            // and `link` needs no further step.
-            if (LLToolMgr::getInstance()->getCurrentTool() == LLToolPie::getInstance())
-            {
-                LLToolMgr::getInstance()->getCurrentToolset()
-                    ->selectTool(LLToolCompTranslate::getInstance());
-            }
+            // Remember the id when it arrives, rather than leaving the prim
+            // SELECTED and hoping the selection is still there on the next
+            // call. It is not: a selection lives only while a build tool is
+            // active, and making one active is what put the Build window on the
+            // user's screen every time the assistant made a prim.
+            //
+            // If something else owns that signal, fall back to the old
+            // behaviour rather than losing the prim entirely -- the tool switch
+            // keeps the selection alive, window and all.
+            watchForTheNextRez();
         }
         // </Lumen>
 
@@ -10682,14 +10748,14 @@ if (method == "camera")
         result["note"]    = "Asked the simulator to make a " + want + " about " +
                             llformat("%.1f", distance) + "m in front"
                             + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
-                            + ". It should appear in a moment, selected and ready to change "
-                              "with `set`. Rezzing again ADDS to the selection rather than "
-                              "replacing it, so to build something out of several prims: rez "
-                              "them one after another, then call `link` once. Do not claim it "
-                              "is there -- say it was asked for, and use inspect_object if you "
-                              "need to be sure. **Tell the user which parcel it is on**: an "
-                              "object left on somebody else's land can be returned without "
-                              "warning.";
+                            + ". To build something out of several prims: rez them one after "
+                              "another and then call `link` with NO arguments -- it joins the "
+                              "ones just made. To change this one, pass its object_id to `set`; "
+                              "look_nearby will give you the id, and it lags a change by tens "
+                              "of seconds so do not use it as proof of anything. Do not claim "
+                              "the prim is there -- say it was asked for. **Tell the user which "
+                              "parcel it is on**: an object left on somebody else's land can be "
+                              "returned without warning.";
         recordAction(params.has("request_id") ? params["request_id"].asString() : "",
                      fingerprintOf("rez_object", params), "rez_object", "ok", result, LLSD());
         return result;
@@ -10771,8 +10837,17 @@ if (method == "camera")
             result["name"] = safeUtf8(sel->getFirstRootNode()->mName);
         }
         if (edit) result["build_tools_open"] = true;
-        result["note"] = std::string("Selected. `set`, `remove`, `link` and `unlink` act on "
-                         "this. Select another with add: true to work on both.")
+        // Measured, not assumed: a selection lives only while a build tool is
+        // active. With the ordinary cursor it is gone by the next call, so
+        // saying "selected" and stopping there would be a claim that expires.
+        const bool sticks = (gFloaterTools && gFloaterTools->getVisible());
+        result["selection_persists"] = sticks;
+        result["note"] = std::string(sticks
+            ? "Selected, and the build tools are open so it stays selected. "
+            : "Selected for this call ONLY -- with the ordinary cursor active a selection does "
+              "not survive to your next call. Pass `object_id` straight to set or remove, or "
+              "`object_ids` to link, instead of selecting first. Use edit: true if the user "
+              "wants to see it in the build tools. ")
                          + (obj->permModify() ? ""
                             : " The user may NOT modify this object, so set and remove will "
                               "fail -- say so rather than trying.");
@@ -10830,7 +10905,15 @@ if (method == "camera")
 
         LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
         const S32 count = sel.notNull() ? sel->getRootObjectCount() : 0;
-        if (count == 0)
+        // link and unlink bring their own targets -- named, or the
+        // prims this assistant rezzed -- so an empty selection is not an error
+        // for them. Everything else still needs one.
+        const bool brings_its_own =
+            (method == "link_objects" || method == "unlink_objects")
+            && ((params.has("object_ids") && params["object_ids"].isArray()
+                 && params["object_ids"].size() > 0)
+                || !recentRezStillHere().empty());
+        if (count == 0 && !brings_its_own)
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "Nothing is selected, so there is nothing to change. `rez` leaves "
@@ -10847,17 +10930,69 @@ if (method == "camera")
         if (method == "link_objects" || method == "unlink_objects")
         {
             const bool linking = (method == "link_objects");
-            if (linking && count < 2)
+
+            // <Lumen> Work from ids, and select them here, in this one call.
+            // `object_ids` names them; with nothing named, `link` joins what
+            // this assistant rezzed and has not linked yet. Either way the
+            // selection is built and used inside a single call, because one
+            // does not survive to the next unless the build tools are up.
+            std::vector<LLUUID> want;
+            bool from_memory = false;
+            if (params.has("object_ids") && params["object_ids"].isArray())
+            {
+                for (LLSD::array_const_iterator it = params["object_ids"].beginArray();
+                     it != params["object_ids"].endArray(); ++it)
+                {
+                    want.push_back(LLUUID(it->asString()));
+                }
+            }
+            else if (count < 2 && linking)
+            {
+                want = recentRezStillHere();
+                from_memory = true;
+            }
+
+            if (!want.empty())
+            {
+                LLSelectMgr::getInstance()->deselectAll();
+                LLSD missing = LLSD::emptyArray();
+                for (const LLUUID& id : want)
+                {
+                    LLViewerObject* o = gObjectList.findObject(id);
+                    if (!o || o->isAvatar()) { missing.append(id); continue; }
+                    LLSelectMgr::getInstance()->selectObjectAndFamily(o, true);
+                    if (!o->isSelected()) missing.append(id);
+                }
+                if (missing.size())
+                {
+                    result["could_not_select"] = missing;
+                }
+                sel = LLSelectMgr::getInstance()->getSelection();
+                result["selected"] = sel.notNull() ? sel->getRootObjectCount() : 0;
+            }
+            // </Lumen>
+
+            const S32 have = result["selected"].asInteger();
+            if (linking && have < 2)
             {
                 LLSD e; e["code"] = -32000;
-                e["message"] = "Linking needs at least two objects selected; only one is.";
+                e["message"] = from_memory
+                    ? std::string("Linking needs at least two objects, and I can account for ")
+                      + llformat("%d", have) + " of the ones rezzed here. Find them with "
+                      "look_nearby and pass their ids as `object_ids`."
+                    : std::string("Linking needs at least two objects; I could reach ")
+                      + llformat("%d", have) + ". Pass `object_ids` from look_nearby.";
                 LLSD w; w["__error"] = e; return w;
             }
+
             if (linking) LLSelectMgr::getInstance()->sendLink();
             else         LLSelectMgr::getInstance()->sendDelink();
+            if (linking) sRecentRez.clear();
+            result["from"] = from_memory ? "the prims rezzed here" : "the ids given";
             result["note"] = linking
-                ? "Asked the simulator to link the selection into one object."
-                : "Asked the simulator to take the selection apart.";
+                ? "Asked the simulator to link them into one object. It takes a moment; "
+                  "look_nearby lags a change by several seconds, so do not use it as proof."
+                : "Asked the simulator to take it apart.";
         }
         else if (method == "remove_object")
         {
