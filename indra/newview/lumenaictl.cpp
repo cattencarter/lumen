@@ -2825,6 +2825,10 @@ void LumenAIControl::watchForLogin()
             LL_INFOS("AICtl") << "Session reached the world at "
                               << mLoggedInAt.asString() << LL_ENDL;
 
+            // <Lumen> and start the catch-up now rather than when the window
+            // opens, so the summary is written while they are still rezzing.
+            LumenAIChatFloater::prefetchAtLogin();
+
             LLEventPumps::instance().obtain("mainloop")
                 .stopListening("LumenAIControlLoginClock");
             mLoginClockUp = false;

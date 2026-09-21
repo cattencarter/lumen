@@ -1886,6 +1886,27 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries
 }
 // </Lumen>
 
+// <Lumen>
+void LumenAIChatFloater::prefetchAtLogin()
+{
+    if (!gSavedSettings.getBOOL("LumenAICatchUpAtLogin")) return;
+
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (provider.empty() || provider == LumenAIKeys::NONE) return;
+    if (gAgentID.isNull() || sCaughtUpFor == gAgentID) return;
+
+    // getInstance CREATES the floater without showing it, so the transcript
+    // exists to draw into and nothing appears on screen until they ask for it.
+    LumenAIChatFloater* self =
+        LLFloaterReg::getTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self) return;
+
+    LL_INFOS("LumenAIChat") << "Summarising what was waiting, before the window is opened."
+                            << LL_ENDL;
+    self->startCatchUp();
+}
+// </Lumen>
+
 void LumenAIChatFloater::startCatchUp()
 {
     if (mBusy) return;

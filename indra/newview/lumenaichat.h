@@ -170,6 +170,15 @@ private:
 class LumenAIChatFloater : public LLFloater
 {
 public:
+    /**
+     * <Lumen> Run the login summary BEFORE anybody opens the window.
+     *
+     * It is a fixed job that does not need the user present, and the whole of
+     * its cost is the model writing -- so doing it while they are still
+     * rezzing means the cards are already there when they look.
+     */
+    static void prefetchAtLogin();
+
     LumenAIChatFloater(const LLSD& key);
     ~LumenAIChatFloater() override;
 
