@@ -17,7 +17,14 @@ class FSViewerManifest:
             'app_name_oneword':self.app_name_oneword()
             }
 
-        return "Phoenix-%(app_name)s_%(optimized)s-%(version_dashes)s" % substitution_strings
+        # <Lumen> Not "Phoenix-". That is the Phoenix Firestorm Project's own
+        # name, and it has no business on the front of an installer they did
+        # not build -- it is the same rule that renamed the bundle, the channel
+        # and the inventory folder, reaching the one file a Windows user is
+        # handed. The AVX2/LEGACY tag goes too: it tells their two builds
+        # apart and we ship one.
+        return "%(app_name)s-%(version_dashes)s" % substitution_strings
+        # </Lumen>
 
     def fs_is_opensim(self):
         return self.args['viewer_flavor'] == 'oss' #Havok would be hvk

@@ -67,7 +67,7 @@ jobs:
         working-directory: lumen
         env:
           AUTOBUILD_VARIABLES_FILE: ${{ github.workspace }}/build-variables/variables
-        run: autobuild configure -c ReleaseOS -A 64 -- -DVIEWER_CHANNEL:STRING=Lumen -DPACKAGE:BOOL=OFF
+        run: autobuild configure -c ReleaseOS -A 64 -- -DVIEWER_CHANNEL:STRING=Lumen -DPACKAGE:BOOL=ON
         shell: cmd
 
       - name: Build
@@ -123,6 +123,21 @@ jobs:
             !lumen/build-vc*/newview/Release/**/*.nsi
             !lumen/build-vc*/newview/Release/firestorm-bin.*
 
+      # The installer, which is the thing to actually hand somebody. NSIS is
+      # preinstalled on the runner and viewer_manifest finds makensis itself,
+      # so this needs no tool of its own -- only PACKAGE:BOOL=ON above, which
+      # was off because the step had never been tried rather than because it
+      # was known to fail. Unsigned, so SmartScreen warns on first run: that
+      # is the decided position, not an oversight.
+      - name: Keep the installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen-windows-installer
+          if-no-files-found: warn
+          retention-days: 7
+          path: lumen/build-vc*/newview/*_Setup.exe
+
       # What the build actually produced, so a run says plainly whether there
       # is something to hand over rather than leaving it to be inferred from
       # a zip's size.
@@ -132,7 +147,8 @@ jobs:
         run: |
           cd lumen/build-vc*/newview/Release
           echo "### Windows build" >> "$GITHUB_STEP_SUMMARY"
-          for exe in *.exe; do
+          for exe in *.exe ../*_Setup.exe; do
+            [ -e "$exe" ] || continue
             printf -- "- %s  (%s)\n" "$exe" "$(du -h "$exe" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           done
           echo "" >> "$GITHUB_STEP_SUMMARY"
