@@ -58,6 +58,7 @@
 #include <sstream>
 #include <cctype>
 #include "llcoros.h"
+#include "llstartup.h"        // <Lumen> catch_up only once the world is up
 #include "lleventcoro.h"
 #include "llfloaterpreference.h"
 #include "llfloaterreg.h"
@@ -458,6 +459,7 @@ namespace
             if (action == "find_person")        return "Finding person";
             if (action == "profile")     return "Reading their profile";
             if (action == "web_presence") return "Looking them up on the web";
+            if (action == "catch_up")    return "Seeing what you missed";
             if (action == "list_groups")        return "Listing groups";
             if (action == "list_friends")       return "Listing friends";
             if (action == "send_group_notice")  return "Posting notice";
@@ -1006,6 +1008,9 @@ void LumenAIChatFloater::onFocusReceived()
     refreshKeyNotice();
 }
 
+// <Lumen> Once per login rather than once per window: see startCatchUp.
+LLUUID LumenAIChatFloater::sCaughtUpFor;
+
 void LumenAIChatFloater::onOpen(const LLSD& key)
 {
     LLFloater::onOpen(key);
@@ -1025,6 +1030,7 @@ void LumenAIChatFloater::onOpen(const LLSD& key)
     }
 
     warmLocalModel();
+    startCatchUp();
 }
 
 /**
@@ -1495,9 +1501,18 @@ void LumenAIChatFloater::onSend()
 
     mInput->setText(LLStringUtil::null);
     sayUser(text);
+    beginTurn(text);
+}
 
-    // The floater may be closed while this is in flight, so the coroutine
-    // holds a handle and checks it rather than capturing `this` raw.
+/**
+ * Hand a turn to whichever provider is chosen.
+ *
+ * <Lumen> Factored out of onSend so the login summary can take the same road.
+ * The floater may be closed while this is in flight, so the coroutine holds a
+ * handle and checks it rather than capturing `this` raw.
+ */
+void LumenAIChatFloater::beginTurn(const std::string& text)
+{
     LLHandle<LLFloater> handle = getHandle();
     LLCoros::instance().launch("LumenAIChatTurn", [handle, text]()
     {
@@ -1518,6 +1533,41 @@ void LumenAIChatFloater::onSend()
             }
         }
     });
+}
+
+/**
+ * What was waiting, the first time this window is opened after a login.
+ *
+ * <Lumen> The author: *"when you start the assistant the first time after
+ * login, I'd like it to summarise your notices and offline IM's for you."*
+ *
+ * It is once per LOGIN, not once per window: the flag is the agent id, so
+ * closing and reopening does not ask again, and logging in as somebody else
+ * does. Deliberately not shown as something the user typed -- they did not
+ * type it -- so it goes in as a note and the answer arrives as an ordinary
+ * reply.
+ *
+ * It is skipped when there is no provider to ask, because a summary that
+ * arrives as "there is no key saved" is worse than silence on the one
+ * occasion nobody asked for anything.
+ */
+void LumenAIChatFloater::startCatchUp()
+{
+    if (mBusy) return;
+    if (!gSavedSettings.getBOOL("LumenAICatchUpAtLogin")) return;
+    if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED) return;
+    if (gAgentID.isNull() || sCaughtUpFor == gAgentID) return;
+
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (provider.empty() || provider == LumenAIKeys::NONE) return;
+
+    sCaughtUpFor = gAgentID;
+    sayNote("Seeing what was waiting for you...");
+    beginTurn(
+        "I have just logged in. Call catch_up once, then tell me in a few lines what was "
+        "waiting -- who wrote and what they wanted, what the notices are about, and anything "
+        "that needs an answer or runs out. Group it by person rather than listing messages. "
+        "If nothing was waiting, say that in one short line and stop there.");
 }
 
 /**

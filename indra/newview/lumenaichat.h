@@ -255,6 +255,9 @@ private:
     S32 mSessionOut = 0;
 
     void onSend();
+    void beginTurn(const std::string& text);
+    void startCatchUp();
+    static LLUUID sCaughtUpFor;   //< which login has already been summarised
     void onClear();
 
     // The whole exchange, including however many tool round trips the model

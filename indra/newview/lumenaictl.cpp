@@ -1638,6 +1638,7 @@ namespace
             if (action == "find_person")   return "find_person";
             if (action == "profile")       return "profile";
             if (action == "web_presence")       return "web_presence";
+            if (action == "catch_up")           return "catch_up";
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
             if (action == "give_item")     return "give_item";
@@ -1924,7 +1925,7 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "find_person", "profile",
-              "web_presence",
+              "web_presence", "catch_up",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
         LLSD chat;
@@ -1975,6 +1976,10 @@ namespace
             "have none.** Second Life holds this, so it is right on any computer. The reply "
             "arrives a moment later: the first call returns `pending: true`, call again with the "
             "same agent_id.\n"
+            "- catch_up: everything waiting for the user in one call -- the notices the viewer "
+            "is holding (group notices, offers: things that are NOT conversations and never "
+            "reach read_messages) and the instant messages this session has seen, which after "
+            "a login is what arrived while they were away. Summarise it; do not read it out.\n"
             "- web_presence: whether they have a **Primfeed**, and any **Marketplace store** "
             "under their name. This asks the two websites rather than reading their profile, so "
             "it finds a store or a Primfeed they never linked anywhere. Answers a moment later: "
@@ -9945,6 +9950,92 @@ if (method == "camera")
                           "over HTTP a moment later -- call worn_by again with the same agent_id "
                           "to collect it. Do NOT tell the user anything about their outfit yet.";
         return pending;
+    }
+
+    if (method == "catch_up")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD result;
+
+        // <Lumen> Notices are NOT instant messages and do not reach the IM
+        // stream. A group notice arrives as a notification, which is why
+        // read_messages has never seen one. The viewer keeps them on its
+        // "Persistent" channel -- the same set the notification well shows --
+        // so this reads what is genuinely still waiting rather than a log of
+        // everything that has ever arrived.
+        LLSD notices = LLSD::emptyArray();
+        if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
+        {
+            chan->forEachNotification([&notices](LLNotificationPtr n)
+            {
+                if (!n || notices.size() >= 40) return;
+                LLSD one;
+                one["kind"] = n->getName();
+                const std::string body = n->getMessage();
+                if (!body.empty()) one["text"] = safeUtf8(body);
+                const std::string label = n->getLabel();
+                if (!label.empty() && label != body) one["subject"] = safeUtf8(label);
+                one["when"] = n->getDate().asString();
+
+                // Who or what it is about, when the notification says so. The
+                // payload's shape is the notification's own, so nothing is
+                // assumed to be there.
+                const LLSD& p = n->getPayload();
+                for (const char* key : { "from_name", "SENDER", "NAME", "GROUP", "group_name" })
+                {
+                    if (p.has(key) && !p[key].asString().empty())
+                    {
+                        one["from"] = safeUtf8(p[key].asString());
+                        break;
+                    }
+                }
+                notices.append(one);
+            });
+        }
+        result["notices"] = notices;
+        result["notice_count"] = (LLSD::Integer)notices.size();
+
+        // The messages are the stream's own, which at the first look after a
+        // login IS the offline backlog: Second Life delivers what was missed
+        // as ordinary instant messages the moment you arrive, and the stream
+        // has been subscribed since the first frame.
+        const LLSD stream = mMessages.read(0, 60);
+        LLSD msgs = LLSD::emptyArray();
+        S32 skipped = 0;
+        for (LLSD::array_const_iterator it = stream["entries"].beginArray();
+             it != stream["entries"].endArray(); ++it)
+        {
+            if ((*it).has("from_id") && (*it)["from_id"].asUUID() == gAgent.getID())
+            {
+                ++skipped;   // our own half of the conversation, not news
+                continue;
+            }
+            msgs.append(*it);
+        }
+        result["messages"] = msgs;
+        result["message_count"] = (LLSD::Integer)msgs.size();
+        result["own_messages_left_out"] = skipped;
+        result["latest_seq"] = stream["latest_seq"];
+        result["subscribed"] = mSubscribed;
+
+        result["note"] =
+            "Everything waiting for the user in one call: `notices` is what the notification "
+            "well is holding -- group notices, offers, anything that is not a conversation -- "
+            "and `messages` is the instant messages this session has seen, which straight after "
+            "a login is what arrived while they were away.\n"
+            "**Summarise, do not recite.** Group by person and by group, say what each one "
+            "wants, and put anything that needs an answer or expires first. If both lists are "
+            "empty say so in one short line and nothing else -- 'nothing came in while you were "
+            "away' is the whole reply, with no offer to check again.\n"
+            "A notice is still waiting whether or not it has been read, so do not tell them it "
+            "is unread. And this cannot see notices from before this session: the viewer keeps "
+            "the ones it is still holding, not a history.";
+        return result;
     }
 
     if (method == "web_presence")

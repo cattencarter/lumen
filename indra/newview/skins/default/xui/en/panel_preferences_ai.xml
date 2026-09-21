@@ -357,6 +357,21 @@
 
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="106" width="480" height="14" font="SansSerifBold">
+          When you log in
+      </text>
+
+      <check_box control_name="LumenAICatchUpAtLogin" follows="left|top" layout="topleft"
+       left="20" top="126" width="480" height="16"
+       name="catch_up_at_login"
+       label="Tell me what I missed the first time I open the Assistant" />
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="148" width="480" height="26" word_wrap="true">
+          A short summary of the notices and instant messages that were waiting, instead of reading them one at a time.
+      </text>
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="188" width="480" height="14" font="SansSerifBold">
           While you are away
       </text>
 
@@ -366,43 +381,43 @@
       </text>
 
       <check_box control_name="LumenAIAutoRespondFriendsOnly" follows="left|top" layout="topleft"
-       left="20" top="160" width="480" height="16"
+       left="20" top="242" width="480" height="16"
        name="auto_respond_friends"
        label="Only answer people on my friends list" />
 
       <spinner control_name="LumenAIAutoRespondMinutes" follows="left|top" layout="topleft"
-       left="20" top="184" width="200" height="20"
+       left="20" top="266" width="200" height="20"
        name="auto_respond_minutes"
        label="Stop after" label_width="60"
        min_val="0" max_val="1440" increment="15" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="187" width="280" height="16">
+       left="226" top="269" width="280" height="16">
           minutes (0 = no limit)
       </text>
 
       <spinner control_name="LumenAIAutoRespondMaxPerPerson" follows="left|top" layout="topleft"
-       left="20" top="210" width="200" height="20"
+       left="20" top="292" width="200" height="20"
        name="auto_respond_per_person"
        label="At most" label_width="60"
        min_val="1" max_val="50" increment="1" decimal_digits="0" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="226" top="213" width="280" height="16">
+       left="226" top="295" width="280" height="16">
           replies to any one person
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="242" width="120" height="16">
+       left="20" top="324" width="120" height="16">
           Also answer to
       </text>
 
       <line_editor control_name="LumenAIAutoRespondNames" follows="left|top" layout="topleft"
-       left="130" top="239" width="260" height="20"
+       left="130" top="321" width="260" height="20"
        name="auto_respond_names" max_length_bytes="255" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="266" width="480" height="26" word_wrap="true">
+       left="20" top="348" width="480" height="26" word_wrap="true">
           Nicknames people use for you in chat, separated by commas. Needed when your display name is not what anyone types.
       </text>
 
