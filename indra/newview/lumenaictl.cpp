@@ -2414,8 +2414,11 @@ namespace
         view_props["called"]=vcl;
         LLSD vlc; vlc["type"]="boolean";
             vlc["description"]="answer_while_away: answer in LOCAL CHAT, where everyone nearby "
-                               "sees it, and only when somebody says the user's name. For "
-                               "holding a roleplay scene together.";
+                               "can read it. Off unless asked for. **\"If Catten writes\" does "
+                               "not say which channel** -- somebody can write to you in an IM or "
+                               "say your name out loud, and only one of those is private. With a "
+                               "named person, turning BOTH on is usually what was meant; say "
+                               "which you turned on, and that local chat is public.";
         view_props["local_chat"]=vlc;
         LLSD vim; vim["type"]="boolean";
             vim["description"]="answer_while_away: answer instant messages. Defaults to true "

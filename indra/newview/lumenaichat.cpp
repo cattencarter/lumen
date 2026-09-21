@@ -3225,6 +3225,15 @@ void LumenAIAutoResponder::considerChat(const LLSD& data)
     {
         return;
     }
+    // <Lumen> The named set applies here too. It was added to the IM path
+    // only, so a local-chat watch armed with "only Catten" would have
+    // answered anybody who said her name -- out loud, where the whole room
+    // reads it.
+    if (!mOnly.empty() && mOnly.find(from_id) == mOnly.end())
+    {
+        return;
+    }
+
 
     // Spoken to, not merely spoken near.
     //
