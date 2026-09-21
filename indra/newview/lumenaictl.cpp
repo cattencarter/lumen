@@ -2439,12 +2439,15 @@ namespace
                                 "gets here\" is this. Once each. Requires `only`.";
         view_props["on_arrival"]=varr;
         LLSD vsay; vsay["type"]="string";
-            vsay["description"]="answer_while_away: the EXACT words to pass on, when the user "
-                                "gave them. \"tell him I'll be right there\" -> \"I'll be "
-                                "right there.\" It is sent word for word, so put THEIR message "
-                                "here and never your instructions about it. Leave it out when "
-                                "they only said they were away; use `note` for anything that "
-                                "shapes a reply rather than being one.";
+            vsay["description"]="answer_while_away: the EXACT words the other person will "
+                                "read, written AS the user, first person. \"tell him I'll be "
+                                "right there\" -> \"I'll be right there.\" It is sent word "
+                                "for word: never your instructions about it, never a third "
+                                "person description like \"user is away\", and in the "
+                                "language they used. **Give this whenever `on_arrival` is set** "
+                                "-- speaking first with wording nobody chose is worse than the "
+                                "plain default. `note` is the separate thing: what shapes a "
+                                "generated reply rather than being one.";
         view_props["say"]=vsay;
         view_props["on"]=von; view_props["note"]=vnt;
         view_props["action"] = actionProperty(view_actions, LL_ARRAY_SIZE(view_actions), "What to do. Required.");

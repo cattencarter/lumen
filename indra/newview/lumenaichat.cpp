@@ -3304,9 +3304,18 @@ void LumenAIAutoResponder::checkArrivals()
 
         mSeen.insert(who);   // once each, whatever happens next
 
-        const std::string text = !mSay.empty() ? mSay
-                               : (!mNote.empty() ? mNote
-                               : std::string("I am away from the keyboard just now."));
+        // NEVER the note. `note` is a brief -- "how long they will be, what to
+        // say, what not to" -- and sending it verbatim put "User is away; let
+        // Catten know if he arrives or messages" in front of somebody who does
+        // not know there is an assistant at all.
+        //
+        // And it speaks AS her, first person, which is what the auto-reply has
+        // always done. A message from Maryam referring to Maryam in the third
+        // person reads as broken to anyone, and as sinister to anyone who
+        // works out why.
+        const std::string text = !mSay.empty()
+            ? mSay
+            : std::string("I'm away from the keyboard just now -- back shortly.");
 
         // addSession, not computeSessionID: sending into a session that does
         // not exist yet adds our own copy locally and delivers nothing, so it
