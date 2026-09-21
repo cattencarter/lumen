@@ -10054,14 +10054,25 @@ if (method == "camera")
         LLSD demo_notices_out, demo_msgs_out;
         if (gSavedSettings.getBOOL("LumenAICatchUpDemo"))
         {
+            // The first group posts THREE times, so the collapsing is visible:
+            // one card for that group, its summary covering all three.
+            static const S32 WHOSE[] = { 0, 0, 0, 1, 2 };
             static const char* SUBJECTS[] = {
                 "Dance night on Friday",
+                "Storyteller evening moved",
+                "Dues are due",
                 "Sim restart at 6pm",
                 "New roleplay rules"
             };
             static const char* BODIES[] = {
                 "Doors at eight, and the theme is anything with feathers. "
                 "Bring a friend -- the parcel holds forty.",
+                "The storyteller evening has moved to Sunday at seven, same "
+                "place. Bring something to sit on; the logs are all taken by "
+                "the time it starts.",
+                "Quarterly dues are due at the end of the month. Ten lindens, "
+                "the same as last year, and nobody is thrown out for being "
+                "late -- but a reminder saves us chasing.",
                 "The region goes down for a restart at six. Please rez nothing "
                 "you cannot afford to lose in the half hour before.",
                 "The revised rules are in the group notices, and take effect on "
@@ -10069,16 +10080,17 @@ if (method == "camera")
             };
 
             LLSD demo_notices = LLSD::emptyArray();
-            for (S32 i = 0; i < 3; ++i)
+            for (S32 i = 0; i < 5; ++i)
             {
                 LLSD one;
                 one["kind"]    = "GroupNotice";
                 one["subject"] = SUBJECTS[i];
                 one["text"]    = BODIES[i];
                 one["when"]    = LLDate::now().asString();
-                if (i < (S32)gAgent.mGroups.size())
+                const S32 which = WHOSE[i];
+                if (which < (S32)gAgent.mGroups.size())
                 {
-                    const LLGroupData& g = gAgent.mGroups[i];
+                    const LLGroupData& g = gAgent.mGroups[which];
                     one["group_name"] = safeUtf8(g.mName);
                     one["group_id"]   = g.mID;
                     const std::string link = groupLink(g.mID);
@@ -10094,7 +10106,7 @@ if (method == "camera")
                     static const char* MADE_UP[] = {
                         "Raglan Shire Artisans", "Dreamshire Social", "Tiny Racers"
                     };
-                    one["group_name"] = MADE_UP[i % 3];
+                    one["group_name"] = MADE_UP[which % 3];
                 }
                 demo_notices.append(one);
             }

@@ -1507,9 +1507,9 @@ void LumenAIChatFloater::sayAssistant(const std::string& text)
     // The icon that replaced "Lumen:" is gone. It read as a stray mark rather
     // than a speaker, and it pushed the first line in while every wrapped line
     // stayed at the margin, so the answer never lined up with its own marker.
-    mTranscript->appendText("\n", false);
-    mTranscript->appendText("Lumen: ", false, nameStyle());
-    // <Lumen> the cards ARE the reply; anything written beside them repeats it
+    // <Lumen> The cards ARE the reply, so there is no speaker line to write:
+    // returning after "Lumen: " had been appended left it standing on its own
+    // at the bottom of the summary, introducing nothing.
     if (mCatchUpDrawn)
     {
         mCatchUpDrawn = false;
@@ -1521,6 +1521,8 @@ void LumenAIChatFloater::sayAssistant(const std::string& text)
         mCatchUpPending = false;
     }
     // </Lumen>
+    mTranscript->appendText("\n", false);
+    mTranscript->appendText("Lumen: ", false, nameStyle());
     mTranscript->appendText(linkifyKnownNames(body), false, bodyStyle());
 }
 
