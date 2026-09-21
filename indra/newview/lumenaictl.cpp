@@ -10787,7 +10787,34 @@ if (method == "camera")
             LLSD w; w["__error"] = err; return w;
         }
 
-        const std::string say = params.has("say") ? params["say"].asString() : std::string();
+        std::string say = params.has("say") ? params["say"].asString() : std::string();
+
+        // <Lumen> An instruction is not a message, and this is the third time
+        // the wrong one was relayed: Catten was sent "Tell Catten I'm away."
+        // Asking more clearly in the description has failed twice, so the
+        // viewer checks instead -- refusing is cheap and the rewrite is one
+        // line of work for the model.
+        {
+            std::string head = say.substr(0, 40);
+            LLStringUtil::toLower(head);
+            static const char* BRIEF[] = { "tell ", "let him", "let her", "let them",
+                                           "say that", "say to", "inform ", "ask him",
+                                           "ask her", "message ", "reply that" };
+            for (const char* p2 : BRIEF)
+            {
+                if (head.compare(0, strlen(p2), p2) == 0)
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] =
+                        "`say` is sent to them word for word, so it must be the MESSAGE, not "
+                        "the instruction. \"Tell Catten I'm away\" would reach him exactly "
+                        "like that. Write what they should read -- \"I'm away just now\" -- "
+                        "and send it again.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+        }
+        // </Lumen>
         LumenAIAutoResponder::instance().arm(on, note, ims, local_chat_eff, also_called,
                                              only, on_arrival, say);
 

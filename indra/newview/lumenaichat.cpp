@@ -3151,14 +3151,9 @@ void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool 
         {
             mSeen.insert(*it);
         }
-        // Online ALREADY is not arriving either; only a change counts. Without
-        // this, arming moments after login fires for everybody, because the
-        // world is not populated yet and nobody looks present.
-        mWasOnline.clear();
-        for (std::set<LLUUID>::const_iterator it = mOnly.begin(); it != mOnly.end(); ++it)
-        {
-            if (LLAvatarTracker::instance().isBuddyOnline(*it)) mWasOnline.insert(*it);
-        }
+        // (There was an online-status trigger here. It went: being online is
+        // not being present, and keeping both meant two ideas of "arrived"
+        // fighting each other.)
         watchForArrivals();
     }
 
@@ -3294,10 +3289,11 @@ void LumenAIAutoResponder::checkArrivals()
         const LLUUID& who = *it;
         if (mSeen.count(who)) continue;
 
-        const bool came_online = LLAvatarTracker::instance().isBuddyOnline(who)
-                              && !mWasOnline.count(who);
-        const bool arrived = present.count(who) || came_online;
-        if (!arrived) continue;
+        // Coming ONLINE is not coming HERE. That path fired for somebody 89m
+        // away who had simply logged back in, and "if Catten comes" plainly
+        // means he walks up. Logging in somewhere else in the world is a
+        // different request and is not this one.
+        if (!present.count(who)) continue;
 
         // Let them finish arriving. Logging in beside somebody fires the
         // instant their avatar appears, and an IM sent into a viewer still
