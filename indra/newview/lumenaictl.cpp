@@ -10789,29 +10789,48 @@ if (method == "camera")
 
         std::string say = params.has("say") ? params["say"].asString() : std::string();
 
-        // <Lumen> An instruction is not a message, and this is the third time
-        // the wrong one was relayed: Catten was sent "Tell Catten I'm away."
-        // Asking more clearly in the description has failed twice, so the
-        // viewer checks instead -- refusing is cheap and the rewrite is one
-        // line of work for the model.
+        // <Lumen> An instruction is not a message: Catten was sent "Tell Catten
+        // I'm away", twice, because the model put the user's words to IT into
+        // the field meaning the words for HIM.
+        //
+        // The first version of this matched English openings -- "tell ",
+        // "let him know" -- which the author stopped immediately: this viewer
+        // is used in Danish as often as English, and "sig til Catten at jeg er
+        // vaek" walks straight through a list like that while LOOKING
+        // guarded. A check that only works in one language is worse than
+        // none, because it is trusted.
+        //
+        // What is language-independent is the shape of the mistake: a message
+        // TO somebody does not refer to them by name in the third person. An
+        // opening address does -- "Catten, I'm on my way" -- so a name at the
+        // very start is allowed and a name anywhere else is the brief leaking
+        // through.
+        if (!say.empty() && !only.empty())
         {
-            std::string head = say.substr(0, 40);
-            LLStringUtil::toLower(head);
-            static const char* BRIEF[] = { "tell ", "let him", "let her", "let them",
-                                           "say that", "say to", "inform ", "ask him",
-                                           "ask her", "message ", "reply that" };
-            for (const char* p2 : BRIEF)
+            std::string lower_say = say;
+            LLStringUtil::toLower(lower_say);
+
+            for (std::set<LLUUID>::const_iterator it = only.begin(); it != only.end(); ++it)
             {
-                if (head.compare(0, strlen(p2), p2) == 0)
-                {
-                    LLSD e; e["code"] = -32602;
-                    e["message"] =
-                        "`say` is sent to them word for word, so it must be the MESSAGE, not "
-                        "the instruction. \"Tell Catten I'm away\" would reach him exactly "
-                        "like that. Write what they should read -- \"I'm away just now\" -- "
-                        "and send it again.";
-                    LLSD w; w["__error"] = e; return w;
-                }
+                LLAvatarName av;
+                if (!LLAvatarNameCache::get(*it, &av)) continue;
+
+                std::string first = av.getUserName();
+                const size_t dot = first.find('.');
+                if (dot != std::string::npos) first = first.substr(0, dot);
+                LLStringUtil::toLower(first);
+                if (first.size() < 3) continue;
+
+                const size_t at = lower_say.find(first);
+                if (at == std::string::npos || at == 0) continue;   // absent, or an address
+
+                LLSD e; e["code"] = -32602;
+                e["message"] =
+                    "`say` is passed on word for word, so it has to be the MESSAGE rather than "
+                    "the instruction -- it names " + first + " in it, which is how one talks "
+                    "ABOUT somebody, not TO them. Write what they should read and send it "
+                    "again.";
+                LLSD w; w["__error"] = e; return w;
             }
         }
         // </Lumen>
