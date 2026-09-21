@@ -1949,13 +1949,25 @@ void LumenAIChatFloater::offerAtLogin()
         "[secondlife:///app/lumen_catchup Show me a summary] -- or just say yes.";
 
     sCaughtUpFor = gAgentID;
-    self->sayNote(offer);
+
+    // Not dim. A note explains the machinery and can afford to recede; this
+    // asks a question and expects an answer, so it reads as ordinary text.
+    if (self->mTranscript)
+    {
+        self->mTranscript->appendText("\n" + offer, true, bodyStyle());
+    }
 
     // sayNote is the window only, so the model would not know what "yes"
     // refers to. This puts the same offer in the history it actually reads.
     LLSD m; m["role"] = "assistant"; m["content"] = what +
         " arrived while you were away. Say yes and I will summarise them.";
     self->mMessages.append(m);
+
+    // And claim the history for this provider, or the first turn throws the
+    // offer away: a turn clears mMessages whenever mHistoryProvider does not
+    // match, and it is empty until a turn has run. That is why "yes" met a
+    // model that had never seen the question.
+    self->mHistoryProvider = gSavedSettings.getString("LumenAIProvider");
 }
 
 void LumenAIChatFloater::summariseNow()
