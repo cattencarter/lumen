@@ -124,7 +124,8 @@ public:
      */
     void arm(bool on, const std::string& note, bool ims, bool local_chat,
              const std::vector<std::string>& also_called = std::vector<std::string>(),
-             const std::set<LLUUID>& only = std::set<LLUUID>());
+             const std::set<LLUUID>& only = std::set<LLUUID>(),
+             bool on_arrival = false);
 
     /**
      * Offered every line of nearby chat. Answers only when spoken to.
@@ -166,6 +167,15 @@ private:
     std::map<LLUUID, S32> mRepliesTo;
     // <Lumen> when non-empty, ONLY these people are answered
     std::set<LLUUID> mOnly;
+
+    // <Lumen> "tell him I'm away when he arrives" -- a different trigger from
+    // "when he writes". Someone who turns up and says nothing never writes.
+    bool             mOnArrival = false;
+    std::set<LLUUID> mSeen;        //< already here when armed, or already told
+    LLFrameTimer     mArrivalPoll;
+    bool             mArrivalWatch = false;
+    void watchForArrivals();
+    void checkArrivals();
     S32                   mRepliesTotal = 0;
     std::set<LLUUID>      mInFlight;
 };

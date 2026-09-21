@@ -2256,7 +2256,7 @@ namespace
             "be. While it is on, each incoming IM from a friend gets one short reply that never "
             "agrees to anything for them and never claims to be them. It stops by itself after a "
             "few replies to any one person. **Tell them plainly when you switch it on and off**, "
-            "and if they say they are back, turn it off even if they did not ask.\n"
+            "and if they say they are back, turn it off even if they did not ask. Naming people in `only` answers them and nobody else, and `on_arrival` tells those same people when they turn up rather than waiting for them to write.\n"
             "- read_scripts: the LSL script windows the user has open, with the script's text, "
             "whatever they have SELECTED in it, and the compiler errors from the last save. "
             "Call this before answering anything about a script -- do not ask them to paste it, "
@@ -2432,6 +2432,12 @@ namespace
                                  "\"if Catten writes, tell him I'll be right back\" is this, "
                                  "not everyone. Leave it out to answer anybody who writes.";
         view_props["only"]=vonly;
+        LLSD varr; varr["type"]="boolean";
+            varr["description"]="answer_while_away: also send `note` to the people in `only` "
+                                "when they ARRIVE -- come online, or turn up nearby -- rather "
+                                "than waiting for them to write. \"Tell him I'm away when he "
+                                "gets here\" is this. Once each. Requires `only`.";
+        view_props["on_arrival"]=varr;
         view_props["on"]=von; view_props["note"]=vnt;
         view_props["action"] = actionProperty(view_actions, LL_ARRAY_SIZE(view_actions), "What to do. Required.");
         LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
@@ -10756,7 +10762,17 @@ if (method == "camera")
             }
         }
 
-        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called, only);
+        const bool on_arrival = params.has("on_arrival") && params["on_arrival"].asBoolean();
+        if (on && on_arrival && only.empty())
+        {
+            LLSD err; err["code"] = -32602;
+            err["message"] = "on_arrival needs `only`. Messaging everybody who happens to "
+                             "walk past is not something to switch on by accident -- say who.";
+            LLSD w; w["__error"] = err; return w;
+        }
+
+        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called,
+                                             only, on_arrival);
 
         LLSD result;
         result["answering_while_away"] = on;
@@ -10772,6 +10788,7 @@ if (method == "camera")
             result["stops_after_minutes"] =
                 gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
             result["answering_ims"] = ims;
+            result["telling_them_on_arrival"] = on_arrival;
             if (!only.empty())
             {
                 result["only_these_people"] = (LLSD::Integer)only.size();

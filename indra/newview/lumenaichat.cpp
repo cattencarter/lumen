@@ -73,6 +73,8 @@
 #include "llgroupiconctrl.h"     // <Lumen>
 #include "llgroupactions.h"      // <Lumen> clickable cards
 #include "llcommandhandler.h"    // <Lumen> the clickable offer
+#include "llcallingcard.h"      // <Lumen> LLAvatarTracker
+#include "llworld.h"   // <Lumen>
 #include "lltexteditor.h"
 #include "lluicolortable.h"
 #include "llviewercontrol.h"
@@ -3117,8 +3119,29 @@ LumenAIAutoResponder::LumenAIAutoResponder()
 
 void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
                             const std::vector<std::string>& also_called,
-                               const std::set<LLUUID>& only)
+                               const std::set<LLUUID>& only,
+                               bool on_arrival)
 {
+    // <Lumen> Arrival, not presence. Whoever is already standing here when
+    // this is switched on has not arrived, so they are marked as seen --
+    // otherwise arming it beside somebody messages them at once.
+    mOnArrival = on && on_arrival;
+    mSeen.clear();
+    if (mOnArrival)
+    {
+        uuid_vec_t here;
+        LLWorld::getInstance()->getAvatars(&here);
+        for (uuid_vec_t::const_iterator it = here.begin(); it != here.end(); ++it)
+        {
+            mSeen.insert(*it);
+        }
+        for (std::set<LLUUID>::const_iterator it = mOnly.begin(); it != mOnly.end(); ++it)
+        {
+            if (LLAvatarTracker::instance().isBuddyOnline(*it)) mSeen.insert(*it);
+        }
+        watchForArrivals();
+    }
+
     mOnly = only;
     mExtraNames = on ? also_called : std::vector<std::string>();
     mTalkingToMe.clear();
@@ -3203,6 +3226,72 @@ bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) 
     }
     return true;
 }
+
+// <Lumen>
+void LumenAIAutoResponder::watchForArrivals()
+{
+    if (mArrivalWatch) return;
+    mArrivalWatch = true;
+    mArrivalPoll.setTimerExpirySec(3.f);
+
+    LLEventPumps::instance().obtain("mainloop").listen("LumenAIArrivals",
+        [this](const LLSD&)
+        {
+            if (!mArmed || !mOnArrival)
+            {
+                LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIArrivals");
+                mArrivalWatch = false;
+                return false;
+            }
+            if (mArrivalPoll.hasExpired())
+            {
+                mArrivalPoll.setTimerExpirySec(3.f);
+                checkArrivals();
+            }
+            return false;
+        });
+}
+
+/**
+ * Tell a named person, once, that the user is away -- when they turn up.
+ *
+ * Polled rather than hooked, because "arrived" has two meanings and the
+ * viewer signals them separately: walking into the region, and logging in.
+ * Three seconds is far below the time it takes anybody to notice being
+ * ignored, and the set being watched is a handful of ids.
+ */
+void LumenAIAutoResponder::checkArrivals()
+{
+    if (mOnly.empty()) return;   // never greet the whole world
+
+    uuid_vec_t here;
+    LLWorld::getInstance()->getAvatars(&here);
+    std::set<LLUUID> present(here.begin(), here.end());
+
+    for (std::set<LLUUID>::const_iterator it = mOnly.begin(); it != mOnly.end(); ++it)
+    {
+        const LLUUID& who = *it;
+        if (mSeen.count(who)) continue;
+
+        const bool arrived = present.count(who)
+                          || LLAvatarTracker::instance().isBuddyOnline(who);
+        if (!arrived) continue;
+
+        mSeen.insert(who);   // once each, whatever happens next
+
+        std::string text = mNote.empty()
+            ? std::string("I am away from the keyboard just now -- back shortly.")
+            : mNote;
+
+        const LLUUID session =
+            LLIMMgr::computeSessionID(IM_NOTHING_SPECIAL, who);
+        LLIMModel::instance().sendMessage(text, session, who, IM_NOTHING_SPECIAL);
+
+        LL_INFOS("LumenAIChat") << "Told " << who << " that the user is away, on arrival."
+                                << LL_ENDL;
+    }
+}
+// </Lumen>
 
 void LumenAIAutoResponder::considerChat(const LLSD& data)
 {
