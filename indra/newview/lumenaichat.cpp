@@ -3428,6 +3428,36 @@ void LumenAIAutoResponder::considerChat(const LLSD& data)
 
     const std::string said = lowerOf(data["message"].asString());
     bool addressed = false;
+
+    // <Lumen> A name is needed because local chat is a ROOM. Twice it is not.
+    //
+    // The author, watching Catten try "hi priincess", "whispering wind?",
+    // "are you here?" and get nothing until the fourth line finally said
+    // "maryam": the assistant "could have looked at the radar and seen that
+    // there was only those two of them close by". Quite right -- with one
+    // other person within earshot it is not a room, it is a conversation, and
+    // nobody says your name every line in a conversation.
+    //
+    // And when the user has NAMED somebody -- "if Catten writes" -- that
+    // person needs no name either. They are the person who was named.
+    if (mOnly.count(from_id))
+    {
+        addressed = true;
+    }
+    else
+    {
+        uuid_vec_t near_by;
+        LLWorld::getInstance()->getAvatars(&near_by, NULL, gAgent.getPositionGlobal(),
+                                           CHAT_NORMAL_RADIUS);
+        S32 others = 0;
+        for (uuid_vec_t::const_iterator it = near_by.begin(); it != near_by.end(); ++it)
+        {
+            if (*it != gAgentID) ++others;
+        }
+        if (others <= 1) addressed = true;
+    }
+    // </Lumen>
+
     for (const std::string& n : names)
     {
         const std::string low = lowerOf(n);
