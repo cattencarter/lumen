@@ -71,6 +71,7 @@
 #include "llpanel.h"            // <Lumen> catch-up cards
 #include "llavatariconctrl.h"    // <Lumen>
 #include "llgroupiconctrl.h"     // <Lumen>
+#include "llgroupactions.h"      // <Lumen> clickable cards
 #include "lltexteditor.h"
 #include "lluicolortable.h"
 #include "llviewercontrol.h"
@@ -437,6 +438,10 @@ namespace
         hp.wrap(true);
         LLTextBox* head = LLUICtrlFactory::create<LLTextBox>(hp);
         head->setRect(LLRect(text_left, 0, text_left + text_width, 0));
+        // A secondlife:///app/ link renders with the person's or group's own
+        // name as its label, so the words do not change -- they become
+        // clickable.  Same mechanism the transcript already uses.
+        head->setParseURLs(true);
         head->setValue(heading);
         head->reshapeToFitText();
         const S32 head_h = llmax(14, head->getTextPixelHeight());
@@ -493,6 +498,29 @@ namespace
         // A group insignia when it is a group's notice, the writer's face when
         // it is a person's. Both controls fetch the picture themselves.
         const LLRect icon_rect(PAD, height - PAD, PAD + ICON, height - PAD - ICON);
+
+        // The icon controls carry no click callback of their own, so an
+        // invisible button sits on top of the picture and opens the same
+        // place the name does.
+        if (group_id.notNull() || agent_id.notNull())
+        {
+            LLButton::Params bp2;
+            bp2.name("icon_hit");
+            bp2.label("");
+            LLButton* hit = LLUICtrlFactory::create<LLButton>(bp2);
+            hit->setRect(icon_rect);
+            hit->setImageUnselected(LLUIImagePtr(NULL));
+            hit->setImageSelected(LLUIImagePtr(NULL));
+            hit->setImageHoverUnselected(LLUIImagePtr(NULL));
+            const LLUUID gid = group_id, aid = agent_id;
+            hit->setClickedCallback([gid, aid](LLUICtrl*, const LLSD&)
+            {
+                if (gid.notNull())      LLGroupActions::show(gid);
+                else if (aid.notNull()) LLAvatarActions::showProfile(aid);
+            });
+            card->addChild(hit);
+        }
+
         if (group_id.notNull())
         {
             LLGroupIconCtrl::Params ip;
@@ -1735,7 +1763,11 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result)
         const std::string who = m.has("from_name") ? m["from_name"].asString()
                                                    : m["from"].asString();
         std::string heading = "IM";
-        if (!who.empty()) heading += "  \xc2\xb7  " + who;
+        if (!who.empty())
+        {
+            const std::string link = m["from_link"].asString();
+            heading += "  \xc2\xb7  " + (link.empty() ? who : link);
+        }
 
         LLPanel* card = buildCatchUpCard(width, m["from_id"].asUUID(), LLUUID::null,
                                          heading, std::string(),
@@ -1754,8 +1786,10 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result)
         const std::string who   = n["from_name"].asString();
 
         std::string heading = group.empty() ? "NOTICE" : "GROUP NOTICE";
-        if (!group.empty())     heading += "  \xc2\xb7  " + group;
-        else if (!who.empty())  heading += "  \xc2\xb7  " + who;
+        const std::string glink = n["group_link"].asString();
+        const std::string plink = n["from_link"].asString();
+        if (!group.empty())     heading += "  \xc2\xb7  " + (glink.empty() ? group : glink);
+        else if (!who.empty())  heading += "  \xc2\xb7  " + (plink.empty() ? who  : plink);
 
         std::string body = n["text"].asString();
         if (!body.empty()) body = "\xe2\x80\x9c" + body + "\xe2\x80\x9d";
