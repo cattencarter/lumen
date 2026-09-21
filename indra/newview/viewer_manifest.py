@@ -970,20 +970,13 @@ class Windows_x86_64_Manifest(ViewerManifest):
         return result
         # </FS:Ansariel>
     def dl_url_from_channel(self):
-        if self.channel_type() == 'release':
-            return 'https://www.firestormviewer.org/choose-your-platform'
-        elif self.channel_type() == 'beta':
-            return 'https://www.firestormviewer.org/early-access-beta-downloads'
-        elif self.channel_type() == 'alpha':
-            return 'https://www.firestormviewer.org/early-access-alpha-downloads'
-        elif self.channel_type() == 'manual':
-            return 'https://www.firestormviewer.org/early-access-manual-downloads'
-        elif self.channel_type() == 'profiling':
-            return 'https://www.firestormviewer.org/profiling-downloads'
-        elif self.channel_type() == 'nightly':
-            return 'https://www.firestormviewer.org/firestorm-nightly-build-downloads'
-        else:
-            return '<NO-URL>'
+        # <Lumen> Where somebody is sent when the installer turns them away.
+        # It was firestormviewer.org, per channel -- so a user whose CPU the
+        # build refuses would have been handed to the Phoenix Firestorm
+        # Project to download a viewer they do not publish. One page, because
+        # there is one build.
+        return "https://github.com/cattencarter/lumen/releases"
+        # </Lumen>
         
 
     def package_finish(self):
