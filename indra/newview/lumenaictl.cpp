@@ -10275,6 +10275,66 @@ if (method == "camera")
         result["latest_seq"] = stream["latest_seq"];
         result["subscribed"] = mSubscribed;
 
+        // <Lumen> One entry per PERSON and per GROUP, not per item.
+        //
+        // A group that posted three notices is one thing that happened, and
+        // three cards for it reads as three. The model writes one summary
+        // covering all of them; the viewer still owns who and which group.
+        LLSD waiting = LLSD::emptyArray();
+        {
+            std::map<std::string, S32> seen;   // key -> index into waiting
+
+            for (LLSD::array_const_iterator it = msgs.beginArray();
+                 it != msgs.endArray(); ++it)
+            {
+                const std::string key = "p:" + (*it)["from_id"].asString()
+                                             + (*it)["from_name"].asString();
+                if (seen.find(key) == seen.end())
+                {
+                    LLSD e;
+                    e["id"]        = llformat("p%d", (S32)waiting.size());
+                    e["what"]      = "im";
+                    e["from_name"] = (*it)["from_name"].isDefined()
+                                     ? (*it)["from_name"] : (*it)["from"];
+                    if ((*it).has("from_id"))   e["from_id"]   = (*it)["from_id"];
+                    if ((*it).has("from_link")) e["from_link"] = (*it)["from_link"];
+                    e["said"] = LLSD::emptyArray();
+                    seen[key] = (S32)waiting.size();
+                    waiting.append(e);
+                }
+                waiting[seen[key]]["said"].append((*it)["message"]);
+            }
+
+            for (LLSD::array_const_iterator it = notices.beginArray();
+                 it != notices.endArray(); ++it)
+            {
+                const std::string key = "g:" + (*it)["group_id"].asString()
+                                             + (*it)["group_name"].asString()
+                                             + (*it)["from_name"].asString();
+                if (seen.find(key) == seen.end())
+                {
+                    LLSD e;
+                    e["id"]   = llformat("g%d", (S32)waiting.size());
+                    e["what"] = (*it)["group_name"].asString().empty() ? "notice"
+                                                                       : "group_notice";
+                    for (const char* k : { "group_name", "group_id", "group_link",
+                                           "from_name", "from_id", "from_link" })
+                    {
+                        if ((*it).has(k)) e[k] = (*it)[k];
+                    }
+                    e["notices"] = LLSD::emptyArray();
+                    seen[key] = (S32)waiting.size();
+                    waiting.append(e);
+                }
+                LLSD one;
+                if ((*it).has("subject")) one["subject"] = (*it)["subject"];
+                if ((*it).has("text"))    one["text"]    = (*it)["text"];
+                waiting[seen[key]]["notices"].append(one);
+            }
+        }
+        result["waiting"] = waiting;
+        // </Lumen>
+
         result["note"] =
             "What arrived while the user was away. `notices` is the notification well -- group "
             "notices, offers, payments, anything that is not a conversation -- and `messages` "
@@ -10283,10 +10343,9 @@ if (method == "camera")
             "**Do not answer in prose. Answer by calling `chat` / `show_waiting` once.** That "
             "call IS the reply -- the viewer draws it, and any text you write beside it is "
             "thrown away.\n"
-            "Give it `items`: one entry per thing here, as {\"id\": the id it carries, "
-            "\"summary\": one short sentence saying what it is ABOUT}. Summarise rather than "
-            "quote -- 'the group is having a dance night on Friday, doors at eight, feather "
-            "theme' rather than the notice's own words. Keep every id and drop nothing.\n"
+            "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n"
+            "Give show_waiting `items`: one entry per id in `waiting`, as {\"id\": that id, "
+            "\"summary\": one or two short sentences saying what it is ABOUT}. Summarise, never quote -- 'a dance night on Friday, doors at eight, feather theme' rather than the notice's own words, and a long notice becomes one line. Keep every id and drop nothing.\n"
             "And `headline`: ONE short line on whether anything needs doing -- who is waiting "
             "on an answer, what expires. 'Nothing urgent. You may want to say hi back.' is the "
             "right length.\n"

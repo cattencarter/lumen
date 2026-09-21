@@ -1815,61 +1815,66 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries
 {
     if (!mTranscript) return;
 
-    const LLSD& msgs    = result["messages"];
-    const LLSD& notices = result["notices"];
-    if (!msgs.isArray() && !notices.isArray()) return;
-    if (msgs.size() == 0 && notices.size() == 0) return;
+    const LLSD& waiting = result["waiting"];
+    if (!waiting.isArray() || waiting.size() == 0) return;
 
     const S32 width = llmax(160, mTranscript->getRect().getWidth() - 28);
 
-    for (LLSD::array_const_iterator it = msgs.beginArray(); it != msgs.endArray(); ++it)
+    for (LLSD::array_const_iterator it = waiting.beginArray();
+         it != waiting.endArray(); ++it)
     {
-        const LLSD& m = *it;
-        const std::string who = m.has("from_name") ? m["from_name"].asString()
-                                                   : m["from"].asString();
-        std::string heading = "IM";
-        if (!who.empty())
-        {
-            const std::string link = m["from_link"].asString();
-            heading += "  \xc2\xb7  " + (link.empty() ? who : link);
-        }
+        const LLSD& e  = *it;
+        const std::string id   = e["id"].asString();
+        const std::string what = e["what"].asString();
 
-        const std::string said = summaries.has(m["id"].asString())
-            ? summaries[m["id"].asString()].asString()
-            : "\xe2\x80\x9c" + m["message"].asString() + "\xe2\x80\x9d";
-        LLPanel* card = buildCatchUpCard(width, m["from_id"].asUUID(), LLUUID::null,
-                                         heading, std::string(), said);
-        LLInlineViewSegment::Params p;
-        p.view = card;
-        p.left_pad = 4;
-        p.right_pad = 4;
-        mTranscript->appendWidget(p, "\n", false);
-    }
+        // Heading: what it is, then who -- as a link where there is one, which
+        // the viewer renders with their own name as the label.
+        std::string heading = (what == "im") ? "IM"
+                            : (what == "group_notice") ? "GROUP NOTICE" : "NOTICE";
+        const std::string glink = e["group_link"].asString();
+        const std::string plink = e["from_link"].asString();
+        const std::string gname = e["group_name"].asString();
+        const std::string pname = e["from_name"].asString();
+        if (!gname.empty())      heading += "  \xc2\xb7  " + (glink.empty() ? gname : glink);
+        else if (!pname.empty()) heading += "  \xc2\xb7  " + (plink.empty() ? pname : plink);
 
-    for (LLSD::array_const_iterator it = notices.beginArray(); it != notices.endArray(); ++it)
-    {
-        const LLSD& n = *it;
-        const std::string group = n["group_name"].asString();
-        const std::string who   = n["from_name"].asString();
+        // The bold line. One notice names itself; several are counted, because
+        // there is no single subject to show and listing them is the body's job.
+        std::string subject;
+        const LLSD& ns = e["notices"];
+        if (ns.isArray() && ns.size() == 1)      subject = ns[0]["subject"].asString();
+        else if (ns.isArray() && ns.size() > 1)  subject = llformat("%d notices", ns.size());
 
-        std::string heading = group.empty() ? "NOTICE" : "GROUP NOTICE";
-        const std::string glink = n["group_link"].asString();
-        const std::string plink = n["from_link"].asString();
-        if (!group.empty())     heading += "  \xc2\xb7  " + (glink.empty() ? group : glink);
-        else if (!who.empty())  heading += "  \xc2\xb7  " + (plink.empty() ? who  : plink);
-
+        // The body is the model's summary. Without one -- it never called
+        // show_waiting -- fall back to the words as sent, which is worse to
+        // read and never wrong.
         std::string body;
-        if (summaries.has(n["id"].asString()))
+        if (summaries.has(id))
         {
-            body = summaries[n["id"].asString()].asString();
+            body = summaries[id].asString();
         }
-        else if (!n["text"].asString().empty())
+        else if (what == "im")
         {
-            body = "\xe2\x80\x9c" + n["text"].asString() + "\xe2\x80\x9d";
+            const LLSD& said = e["said"];
+            for (LLSD::array_const_iterator m = said.beginArray(); m != said.endArray(); ++m)
+            {
+                if (!body.empty()) body += "  ";
+                body += "\xe2\x80\x9c" + (*m).asString() + "\xe2\x80\x9d";
+            }
+        }
+        else if (ns.isArray())
+        {
+            for (LLSD::array_const_iterator n = ns.beginArray(); n != ns.endArray(); ++n)
+            {
+                const std::string t = (*n)["text"].asString();
+                if (t.empty()) continue;
+                if (!body.empty()) body += "\n";
+                body += "\xe2\x80\x9c" + t + "\xe2\x80\x9d";
+            }
         }
 
-        LLPanel* card = buildCatchUpCard(width, n["from_id"].asUUID(), n["group_id"].asUUID(),
-                                         heading, n["subject"].asString(), body);
+        LLPanel* card = buildCatchUpCard(width, e["from_id"].asUUID(), e["group_id"].asUUID(),
+                                         heading, subject, body);
         LLInlineViewSegment::Params p;
         p.view = card;
         p.left_pad = 4;
