@@ -10015,6 +10015,86 @@ if (method == "camera")
 
         LLSD result;
 
+        // <Lumen> Demo data, for looking at the cards without waiting for
+        // somebody to write to you.  `LumenAICatchUpDemo` in Debug Settings,
+        // off by default.
+        //
+        // The ids are the user's OWN groups and avatar rather than invented
+        // ones, so the insignias and the face really resolve -- a card full of
+        // blank icons would prove nothing about the part most likely to break.
+        // The last message deliberately carries no id at all, because a sender
+        // the viewer cannot picture has to look right too.
+        if (gSavedSettings.getBOOL("LumenAICatchUpDemo"))
+        {
+            static const char* SUBJECTS[] = {
+                "Dance night on Friday",
+                "Sim restart at 6pm",
+                "New roleplay rules"
+            };
+            static const char* BODIES[] = {
+                "Doors at eight, and the theme is anything with feathers. "
+                "Bring a friend -- the parcel holds forty.",
+                "The region goes down for a restart at six. Please rez nothing "
+                "you cannot afford to lose in the half hour before.",
+                "The revised rules are in the group notices, and take effect on "
+                "the first. The short version: ask before you bite."
+            };
+
+            LLSD demo_notices = LLSD::emptyArray();
+            for (S32 i = 0; i < 3; ++i)
+            {
+                LLSD one;
+                one["kind"]    = "GroupNotice";
+                one["subject"] = SUBJECTS[i];
+                one["text"]    = BODIES[i];
+                one["when"]    = LLDate::now().asString();
+                if (i < (S32)gAgent.mGroups.size())
+                {
+                    const LLGroupData& g = gAgent.mGroups[i];
+                    one["group_name"] = safeUtf8(g.mName);
+                    one["group_id"]   = g.mID;
+                    const std::string link = groupLink(g.mID);
+                    if (!link.empty()) one["group_link"] = link;
+                }
+                demo_notices.append(one);
+            }
+
+            LLSD demo_msgs = LLSD::emptyArray();
+            LLAvatarName av;
+            std::string me = "Someone";
+            if (LLAvatarNameCache::get(gAgent.getID(), &av)) me = av.getDisplayName();
+
+            LLSD m1;
+            m1["from"]      = me;
+            m1["from_name"] = me;
+            m1["from_id"]   = gAgent.getID();
+            m1["message"]   = "Are you coming to the thing tonight? I saved you a seat.";
+            const std::string me_link = profileLink(gAgent.getID());
+            if (!me_link.empty()) m1["from_link"] = me_link;
+            demo_msgs.append(m1);
+
+            LLSD m2;
+            m2["from"]      = "Someone With No Picture";
+            m2["from_name"] = "Someone With No Picture";
+            m2["message"]   = "hi";
+            demo_msgs.append(m2);
+
+            result["notices"]                       = demo_notices;
+            result["notice_count"]                  = 3;
+            result["notices_from_earlier_sessions"] = 0;
+            result["messages"]                      = demo_msgs;
+            result["message_count"]                 = 2;
+            result["own_messages_left_out"]         = 0;
+            result["subscribed"]                    = mSubscribed;
+            result["since"]                         = "demo";
+            result["demo"]                          = true;
+            result["note"] =
+                "DEMO DATA, made up so the cards can be looked at. The viewer has already "
+                "drawn them. Write one short closing line and nothing else.";
+            return result;
+        }
+        // </Lumen>
+
         // <Lumen> Notices are NOT instant messages and do not reach the IM
         // stream. A group notice arrives as a notification, which is why
         // read_messages has never seen one. The viewer keeps them on its
