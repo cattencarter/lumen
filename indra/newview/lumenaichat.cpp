@@ -196,19 +196,38 @@ namespace
      */
     std::map<std::string, std::string> sProfileLinks;
 
-    /** Harvest creator_name/creator_link pairs from any tool result. */
+    /**
+     * Harvest any `<thing>_name` / `<thing>_link` pair from a tool result.
+     *
+     * This began as creator_name/creator_link alone, for "who made this
+     * skirt".  The same want turned up the moment `catch_up` started naming
+     * who had written and which group had posted, and it will turn up again.
+     * So the rule is the shape of the keys rather than a list of them: a tool
+     * that returns a name beside its link gets that name made clickable, with
+     * nothing added here.
+     */
     void rememberProfileLinks(const LLSD& node)
     {
+        static const std::string NAME_SUFFIX("_name");
+
         if (node.isMap())
         {
-            if (node.has("creator_name") && node.has("creator_link"))
-            {
-                const std::string nm = node["creator_name"].asString();
-                const std::string ln = node["creator_link"].asString();
-                if (!nm.empty() && !ln.empty()) { sProfileLinks[nm] = ln; }
-            }
             for (LLSD::map_const_iterator it = node.beginMap(); it != node.endMap(); ++it)
             {
+                const std::string& key = it->first;
+                if (key.size() > NAME_SUFFIX.size()
+                    && key.compare(key.size() - NAME_SUFFIX.size(),
+                                   NAME_SUFFIX.size(), NAME_SUFFIX) == 0)
+                {
+                    const std::string link_key =
+                        key.substr(0, key.size() - NAME_SUFFIX.size()) + "_link";
+                    if (node.has(link_key))
+                    {
+                        const std::string nm = it->second.asString();
+                        const std::string ln = node[link_key].asString();
+                        if (!nm.empty() && !ln.empty()) { sProfileLinks[nm] = ln; }
+                    }
+                }
                 rememberProfileLinks(it->second);
             }
         }

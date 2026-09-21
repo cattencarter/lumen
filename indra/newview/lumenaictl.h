@@ -118,6 +118,7 @@ public:
     // rather than in the .cpp's anonymous namespace because itemToLLSD needs
     // it too, and one spelling of the link beats two that drift.
     static std::string profileLink(const LLUUID& agent_id);
+    static std::string groupLink(const LLUUID& group_id);   // <Lumen>
     static bool wornRequestPending(const LLUUID& who);
     static void beginWornRequest(const LLUUID& who);
     static bool takeWornReply(const LLUUID& who, LLSD& out);

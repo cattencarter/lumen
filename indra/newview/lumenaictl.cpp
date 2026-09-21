@@ -4759,6 +4759,18 @@ std::string LumenAIControl::profileLink(const LLUUID& agent_id)
     return "secondlife:///app/agent/" + agent_id.asString() + "/about";
 }
 
+// <Lumen> The same thing for a group, so a notice can name who posted it and
+// which group it went to, and both are clickable.
+std::string LumenAIControl::groupLink(const LLUUID& group_id)
+{
+    if (group_id.isNull())
+    {
+        return std::string();
+    }
+    return "secondlife:///app/group/" + group_id.asString() + "/about";
+}
+// </Lumen>
+
 bool LumenAIControl::wornRequestPending(const LLUUID& who)
 {
     return sWornPending.count(who) > 0;
@@ -10053,14 +10065,48 @@ if (method == "camera")
                 // payload's shape is the notification's own, so nothing is
                 // assumed to be there.
                 const LLSD& p = n->getPayload();
-                for (const char* key : { "from_name", "SENDER", "NAME", "GROUP", "group_name" })
+
+                // <Lumen> A person and a group are kept apart on purpose.  The
+                // old single "from" took whichever key came first, so a group
+                // notice could report the GROUP as the sender -- harmless while
+                // it was only text, and wrong the moment a name becomes a link
+                // to a profile.
+                for (const char* key : { "from_name", "SENDER", "NAME" })
                 {
                     if (p.has(key) && !p[key].asString().empty())
                     {
-                        one["from"] = safeUtf8(p[key].asString());
+                        one["from_name"] = safeUtf8(p[key].asString());
                         break;
                     }
                 }
+                for (const char* key : { "group_name", "GROUP" })
+                {
+                    if (p.has(key) && !p[key].asString().empty())
+                    {
+                        one["group_name"] = safeUtf8(p[key].asString());
+                        break;
+                    }
+                }
+
+                // The ids turn those names into links.  The viewer does the
+                // substitution itself (a model asked to paste a link does not),
+                // and renders each with the name as its label, so the words the
+                // user reads do not change -- they become clickable.
+                for (const char* key : { "from_id", "sender_id", "SENDER_ID" })
+                {
+                    if (p.has(key) && p[key].asUUID().notNull())
+                    {
+                        const std::string link = profileLink(p[key].asUUID());
+                        if (!link.empty()) one["from_link"] = link;
+                        break;
+                    }
+                }
+                if (p.has("group_id") && p["group_id"].asUUID().notNull())
+                {
+                    const std::string link = groupLink(p["group_id"].asUUID());
+                    if (!link.empty()) one["group_link"] = link;
+                }
+                // </Lumen>
                 notices.append(one);
             });
         }
@@ -10087,7 +10133,19 @@ if (method == "camera")
                 ++skipped;   // our own half of the conversation, not news
                 continue;
             }
-            msgs.append(*it);
+            // <Lumen> the sender's name beside a link to their profile
+            LLSD m = *it;
+            if (m.has("from") && m.has("from_id"))
+            {
+                const std::string link = profileLink(m["from_id"].asUUID());
+                if (!link.empty())
+                {
+                    m["from_name"] = m["from"];
+                    m["from_link"] = link;
+                }
+            }
+            msgs.append(m);
+            // </Lumen>
         }
         result["messages"] = msgs;
         result["message_count"] = (LLSD::Integer)msgs.size();
@@ -10104,13 +10162,18 @@ if (method == "camera")
             "and `notices_from_earlier_sessions` counts undismissed ones from previous days "
             "that were left out. Do not mention that count unless the user asks why something "
             "is missing.\n"
+            "**Keep the two apart and label them.** Write the instant messages first under a "
+            "short heading, then the notices under their own -- never mixed into one "
+            "paragraph, even when there is only one of each.\n"
             "**Summarise in a few lines. Do not recite the list.** Anything that needs an "
-            "answer, or that expires, goes first and by itself. After that, one line per "
-            "person or group saying what it was about -- not one line per notice. Several "
-            "notices about the same event are one line. Events whose date has already passed "
-            "are worth a single closing line together, never one each. Skip the routine "
-            "entirely: a payment that went through, an object returned, anything that happened "
-            "and is finished.\n"
+            "answer, or that expires, goes first. Then one line per person or group saying "
+            "what it was about -- not one line per notice. Several notices about the same "
+            "event are one line. Events whose date has already passed are worth a single "
+            "closing line together, never one each. Skip the routine entirely: a payment that "
+            "went through, an object returned, anything finished.\n"
+            "Name the person or the group plainly, exactly as `from_name` and `group_name` "
+            "give it. The viewer makes those names clickable itself, so write the name and "
+            "never a URL.\n"
             "If nothing came in, 'nothing came in while you were away' is the whole reply -- "
             "no list, no offer to check again.\n"
             "A notice is still waiting whether or not it has been read, so do not call it "
