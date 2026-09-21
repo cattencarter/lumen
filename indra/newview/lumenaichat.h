@@ -123,7 +123,8 @@ public:
      * what was probably meant.
      */
     void arm(bool on, const std::string& note, bool ims, bool local_chat,
-             const std::vector<std::string>& also_called = std::vector<std::string>());
+             const std::vector<std::string>& also_called = std::vector<std::string>(),
+             const std::set<LLUUID>& only = std::set<LLUUID>());
 
     /**
      * Offered every line of nearby chat. Answers only when spoken to.
@@ -163,6 +164,8 @@ private:
     F64                   mArmedAt = 0.0;
     std::string           mNote;
     std::map<LLUUID, S32> mRepliesTo;
+    // <Lumen> when non-empty, ONLY these people are answered
+    std::set<LLUUID> mOnly;
     S32                   mRepliesTotal = 0;
     std::set<LLUUID>      mInFlight;
 };

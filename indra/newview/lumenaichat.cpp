@@ -3116,8 +3116,10 @@ LumenAIAutoResponder::LumenAIAutoResponder()
 }
 
 void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
-                            const std::vector<std::string>& also_called)
+                            const std::vector<std::string>& also_called,
+                               const std::set<LLUUID>& only)
 {
+    mOnly = only;
     mExtraNames = on ? also_called : std::vector<std::string>();
     mTalkingToMe.clear();
     mArmed = on;
@@ -3176,6 +3178,13 @@ bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) 
     {
         why_not = "not a friend"; return false;
     }
+    // <Lumen> "if Catten writes, tell him I'll be right back" names ONE person,
+    // and answering everybody is a different thing from what was asked.
+    if (!mOnly.empty() && mOnly.find(from_id) == mOnly.end())
+    {
+        why_not = "not one of the people named"; return false;
+    }
+    // </Lumen>
     if (mInFlight.count(from_id))
     {
         why_not = "already answering them"; return false;

@@ -2424,6 +2424,11 @@ namespace
         LLSD vnt; vnt["type"]="string";
             vnt["description"]="answer_while_away: anything they said on the way out -- how long "
                                "they will be, what to say, what not to. Optional.";
+        LLSD vonly; vonly["type"]="array";
+            vonly["description"]="answer_while_away: answer ONLY these people, by name. "
+                                 "\"if Catten writes, tell him I'll be right back\" is this, "
+                                 "not everyone. Leave it out to answer anybody who writes.";
+        view_props["only"]=vonly;
         view_props["on"]=von; view_props["note"]=vnt;
         view_props["action"] = actionProperty(view_actions, LL_ARRAY_SIZE(view_actions), "What to do. Required.");
         LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
@@ -10720,7 +10725,35 @@ if (method == "camera")
             }
         }
 
-        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called);
+        // <Lumen> "if Catten writes..." names one person. Resolve each name,
+        // and if NONE of them resolves, refuse rather than falling back to
+        // answering everybody -- that is the one wrong answer worth avoiding,
+        // because it is wider than what was asked and nobody would notice.
+        std::set<LLUUID> only;
+        LLSD not_found = LLSD::emptyArray();
+        if (on && params.has("only") && params["only"].isArray())
+        {
+            for (LLSD::array_const_iterator it = params["only"].beginArray();
+                 it != params["only"].endArray(); ++it)
+            {
+                LLSD e;
+                LLSD one; one["name"] = (*it).asString();
+                const LLUUID id = resolvePerson(one, e);
+                if (id.notNull()) only.insert(id);
+                else              not_found.append((*it).asString());
+            }
+            if (only.empty())
+            {
+                LLSD err; err["code"] = -32000;
+                err["message"] = "Nobody by that name could be found, so nothing was "
+                                 "switched on. Answering everyone is wider than what was "
+                                 "asked -- say who, or say to answer everyone.";
+                err["data"] = LLSD().with("not_found", not_found);
+                LLSD w; w["__error"] = err; return w;
+            }
+        }
+
+        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called, only);
 
         LLSD result;
         result["answering_while_away"] = on;
@@ -10736,6 +10769,11 @@ if (method == "camera")
             result["stops_after_minutes"] =
                 gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
             result["answering_ims"] = ims;
+            if (!only.empty())
+            {
+                result["only_these_people"] = (LLSD::Integer)only.size();
+                if (not_found.size()) result["names_not_found"] = not_found;
+            }
             result["answering_local_chat"] = local_chat;
             result["note"] =
                 "Now answering one-to-one IMs for them. Say so plainly, including that it "
