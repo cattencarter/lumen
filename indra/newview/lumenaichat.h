@@ -125,7 +125,8 @@ public:
     void arm(bool on, const std::string& note, bool ims, bool local_chat,
              const std::vector<std::string>& also_called = std::vector<std::string>(),
              const std::set<LLUUID>& only = std::set<LLUUID>(),
-             bool on_arrival = false);
+             bool on_arrival = false,
+             const std::string& say = std::string());
 
     /**
      * Offered every line of nearby chat. Answers only when spoken to.
@@ -173,7 +174,9 @@ private:
     bool             mOnArrival = false;
     std::set<LLUUID> mSeen;        //< already near when armed, or already told
     std::set<LLUUID> mWasOnline;   //< online when armed, so logging in is not arriving
-    std::set<LLUUID> mToldFirst;   //< has had the note verbatim
+    std::set<LLUUID> mToldFirst;   //< has had the exact words already
+    std::string      mSay;         //< exact words to relay, if any
+    std::map<LLUUID, F32> mArrivedAt;  //< first sighting, so the greeting can settle
     LLFrameTimer     mArrivalPoll;
     bool             mArrivalWatch = false;
     void watchForArrivals();

@@ -2438,6 +2438,14 @@ namespace
                                 "than waiting for them to write. \"Tell him I'm away when he "
                                 "gets here\" is this. Once each. Requires `only`.";
         view_props["on_arrival"]=varr;
+        LLSD vsay; vsay["type"]="string";
+            vsay["description"]="answer_while_away: the EXACT words to pass on, when the user "
+                                "gave them. \"tell him I'll be right there\" -> \"I'll be "
+                                "right there.\" It is sent word for word, so put THEIR message "
+                                "here and never your instructions about it. Leave it out when "
+                                "they only said they were away; use `note` for anything that "
+                                "shapes a reply rather than being one.";
+        view_props["say"]=vsay;
         view_props["on"]=von; view_props["note"]=vnt;
         view_props["action"] = actionProperty(view_actions, LL_ARRAY_SIZE(view_actions), "What to do. Required.");
         LLSD vdid; vdid["type"]="string"; vdid["description"]="answer_dialogue: the dialogue's id, from read_dialogues.";
@@ -10779,14 +10787,16 @@ if (method == "camera")
             LLSD w; w["__error"] = err; return w;
         }
 
+        const std::string say = params.has("say") ? params["say"].asString() : std::string();
         LumenAIAutoResponder::instance().arm(on, note, ims, local_chat_eff, also_called,
-                                             only, on_arrival);
+                                             only, on_arrival, say);
 
         LLSD result;
         result["answering_while_away"] = on;
         if (on)
         {
             if (!note.empty()) result["note_given"] = note;
+            if (!say.empty())  result["sending_word_for_word"] = say;
             result["friends_only"] =
                 gSavedPerAccountSettings.getBOOL("LumenAIAutoRespondFriendsOnly");
             result["max_per_person"] =

@@ -3119,12 +3119,18 @@ LumenAIAutoResponder::LumenAIAutoResponder()
 
 // <Lumen> /// A little wider than chat range: it should fire as somebody walks up.
 static const F32 ARRIVAL_RANGE = 30.f;
+/// ...and a moment to finish arriving before being spoken to.
+static const F32 ARRIVAL_SETTLE = 12.f;
 
 void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
                             const std::vector<std::string>& also_called,
                                const std::set<LLUUID>& only,
-                               bool on_arrival)
+                               bool on_arrival,
+                               const std::string& say)
 {
+    mSay = on ? say : std::string();
+    mToldFirst.clear();
+    mArrivedAt.clear();
     // <Lumen> Arrival, not presence. Whoever is already standing here when
     // this is switched on has not arrived, so they are marked as seen --
     // otherwise arming it beside somebody messages them at once.
@@ -3293,15 +3299,28 @@ void LumenAIAutoResponder::checkArrivals()
         const bool arrived = present.count(who) || came_online;
         if (!arrived) continue;
 
+        // Let them finish arriving. Logging in beside somebody fires the
+        // instant their avatar appears, and an IM sent into a viewer still
+        // logging in is one nobody sees.
+        const F32 now = (F32)LLFrameTimer::getElapsedSeconds();
+        if (!mArrivedAt.count(who)) { mArrivedAt[who] = now; continue; }
+        if (now - mArrivedAt[who] < ARRIVAL_SETTLE) continue;
+
         mSeen.insert(who);   // once each, whatever happens next
 
-        std::string text = mNote.empty()
-            ? std::string("I am away from the keyboard just now -- back shortly.")
-            : mNote;
+        const std::string text = !mSay.empty() ? mSay
+                               : (!mNote.empty() ? mNote
+                               : std::string("I am away from the keyboard just now."));
 
-        const LLUUID session =
-            LLIMMgr::computeSessionID(IM_NOTHING_SPECIAL, who);
-        LLIMModel::instance().sendMessage(text, session, who, IM_NOTHING_SPECIAL);
+        // addSession, not computeSessionID: sending into a session that does
+        // not exist yet adds our own copy locally and delivers nothing, so it
+        // looked sent and never arrived. send_im twenty lines away does this,
+        // with a comment saying why.
+        LLAvatarName av;
+        std::string name = "Resident";
+        if (LLAvatarNameCache::get(who, &av)) name = av.getUserName();
+        const LLUUID session = gIMMgr->addSession(name, IM_NOTHING_SPECIAL, who);
+        LLIMModel::sendMessage(text, session, who, IM_NOTHING_SPECIAL);
 
         LL_INFOS("LumenAIChat") << "Told " << who << " that the user is away, on arrival."
                                 << LL_ENDL;
@@ -3578,14 +3597,23 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     // the user said what to say, the FIRST reply to each person is that
     // sentence, word for word. Anything after it is conversation and is
     // generated as before.
-    if (!mNote.empty() && !mToldFirst.count(from_id))
+    // `note` is a brief -- "how long they will be, what to say, what not to" --
+    // and sending it verbatim relayed the user's own instruction to the
+    // assistant: Catten was told "Tell Catten I'm away when he arrives."
+    // `say` is the other thing: the exact sentence to pass on.
+    if (!mSay.empty() && !mToldFirst.count(from_id))
     {
         mToldFirst.insert(from_id);
         mRepliesTo[from_id]++;
         ++mRepliesTotal;
-        if (speak_aloud) FSNearbyChat::instance().sendChat(utf8str_to_wstring(mNote), CHAT_TYPE_NORMAL);
-        else             LLIMModel::instance().sendMessage(mNote, session_id, from_id,
-                                                           IM_NOTHING_SPECIAL);
+        if (speak_aloud)
+        {
+            FSNearbyChat::instance().sendChat(utf8str_to_wstring(mSay), CHAT_TYPE_NORMAL);
+        }
+        else
+        {
+            LLIMModel::sendMessage(mSay, session_id, from_id, IM_NOTHING_SPECIAL);
+        }
         LL_INFOS("LumenAIChat") << "Answered with the user's own words." << LL_ENDL;
         return;
     }
