@@ -72,6 +72,7 @@
 #include "llavatariconctrl.h"    // <Lumen>
 #include "llgroupiconctrl.h"     // <Lumen>
 #include "llgroupactions.h"      // <Lumen> clickable cards
+#include "llcommandhandler.h"    // <Lumen> the clickable offer
 #include "lltexteditor.h"
 #include "lluicolortable.h"
 #include "llviewercontrol.h"
@@ -1216,7 +1217,6 @@ void LumenAIChatFloater::onOpen(const LLSD& key)
     }
 
     warmLocalModel();
-    startCatchUp();
 }
 
 /**
@@ -1887,23 +1887,104 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries
 // </Lumen>
 
 // <Lumen>
-void LumenAIChatFloater::prefetchAtLogin()
+/**
+ * "Something arrived. Want a summary?" -- rather than writing one unasked.
+ *
+ * The author's call, and it is the better shape for a reason worth keeping:
+ * COUNTING is free and SUMMARISING is the entire cost. The viewer already
+ * holds what arrived, so the offer costs nothing and appears at once; the two
+ * model calls happen only if the answer is yes.
+ *
+ * It also means silence when nothing arrived. Telling somebody at every login
+ * that there was nothing to tell them is a sentence they have to read to learn
+ * they did not need to.
+ */
+void LumenAIChatFloater::offerAtLogin()
 {
     if (!gSavedSettings.getBOOL("LumenAICatchUpAtLogin")) return;
-
-    const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    if (provider.empty() || provider == LumenAIKeys::NONE) return;
     if (gAgentID.isNull() || sCaughtUpFor == gAgentID) return;
 
-    // getInstance CREATES the floater without showing it, so the transcript
-    // exists to draw into and nothing appears on screen until they ask for it.
     LumenAIChatFloater* self =
         LLFloaterReg::getTypedInstance<LumenAIChatFloater>("ai_chat");
     if (!self) return;
 
-    LL_INFOS("LumenAIChat") << "Summarising what was waiting, before the window is opened."
-                            << LL_ENDL;
+    // Straight to the endpoint, with no provider in it at all.
+    LLSD args; args["action"] = "catch_up";
+    LLSD call; call["name"] = "chat"; call["arguments"] = args;
+    const LLSD reply = rpc("tools/call", call);
+
+    LLSD data;
+    if (reply.has("result") && reply["result"].has("content")
+        && reply["result"]["content"].isArray()
+        && reply["result"]["content"].size() > 0)
+    {
+        bool ok = false;
+        data = jsonParse(reply["result"]["content"][0]["text"].asString(), ok);
+        if (!ok) return;
+    }
+
+    S32 ims = 0, notices = 0;
+    const LLSD& waiting = data["waiting"];
+    for (LLSD::array_const_iterator it = waiting.beginArray();
+         it != waiting.endArray(); ++it)
+    {
+        if ((*it)["what"].asString() == "im") ++ims;
+        else                                  ++notices;
+    }
+    if (ims == 0 && notices == 0)
+    {
+        sCaughtUpFor = gAgentID;   // asked and answered: nothing, so say nothing
+        return;
+    }
+
+    std::string what;
+    if (ims)     what += llformat("%d instant message%s", ims, ims == 1 ? "" : "s");
+    if (ims && notices) what += " and ";
+    if (notices) what += llformat("%d group notice%s", notices, notices == 1 ? "" : "s");
+
+    // The label form renders as the words rather than the URL, and the handler
+    // is registered UNTRUSTED_BLOCK so nothing in world can fire it.
+    const std::string offer =
+        what + " arrived while you were away. "
+        "[secondlife:///app/lumen_catchup Show me a summary] -- or just say yes.";
+
+    sCaughtUpFor = gAgentID;
+    self->sayNote(offer);
+
+    // sayNote is the window only, so the model would not know what "yes"
+    // refers to. This puts the same offer in the history it actually reads.
+    LLSD m; m["role"] = "assistant"; m["content"] = what +
+        " arrived while you were away. Say yes and I will summarise them.";
+    self->mMessages.append(m);
+}
+
+void LumenAIChatFloater::summariseNow()
+{
+    LumenAIChatFloater* self =
+        LLFloaterReg::getTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self || self->mBusy) return;
+    self->openFloater(LLSD());
     self->startCatchUp();
+}
+
+namespace
+{
+    /// secondlife:///app/lumen_catchup -- the clickable half of the offer.
+    class LumenCatchUpHandler : public LLCommandHandler
+    {
+    public:
+        // UNTRUSTED_BLOCK: a SLURL can reach the viewer from a web page, an
+        // object or a line of chat somebody else wrote. This one spends the
+        // user's money, so only the viewer's own interface may fire it.
+        LumenCatchUpHandler() : LLCommandHandler("lumen_catchup", UNTRUSTED_BLOCK) {}
+
+        bool handle(const LLSD&, const LLSD&, const std::string&, LLMediaCtrl*) override
+        {
+            LumenAIChatFloater::summariseNow();
+            return true;
+        }
+    };
+    LumenCatchUpHandler gLumenCatchUpHandler;
 }
 // </Lumen>
 
@@ -1912,12 +1993,11 @@ void LumenAIChatFloater::startCatchUp()
     if (mBusy) return;
     if (!gSavedSettings.getBOOL("LumenAICatchUpAtLogin")) return;
     if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED) return;
-    if (gAgentID.isNull() || sCaughtUpFor == gAgentID) return;
+    if (gAgentID.isNull()) return;
 
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     if (provider.empty() || provider == LumenAIKeys::NONE) return;
 
-    sCaughtUpFor = gAgentID;
     sayNote("Seeing what was waiting for you...");
     beginTurn(
         "I have just logged in. Call catch_up once, then tell me in a few lines what was "

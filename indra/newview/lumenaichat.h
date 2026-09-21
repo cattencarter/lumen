@@ -171,13 +171,15 @@ class LumenAIChatFloater : public LLFloater
 {
 public:
     /**
-     * <Lumen> Run the login summary BEFORE anybody opens the window.
+     * <Lumen> Offer the login summary; do not presume it is wanted.
      *
-     * It is a fixed job that does not need the user present, and the whole of
-     * its cost is the model writing -- so doing it while they are still
-     * rezzing means the cards are already there when they look.
+     * Counting what arrived is free -- the viewer has it. WRITING the summary
+     * is the whole cost, measured: input almost entirely cached, 407 output
+     * tokens doing all the work. So the offer appears instantly and nothing
+     * is spent unless the user asks.
      */
-    static void prefetchAtLogin();
+    static void offerAtLogin();
+    static void summariseNow();   //< the offer was accepted
 
     LumenAIChatFloater(const LLSD& key);
     ~LumenAIChatFloater() override;
