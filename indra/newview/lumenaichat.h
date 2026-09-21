@@ -257,7 +257,12 @@ private:
     void onSend();
     void beginTurn(const std::string& text);
     void startCatchUp();
-    void renderCatchUp(const LLSD& result);   // <Lumen> draw it, do not narrate it
+    void renderCatchUp(const LLSD& result, const LLSD& summaries);  // <Lumen>
+    void noteCatchUp(const std::string& tool, const LLSD& args,
+                     const LLSD& structured, bool is_error);   // <Lumen>
+    LLSD mLastCatchUp;          //< what catch_up returned this turn
+    bool mCatchUpPending = false;  //< returned, not yet drawn
+    bool mCatchUpDrawn   = false;  //< drawn, so the prose is redundant
     static LLUUID sCaughtUpFor;   //< which login has already been summarised
     void onClear();
 

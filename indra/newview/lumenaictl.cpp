@@ -1639,6 +1639,7 @@ namespace
             if (action == "profile")       return "profile";
             if (action == "web_presence")       return "web_presence";
             if (action == "catch_up")           return "catch_up";
+            if (action == "show_waiting")       return "show_waiting";
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
             if (action == "give_item")     return "give_item";
@@ -1925,7 +1926,7 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "find_person", "profile",
-              "web_presence", "catch_up",
+              "web_presence", "catch_up", "show_waiting",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
         LLSD chat;
@@ -2026,6 +2027,18 @@ namespace
             ccf["description"]="give_item, only for a NO-COPY item, and only after the user has "
                                "said yes: the item's exact name. Without it the call is refused.";
         chat_props["confirm"]=ccf;
+        // <Lumen> show_waiting: the reply to catch_up, as data rather than prose
+        LLSD cit; cit["type"]="array";
+            cit["description"]="show_waiting: one entry per thing catch_up returned, as "
+                               "{\"id\": the id that item carries, \"summary\": one short "
+                               "sentence saying what it is ABOUT}. Summarise, do not quote. "
+                               "Keep every id.";
+        LLSD chl; chl["type"]="string";
+            chl["description"]="show_waiting: ONE short line on whether anything needs doing -- "
+                               "who is waiting on an answer, what expires. This is the only "
+                               "sentence the user reads besides the cards.";
+        chat_props["items"]=cit; chat_props["headline"]=chl;
+        // </Lumen>
         chat_props["subject"]=csub; chat_props["item_id"]=citm;
         chat_props["since"]=ssince; chat_props["limit"]=slim; chat_props["request_id"]=srq;
         {
@@ -10005,6 +10018,19 @@ if (method == "camera")
         return pending;
     }
 
+    if (method == "show_waiting")
+    {
+        // The viewer DRAWS this; the endpoint only records that it was asked
+        // for. Everything factual on a card -- who, which group, the subject,
+        // the links, the pictures -- still comes from the viewer's own copy of
+        // catch_up, so the only thing this call contributes is the wording.
+        LLSD result;
+        result["shown"]    = params.has("items") ? (LLSD::Integer)params["items"].size() : 0;
+        result["headline"] = params["headline"].asString();
+        result["note"]     = "Shown. The user is looking at it now. Write nothing further.";
+        return result;
+    }
+
     if (method == "catch_up")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -10146,6 +10172,7 @@ if (method == "camera")
                 }
                 // </Lumen>
                 LLSD one;
+                one["id"]   = llformat("n%d", (S32)notices.size());
                 one["kind"] = n->getName();
                 const std::string body = n->getMessage();
                 if (!body.empty()) one["text"] = safeUtf8(body);
@@ -10229,6 +10256,7 @@ if (method == "camera")
             }
             // <Lumen> the sender's name beside a link to their profile
             LLSD m = *it;
+            m["id"] = llformat("m%d", (S32)msgs.size());
             if (m.has("from") && m.has("from_id"))
             {
                 const std::string link = profileLink(m["from_id"].asUUID());
@@ -10248,30 +10276,21 @@ if (method == "camera")
         result["subscribed"] = mSubscribed;
 
         result["note"] =
-            "What arrived while the user was away, in one call. `notices` is the notification "
-            "well -- group notices, offers, payments, anything that is not a conversation -- "
-            "and `messages` is the instant messages, which straight after a login is the "
-            "offline backlog.\n"
-            "Both are limited to THIS login: `since` is when the session reached the world, "
-            "and `notices_from_earlier_sessions` counts undismissed ones from previous days "
-            "that were left out. Do not mention that count unless the user asks why something "
-            "is missing.\n"
-            "**The viewer has ALREADY shown every one of these to the user, as cards with the "
-            "sender's picture, the group, the subject and the words. Do NOT summarise them, "
-            "list them, or mention them one by one.** Repeating what is already on screen is "
-            "the one thing that makes this worse rather than better.\n"
-            "Write ONE short line and stop. Not a paragraph, not a line per item: one. It "
-            "says only whether anything needs doing -- who is waiting on an answer, what "
-            "expires, what is time-critical. 'Nothing urgent. You may want to say hi back.' "
-            "is the whole reply when nothing is pressing. If nothing came in at all, no card "
-            "was drawn, so say 'nothing came in while you were away' and stop.\n"
-            "If that line names somebody, write the name exactly as `from_name` or "
-            "`group_name` gives it -- the viewer makes names clickable itself, so never "
-            "write a URL.\n"
-            "If nothing came in, 'nothing came in while you were away' is the whole reply -- "
-            "no list, no offer to check again.\n"
-            "A notice is still waiting whether or not it has been read, so do not call it "
-            "unread.";
+            "What arrived while the user was away. `notices` is the notification well -- group "
+            "notices, offers, payments, anything that is not a conversation -- and `messages` "
+            "is the instant messages, which straight after a login is the offline backlog. "
+            "Both are limited to THIS login; `since` is when the session reached the world.\n"
+            "**Do not answer in prose. Answer by calling `chat` / `show_waiting` once.** That "
+            "call IS the reply -- the viewer draws it, and any text you write beside it is "
+            "thrown away.\n"
+            "Give it `items`: one entry per thing here, as {\"id\": the id it carries, "
+            "\"summary\": one short sentence saying what it is ABOUT}. Summarise rather than "
+            "quote -- 'the group is having a dance night on Friday, doors at eight, feather "
+            "theme' rather than the notice's own words. Keep every id and drop nothing.\n"
+            "And `headline`: ONE short line on whether anything needs doing -- who is waiting "
+            "on an answer, what expires. 'Nothing urgent. You may want to say hi back.' is the "
+            "right length.\n"
+            "If nothing came in at all, call it with no items and a headline saying so.";
         return result;
     }
 

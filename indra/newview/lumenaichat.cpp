@@ -645,6 +645,7 @@ namespace
             if (action == "profile")     return "Reading their profile";
             if (action == "web_presence") return "Looking them up on the web";
             if (action == "catch_up")    return "Seeing what you missed";
+            if (action == "show_waiting") return "Showing what was waiting";
             if (action == "list_groups")        return "Listing groups";
             if (action == "list_friends")       return "Listing friends";
             if (action == "send_group_notice")  return "Posting notice";
@@ -1508,6 +1509,18 @@ void LumenAIChatFloater::sayAssistant(const std::string& text)
     // stayed at the margin, so the answer never lined up with its own marker.
     mTranscript->appendText("\n", false);
     mTranscript->appendText("Lumen: ", false, nameStyle());
+    // <Lumen> the cards ARE the reply; anything written beside them repeats it
+    if (mCatchUpDrawn)
+    {
+        mCatchUpDrawn = false;
+        return;
+    }
+    if (mCatchUpPending)
+    {
+        renderCatchUp(mLastCatchUp, LLSD());   // it never called show_waiting
+        mCatchUpPending = false;
+    }
+    // </Lumen>
     mTranscript->appendText(linkifyKnownNames(body), false, bodyStyle());
 }
 
@@ -1746,7 +1759,59 @@ void LumenAIChatFloater::beginTurn(const std::string& text)
  * it. So the cards are built from the result and the model is left with the
  * one line underneath -- which is the part a model is actually good at.
  */
-void LumenAIChatFloater::renderCatchUp(const LLSD& result)
+// <Lumen>
+/**
+ * catch_up hands over the facts; show_waiting says how to word them.
+ *
+ * Asking the model to keep its reply to one line did not work -- the fourth
+ * time in this project that a formatting instruction was ignored.  So the
+ * reply is not prose at all: the model answers by CALLING show_waiting, the
+ * viewer draws from its own copy of the data, and the free text of that turn
+ * is thrown away.  Everything factual on a card still comes from the tool, so
+ * only the wording is the model's.
+ *
+ * If it never calls show_waiting, the cards are drawn anyway with the words
+ * as sent, and its prose is kept -- worse, but never nothing.
+ */
+void LumenAIChatFloater::noteCatchUp(const std::string& tool, const LLSD& args,
+                                     const LLSD& structured, bool is_error)
+{
+    if (is_error || tool != "chat") return;
+    const std::string action = args["action"].asString();
+
+    if (action == "catch_up")
+    {
+        mLastCatchUp    = structured;
+        mCatchUpPending = true;
+        return;
+    }
+
+    if (action == "show_waiting")
+    {
+        LLSD summaries;
+        const LLSD& items = args["items"];
+        for (LLSD::array_const_iterator it = items.beginArray();
+             it != items.endArray(); ++it)
+        {
+            const std::string id = (*it)["id"].asString();
+            const std::string sm = (*it)["summary"].asString();
+            if (!id.empty() && !sm.empty()) summaries[id] = sm;
+        }
+
+        renderCatchUp(mLastCatchUp, summaries);
+        mCatchUpPending = false;
+        mCatchUpDrawn   = true;
+
+        const std::string head = args["headline"].asString();
+        if (!head.empty() && mTranscript)
+        {
+            mTranscript->appendText(linkifyKnownNames(head), false, bodyStyle());
+        }
+    }
+}
+// </Lumen>
+
+void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries)
 {
     if (!mTranscript) return;
 
@@ -1769,9 +1834,11 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result)
             heading += "  \xc2\xb7  " + (link.empty() ? who : link);
         }
 
+        const std::string said = summaries.has(m["id"].asString())
+            ? summaries[m["id"].asString()].asString()
+            : "\xe2\x80\x9c" + m["message"].asString() + "\xe2\x80\x9d";
         LLPanel* card = buildCatchUpCard(width, m["from_id"].asUUID(), LLUUID::null,
-                                         heading, std::string(),
-                                         "\xe2\x80\x9c" + m["message"].asString() + "\xe2\x80\x9d");
+                                         heading, std::string(), said);
         LLInlineViewSegment::Params p;
         p.view = card;
         p.left_pad = 4;
@@ -1791,8 +1858,15 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result)
         if (!group.empty())     heading += "  \xc2\xb7  " + (glink.empty() ? group : glink);
         else if (!who.empty())  heading += "  \xc2\xb7  " + (plink.empty() ? who  : plink);
 
-        std::string body = n["text"].asString();
-        if (!body.empty()) body = "\xe2\x80\x9c" + body + "\xe2\x80\x9d";
+        std::string body;
+        if (summaries.has(n["id"].asString()))
+        {
+            body = summaries[n["id"].asString()].asString();
+        }
+        else if (!n["text"].asString().empty())
+        {
+            body = "\xe2\x80\x9c" + n["text"].asString() + "\xe2\x80\x9d";
+        }
 
         LLPanel* card = buildCatchUpCard(width, n["from_id"].asUUID(), n["group_id"].asUUID(),
                                          heading, n["subject"].asString(), body);
@@ -2543,11 +2617,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                         ? callTool(name, args, call_id, is_error, &structured)
                         : std::string("Could not read the arguments for this call.");
                     // <Lumen> catch_up is drawn rather than described
-                    if (!is_error && name == "chat"
-                        && args["action"].asString() == "catch_up")
-                    {
-                        renderCatchUp(structured);
-                    }
+                    noteCatchUp(name, args, structured, is_error);
                     // </Lumen>
 
                     LLSD tr;
@@ -2596,11 +2666,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     const std::string result =
                         callTool(name, (*it)["input"], call_id, is_error, &structured);
                     // <Lumen> catch_up is drawn rather than described
-                    if (!is_error && name == "chat"
-                        && (*it)["input"]["action"].asString() == "catch_up")
-                    {
-                        renderCatchUp(structured);
-                    }
+                    noteCatchUp(name, (*it)["input"], structured, is_error);
                     // </Lumen>
 
                     LLSD tr;
