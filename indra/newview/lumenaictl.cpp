@@ -77,6 +77,9 @@
 #include "llsnapshotmodel.h"
 #include "llsnapshotlivepreview.h"
 #include "lltoolplacer.h"
+#include "llcorehttputil.h"   // <Lumen> web_presence: the two lookups outside SL
+#include "lluri.h"
+#include "llcoros.h"
 #include "llfloatertools.h"   // <Lumen> is the build panel up? the selection only lives while it is
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
@@ -1634,6 +1637,7 @@ namespace
             if (action == "send_im")       return "send_im";
             if (action == "find_person")   return "find_person";
             if (action == "profile")       return "profile";
+            if (action == "web_presence")       return "web_presence";
             if (action == "list_groups")   return "list_groups";
             if (action == "send_group_notice") return "send_group_notice";
             if (action == "give_item")     return "give_item";
@@ -1920,6 +1924,7 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "find_person", "profile",
+              "web_presence",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
         LLSD chat;
@@ -1970,6 +1975,13 @@ namespace
             "have none.** Second Life holds this, so it is right on any computer. The reply "
             "arrives a moment later: the first call returns `pending: true`, call again with the "
             "same agent_id.\n"
+            "- web_presence: whether they have a **Primfeed**, and any **Marketplace store** "
+            "under their name. This asks the two websites rather than reading their profile, so "
+            "it finds a store or a Primfeed they never linked anywhere. Answers a moment later: "
+            "the first call returns `pending: true`, call again with the same agent_id. **Tell "
+            "`exists: false` apart from `reachable: false`** -- the first means checked and "
+            "there is none, the second means the site did not answer. This is the only thing in "
+            "Lumen that contacts a site outside Second Life.\n"
             "- find_person: look someone up by name to get their avatar id. Searches the user's "
             "friends and the avatars nearby -- the viewer cannot search all of Second Life.\n"
             "- list_groups: the groups the user belongs to, and whether they are allowed to send "
@@ -4895,6 +4907,264 @@ namespace
         }
         sRecentRez.swap(keep);
         return out;
+    }
+}
+// </Lumen>
+
+// <Lumen> Where else this person is on the web.
+//
+// The first thing in Lumen that calls a THIRD PARTY -- not Linden Lab, not an
+// AI provider the user chose -- and the working agreements say that is to be
+// stated rather than slipped in. It also leaks the lookup: asking whether
+// somebody has a Primfeed tells primfeed.com that somebody went looking. The
+// Marketplace half is Linden Lab's own servers, so only the first carries it.
+//
+// Both shapes were measured against the live sites, 2026-09-21, because the
+// design recorded from reading was wrong about the Marketplace in three ways.
+namespace
+{
+    std::map<LLUUID, LLSD> sWebPresence;
+    std::set<LLUUID>       sWebPresencePending;
+
+    // The whole reason this needs a real test: BOTH answer 200.
+    //
+    //   primfeed.com/catten.carter        200  og:type = profile
+    //   primfeed.com/<nobody>             200  og:type = website
+    //
+    // The status code says nothing and the "no such account" text is drawn by
+    // JavaScript, so the two obvious checks are both wrong.
+    const char* const PRIMFEED_BASE = "https://www.primfeed.com/";
+
+    // And the Marketplace needs a session before it will answer at all. A cold
+    // request 302s to id.secondlife.com/openid/checklogin; a plain curl that
+    // follows without carrying cookies gets 502, which reads as "the site is
+    // down" and is not. Two requests do it: ask with the anonymous identifier
+    // to be handed an _slm_session, then ask again carrying it.
+    const char* const MP_SEARCH =
+        "https://marketplace.secondlife.com/stores/store_name_search"
+        "?utf8=%E2%9C%93&search%5Bsort%5D=&search%5Bkeywords%5D=";
+    const char* const MP_ANON =
+        "&openid_identifier=https%3A%2F%2Fid.secondlife.com%2Fid%2Fanonymous";
+
+    // One GET. `cookie` is sent when non-empty; `set_cookie_out` collects the
+    // session the Marketplace hands back on its redirect, which is why this
+    // does not follow them.
+    std::string webGet(const std::string& url, const std::string& cookie,
+                       bool follow, std::string* set_cookie_out)
+    {
+        static const LLCore::HttpRequest::policy_t web_policy =
+            LLCore::HttpRequest::createPolicyClass();
+
+        LLCore::HttpRequest::ptr_t request(new LLCore::HttpRequest);
+        LLCore::HttpOptions::ptr_t options(new LLCore::HttpOptions);
+        LLCore::HttpHeaders::ptr_t headers(new LLCore::HttpHeaders);
+
+        options->setTimeout(20);
+        options->setRetries(0);
+        options->setFollowRedirects(follow);
+        if (set_cookie_out) options->setWantHeaders(true);
+
+        headers->append("User-Agent", "Lumen Viewer");
+        headers->append("Accept", "text/html");
+        if (!cookie.empty()) headers->append("Cookie", cookie);
+
+        LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenWeb", web_policy);
+        LLSD raw = adapter.getRawAndSuspend(request, url, options, headers);
+
+        if (set_cookie_out)
+        {
+            const LLSD http = raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
+            const LLSD hdrs = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_HEADERS];
+            for (LLSD::map_const_iterator it = hdrs.beginMap(); it != hdrs.endMap(); ++it)
+            {
+                std::string key = it->first;
+                LLStringUtil::toLower(key);
+                if (key != "set-cookie") continue;
+                std::string v = it->second.asString();
+                const size_t semi = v.find(';');
+                if (semi != std::string::npos) v = v.substr(0, semi);
+                if (v.find("_slm_session=") == 0) *set_cookie_out = v;
+            }
+        }
+
+        std::string body;
+        for (const std::string& key : { LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW,
+                                        LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_CONTENT })
+        {
+            if (raw.has(key) && raw[key].isBinary())
+            {
+                const LLSD::Binary& bytes = raw[key].asBinary();
+                if (!bytes.empty()) { body.assign(bytes.begin(), bytes.end()); break; }
+            }
+        }
+        return body;
+    }
+
+    // <meta property="og:type" content="profile"> -- attribute order is the
+    // site's to change, so both orders are accepted rather than one exact line.
+    bool metaSays(const std::string& html, const char* prop, const char* value)
+    {
+        const std::string a = std::string("property=\"") + prop + "\"";
+        const std::string b = std::string("content=\"") + value + "\"";
+        size_t at = html.find(a);
+        while (at != std::string::npos)
+        {
+            const size_t open = html.rfind('<', at);
+            const size_t close = html.find('>', at);
+            if (open != std::string::npos && close != std::string::npos
+                && html.compare(open, 5, "<meta") == 0
+                && html.find(b, open) < close) return true;
+            at = html.find(a, at + 1);
+        }
+        return false;
+    }
+
+    std::string metaContent(const std::string& html, const char* prop)
+    {
+        const std::string a = std::string("property=\"") + prop + "\"";
+        const size_t at = html.find(a);
+        if (at == std::string::npos) return std::string();
+        const size_t close = html.find('>', at);
+        const size_t c = html.find("content=\"", at);
+        if (c == std::string::npos || close == std::string::npos || c > close) return std::string();
+        const size_t s = c + 9;
+        const size_t e = html.find('"', s);
+        if (e == std::string::npos || e > close) return std::string();
+        return html.substr(s, e - s);
+    }
+}
+// </Lumen>
+
+// <Lumen> The two lookups, off the frame loop. Everything slow is a coroutine
+// here (Findings 12, 17 and 21 are all the other way round).
+namespace
+{
+    std::string stripTags(const std::string& in)
+    {
+        std::string out;
+        bool inside = false;
+        for (char c : in)
+        {
+            if (c == '<') inside = true;
+            else if (c == '>') inside = false;
+            else if (!inside) out += c;
+        }
+        LLStringUtil::replaceString(out, "&#39;", "'");
+        LLStringUtil::replaceString(out, "&amp;", "&");
+        LLStringUtil::replaceString(out, "&quot;", "\"");
+        LLStringUtil::trim(out);
+        // collapse the runs of whitespace the markup leaves behind
+        std::string tidy;
+        bool space = false;
+        for (char c : out)
+        {
+            const bool ws = (c == ' ' || c == '\n' || c == '\r' || c == '\t');
+            if (ws) { space = true; continue; }
+            if (space && !tidy.empty()) tidy += ' ';
+            space = false;
+            tidy += c;
+        }
+        return tidy;
+    }
+
+    void lookUpWebPresence(LLUUID who, std::string username, std::string legacy)
+    {
+        LLSD out;
+        out["agent_id"] = who;
+        out["username"] = username;
+        out["searched_for"] = legacy;
+
+        // --- Primfeed: one GET, and the answer is in og:type ----------------
+        LLSD pf;
+        const std::string pf_url = std::string(PRIMFEED_BASE) + username;
+        const std::string pf_html = webGet(pf_url, "", true, NULL);
+        pf["url"] = pf_url;
+        if (pf_html.empty())
+        {
+            pf["reachable"] = false;
+            pf["note"] = "primfeed.com did not answer. That is not the same as the person "
+                         "having no Primfeed -- say the check failed, not that they have none.";
+        }
+        else
+        {
+            const bool exists = metaSays(pf_html, "og:type", "profile");
+            pf["exists"] = exists;
+            if (exists)
+            {
+                const std::string t = metaContent(pf_html, "og:title");
+                if (!t.empty()) pf["title"] = safeUtf8(t);
+            }
+        }
+        out["primfeed"] = pf;
+
+        // --- Marketplace: a session first, then the search ------------------
+        const std::string base = std::string(MP_SEARCH) + LLURI::escape(legacy);
+        std::string cookie;
+        webGet(base + MP_ANON, "", false, &cookie);
+
+        LLSD stores = LLSD::emptyArray();
+        if (cookie.empty())
+        {
+            out["marketplace_checked"] = false;
+            out["marketplace_note"] =
+                "The Marketplace would not start an anonymous session, so the store search did "
+                "not run. Say the check failed rather than that they have no store.";
+        }
+        else
+        {
+            const std::string html = webGet(base, cookie, true, NULL);
+            out["marketplace_checked"] = true;
+            size_t at = html.find("href=\"/stores/");
+            while (at != std::string::npos && stores.size() < 12)
+            {
+                const size_t id_s = at + 14;
+                const size_t id_e = html.find('"', id_s);
+                const size_t a_end = html.find("</a>", at);
+                if (id_e == std::string::npos || a_end == std::string::npos) break;
+                const std::string id = html.substr(id_s, id_e - id_s);
+                const size_t text_s = html.find('>', id_e);
+                std::string label;
+                if (text_s != std::string::npos && text_s < a_end)
+                {
+                    label = stripTags(html.substr(text_s + 1, a_end - text_s - 1));
+                }
+                if (!label.empty() && id.find_first_not_of("0123456789") == std::string::npos)
+                {
+                    bool seen = false;
+                    for (LLSD::array_const_iterator s = stores.beginArray();
+                         s != stores.endArray(); ++s)
+                    {
+                        if ((*s)["url"].asString().find("/stores/" + id) != std::string::npos)
+                        { seen = true; break; }
+                    }
+                    if (!seen)
+                    {
+                        LLSD st;
+                        st["name"] = safeUtf8(label);
+                        st["url"]  = "https://marketplace.secondlife.com/stores/" + id;
+                        stores.append(st);
+                    }
+                }
+                at = html.find("href=\"/stores/", a_end);
+            }
+        }
+        out["marketplace_stores"] = stores;
+
+        out["note"] =
+            "This asked two websites, not Second Life. **Primfeed `exists` is the only reliable "
+            "test there is** -- the page answers 200 whether or not the account is real, so a "
+            "false here means it was checked and there is none, while `reachable: false` means "
+            "it was not checked at all. The Marketplace search matches the MERCHANT name as "
+            "well as the store name, which is how a store called something else turns up under "
+            "a person's name -- and an empty list means no store was found under that name, not "
+            "that they sell nothing.";
+
+        sWebPresence[who] = out;
+        sWebPresencePending.erase(who);
+        LL_INFOS("AICtl") << "web_presence: " << legacy << " -- primfeed "
+                          << (out["primfeed"].has("exists") && out["primfeed"]["exists"].asBoolean()
+                              ? "yes" : "no")
+                          << ", " << stores.size() << " store(s)" << LL_ENDL;
     }
 }
 // </Lumen>
@@ -9674,6 +9944,87 @@ if (method == "camera")
         pending["note"] = "Asked the in-world bridge what they are wearing. The reply comes back "
                           "over HTTP a moment later -- call worn_by again with the same agent_id "
                           "to collect it. Do NOT tell the user anything about their outfit yet.";
+        return pending;
+    }
+
+    if (method == "web_presence")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLUUID who;
+        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
+        {
+            who = params["agent_id"].asUUID();
+        }
+        else
+        {
+            const std::string name = params.has("person") ? params["person"].asString() : std::string();
+            if (name.empty())
+            {
+                LLSD e; e["code"] = -32602; e["message"] = "Give `person` (a name) or `agent_id`.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLSD people = findPeople(name);
+            if (people.size() == 0)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nobody nearby or on the friends list matched \"" + name + "\".";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (people.size() > 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one person matched \"" + name + "\". Ask which, then pass agent_id.";
+                e["data"] = people;
+                LLSD w; w["__error"] = e; return w;
+            }
+            who = people[0]["agent_id"].asUUID();
+        }
+
+        std::map<LLUUID, LLSD>::iterator got = sWebPresence.find(who);
+        if (got != sWebPresence.end())
+        {
+            LLSD out = got->second;
+            sWebPresence.erase(got);
+            return out;
+        }
+
+        if (!sWebPresencePending.count(who))
+        {
+            // The USERNAME is what Primfeed is keyed on -- "catten.carter", not
+            // the display name and not the legacy name. If the cache has not
+            // got it yet, ask and let the next call collect: guessing the
+            // username would produce a confident wrong "they have none".
+            LLAvatarName av;
+            if (!LLAvatarNameCache::get(who, &av))
+            {
+                LLAvatarNameCache::getInstance()->get(
+                    who, [](const LLUUID&, const LLAvatarName&) {});
+                LLSD pending;
+                pending["agent_id"] = who;
+                pending["pending"] = true;
+                pending["note"] = "Looking up their username first. Call web_presence again "
+                                  "with the same agent_id in a moment.";
+                return pending;
+            }
+
+            sWebPresencePending.insert(who);
+            const std::string username = av.getAccountName();
+            const std::string legacy   = av.getLegacyName();
+            LLCoros::instance().launch("LumenWebPresence",
+                [who, username, legacy]() { lookUpWebPresence(who, username, legacy); });
+        }
+
+        LLSD pending;
+        pending["agent_id"] = who;
+        pending["pending"] = true;
+        pending["note"] = "Asked primfeed.com and the Second Life Marketplace. Both answer over "
+                          "the network a moment later -- call web_presence again with the same "
+                          "agent_id to collect it. Say nothing about what they have until then.";
         return pending;
     }
 

@@ -457,6 +457,7 @@ namespace
             if (action == "send_im")            return "Sending message";
             if (action == "find_person")        return "Finding person";
             if (action == "profile")     return "Reading their profile";
+            if (action == "web_presence") return "Looking them up on the web";
             if (action == "list_groups")        return "Listing groups";
             if (action == "list_friends")       return "Listing friends";
             if (action == "send_group_notice")  return "Posting notice";
