@@ -77,6 +77,13 @@
 #include "llsnapshotmodel.h"
 #include "llsnapshotlivepreview.h"
 #include "lltoolplacer.h"
+#include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
+#include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
+#include "lltoolmgr.h"        // <Lumen> a new prim is only auto-selected
+#include "lltoolcomp.h"       //   when the current tool is not the pie tool
+#include "lltoolpie.h"
+#include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
+#include "llwindow.h"         //   incBusyCount, balanced when it arrives
 #include "lltooldraganddrop.h"
 #include "fscommon.h"
 #include "llviewerwindow.h"
@@ -1597,6 +1604,7 @@ namespace
         if (group == "build")
         {
             if (action == "rez")    return "rez_object";
+            if (action == "select") return "select_object";
             if (action == "set")    return "set_object";
             if (action == "remove") return "remove_object";
             if (action == "link")   return "link_objects";
@@ -2529,7 +2537,7 @@ namespace
         // rather than letting the simulator reject it and leaving the assistant
         // to guess why.
         static const char* const build_actions[] =
-            { "rez", "set", "remove", "link", "unlink" };
+            { "rez", "select", "set", "remove", "link", "unlink" };
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -2537,10 +2545,21 @@ namespace
             "- rez: put a new prim on the ground in front of the user. `shape` chooses what "
             "(box, sphere, cylinder, cone, torus, prism; box if you do not say). `distance` is "
             "how far in front, in metres, default 2.\n"
+            "- select: point the other actions at an object, by `object_id` from look_nearby or "
+            "inspect_object. **Everything below works on the selection**, and until this existed "
+            "the only way to select anything was for the USER to click it -- which is the "
+            "interface barrier this project exists to remove. `add: true` selects a second and a "
+            "third without letting go of the first, which is how you link things that are "
+            "already in the world. `edit: true` also opens the build tools on it, which is what "
+            "somebody means by \"edit that\".\n"
             "- set: change what is selected -- `name`, `description`, `size` (metres, one number "
             "for a cube or three for x/y/z), `colour` (a name like \"red\", or three numbers "
             "0-1), `position` and `rotation`.\n"
             "- remove: `take: true` puts it in inventory, otherwise it is deleted.\n"
+            "\n"
+            "`set` and `remove` also accept `object_id` directly and select it for you, so "
+            "\"delete that\" is one call and not two. **Never ask the user to click an object to "
+            "select it** -- find it with look_nearby or inspect_object and pass its id.\n"
             "- link / unlink: join what is selected into one object, or take it apart. Linking "
             "needs at least two selected.\n"
             "\n"
@@ -2588,6 +2607,17 @@ namespace
             build_props["size"]=bsz;    build_props["colour"]=bco;
             build_props["colour_name"]=bcn;
             build_props["position"]=bpo; build_props["rotation"]=bro;
+            LLSD bid; bid["type"]="string";
+                bid["description"]="select, set, remove: the object to act on, as an object_id "
+                                   "from look_nearby or inspect_object. Without it these work on "
+                                   "whatever is already selected.";
+            LLSD bad; bad["type"]="boolean";
+                bad["description"]="select: true adds to the selection instead of replacing it, "
+                                   "so several objects can be linked.";
+            LLSD bed; bed["type"]="boolean";
+                bed["description"]="select: true also opens the build tools on it, which is what "
+                                   "a person means by \"edit that\".";
+            build_props["object_id"]=bid; build_props["add"]=bad; build_props["edit"]=bed;
             build_props["take"]=btk;    build_props["request_id"]=srq;
         }
         LLSD build_schema; build_schema["type"]="object"; build_schema["properties"]=build_props;
@@ -5872,10 +5902,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         allows["flying"] = parcel->getAllowFly();
         allows["other_peoples_scripts"] = parcel->getAllowOtherScripts();
         allows["damage"] = parcel->getAllowDamage();
+        // `build` was missing here until a rez failed for an unrelated reason
+        // and the model, told by the note below to check this list first,
+        // correctly reported that no building permission was stated -- on a
+        // parcel that allowed it. The list is only as wide as the day it was
+        // written on. This asks the same question the Build tool asks, so it
+        // accounts for group land and for estate powers, not just the flag.
+        allows["building"] = LLViewerParcelMgr::getInstance()->allowAgentBuild(parcel);
         result["parcel_allows"] = allows;
-        result["note"] = "If something did not work here, check parcel_allows first -- flying and "
-                         "scripts are commonly switched off on a parcel, and that is the reason "
-                         "rather than a fault.";
+        result["note"] = "If something did not work here, check parcel_allows first -- building, "
+                         "flying and scripts are commonly switched off on a parcel, and that is "
+                         "the reason rather than a fault. If building IS allowed and a rez still "
+                         "failed, the parcel is not the cause and saying so is wrong.";
         return result;
     }
 
@@ -10342,7 +10380,13 @@ if (method == "camera")
         if (at.magVecSquared() < 0.0001f) at = LLVector3(1.f, 0.f, 0.f);
         at.normalize();
         LLVector3 target = gAgent.getPositionAgent() + at * distance;
-        target.mV[VZ] = LLWorld::getInstance()->resolveLandHeightAgent(target) + 0.5f;
+        // The ground, but never below the user's own feet. `resolveLandHeight`
+        // is the TERRAIN, so somebody standing on a platform, a boat or a sky
+        // build would have had their prim rezzed at the land far beneath them,
+        // out of sight and reported as a success.
+        F32 feet = gAgent.getPositionAgent().mV[VZ];
+        if (isAgentAvatarValid()) feet -= gAgentAvatarp->getPelvisToFoot();
+        target.mV[VZ] = llmax(LLWorld::getInstance()->resolveLandHeightAgent(target), feet) + 0.5f;
 
         // --- from inventory, if an item was named ---------------------------
         //
@@ -10455,47 +10499,171 @@ if (method == "camera")
             return result;
         }
 
-        // addObject() raycasts from a SCREEN point -- it is the mouse's path,
-        // and there is no other. So the spot has to be visible. Projecting
-        // without clamping is deliberate: clamped, an off-screen target comes
-        // back pinned to the edge and the prim lands somewhere nobody asked
-        // for, which is worse than refusing.
-        LLCoordGL screen;
-        if (!LLViewerCamera::getInstance()->projectPosAgentToScreen(target, screen, false))
-        {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "That spot is not on screen, and a new object can only be placed "
-                           "somewhere the camera can see. Ask the user to face the place they "
-                           "want it, or use camera / reset first.";
-            LLSD w; w["__error"] = e; return w;
-        }
-
-        // The public path, which is what a mouse-up on the Create tool runs.
-        // `sObjectType` is static and shared with the user's own Build tool, so
-        // it is put back: an assistant that silently changes which shape their
-        // next click would make is a small, baffling side effect.
+        // <Lumen> The prim is placed with the ray WE choose, not with one cast
+        // from the camera.
         //
-        // `CreateToolCopySelection` is checked too, because placeObject honours
-        // it -- with that on, this would DUPLICATE whatever is selected instead
-        // of making the shape asked for, and report success either way.
-        const LLPCode was = LLToolPlacer::getObjectType();
-        const bool copy_mode = gSavedSettings.getBOOL("CreateToolCopySelection");
-        if (copy_mode) gSavedSettings.setBOOL("CreateToolCopySelection", false);
-        LLToolPlacer::setObjectType(pcode);
-
-        LLToolPlacer placer;
-        const bool placed = placer.placeObject(screen.mX, screen.mY, MASK_NONE);
-
-        LLToolPlacer::setObjectType(was);
-        if (copy_mode) gSavedSettings.setBOOL("CreateToolCopySelection", true);
-
-        if (!placed)
+        // This used to project the target to a screen point and hand it to
+        // `LLToolPlacer`, which is the mouse's path: it raycasts from the
+        // camera through that pixel and refuses if the ray hits nothing, or
+        // hits an avatar. In default third person the camera sits behind and
+        // above the user, so the line of sight to a spot two metres in front of
+        // them at ground level passes straight through their own body -- and
+        // every rez was refused with "the viewer refused to place it there",
+        // on a parcel that allowed building, with nothing wrong but the angle.
+        //
+        // The inventory path twenty lines up never had the problem, because it
+        // sets BypassRaycast and gives the simulator its own ray. This does the
+        // same. The cost is that the ObjectAdd block is packed here rather than
+        // by `LLToolPlacer::addObject`: shape, scale, material and flags are
+        // copied from it deliberately, so a prim the assistant makes is the
+        // same prim the user's own Create tool would have made.
+        LLViewerRegion* regionp = gAgent.getRegion();
+        if (!regionp)
         {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "The viewer refused to place it there. Usually that means the spot "
-                           "is on an avatar or an attachment, or too far from the user.";
+            LLSD e; e["code"] = -32000; e["message"] = "No region yet.";
             LLSD w; w["__error"] = e; return w;
         }
+
+        // RLV: `LLToolPlacer` answers a rez restriction by returning TRUE and
+        // doing nothing, because its caller only wants to know whether the
+        // click was handled. Inherit that silence and an assistant reports a
+        // prim it never made.
+        if (rlv_handler_t::isEnabled()
+            && (gRlvHandler.hasBehaviour(RLV_BHVR_REZ)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_INTERACT)))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids rezzing, so nothing "
+                           "was made. Tell them plainly -- it is their own attachment doing it, "
+                           "not the land.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLQuaternion rotation;
+        LLVolumeParams volume_params;
+        const LLVector3 scale(gSavedSettings.getF32("FSBuildPrefs_Xsize"),
+                              gSavedSettings.getF32("FSBuildPrefs_Ysize"),
+                              gSavedSettings.getF32("FSBuildPrefs_Zsize"));
+
+        U8 material = LL_MCODE_WOOD;
+        const std::string default_material = gSavedSettings.getString("FSBuildPrefs_Material");
+        if      (default_material == "Stone")   material = LL_MCODE_STONE;
+        else if (default_material == "Metal")   material = LL_MCODE_METAL;
+        else if (default_material == "Glass")   material = LL_MCODE_GLASS;
+        else if (default_material == "Flesh")   material = LL_MCODE_FLESH;
+        else if (default_material == "Rubber")  material = LL_MCODE_RUBBER;
+        else if (default_material == "Plastic") material = LL_MCODE_PLASTIC;
+
+        // Deliberately not LLUIUsage::logCommand("Build.ObjectAdd"): that counter
+        // is for things the user clicked, and nobody clicked this.
+        LLMessageSystem* msg = gMessageSystem;
+        msg->newMessageFast(_PREHASH_ObjectAdd);
+        msg->nextBlockFast(_PREHASH_AgentData);
+        msg->addUUIDFast(_PREHASH_AgentID,   gAgent.getID());
+        msg->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        msg->addUUIDFast(_PREHASH_GroupID,   FSCommon::getGroupForRezzing());
+        msg->nextBlockFast(_PREHASH_ObjectData);
+        msg->addU8Fast(_PREHASH_Material, material);
+
+        // Selected on arrival is not cosmetic: `set`, `link` and `remove` all
+        // work on the selection, and it is the only handle anything has on a
+        // prim that did not exist when the call was made.
+        U32 flags = 0;
+        const bool create_selected = !gRlvHandler.hasBehaviour(RLV_BHVR_EDIT);
+        if (create_selected) flags |= FLAGS_CREATE_SELECTED;
+        msg->addU32Fast(_PREHASH_AddFlags, flags);
+
+        switch (pcode)
+        {
+        case LL_PCODE_SPHERE:
+            rotation.setQuat(90.f * DEG_TO_RAD, LLVector3::y_axis);
+            volume_params.setType(LL_PCODE_PROFILE_CIRCLE_HALF, LL_PCODE_PATH_CIRCLE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(1, 1);
+            volume_params.setShear(0, 0);
+            break;
+        case LL_PCODE_TORUS:
+            rotation.setQuat(90.f * DEG_TO_RAD, LLVector3::y_axis);
+            volume_params.setType(LL_PCODE_PROFILE_CIRCLE, LL_PCODE_PATH_CIRCLE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(1.f, 0.25f);
+            volume_params.setShear(0, 0);
+            break;
+        case LL_PCODE_PRISM:
+            volume_params.setType(LL_PCODE_PROFILE_SQUARE, LL_PCODE_PATH_LINE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(0, 1);
+            volume_params.setShear(-0.5f, 0);
+            break;
+        case LL_PCODE_PYRAMID:
+            volume_params.setType(LL_PCODE_PROFILE_SQUARE, LL_PCODE_PATH_LINE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(0, 0);
+            volume_params.setShear(0, 0);
+            break;
+        case LL_PCODE_CYLINDER:
+            volume_params.setType(LL_PCODE_PROFILE_CIRCLE, LL_PCODE_PATH_LINE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(1, 1);
+            volume_params.setShear(0, 0);
+            break;
+        case LL_PCODE_CONE:
+            volume_params.setType(LL_PCODE_PROFILE_CIRCLE, LL_PCODE_PATH_LINE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(0, 0);
+            volume_params.setShear(0, 0);
+            break;
+        case LL_PCODE_CUBE:
+        default:
+            volume_params.setType(LL_PCODE_PROFILE_SQUARE, LL_PCODE_PATH_LINE);
+            volume_params.setBeginAndEndS(0.f, 1.f);
+            volume_params.setBeginAndEndT(0.f, 1.f);
+            volume_params.setRatio(1, 1);
+            volume_params.setShear(0, 0);
+            break;
+        }
+        LLVolumeMessage::packVolumeParams(&volume_params, msg);
+        msg->addU8Fast(_PREHASH_PCode, LL_PCODE_VOLUME);
+
+        msg->addVector3Fast(_PREHASH_Scale,    scale);
+        msg->addQuatFast(_PREHASH_Rotation,    rotation);
+        // Straight down onto the spot, two metres above it, which is what frees
+        // this from where the user happens to be looking.
+        msg->addVector3Fast(_PREHASH_RayStart, target + LLVector3(0.f, 0.f, 2.f));
+        msg->addVector3Fast(_PREHASH_RayEnd,   target);
+        msg->addU8Fast(_PREHASH_BypassRaycast, (U8) true);
+        msg->addU8Fast(_PREHASH_RayEndIsIntersection, (U8) false);
+        msg->addU8Fast(_PREHASH_State, 0);
+        msg->addUUIDFast(_PREHASH_RayTargetID, LLUUID::null);
+        msg->sendReliable(regionp->getHost());
+
+        if (create_selected)
+        {
+            // Counted down again by the object-update path, which also applies
+            // the user's own build preferences to what arrives.
+            FSCommon::sObjectAddMsg++;
+            gViewerWindow->getWindow()->incBusyCount();
+
+            // `llviewerobjectlist` selects a newly created object only when the
+            // current tool is not the pie tool -- so with the ordinary cursor
+            // active, nothing would be selected and `link` would have nothing
+            // to work on. The Create tool leaves Translate current for the same
+            // reason; this matches it. Deliberately NOT deselecting first:
+            // selectObjectAndFamily adds, so four rezzes leave four selected
+            // and `link` needs no further step.
+            if (LLToolMgr::getInstance()->getCurrentTool() == LLToolPie::getInstance())
+            {
+                LLToolMgr::getInstance()->getCurrentToolset()
+                    ->selectTool(LLToolCompTranslate::getInstance());
+            }
+        }
+        // </Lumen>
 
         std::string parcel;
         if (LLParcel* p = LLViewerParcelMgr::getInstance()->getAgentParcel())
@@ -10515,15 +10683,103 @@ if (method == "camera")
                             llformat("%.1f", distance) + "m in front"
                             + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
                             + ". It should appear in a moment, selected and ready to change "
-                              "with `set`. Do not claim it is there -- say it was asked for, "
-                              "and use inspect_object if you need to be sure. **Tell the user "
-                              "which parcel it is on**: an object left on somebody else's land "
-                              "can be returned without warning.";
+                              "with `set`. Rezzing again ADDS to the selection rather than "
+                              "replacing it, so to build something out of several prims: rez "
+                              "them one after another, then call `link` once. Do not claim it "
+                              "is there -- say it was asked for, and use inspect_object if you "
+                              "need to be sure. **Tell the user which parcel it is on**: an "
+                              "object left on somebody else's land can be returned without "
+                              "warning.";
         recordAction(params.has("request_id") ? params["request_id"].asString() : "",
                      fingerprintOf("rez_object", params), "rez_object", "ok", result, LLSD());
         return result;
     }
 
+
+    // ---- build: select ------------------------------------------------------
+    //
+    // <Lumen> Everything else in this group works on the SELECTION, and until
+    // this existed nothing could put anything into it: the assistant could find
+    // an object, name it, inspect it, and then had to ask the user to go and
+    // click it. That is the interface barrier this project exists to remove,
+    // reappearing at the last step. The author, 2026-09-21, reading a
+    // transcript where it asked three times: *"shouldn't it be able to do
+    // this?"*
+    if (method == "select_object")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!params.has("object_id") || params["object_id"].asString().empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "select needs `object_id`. Get one from look_nearby or "
+                           "inspect_object -- do not ask the user to click the thing.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const LLUUID id = params["object_id"].asUUID();
+        LLViewerObject* obj = gObjectList.findObject(id);
+        if (!obj)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "No object with that id is in view. The viewer only knows about "
+                           "objects near the user, and an id from an earlier session or another "
+                           "region is not one of them. Call look_nearby again -- an object that "
+                           "was re-rezzed has a NEW id.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (obj->isAvatar())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That id is a person, not an object.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const bool add  = params.has("add")  && params["add"].asBoolean();
+        const bool edit = params.has("edit") && params["edit"].asBoolean();
+        if (!add) LLSelectMgr::getInstance()->deselectAll();
+        LLSelectMgr::getInstance()->selectObjectAndFamily(obj, true);
+
+        // Asked rather than assumed: selectObjectAndFamily returns null both
+        // when it refused and when the thing was already selected, so the
+        // return value cannot tell us whether it worked. The object can.
+        if (!obj->isSelected())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The viewer would not select that object. Usually that is a setting "
+                           "on the user's side -- \"select only my objects\" or \"select only "
+                           "movable objects\" under the build tools -- or an RLV restriction "
+                           "they are wearing. Nothing was changed.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (edit) handle_object_edit();
+
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        LLSD result;
+        result["selected"]   = sel.notNull() ? sel->getRootObjectCount() : 0;
+        result["object_id"]  = id;
+        result["prims"]      = (S32) obj->numChildren() + 1;
+        result["can_modify"] = obj->permModify();
+        result["is_mine"]    = obj->permYouOwner();
+        if (sel.notNull() && sel->getFirstRootNode()
+            && !sel->getFirstRootNode()->mName.empty())
+        {
+            result["name"] = safeUtf8(sel->getFirstRootNode()->mName);
+        }
+        if (edit) result["build_tools_open"] = true;
+        result["note"] = std::string("Selected. `set`, `remove`, `link` and `unlink` act on "
+                         "this. Select another with add: true to work on both.")
+                         + (obj->permModify() ? ""
+                            : " The user may NOT modify this object, so set and remove will "
+                              "fail -- say so rather than trying.");
+        recordAction(params.has("request_id") ? params["request_id"].asString() : "",
+                     fingerprintOf("select_object", params), "select_object", "ok", result, LLSD());
+        return result;
+    }
 
     // ---- build: set, remove, link, unlink -----------------------------------
     if (method == "set_object" || method == "remove_object"
@@ -10536,14 +10792,52 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> "delete that" should be one call, not a select and then a
+        // remove, so `set` and `remove` take an object_id and select it.
+        //
+        // An object_id that cannot be resolved is an error for ALL FOUR, even
+        // the two that do not use it. That is deliberate rather than tidy:
+        // it means a caller can name the null uuid to have any of these refuse
+        // without touching anything, which is what `mcp-check` needs in order
+        // to prove the action is reachable without deleting whatever the user
+        // happens to have selected. Decisions 107 was the same hazard with the
+        // avatar in the air; this one would have taken somebody's build.
+        if (params.has("object_id") && !params["object_id"].asString().empty())
+        {
+            LLViewerObject* target = gObjectList.findObject(params["object_id"].asUUID());
+            if (!target || target->isAvatar())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "No object with that id is in view, so nothing was done. Call "
+                               "look_nearby again -- an object that was re-rezzed has a new id.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (method == "set_object" || method == "remove_object")
+            {
+                LLSelectMgr::getInstance()->deselectAll();
+                LLSelectMgr::getInstance()->selectObjectAndFamily(target, true);
+                if (!target->isSelected())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "The viewer would not select that object, so nothing was "
+                                   "changed. A \"select only my objects\" setting or an RLV "
+                                   "restriction is the usual reason.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+        }
+        // </Lumen>
+
         LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
         const S32 count = sel.notNull() ? sel->getRootObjectCount() : 0;
         if (count == 0)
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "Nothing is selected, so there is nothing to change. `rez` leaves "
-                           "the new object selected; otherwise the user selects it by clicking "
-                           "it with the build tools open. Do not guess at an object.";
+                           "the new object selected; otherwise find the object with look_nearby "
+                           "or inspect_object and pass its `object_id`, either here or to "
+                           "`select` first. Do not ask the user to click it, and do not guess "
+                           "at an object.";
             LLSD w; w["__error"] = e; return w;
         }
 

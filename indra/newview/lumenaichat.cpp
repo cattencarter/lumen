@@ -427,6 +427,7 @@ namespace
         if (group == "build")
         {
             if (action == "rez")    return "Making an object";
+            if (action == "select") return "Selecting the object";
             if (action == "set")    return "Changing the object";
             if (action == "remove") return "Removing the object";
             if (action == "link")   return "Linking the objects";

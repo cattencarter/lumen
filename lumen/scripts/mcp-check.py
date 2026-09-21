@@ -12,6 +12,10 @@ Standard library only. Nothing to install.
 """
 
 import argparse
+
+# The all-zero uuid: names no object, so any handler that takes one refuses
+# before it does anything. See the build entries in SAFE below.
+NULL_UUID = "00000000-0000-0000-0000-000000000000"
 import json
 import sys
 import urllib.error
@@ -176,6 +180,23 @@ def main():
         ("movement", "camera"):         {"shot": "reset"},    # Decisions 92
         ("viewer",   "lighting"):       {"preset": "region"}, # the place's own light
         ("viewer",   "answer_while_away"): {"on": False},
+
+        # `build` makes things other people can see, and `remove` deletes
+        # whatever is selected -- which, on a run while the user had something
+        # selected, would be their own object. Decisions 107 with worse
+        # consequences than a flying avatar.
+        #
+        # There is no harmless rez, so this one is made to refuse: an unknown
+        # shape is rejected BY THE HANDLER, which is exactly what this sweep
+        # needs to prove -- the action was reached. The null uuid does the same
+        # for the other five, because an object_id that cannot be resolved is
+        # an error for all of them before anything is touched.
+        ("build",    "rez"):            {"shape": "__check_only__"},
+        ("build",    "select"):         {"object_id": NULL_UUID},
+        ("build",    "set"):            {"object_id": NULL_UUID},
+        ("build",    "remove"):         {"object_id": NULL_UUID},
+        ("build",    "link"):           {"object_id": NULL_UUID},
+        ("build",    "unlink"):         {"object_id": NULL_UUID},
     }
 
     # And a net, because the table above is hand-written and the next action

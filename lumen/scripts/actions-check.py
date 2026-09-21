@@ -248,4 +248,4 @@ if fails:
     for f in fails:
         print("  FAIL  " + f)
     sys.exit(1)
-print("  all five lists agree, no Windows-reserved identifier, and every English XUI file parses")
+print("  all six lists agree, no Windows-reserved identifier, and every English XUI file parses")
