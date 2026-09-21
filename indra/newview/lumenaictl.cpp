@@ -10050,6 +10050,8 @@ if (method == "camera")
         // blank icons would prove nothing about the part most likely to break.
         // The last message deliberately carries no id at all, because a sender
         // the viewer cannot picture has to look right too.
+        bool demo_on = false;
+        LLSD demo_notices_out, demo_msgs_out;
         if (gSavedSettings.getBOOL("LumenAICatchUpDemo"))
         {
             static const char* SUBJECTS[] = {
@@ -10117,19 +10119,15 @@ if (method == "camera")
             m2["message"]   = "hi";
             demo_msgs.append(m2);
 
-            result["notices"]                       = demo_notices;
-            result["notice_count"]                  = 3;
-            result["notices_from_earlier_sessions"] = 0;
-            result["messages"]                      = demo_msgs;
-            result["message_count"]                 = 2;
-            result["own_messages_left_out"]         = 0;
-            result["subscribed"]                    = mSubscribed;
-            result["since"]                         = "demo";
-            result["demo"]                          = true;
-            result["note"] =
-                "DEMO DATA, made up so the cards can be looked at. The viewer has already "
-                "drawn them. Write one short closing line and nothing else.";
-            return result;
+            // Deliberately NOT a result of its own. The first version built
+            // one and returned here, which meant the demo skipped the
+            // grouping and carried its own note -- so it exercised a path the
+            // real thing does not have, and the cards silently stopped being
+            // drawn. A fixture that takes a different road tests a different
+            // thing.
+            demo_on      = true;
+            demo_notices_out = demo_notices;
+            demo_msgs_out    = demo_msgs;
         }
         // </Lumen>
 
@@ -10158,7 +10156,8 @@ if (method == "camera")
         S32 from_earlier = 0;
 
         LLSD notices = LLSD::emptyArray();
-        if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
+        if (demo_on) { notices = demo_notices_out; }
+        else if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
         {
             chan->forEachNotification([&notices, cutoff, &from_earlier](LLNotificationPtr n)
             {
@@ -10243,9 +10242,10 @@ if (method == "camera")
         // login IS the offline backlog: Second Life delivers what was missed
         // as ordinary instant messages the moment you arrive, and the stream
         // has been subscribed since the first frame.
-        const LLSD stream = mMessages.read(0, 60);
-        LLSD msgs = LLSD::emptyArray();
+        const LLSD stream = demo_on ? LLSD() : mMessages.read(0, 60);
+        LLSD msgs = demo_on ? demo_msgs_out : LLSD::emptyArray();
         S32 skipped = 0;
+        if (!demo_on)
         for (LLSD::array_const_iterator it = stream["entries"].beginArray();
              it != stream["entries"].endArray(); ++it)
         {
