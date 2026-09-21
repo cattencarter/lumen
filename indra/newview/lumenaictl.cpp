@@ -10069,108 +10069,6 @@ if (method == "camera")
 
         LLSD result;
 
-        // <Lumen> Demo data, for looking at the cards without waiting for
-        // somebody to write to you.  `LumenAICatchUpDemo` in Debug Settings,
-        // off by default.
-        //
-        // The ids are the user's OWN groups and avatar rather than invented
-        // ones, so the insignias and the face really resolve -- a card full of
-        // blank icons would prove nothing about the part most likely to break.
-        // The last message deliberately carries no id at all, because a sender
-        // the viewer cannot picture has to look right too.
-        bool demo_on = false;
-        LLSD demo_notices_out, demo_msgs_out;
-        if (gSavedSettings.getBOOL("LumenAICatchUpDemo"))
-        {
-            // The first group posts THREE times, so the collapsing is visible:
-            // one card for that group, its summary covering all three.
-            static const S32 WHOSE[] = { 0, 0, 0, 1, 2 };
-            static const char* SUBJECTS[] = {
-                "Dance night on Friday",
-                "Storyteller evening moved",
-                "Dues are due",
-                "Sim restart at 6pm",
-                "New roleplay rules"
-            };
-            static const char* BODIES[] = {
-                "Doors at eight, and the theme is anything with feathers. "
-                "Bring a friend -- the parcel holds forty.",
-                "The storyteller evening has moved to Sunday at seven, same "
-                "place. Bring something to sit on; the logs are all taken by "
-                "the time it starts.",
-                "Quarterly dues are due at the end of the month. Ten lindens, "
-                "the same as last year, and nobody is thrown out for being "
-                "late -- but a reminder saves us chasing.",
-                "The region goes down for a restart at six. Please rez nothing "
-                "you cannot afford to lose in the half hour before.",
-                "The revised rules are in the group notices, and take effect on "
-                "the first. The short version: ask before you bite."
-            };
-
-            LLSD demo_notices = LLSD::emptyArray();
-            for (S32 i = 0; i < 5; ++i)
-            {
-                LLSD one;
-                one["kind"]    = "GroupNotice";
-                one["subject"] = SUBJECTS[i];
-                one["text"]    = BODIES[i];
-                one["when"]    = LLDate::now().asString();
-                const S32 which = WHOSE[i];
-                if (which < (S32)gAgent.mGroups.size())
-                {
-                    const LLGroupData& g = gAgent.mGroups[which];
-                    one["group_name"] = safeUtf8(g.mName);
-                    one["group_id"]   = g.mID;
-                    const std::string link = groupLink(g.mID);
-                    if (!link.empty()) one["group_link"] = link;
-                }
-                else
-                {
-                    // An account in no groups -- a test avatar, usually --
-                    // would otherwise produce a card with no group at all,
-                    // which is a DIFFERENT layout from the one being judged.
-                    // Invented names keep the shape honest; the insignia is
-                    // simply missing, which is a case worth seeing too.
-                    static const char* MADE_UP[] = {
-                        "Raglan Shire Artisans", "Dreamshire Social", "Tiny Racers"
-                    };
-                    one["group_name"] = MADE_UP[which % 3];
-                }
-                demo_notices.append(one);
-            }
-
-            LLSD demo_msgs = LLSD::emptyArray();
-            LLAvatarName av;
-            std::string me = "Someone";
-            if (LLAvatarNameCache::get(gAgent.getID(), &av)) me = av.getDisplayName();
-
-            LLSD m1;
-            m1["from"]      = me;
-            m1["from_name"] = me;
-            m1["from_id"]   = gAgent.getID();
-            m1["message"]   = "Are you coming to the thing tonight? I saved you a seat.";
-            const std::string me_link = profileLink(gAgent.getID());
-            if (!me_link.empty()) m1["from_link"] = me_link;
-            demo_msgs.append(m1);
-
-            LLSD m2;
-            m2["from"]      = "Someone With No Picture";
-            m2["from_name"] = "Someone With No Picture";
-            m2["message"]   = "hi";
-            demo_msgs.append(m2);
-
-            // Deliberately NOT a result of its own. The first version built
-            // one and returned here, which meant the demo skipped the
-            // grouping and carried its own note -- so it exercised a path the
-            // real thing does not have, and the cards silently stopped being
-            // drawn. A fixture that takes a different road tests a different
-            // thing.
-            demo_on      = true;
-            demo_notices_out = demo_notices;
-            demo_msgs_out    = demo_msgs;
-        }
-        // </Lumen>
-
         // <Lumen> Notices are NOT instant messages and do not reach the IM
         // stream. A group notice arrives as a notification, which is why
         // read_messages has never seen one. The viewer keeps them on its
@@ -10196,8 +10094,7 @@ if (method == "camera")
         S32 from_earlier = 0;
 
         LLSD notices = LLSD::emptyArray();
-        if (demo_on) { notices = demo_notices_out; }
-        else if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
+        if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
         {
             chan->forEachNotification([&notices, cutoff, &from_earlier](LLNotificationPtr n)
             {
@@ -10282,10 +10179,9 @@ if (method == "camera")
         // login IS the offline backlog: Second Life delivers what was missed
         // as ordinary instant messages the moment you arrive, and the stream
         // has been subscribed since the first frame.
-        const LLSD stream = demo_on ? LLSD() : mMessages.read(0, 60);
-        LLSD msgs = demo_on ? demo_msgs_out : LLSD::emptyArray();
+        const LLSD stream = mMessages.read(0, 60);
+        LLSD msgs = LLSD::emptyArray();
         S32 skipped = 0;
-        if (!demo_on)
         for (LLSD::array_const_iterator it = stream["entries"].beginArray();
              it != stream["entries"].endArray(); ++it)
         {
