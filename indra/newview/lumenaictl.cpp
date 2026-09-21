@@ -10755,6 +10755,7 @@ if (method == "camera")
         // answering everybody -- that is the one wrong answer worth avoiding,
         // because it is wider than what was asked and nobody would notice.
         std::set<LLUUID> only;
+        std::vector<std::string> only_as_written;
         LLSD not_found = LLSD::emptyArray();
         if (on && params.has("only") && params["only"].isArray())
         {
@@ -10764,7 +10765,18 @@ if (method == "camera")
                 LLSD e;
                 LLSD one; one["name"] = (*it).asString();
                 const LLUUID id = resolvePerson(one, e);
-                if (id.notNull()) only.insert(id);
+                if (id.notNull())
+                {
+                    only.insert(id);
+                    // <Lumen> and keep the spelling THEY used. A person has
+                    // four stored names and the one people type may be none of
+                    // them -- the account everybody calls kwanita has the
+                    // username tyria06 and a display name written in lookalike
+                    // characters. Transliterating those was weighed and
+                    // rejected here long ago as a bottomless table that still
+                    // guesses. This is not a guess: the user just told us.
+                    only_as_written.push_back((*it).asString());
+                }
                 else              not_found.append((*it).asString());
             }
             if (only.empty())
@@ -10820,7 +10832,7 @@ if (method == "camera")
                 // ones you looked at: the account called kwanita by everybody
                 // has the username tyria06. Checking one form is how a guard
                 // misses the only spelling anybody writes.
-                std::vector<std::string> forms;
+                std::vector<std::string> forms = only_as_written;
                 forms.push_back(av.getUserName());
                 forms.push_back(av.getDisplayName());
                 forms.push_back(av.getLegacyName());
@@ -10838,7 +10850,7 @@ if (method == "camera")
                     if (found != std::string::npos && found != 0) at = found;
                 }
                 if (at == std::string::npos) continue;   // absent, or an opening address
-                std::string first = forms[0];
+                std::string first = av.getUserName();
 
                 LLSD e; e["code"] = -32602;
                 e["message"] =
