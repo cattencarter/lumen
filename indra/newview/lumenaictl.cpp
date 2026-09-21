@@ -2781,6 +2781,46 @@ void LumenAIControl::showDisclaimerWhenLoggedIn()
     mDisclaimerListenerUp = true;
 }
 
+// <Lumen>
+/**
+ * Note when this session actually reached the world.
+ *
+ * `catch_up` needs to tell "waiting for you" from "still sitting in the
+ * notification well from yesterday", and the well keeps an undismissed notice
+ * for as long as it is undismissed -- across restarts, with its original date.
+ * So the question is not what the well holds, it is what arrived THIS time.
+ *
+ * Second Life hands over the offline backlog at login, so the arrival clock
+ * answers it without anyone remembering a logout: nothing is written down, and
+ * a fresh install is right on its first run.  Same shape as the disclaimer
+ * watcher above -- one comparison per frame for a few seconds, then gone.
+ */
+void LumenAIControl::watchForLogin()
+{
+    if (mLoginClockUp || mLoggedInAt.secondsSinceEpoch() > 0.0) return;
+
+    LLEventPumps::instance().obtain("mainloop").listen("LumenAIControlLoginClock",
+        [this](const LLSD&)
+        {
+            if (!LLStartUp::getStartupState()
+                || LLStartUp::getStartupState() < STATE_STARTED)
+            {
+                return false;
+            }
+
+            mLoggedInAt = LLDate::now();
+            LL_INFOS("AICtl") << "Session reached the world at "
+                              << mLoggedInAt.asString() << LL_ENDL;
+
+            LLEventPumps::instance().obtain("mainloop")
+                .stopListening("LumenAIControlLoginClock");
+            mLoginClockUp = false;
+            return false;
+        });
+    mLoginClockUp = true;
+}
+// </Lumen>
+
 void LumenAIControl::listenForStreams()
 {
     if (mSubscribed || mStreamListenerUp)
@@ -2888,6 +2928,7 @@ bool LumenAIControl::startInternal()
     // Whether or not the endpoint is switched on, and whether or not they ever
     // use the assistant: they are told what this viewer is before they use it.
     showDisclaimerWhenLoggedIn();
+    watchForLogin();   // <Lumen>
 
     // <Lumen> Lumen is a standalone viewer. Nothing outside it may drive it,
     // and there is no setting offering that any more. The author: *"I don't want
@@ -9968,12 +10009,38 @@ if (method == "camera")
         // "Persistent" channel -- the same set the notification well shows --
         // so this reads what is genuinely still waiting rather than a log of
         // everything that has ever arrived.
+        // <Lumen> Only what arrived THIS login.
+        //
+        // The well keeps an undismissed notice across restarts, with its
+        // original date, so reading the whole channel served up notices and
+        // payment confirmations from days the user was sitting right there --
+        // which is not news, and buried the part that was.  The offline
+        // backlog is delivered at login, so the arrival clock separates them
+        // with nothing remembered between runs.
+        //
+        // The margin covers delivery that straggles in around STATE_STARTED,
+        // and is far shorter than any gap between real sessions.  With no
+        // clock yet, or a notice carrying no date of its own, nothing is
+        // filtered: leaving something out is worse than showing it early.
+        const F64 LOGIN_DELIVERY_MARGIN = 120.0;
+        const F64 login_at = mLoggedInAt.secondsSinceEpoch();
+        const F64 cutoff   = (login_at > 0.0) ? (login_at - LOGIN_DELIVERY_MARGIN) : 0.0;
+        S32 from_earlier = 0;
+
         LLSD notices = LLSD::emptyArray();
         if (LLNotificationChannelPtr chan = LLNotifications::instance().getChannel("Persistent"))
         {
-            chan->forEachNotification([&notices](LLNotificationPtr n)
+            chan->forEachNotification([&notices, cutoff, &from_earlier](LLNotificationPtr n)
             {
                 if (!n || notices.size() >= 40) return;
+
+                const F64 when = n->getDate().secondsSinceEpoch();
+                if (cutoff > 0.0 && when > 0.0 && when < cutoff)
+                {
+                    ++from_earlier;   // left over from a previous session
+                    return;
+                }
+                // </Lumen>
                 LLSD one;
                 one["kind"] = n->getName();
                 const std::string body = n->getMessage();
@@ -9999,6 +10066,11 @@ if (method == "camera")
         }
         result["notices"] = notices;
         result["notice_count"] = (LLSD::Integer)notices.size();
+        // <Lumen> never drop things silently: say what was set aside, and say
+        // when the clock was not available to judge by.
+        result["notices_from_earlier_sessions"] = from_earlier;
+        result["since"] = (login_at > 0.0) ? mLoggedInAt.asString() : std::string("unknown");
+        // </Lumen>
 
         // The messages are the stream's own, which at the first look after a
         // login IS the offline backlog: Second Life delivers what was missed
@@ -10024,17 +10096,25 @@ if (method == "camera")
         result["subscribed"] = mSubscribed;
 
         result["note"] =
-            "Everything waiting for the user in one call: `notices` is what the notification "
-            "well is holding -- group notices, offers, anything that is not a conversation -- "
-            "and `messages` is the instant messages this session has seen, which straight after "
-            "a login is what arrived while they were away.\n"
-            "**Summarise, do not recite.** Group by person and by group, say what each one "
-            "wants, and put anything that needs an answer or expires first. If both lists are "
-            "empty say so in one short line and nothing else -- 'nothing came in while you were "
-            "away' is the whole reply, with no offer to check again.\n"
-            "A notice is still waiting whether or not it has been read, so do not tell them it "
-            "is unread. And this cannot see notices from before this session: the viewer keeps "
-            "the ones it is still holding, not a history.";
+            "What arrived while the user was away, in one call. `notices` is the notification "
+            "well -- group notices, offers, payments, anything that is not a conversation -- "
+            "and `messages` is the instant messages, which straight after a login is the "
+            "offline backlog.\n"
+            "Both are limited to THIS login: `since` is when the session reached the world, "
+            "and `notices_from_earlier_sessions` counts undismissed ones from previous days "
+            "that were left out. Do not mention that count unless the user asks why something "
+            "is missing.\n"
+            "**Summarise in a few lines. Do not recite the list.** Anything that needs an "
+            "answer, or that expires, goes first and by itself. After that, one line per "
+            "person or group saying what it was about -- not one line per notice. Several "
+            "notices about the same event are one line. Events whose date has already passed "
+            "are worth a single closing line together, never one each. Skip the routine "
+            "entirely: a payment that went through, an object returned, anything that happened "
+            "and is finished.\n"
+            "If nothing came in, 'nothing came in while you were away' is the whole reply -- "
+            "no list, no offer to check again.\n"
+            "A notice is still waiting whether or not it has been read, so do not call it "
+            "unread.";
         return result;
     }
 

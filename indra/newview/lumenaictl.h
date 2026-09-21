@@ -209,6 +209,7 @@ private:
     /** Get the streams subscribed even when the socket is switched off. */
     void listenForStreams();
     void showDisclaimerWhenLoggedIn();
+    void watchForLogin();   // <Lumen> when this session reached the world
 
     /**
      * Who we are following, and the loop that keeps it going.
@@ -224,6 +225,14 @@ private:
     bool   mFollowListenerUp = false;
     bool mStreamListenerUp = false;
     bool mDisclaimerListenerUp = false;
+
+    // <Lumen> The moment this session reached STATE_STARTED.  Second Life
+    // delivers everything missed while away AT login, so "arrived after this"
+    // is the same set as "arrived while you were away" -- derived rather than
+    // remembered, so it is correct on a fresh install.  Null until seen.
+    LLDate mLoggedInAt;
+    bool   mLoginClockUp = false;
+    // </Lumen>
 
     /**
      * Look up a previous write by the caller's request id.
