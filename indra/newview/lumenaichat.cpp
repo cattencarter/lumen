@@ -2693,6 +2693,21 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                 LLSD m; m["role"] = "user"; m["content"] = tool_results;
                 mMessages.append(m);
             }
+
+            // <Lumen> show_waiting IS the reply, so the turn is over.
+            //
+            // Otherwise the result goes back for one more completion whose
+            // text is thrown away unread -- a whole round trip, with the tool
+            // surface resent, for nothing. It was the slowest third of the
+            // catch-up and none of it reached the screen.
+            if (mCatchUpDrawn)
+            {
+                mCatchUpDrawn = false;
+                setBusy(false);
+                sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
+                return;
+            }
+            // </Lumen>
         }
 
         if (!wants_tools)
