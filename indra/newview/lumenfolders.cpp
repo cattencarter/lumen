@@ -73,4 +73,22 @@ void LumenFolders::migrateRootFolder()
                              << "\" (" << theirs << "); contents are untouched." << LL_ENDL;
 
     rename_category(&gInventory, theirs, ROOT_FIRESTORM_FOLDER);
+
+    // <Lumen> And rename it LOCALLY, now. rename_category goes through AIS,
+    // and the local model learns the new name only when the server's reply
+    // lands -- seconds, sometimes more. The bridge (STATE_CLEANUP) and the AO
+    // look this folder up BY NAME and create a fresh, empty "#Lumen" when they
+    // find none, which is exactly the two-folders, AO-gone outcome this
+    // migration exists to prevent. The UDP branch of update_inventory_category
+    // does this same local update itself (llviewerinventory.cpp:1681-1694);
+    // the AIS branch leaves it to the reply. The reply will set the same name
+    // again, harmlessly; if the server refuses, the next login's fetch puts
+    // the old name back and this runs once more.
+    if (LLViewerInventoryCategory* cat = gInventory.getCategory(theirs))
+    {
+        LLPointer<LLViewerInventoryCategory> renamed = new LLViewerInventoryCategory(cat);
+        renamed->rename(ROOT_FIRESTORM_FOLDER);
+        gInventory.updateCategory(renamed);
+    }
+    // </Lumen>
 }

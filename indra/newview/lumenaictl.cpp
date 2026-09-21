@@ -69,6 +69,8 @@
 #include "llinventorydefines.h"
 #include "llviewerassettype.h"
 #include "rlvlocks.h"
+#include "rlvcommon.h"        // <Lumen> rlvCanDeleteOrReturn, for `remove`
+#include "llsdutil.h"         // <Lumen> llsd_equals, for set_setting's read-back
 #include "llsdserialize.h"
 #include "llviewerobjectlist.h"
 #include "fspose.h"
@@ -767,6 +769,19 @@ namespace
             {
                 return false;   // folders are not results
             }
+            // <Lumen> Never a link. The outfit folders hold a link for every
+            // worn or saved garment, with the original's name and type -- so
+            // by name, every such item matched twice and was refused as
+            // ambiguous, and a caller that then picked the link's id acted on
+            // an item whose permissions are the LINK's, not the original's
+            // (llviewerinventory.cpp:2507 -- getPermissions does not follow
+            // links, where getType, getName and getAssetUUID do). The original
+            // is always in the same inventory, so nothing is lost by skipping.
+            if (item->getIsLinkType())
+            {
+                return false;
+            }
+            // </Lumen>
             if (mKind != LLAssetType::AT_NONE && item->getType() != mKind)
             {
                 return false;
@@ -1302,6 +1317,51 @@ namespace
         }
         return hits;
     }
+
+    /**
+     * <Lumen> Read one transcript FILE, by its real path.
+     *
+     * Decisions 109 chose never to open a transcript by hand, trusting
+     * `LLLogChat::loadChatHistory` to know the dated names. It does not: it
+     * takes a NAME and re-appends the CURRENT month (lllogchat.cpp:311-323),
+     * so a label stripped of "-2026-08" came back as this month's file --
+     * empty for a conversation from August, and two months of the same
+     * person read as two identical "conversations". The parsing is still the
+     * viewer's own, line for line (LLChatLogParser::parse, and the
+     * leading-space rule for a wrapped message); only the opening is ours.
+     */
+    void loadTranscriptFile(const std::string& path, std::list<LLSD>& messages)
+    {
+        llifstream in(path.c_str(), std::ios::in | std::ios::binary);
+        if (!in.is_open()) return;
+        std::string line;
+        while (std::getline(in, line))
+        {
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+            if (line.empty()) continue;
+            if (line.size() >= 3 && (U8)line[0] == 0xEF && (U8)line[1] == 0xBB && (U8)line[2] == 0xBF)
+            {
+                line.erase(0, 3);   // a byte-order mark on the first line
+            }
+            if (line[0] == ' ')
+            {
+                // A wrapped message continues the one before it.
+                if (!messages.empty())
+                {
+                    LLSD& last = messages.back();
+                    last["message"] = last["message"].asString() + "\n" + line.substr(1);
+                }
+                continue;
+            }
+            LLSD item;
+            if (!LLChatLogParser::parse(line, item))
+            {
+                item["message"] = line;
+            }
+            messages.push_back(item);
+        }
+    }
+    // </Lumen>
 
     // "2026/09/16 06:37" sorts correctly as a string, so a cutoff needs no date
     // parsing -- which is worth having rather than being clever about, since a
@@ -2971,6 +3031,17 @@ bool LumenAIControl::startInternal()
     showDisclaimerWhenLoggedIn();
     watchForLogin();   // <Lumen>
 
+    // <Lumen> New every session, so it cannot be remembered from a previous one
+    // either. Generated HERE, before the provider check below: it used to sit
+    // after the early return, so `status` answered an empty session_check for
+    // every in-process provider -- the one guard against a guessed answer
+    // (Decisions 50) was dead for the in-viewer Assistant.
+    if (mSessionCheck.empty())
+    {
+        mSessionCheck = LLUUID::generateNewID().asString().substr(0, 6);
+        LL_INFOS("AICtl") << "session check is " << mSessionCheck << LL_ENDL;
+    }
+
     // <Lumen> Lumen is a standalone viewer. Nothing outside it may drive it,
     // and there is no setting offering that any more. The author: *"I don't want
     // other apps drive the viewer, only if requested to from inside the viewer
@@ -3017,14 +3088,20 @@ bool LumenAIControl::startInternal()
     // by LLMessageSystem::checkAllMessages, which does not run until the
     // message system is up, so an endpoint on it would bind, listen, and never
     // answer anything while the viewer sits on the login screen.
+    // <Lumen> A pump left over from a run that tick() switched off still owns
+    // the old server socket. Adding a second server to it would leave two
+    // listeners and a dead one; drop it and start clean. Safe here: this is
+    // not inside the pump's own callback.
+    if (mPump && mPumpStale)
+    {
+        delete mPump;
+        mPump = NULL;
+        mPumpStale = false;
+    }
     if (!mPump)
     {
         mPump = new LLPumpIO(gAPRPoolp);
     }
-
-    // New every session, so it cannot be remembered from a previous one either.
-    mSessionCheck = LLUUID::generateNewID().asString().substr(0, 6);
-    LL_INFOS("AICtl") << "session check is " << mSessionCheck << LL_ENDL;
 
     LLHTTPNode* root = NULL;
     if (mPort == 0)
@@ -3098,21 +3175,34 @@ bool LumenAIControl::tick(const LLSD&)
     catch (const std::exception& e)
     {
         LL_WARNS("AICtl") << "Exception while servicing the endpoint: " << e.what()
-                          << "; the endpoint is off for this session." << LL_ENDL;
+                          << "; the endpoint is off until the next start()." << LL_ENDL;
         mRunning = false;
     }
     catch (...)
     {
         LL_WARNS("AICtl") << "Unknown exception while servicing the endpoint; "
-                             "the endpoint is off for this session." << LL_ENDL;
+                             "the endpoint is off until the next start()." << LL_ENDL;
         mRunning = false;
     }
 
     // Deliberately NOT stop(): we are inside mPump's own callback, and stop()
     // deletes mPump. Doing that here frees the object whose stack frame we are
     // standing in, which is how the first version of this guard turned a
-    // handled exception into a crash. Clearing mRunning is enough; the pump is
-    // released at shutdown.
+    // handled exception into a crash.
+    //
+    // <Lumen> But clearing mRunning alone was not "switching itself off": the
+    // listener stayed on the mainloop, so this ran -- and could throw -- every
+    // frame, and a later start() then registered "LumenAIControl" a second
+    // time, which LLEventPump refuses with an exception. So Codex and Claude
+    // Code could never reconnect for the rest of the session. Take the
+    // listener off here (disconnecting a signals2 slot from inside its own
+    // invocation is allowed) and mark the pump for start() to replace.
+    if (!mRunning)
+    {
+        LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControl");
+        mPumpStale = true;
+    }
+    // </Lumen>
     return false;
 }
 
@@ -3597,6 +3687,19 @@ namespace
     // about two people must not collect each other's answer.
     std::map<LLUUID, LLSD> sWornReplies;
     std::set<LLUUID>       sWornPending;
+    // <Lumen> When each pending question was asked. A reply that never comes
+    // -- the bridge dropped it, the profile request was lost -- used to pin
+    // that avatar at "pending" for the rest of the session, because nothing
+    // ever asked again. After this long, ask again.
+    std::map<LLUUID, F64>  sPendingSince;
+    const F64 PENDING_RETRY_SECONDS = 30.0;
+    bool pendingTooLong(const LLUUID& who)
+    {
+        std::map<LLUUID, F64>::const_iterator it = sPendingSince.find(who);
+        return it != sPendingSince.end()
+            && LLTimer::getTotalSeconds() - it->second > PENDING_RETRY_SECONDS;
+    }
+    // </Lumen>
 
     std::string fromBase64(const std::string& in)
     {
@@ -3738,6 +3841,24 @@ namespace
 
     const LLSD& lslSyntax()
     {
+        // <Lumen> Re-read from LLSyntaxIdLSL whenever it holds something,
+        // rather than once. The first call usually lands before the region's
+        // syntax file has arrived -- the constructor loads the shipped default
+        // and only STARTS the fetch (llsyntaxid.cpp:49-57) -- so a one-time
+        // copy froze the default for the whole session, and a region change
+        // never reached it either, while the tool went on saying "as the
+        // simulator served it". A copy of the map per lookup is cheap next to
+        // the round trip that justifies the tool.
+        {
+            const LLSD live = LLSyntaxIdLSL::getInstance()->getKeywordsXML();
+            if (live.isMap() && live.has("functions"))
+            {
+                sLslSyntax = live;
+                sLslLoaded = true;
+                return sLslSyntax;
+            }
+        }
+        // </Lumen>
         if (!sLslLoaded)
         {
             sLslLoaded = true;
@@ -4820,6 +4941,7 @@ bool LumenAIControl::wornRequestPending(const LLUUID& who)
 void LumenAIControl::beginWornRequest(const LLUUID& who)
 {
     sWornPending.insert(who);
+    sPendingSince[who] = LLTimer::getTotalSeconds();   // <Lumen>
 }
 
 bool LumenAIControl::takeWornReply(const LLUUID& who, LLSD& out)
@@ -5794,9 +5916,14 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 fixed.append(one);
             }
             result["spelling_corrected"] = fixed;
-            result["note"] = "Nothing matched as spelled, so the spelling was corrected. "
-                             "TELL THE USER what was changed to what -- they may have meant "
-                             "something else entirely.";
+            // <Lumen> Appended, not assigned: three notes shared this one key
+            // and the last writer won, so the filters-removed-everything
+            // explanation and this instruction both vanished under the
+            // truncation message whenever it applied too.
+            const std::string spelt = "Nothing matched as spelled, so the spelling was corrected. "
+                                      "TELL THE USER what was changed to what -- they may have "
+                                      "meant something else entirely.";
+            result["note"] = result.has("note") ? result["note"].asString() + "\n\n" + spelt : spelt;
         }
         result["returned"] = (LLSD::Integer)found.size();
         result["truncated"] = worn_only ? ((S32)items.size() > limit)
@@ -5820,13 +5947,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // capped walk could only say "at least this many" because it had
             // stopped early on purpose (Findings 21, 60).
             result["matched"] = (LLSD::Integer)ranked_total;
-            if ((S32)ranked_total > (S32)found.size())
+            // <Lumen> Not when a filter threw everything away: "showing the
+            // best 0 of 144" beside "do not raise the limit" replaced the one
+            // note that explained what happened.
+            if ((S32)ranked_total > (S32)found.size() && found.size() > 0)
             {
-                result["note"] = "Showing the best " + llformat("%d", (S32)found.size()) +
+                const std::string cut = "Showing the best " + llformat("%d", (S32)found.size()) +
                                  " of " + llformat("%d", (S32)ranked_total) + " matches, "
                                  "ranked by how well the name fits. These are the closest ones, "
                                  "not merely the first found, so raising the limit is rarely what "
                                  "you want; a more specific query is.";
+                result["note"] = result.has("note") ? result["note"].asString() + "\n\n" + cut : cut;
             }
         }
         else
@@ -5946,6 +6077,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                            "conversation. Use say for something the user should simply see.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> The IM window checks this before sending (fsfloaterim.cpp,
+        // sendMsg); LLIMModel::sendMessage below does not, so without this an
+        // @sendim restriction the user accepted was silently walked past.
+        if (RlvActions::isRlvEnabled() && !RlvActions::canSendIM(to))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids sending instant "
+                           "messages to that person right now. Nothing was sent -- say it is "
+                           "their own attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
@@ -6654,12 +6797,29 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         {
             LLInventoryObject::object_list_t contents;
             chain[i]->getInventoryContents(contents);
+            // <Lumen> An EMPTY prim looks exactly like an UNFETCHED one from
+            // here: getInventoryContents skips the synthesised Contents folder
+            // (llviewerobject.cpp:3810), so a fetched prim with no scripts
+            // returned an empty list too, was re-requested every call, and a
+            // scriptless object answered `pending` for ever. Ask the object
+            // whether it is still waiting, or has never been asked, before
+            // deciding that emptiness means "still loading".
             if (contents.empty())
             {
-                chain[i]->requestInventory();
-                ++waiting;
-                continue;
+                if (chain[i]->isInventoryPending())
+                {
+                    ++waiting;
+                    continue;
+                }
+                if (chain[i]->isInventoryDirty())
+                {
+                    chain[i]->requestInventory();
+                    ++waiting;
+                    continue;
+                }
+                continue;   // fetched, and genuinely holds nothing
             }
+            // </Lumen>
             for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
                  it != contents.end(); ++it)
             {
@@ -7473,11 +7633,88 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // and the viewer would then attempt to draw it. Refusing WITH the range
         // is better than clamping silently, which would be a wrong answer
         // wearing the clothes of a right one.
+        // <Lumen> The value has to be the control's own TYPE before anything
+        // else is decided. LLControlVariable::setValue coerces a string only
+        // for booleans (llcontrol.cpp:186) and otherwise stores what it is
+        // handed -- so `value: "99999"` (quoted, which models do) skipped the
+        // range check below because it was "not numeric", and an F32 control
+        // then held a String that read back as 99999. The case Decisions 123
+        // recorded as closed, open again by one pair of quotation marks. A
+        // colour or vector control fed a scalar was worse: stored raw, read as
+        // zeros, persisted. So: convert to the type, refuse what cannot be.
+        LLSD value = params["value"];
+        {
+            const std::string raw = value.isString() ? value.asString() : std::string();
+            bool ok = true;
+            switch (var->type())
+            {
+            case TYPE_BOOLEAN:
+            {
+                if (value.isBoolean()) break;
+                if (value.isInteger() || value.isReal()) { value = (value.asReal() != 0.0); break; }
+                std::string l = lowered(raw); LLStringUtil::trim(l);
+                if (l == "true" || l == "on" || l == "yes" || l == "1")       value = true;
+                else if (l == "false" || l == "off" || l == "no" || l == "0") value = false;
+                else ok = false;
+                break;
+            }
+            case TYPE_S32: case TYPE_U32: case TYPE_F32:
+            {
+                if (value.isInteger() || value.isReal()) { /* fine */ }
+                else if (value.isString())
+                {
+                    char* end = NULL;
+                    const double d = strtod(raw.c_str(), &end);
+                    ok = (end && end != raw.c_str());
+                    if (ok) { while (*end == ' ') ++end; ok = (*end == '\0'); }
+                    if (ok) value = LLSD::Real(d);
+                }
+                else ok = false;
+                if (ok && var->type() == TYPE_S32) value = LLSD::Integer(llround(value.asReal()));
+                if (ok && var->type() == TYPE_U32)
+                {
+                    if (value.asReal() < 0.0) ok = false;
+                    else value = LLSD::Integer(llround(value.asReal()));
+                }
+                break;
+            }
+            case TYPE_STRING:
+                if (!value.isString()) value = value.asString();
+                break;
+            case TYPE_COL3: case TYPE_COL4: case TYPE_VEC3: case TYPE_VEC3D: case TYPE_RECT:
+            case TYPE_QUAT:
+                // These take an array of numbers and nothing else.
+                ok = value.isArray() && value.size() >= 3;
+                for (S32 i = 0; ok && i < (S32)value.size(); ++i)
+                {
+                    ok = value[i].isReal() || value[i].isInteger();
+                }
+                break;
+            default:
+                break;   // TYPE_LLSD and anything new: hand it on as given
+            }
+            if (!ok)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "\"" + safeUtf8(params["value"].asString()) + "\" is not a value "
+                               "of the kind " + ctrl + " takes. Nothing was changed.";
+                LLSD d; d["setting"] = ctrl; d["current"] = before;
+                d["takes"] = (var->type() == TYPE_BOOLEAN) ? "true or false"
+                           : (var->type() == TYPE_STRING)  ? "text"
+                           : (var->type() == TYPE_S32 || var->type() == TYPE_U32
+                              || var->type() == TYPE_F32) ? "a number"
+                           : "a list of numbers";
+                e["data"] = d;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
+
         std::map<std::string, std::pair<F32, F32> >::const_iterator rng = sSettingRange.find(ctrl);
-        const bool numeric = params["value"].isReal() || params["value"].isInteger();
+        const bool numeric = value.isReal() || value.isInteger();
         if (rng != sSettingRange.end() && numeric)
         {
-            const F32 want = (F32)params["value"].asReal();
+            const F32 want = (F32)value.asReal();
             if (want < rng->second.first || want > rng->second.second)
             {
                 LLSD e; e["code"] = -32602;
@@ -7491,11 +7728,16 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
         }
 
-        grp->setUntypedValue(ctrl, params["value"]);
+        grp->setUntypedValue(ctrl, value);
         const LLSD after = var->getValue();
 
-        const bool moved  = (after.asString() != before.asString());
-        const bool wanted = (after.asString() == params["value"].asString());
+        // <Lumen> Compared as LLSD, not as strings: a boolean renders as
+        // "true"/"" and an integer as "1"/"0", so `value: 1` on a BOOL control
+        // already true used to read as changed, and false as "refused".
+        const bool moved  = !llsd_equals(after, before);
+        const bool wanted = llsd_equals(after, value)
+                         || (numeric && (after.isReal() || after.isInteger())
+                             && fabs(after.asReal() - value.asReal()) < 1e-6);
 
         LLSD r;
         r["setting"] = ctrl;
@@ -8194,9 +8436,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             else if (params.has("heading"))
             {
-                F32 deg = (F32)params["heading"].asReal();
-                while (deg < 0.f)    deg += 360.f;
-                while (deg >= 360.f) deg -= 360.f;
+                // <Lumen> fmodf, not a subtraction loop: at 4e9 an F32 cannot
+                // represent deg - 360 as anything but deg, and the loop never
+                // ended -- a mistyped bearing took the whole viewer down.
+                F32 deg = fmodf((F32)params["heading"].asReal(), 360.f);
+                if (deg < 0.f) deg += 360.f;
                 // Bearing back to world axes: X east, Y north.
                 look.setVec(sinf(deg * DEG_TO_RAD), cosf(deg * DEG_TO_RAD), 0.f);
                 described = llformat("%.0f degrees (%s)", deg, compassPoint(deg).c_str());
@@ -8412,9 +8656,9 @@ if (method == "camera")
 
             // Around the subject. 0 is in front of them, which means standing
             // where they are facing -- not where the camera happens to be.
-            F32 deg = params.has("angle") ? (F32)params["angle"].asReal() : 0.f;
-            while (deg < 0.f)    deg += 360.f;
-            while (deg >= 360.f) deg -= 360.f;
+            // <Lumen> fmodf rather than a subtraction loop; see `turn`.
+            F32 deg = params.has("angle") ? fmodf((F32)params["angle"].asReal(), 360.f) : 0.f;
+            if (deg < 0.f) deg += 360.f;
 
             LLVector3 facing = gAgent.getAtAxis();
             if (focus_id.notNull() && focus_id != gAgent.getID())
@@ -8569,6 +8813,17 @@ if (method == "camera")
                 LLSD w; w["__error"] = e; return w;
             }
 
+            // <Lumen> And the same check the viewer's own Sit Here makes first
+            // (llviewermenu.cpp, handle_object_sit): under @sit or @sittp this
+            // used to sit anyway and report "requested".
+            if (RlvActions::isRlvEnabled() && !RlvActions::canSit(object))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing forbids sitting on that "
+                               "right now. Nothing was sent -- say it is their own attachment.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            // </Lumen>
             // The same message the viewer's own Sit Here sends.
             gMessageSystem->newMessageFast(_PREHASH_AgentRequestSit);
             gMessageSystem->nextBlockFast(_PREHASH_AgentData);
@@ -9155,16 +9410,38 @@ if (method == "camera")
             return result;
         }
 
-        if (!searching && files.size() > 1)
+        // <Lumen> One conversation may be several FILES -- one per month with
+        // LogFileNamewithDate on -- and they all carry the same label. Distinct
+        // labels are what "more than one conversation" means; several files
+        // under one label are that one conversation, read oldest first.
+        if (!searching)
         {
-            LLSD which = LLSD::emptyArray();
-            for (size_t i = 0; i < labels.size() && i < 20; ++i) which.append(labels[i]);
-            LLSD e; e["code"] = -32602;
-            e["message"] = "More than one saved conversation matches that name. Ask which one, "
-                           "then pass it exactly.";
-            e["data"] = which;
-            LLSD w; w["__error"] = e; return w;
+            std::vector<std::string> distinct;
+            for (size_t i = 0; i < labels.size(); ++i)
+            {
+                if (std::find(distinct.begin(), distinct.end(), labels[i]) == distinct.end())
+                {
+                    distinct.push_back(labels[i]);
+                }
+            }
+            if (distinct.size() > 1)
+            {
+                LLSD which = LLSD::emptyArray();
+                for (size_t i = 0; i < distinct.size() && i < 20; ++i) which.append(distinct[i]);
+                LLSD e; e["code"] = -32602;
+                e["message"] = "More than one saved conversation matches that name. Ask which "
+                               "one, then pass it exactly.";
+                e["data"] = which;
+                LLSD w; w["__error"] = e; return w;
+            }
+            // Dated names sort chronologically as strings.
+            std::vector<std::pair<std::string, std::string> > order;
+            for (size_t i = 0; i < files.size(); ++i) order.push_back(std::make_pair(files[i], labels[i]));
+            std::sort(order.begin(), order.end());
+            files.clear(); labels.clear();
+            for (size_t i = 0; i < order.size(); ++i) { files.push_back(order[i].first); labels.push_back(order[i].second); }
         }
+        // </Lumen>
 
         LLSD lines = LLSD::emptyArray();
         S32  scanned = 0;
@@ -9173,8 +9450,7 @@ if (method == "camera")
         for (size_t f = 0; f < files.size(); ++f)
         {
             std::list<LLSD> msgs;
-            LLSD load; load["load_all_history"] = true;
-            LLLogChat::loadChatHistory(transcriptLabel(files[f]), msgs, load, false);
+            loadTranscriptFile(files[f], msgs);   // <Lumen> by path; see loadTranscriptFile
 
             for (std::list<LLSD>::const_iterator it = msgs.begin(); it != msgs.end(); ++it)
             {
@@ -9281,6 +9557,33 @@ if (method == "camera")
             }
             return result;
         }
+
+        // <Lumen> Two things this write never checked. A retried request_id
+        // fetched and wrote the picture again as "Name-2.png"; and a second
+        // save started while the first was still fetching reset the shared
+        // status, so the first callback then reported ITS file under the
+        // second item's name.
+        {
+            LLSD replay;
+            if (recallAction(params.has("request_id") ? params["request_id"].asString() : "",
+                             replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id already started that save; nothing was "
+                                 "written a second time. Call save_image with no name to see "
+                                 "how it went.";
+                return replay;
+            }
+        }
+        if (gLastSave.running)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "A picture (\"" + safeUtf8(gLastSave.item) + "\") is still being "
+                           "fetched and written. One at a time: call save_image with no name "
+                           "until it reports saved, then ask for the next.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         LLSD item_error;
         const LLUUID id = resolveItem(params, item_error);
@@ -9390,6 +9693,12 @@ if (method == "camera")
         }
         const bool in_trash = gInventory.isObjectDescendentOf(id, trash);
         const std::string item_name = item->getName();
+        // <Lumen> A link carries its own (full) permissions, not the original's
+        // (llviewerinventory.cpp:2507). Trashing a link destroys nothing -- the
+        // original stays where it is -- so it needs no confirmation; but the
+        // reply has to say that a link is what moved.
+        const bool is_link = item->getIsLinkType();
+        // </Lumen>
 
         if (method == "undelete_item")
         {
@@ -9453,7 +9762,7 @@ if (method == "camera")
         // harmless, require a second deliberate one, and put the item's name
         // in front of whoever is reading -- and the action log records that
         // the confirmation was given, so it can be checked afterwards.
-        if (!item->getPermissions().allowCopyBy(gAgentID))
+        if (!is_link && !item->getPermissions().allowCopyBy(gAgentID))
         {
             const std::string confirm = params.has("confirm")
                 ? params["confirm"].asString() : std::string();
@@ -9495,6 +9804,13 @@ if (method == "camera")
         result["confirm_with"] =
             "It is in the Trash, not destroyed. undelete_item puts it back. Tell the user it was "
             "moved to Trash rather than saying it was deleted.";
+        if (is_link)
+        {
+            result["removed_link_only"] = true;
+            result["note"] = "That was a LINK -- an entry in an outfit or favourites folder "
+                             "pointing at the real item. Only the link went to the Trash; the "
+                             "item itself is still in inventory. Say so.";
+        }
 
         // This one entry keeps the item's name, unlike the rest of the log.
         // A deletion you cannot identify afterwards is not something the user
@@ -9604,6 +9920,16 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> A link's permissions are the link's own, not the original's
+        // (llviewerinventory.cpp:2507), so an item_id naming a link would have
+        // passed the no-copy check on a no-copy original -- and the offer
+        // would have carried the LINK's id. Give the thing itself.
+        if (LLViewerInventoryItem* real = item->getLinkedItem())
+        {
+            item = real;
+        }
+        // </Lumen>
+
         if (!LLGiveInventory::isInventoryGiveAcceptable(item))
         {
             LLSD e; e["code"] = -32000;
@@ -9666,12 +9992,40 @@ if (method == "camera")
             LL_INFOS("AICtl") << "give_item: no-copy, confirmed for " << item_id << LL_ENDL;
         }
 
-        if (!LLGiveInventory::doGiveInventoryItem(to, item))
+        // <Lumen> Two roads, because the viewer's own has a dialogue in it.
+        //
+        // doGiveInventoryItem() hands a copyable item straight on, but for a
+        // no-copy one it puts CannotCopyWarning on the SCREEN and returns
+        // false (llgiveinventory.cpp:202-223). So the confirmed no-copy give
+        // above used to answer "Second Life refused the offer" while a box sat
+        // in the viewer waiting for a click -- and if the user clicked it, the
+        // item went after the assistant had said it did not. The confirmation
+        // has already happened, in the conversation (Decisions 40), so the
+        // no-copy case goes to the commit path directly, with the same RLV
+        // check the dialogue's own Yes button makes.
+        bool offered = false;
+        if (item->getPermissions().allowCopyBy(gAgentID))
+        {
+            offered = LLGiveInventory::doGiveInventoryItem(to, item);
+        }
+        else
+        {
+            if (RlvActions::isRlvEnabled() && !RlvActions::canGiveInventory(to))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing forbids giving inventory "
+                               "to that person. Nothing was offered.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            offered = LLGiveInventory::commitGiveInventoryItem(to, item);
+        }
+        if (!offered)
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "Second Life refused the offer.";
             LLSD w; w["__error"] = e; return w;
         }
+        // </Lumen>
 
         LL_INFOS("AICtl") << "give_item: offered " << item_id << " to " << to << LL_ENDL;
 
@@ -9946,6 +10300,32 @@ if (method == "camera")
         // confused with a one-to-one conversation.
         const LLUUID session_id =
             gIMMgr->addSession(group_name, IM_SESSION_GROUP_START, group_id);
+
+        // <Lumen> A group session has to be STARTED before anything can be said
+        // into it. Creating one sends the start request and leaves
+        // mSessionInitialized false until the server answers (llimview.cpp:937);
+        // the viewer's own IM window queues the text until then
+        // (fsfloaterim.cpp, mQueuedMsgsForInit), where LLIMModel::sendMessage
+        // just sends -- its own comment reads "*FIXME: Queue messages and wait
+        // for server". So with the group's chat not already open, this sent
+        // into a session that did not exist yet. Say "joining" and let the
+        // caller try again; the second call finds the session ready.
+        {
+            LLIMModel::LLIMSession* session = LLIMModel::getInstance()->findIMSession(session_id);
+            if (session && !session->mSessionInitialized)
+            {
+                LLSD pending;
+                pending["pending"] = true;
+                pending["group"] = group_name;
+                pending["group_id"] = group_id;
+                pending["note"] = "The group's chat was not open, so the viewer is joining it "
+                                  "first. Nothing was sent yet. Call send_group_message again "
+                                  "with the same request_id in a moment; it will send once the "
+                                  "session is up.";
+                return pending;
+            }
+        }
+        // </Lumen>
         LLIMModel::sendMessage(message, session_id, group_id, IM_SESSION_GROUP_START);
 
         LL_INFOS("AICtl") << "send_group_message: " << message.size()
@@ -10028,7 +10408,7 @@ if (method == "camera")
             return ready;
         }
 
-        if (!wornRequestPending(target))
+        if (!wornRequestPending(target) || pendingTooLong(target))   // <Lumen> ask again after 30 s
         {
             beginWornRequest(target);
             FSLSLBridge::instance().viewerToLSL("worn|" + target.asString(),
@@ -10179,7 +10559,13 @@ if (method == "camera")
         // login IS the offline backlog: Second Life delivers what was missed
         // as ordinary instant messages the moment you arrive, and the stream
         // has been subscribed since the first frame.
-        const LLSD stream = mMessages.read(0, 60);
+        // <Lumen> The NEWEST sixty, not the oldest: read(since, limit) walks
+        // forward from `since`, so read(0, 60) on a stream that had grown past
+        // sixty handed back the start of the session and dropped what had just
+        // arrived. Back off from the latest sequence instead.
+        const LLSD peek = mMessages.read(0, 1);
+        const S32 latest = peek["latest_seq"].asInteger();
+        const LLSD stream = mMessages.read(latest > 60 ? (U64)(latest - 60) : 0, 60);
         LLSD msgs = LLSD::emptyArray();
         S32 skipped = 0;
         for (LLSD::array_const_iterator it = stream["entries"].beginArray();
@@ -10334,7 +10720,7 @@ if (method == "camera")
             return out;
         }
 
-        if (!sWebPresencePending.count(who))
+        if (!sWebPresencePending.count(who) || pendingTooLong(who))   // <Lumen> ask again after 30 s
         {
             // The USERNAME is what Primfeed is keyed on -- "catten.carter", not
             // the display name and not the legacy name. If the cache has not
@@ -10354,6 +10740,7 @@ if (method == "camera")
             }
 
             sWebPresencePending.insert(who);
+            sPendingSince[who] = LLTimer::getTotalSeconds();
             const std::string username = av.getAccountName();
             const std::string legacy   = av.getLegacyName();
             LLCoros::instance().launch("LumenWebPresence",
@@ -10415,9 +10802,10 @@ if (method == "camera")
             return out;
         }
 
-        if (!sProfilesPending.count(who))
+        if (!sProfilesPending.count(who) || pendingTooLong(who))   // <Lumen> ask again after 30 s
         {
             sProfilesPending.insert(who);
+            sPendingSince[who] = LLTimer::getTotalSeconds();
             ProfileWatcher* w = new ProfileWatcher(who);
             LLAvatarPropertiesProcessor::getInstance()->addObserver(who, w);
             LLAvatarPropertiesProcessor::getInstance()->sendAvatarPropertiesRequest(who);
@@ -10597,7 +10985,32 @@ if (method == "camera")
         if (on)
         {
             const std::string provider = gSavedSettings.getString("LumenAIProvider");
-            if (!LumenAIKeys::has(provider))
+            // <Lumen> A local model needs an address, not a key -- the same
+            // rule the Assistant window applies. `has()` asks whether a key is
+            // saved, which for `local` is never, so this refused with "no
+            // Local key saved" about a provider that takes none.
+            if (provider == LumenAIKeys::LOCAL)
+            {
+                if (gSavedSettings.getString("LumenAILocalURL").empty())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "The local model has no address set (Preferences > AI), so "
+                                   "the viewer cannot answer for them. NOT armed.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+            else if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Answering while away needs a provider the viewer can call by "
+                               "itself -- Anthropic, OpenAI or a local model. " +
+                               LumenAIKeys::displayName(provider) + " is a separate program "
+                               "driven from the Assistant window and cannot answer unattended. "
+                               "Tell them to pick one of the others in Preferences > AI for "
+                               "this. NOT armed.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            else if (!LumenAIKeys::has(provider))
             {
                 LLSD e; e["code"] = -32000;
                 e["message"] =
@@ -10959,17 +11372,37 @@ if (method == "camera")
         {
             const std::string want = lowered(params["script"].asString());
             const char* const KINDS[] = { "preview_script", "preview_scriptedit" };
+            // <Lumen> Count the matches. This kept whichever window enumerated
+            // LAST, so with "Script: door" and "Script: door v2" both open,
+            // script="door" overwrote one of them with no warning -- the very
+            // coin toss the parameter was added to remove (Decisions 90).
+            LLSD matched = LLSD::emptyArray();
+            LLFloater* exact = NULL;
             for (const char* kind : KINDS)
             {
                 for (LLFloater* f : LLFloaterReg::getFloaterList(kind))
                 {
-                    if (f && f->getVisible()
-                        && lowered(f->getTitle()).find(want) != std::string::npos)
+                    if (!f || !f->getVisible()) continue;
+                    const std::string title = lowered(f->getTitle());
+                    if (title == want) exact = f;                       // settles it on its own
+                    if (title.find(want) != std::string::npos)
                     {
                         target = f;
+                        matched.append(f->getTitle());
                     }
                 }
             }
+            if (exact) { target = exact; matched = LLSD::emptyArray(); matched.append(exact->getTitle()); }
+            if (matched.size() > 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one open script window matches \""
+                             + params["script"].asString()
+                             + "\". Say which, using its full title. Nothing changed.";
+                e["data"] = matched;
+                LLSD w; w["__error"] = e; return w;
+            }
+            // </Lumen>
             if (!target)
             {
                 LLSD e; e["code"] = -32000;
@@ -11239,6 +11672,22 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> A retried tools/call carries the same request_id, and this
+        // used to record it without ever looking it up -- so a model retrying
+        // after a timeout made two prims. Same rule as every other write.
+        {
+            LLSD replay;
+            if (recallAction(params.has("request_id") ? params["request_id"].asString() : "",
+                             replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id already rezzed something; nothing was made "
+                                 "a second time.";
+                return replay;
+            }
+        }
+        // </Lumen>
+
         static const struct { const char* name; LLPCode code; } kShapes[] = {
             { "box",      LL_PCODE_CUBE     }, { "cube",   LL_PCODE_CUBE     },
             { "sphere",   LL_PCODE_SPHERE   }, { "ball",   LL_PCODE_SPHERE   },
@@ -11308,6 +11757,15 @@ if (method == "camera")
                 LLSD e; e["code"] = -32602; e["message"] = "That item is gone from inventory.";
                 LLSD w; w["__error"] = e; return w;
             }
+            // <Lumen> Rez the original, never the link: a link's permissions
+            // are its own (llviewerinventory.cpp:2507), so the no-copy check
+            // below would pass on a no-copy original, and RezObject would
+            // carry the link.
+            if (LLViewerInventoryItem* real = item->getLinkedItem())
+            {
+                item = real;
+            }
+            // </Lumen>
             if (item->getType() != LLAssetType::AT_OBJECT)
             {
                 LLSD e; e["code"] = -32602;
@@ -11376,7 +11834,7 @@ if (method == "camera")
                 parcel = pcl->getName();
             }
             LLSD result;
-            result["rezzed"]  = item->getName();
+            result["rezzed"]  = safeUtf8(item->getName());
             result["from"]    = "inventory";
             result["no_copy"] = !copyable;
             result["parcel"]  = parcel;
@@ -11611,6 +12069,16 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        {
+            LLSD replay;   // <Lumen> same request_id, same answer, nothing reselected
+            if (recallAction(params.has("request_id") ? params["request_id"].asString() : "",
+                             replay))
+            {
+                replay["replayed"] = true;
+                return replay;
+            }
+        }
+
         const LLUUID id = params["object_id"].asUUID();
         LLViewerObject* obj = gObjectList.findObject(id);
         if (!obj)
@@ -11690,6 +12158,18 @@ if (method == "camera")
             LLSD e; e["code"] = -32000;
             e["message"] = "Not logged in yet.";
             LLSD w; w["__error"] = e; return w;
+        }
+
+        {
+            LLSD replay;   // <Lumen> a retried delete or link must not run twice
+            if (recallAction(params.has("request_id") ? params["request_id"].asString() : "",
+                             replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id was already carried out; nothing was done "
+                                 "a second time.";
+                return replay;
+            }
         }
 
         // <Lumen> "delete that" should be one call, not a select and then a
@@ -11798,6 +12278,17 @@ if (method == "camera")
             // </Lumen>
 
             const S32 have = result["selected"].asInteger();
+            // <Lumen> `unlink` with nothing selected, nothing named and a prim
+            // rezzed earlier still in view used to reach sendDelink() on an
+            // empty selection and report "asked the simulator to take it apart".
+            if (!linking && have < 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nothing is selected and no `object_ids` were given, so there is "
+                               "nothing to unlink. Pass the object's id from look_nearby.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            // </Lumen>
             if (linking && have < 2)
             {
                 LLSD e; e["code"] = -32000;
@@ -11832,7 +12323,78 @@ if (method == "camera")
                                "can be recovered.";
                 LLSD w; w["__error"] = e; return w;
             }
-            LLSelectMgr::getInstance()->selectDelete();
+            // <Lumen> selectDelete() is the menu's path, and the menu has a
+            // dialogue in it: for anything locked, no-copy or not the user's
+            // own it puts ConfirmObjectDelete* on the SCREEN and returns, and
+            // under RLV it does nothing at all (llselectmgr.cpp:4307-4412).
+            // This used to report "sent to the Trash" in every one of those
+            // cases. So the same tests are made here first, the confirmation
+            // is asked for in the conversation (Decisions 40) with the
+            // object's name as `confirm`, and the derez goes through the same
+            // confirmDelete() the dialogue's own Yes button calls.
+            if (rlv_handler_t::isEnabled() && !rlvCanDeleteOrReturn())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing forbids deleting "
+                               "objects. Nothing was changed -- say it is their attachment, "
+                               "not the land.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            bool any = false, locked = false, no_copy = false, not_mine = false;
+            std::string first_name;
+            for (LLObjectSelection::iterator it = sel->begin(); it != sel->end(); ++it)
+            {
+                LLViewerObject* o = (*it)->getObject();
+                if (!o || o->isAttachment()) continue;
+                any = true;
+                if (!o->permMove())     locked   = true;
+                if (!o->permCopy())     no_copy  = true;
+                if (!o->permYouOwner()) not_mine = true;
+                if (first_name.empty() && !(*it)->mName.empty()) first_name = (*it)->mName;
+            }
+            if (!any)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The selection holds nothing that can be deleted from here "
+                               "(attachments are detached, not deleted).";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (not_mine)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That object is not the user's own. Deleting somebody else's "
+                               "object means RETURNING it to them, which this tool does not "
+                               "do. Say so rather than trying another way.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (locked || no_copy)
+            {
+                const std::string confirm = params.has("confirm")
+                                          ? params["confirm"].asString() : std::string();
+                if (first_name.empty() || lowered(confirm) != lowered(first_name))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = std::string(no_copy
+                        ? "That object is no-copy: sending it to the Trash is the only copy "
+                          "going there, and if the Trash is emptied it is gone for good. "
+                        : "That object is locked, which the user did to protect it. ")
+                        + "Do not do this on your own. Tell them, and if they say yes call "
+                          "again with `confirm` set to the object's exact name"
+                        + (first_name.empty() ? " (call look_nearby first to learn it)."
+                                              : ": \"" + safeUtf8(first_name) + "\".");
+                    LLSD d; d["needs_confirmation"] = true;
+                    if (!first_name.empty()) d["object"] = safeUtf8(first_name);
+                    d["reason"] = no_copy ? "no-copy" : "locked";
+                    e["data"] = d;
+                    LLSD w; w["__error"] = e; return w;
+                }
+                result["confirmed"] = true;
+            }
+            // The same call the dialogue's Yes makes, minus the dialogue.
+            LLNotification::Params del("ConfirmObjectDeleteLock");
+            del.functor.function(boost::bind(&LLSelectMgr::confirmDelete, _1, _2, sel));
+            LLNotifications::instance().forceResponse(del, 0);
+            // </Lumen>
             result["note"] = "Sent the selection to the Trash. It is recoverable from there; "
                              "nothing was purged.";
         }

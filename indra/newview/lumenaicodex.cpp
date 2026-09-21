@@ -31,6 +31,7 @@
 #include "lumenaicodex.h"
 
 #include "llfile.h"
+#include "lltimer.h"      // <Lumen> deadlines on the handshake and on send
 
 #include "llbase64.h"
 #include "llsdjson.h"
@@ -42,6 +43,7 @@
 // with a confusing error: Codex is a macOS and Linux option in Lumen today.
 #else
 #include <sys/socket.h>
+#include <sys/select.h>   // <Lumen> bounded waits on the handshake and on send
 #include <sys/un.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -147,12 +149,16 @@ bool LumenAICodex::connect(std::string& why)
         return false;
     }
 
-    if (!handshake(why)) { close(); return false; }
-
-    // Only AFTER the handshake, which is a blocking exchange of a few hundred
-    // bytes. Doing it non-blocking would mean a state machine for four lines
-    // of HTTP.
+    // <Lumen> Non-blocking BEFORE the handshake, not after. The handshake used
+    // to run on a blocking socket, so a daemon that accepted the connection
+    // and then said nothing -- busy, wedged, mid-restart -- held the frame
+    // loop in recv() for as long as it liked; the "200 tries" cap in
+    // handshake() never bounded anything, because the read never returned to
+    // count them. With the socket non-blocking the loop there really does
+    // poll, and gives up after a few seconds.
     fcntl(mFd, F_SETFL, fcntl(mFd, F_GETFL, 0) | O_NONBLOCK);
+    if (!handshake(why)) { close(); return false; }
+    // </Lumen>
     mUpgraded = true;
     return true;
 #endif
@@ -185,8 +191,25 @@ bool LumenAICodex::handshake(std::string& why)
 
     std::string head;
     char buf[1024];
-    for (S32 tries = 0; tries < 200 && head.find("\r\n\r\n") == std::string::npos; ++tries)
+    // <Lumen> Wait for readability with a short timeout, up to a deadline,
+    // rather than spinning: the socket is non-blocking now (see connect()).
+    const F64 deadline = LLTimer::getTotalSeconds() + 5.0;
+    while (head.find("\r\n\r\n") == std::string::npos)
     {
+        if (LLTimer::getTotalSeconds() > deadline)
+        {
+            why = "Codex accepted the connection but did not answer the handshake within "
+                  "five seconds. Is its background service healthy?  codex app-server daemon start";
+            return false;
+        }
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(mFd, &readable);
+        struct timeval wait = { 0, 50 * 1000 };   // 50 ms
+        const int ready = ::select(mFd + 1, &readable, NULL, NULL, &wait);
+        if (ready < 0 && errno != EINTR) { why = "Codex refused the connection."; return false; }
+        if (ready <= 0) continue;
+
         const ssize_t n = ::recv(mFd, buf, sizeof(buf), 0);
         if (n > 0) head.append(buf, n);
         else if (n == 0) { why = "Codex closed the connection during the handshake."; return false; }
@@ -196,6 +219,7 @@ bool LumenAICodex::handshake(std::string& why)
             return false;
         }
     }
+    // </Lumen>
     if (head.find(" 101 ") == std::string::npos)
     {
         why = "Codex did not accept the connection: " + head.substr(0, head.find("\r\n"));
@@ -239,11 +263,26 @@ bool LumenAICodex::send(const LLSD& message)
     for (size_t i = 0; i < n; ++i) frame.push_back((char)(text[i] ^ mask[i % 4]));
 
     size_t sent = 0;
+    const F64 deadline = LLTimer::getTotalSeconds() + 5.0;   // <Lumen> bounded
     while (sent < frame.size())
     {
         const ssize_t w = ::send(mFd, frame.data() + sent, frame.size() - sent, 0);
         if (w > 0) { sent += w; continue; }
-        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+        {
+            // <Lumen> The socket is non-blocking, so a full kernel buffer used
+            // to make this a busy loop at 100% CPU on the frame loop until the
+            // daemon drained it. Wait for writability instead, and give up
+            // after a few seconds rather than never.
+            if (LLTimer::getTotalSeconds() > deadline) return false;
+            fd_set writable;
+            FD_ZERO(&writable);
+            FD_SET(mFd, &writable);
+            struct timeval wait = { 0, 50 * 1000 };
+            ::select(mFd + 1, NULL, &writable, NULL, &wait);
+            continue;
+            // </Lumen>
+        }
         return false;
     }
     return true;

@@ -82,11 +82,18 @@ private:
                                     const std::string& item_name = std::string(),
                                     bool is_folder = false);
 
+// <Lumen> Made public. The assistant endpoint asks its own confirmation for a
+// no-copy item, in the conversation, and then needs the give itself without
+// doGiveInventoryItem() putting the viewer's CannotCopyWarning dialogue on
+// screen a second time and returning false.
+public:
 // [RLVa:KB] - @share
     static bool commitGiveInventoryItem(const LLUUID& to_agent,
                                     const LLInventoryItem* item,
                                     const LLUUID &im_session_id = LLUUID::null);
 // [/RLVa:KB]
+private:
+// </Lumen>
 //  static void commitGiveInventoryItem(const LLUUID& to_agent,
 //                                  const LLInventoryItem* item,
 //                                  const LLUUID &im_session_id = LLUUID::null);

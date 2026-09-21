@@ -43,7 +43,10 @@ namespace
             if (c >= '0' && c <= '9') { cur += c; continue; }
             if (c == '.')
             {
-                if (cur.empty()) return {};
+                // <Lumen> stoi throws on a run of digits past INT_MAX, and
+                // this runs inside a coroutine. A tag that long is not a
+                // version we understand; say so rather than throw.
+                if (cur.empty() || cur.size() > 9) return {};
                 out.push_back(std::stoi(cur));
                 cur.clear();
                 continue;
@@ -52,6 +55,7 @@ namespace
             // other character means we do not understand this tag at all.
             break;
         }
+        if (cur.size() > 9) return {};   // <Lumen>
         if (!cur.empty()) out.push_back(std::stoi(cur));
         return out;
     }

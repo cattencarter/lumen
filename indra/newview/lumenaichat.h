@@ -287,6 +287,7 @@ private:
     void beginTurn(const std::string& text);
     void startCatchUp();
     void renderCatchUp(const LLSD& result, const LLSD& summaries);  // <Lumen>
+    void flushCatchUp();   // <Lumen> end of turn: draw what was never worded
     void noteCatchUp(const std::string& tool, const LLSD& args,
                      const LLSD& structured, bool is_error);   // <Lumen>
     LLSD mLastCatchUp;          //< what catch_up returned this turn

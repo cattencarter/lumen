@@ -976,7 +976,14 @@ private:
     static void logNoOp(LLSelectNode* node, void *user_data);
     static void logAttachmentRequest(LLSelectNode* node, void *user_data);
     static void logDetachRequest(LLSelectNode* node, void *user_data);
+// <Lumen> Made public. The assistant endpoint makes selectDelete()'s own
+// permission tests itself, asks its confirmation in the conversation, and then
+// needs the derez that the dialogue's Yes button would have run -- without the
+// dialogue.
+public:
     static bool confirmDelete(const LLSD& notification, const LLSD& response, LLObjectSelectionHandle handle);
+private:
+// </Lumen>
 
     // Get the first ID that matches test and whether or not all ids are identical in selected objects.
     void getFirst(LLSelectGetFirstTest* test);

@@ -84,6 +84,7 @@ private:
     bool         mEverPlayed;       // this URL played at least once
     S32          mReconnectsLeft;
     LLFrameTimer mRetryTimer;
+    LLFrameTimer mPlayingFor;       // since this URL was last handed to the plugin
     // </Lumen>
 
     // <FS:ND> stream metadata from plugin

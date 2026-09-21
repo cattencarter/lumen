@@ -32,9 +32,22 @@ namespace
      * feature. LLProcess runs an executable, not a command line, so without a
      * shell the `| sh` would arrive as two more arguments to curl.
      */
-    const char* command(const std::string& provider, int step)
+    std::string command(const std::string& provider, int step)
     {
         const bool codex = (provider == LumenAIKeys::CODEX);
+        // <Lumen> Step 1 for Claude Code ran a bare `claude`, which the shell
+        // resolves on PATH -- and a viewer launched from the Dock has launchd's
+        // PATH, where none of the five places the installer puts it are
+        // (lumenaiclaude.cpp, cliPath). The shell answered "command not found"
+        // at once, the step read that as finished, and the browser sign-in it
+        // promised never opened. Use the path the provider itself found.
+        if (!codex && step == 1)
+        {
+            const std::string cli = LumenAIClaude::cliPath();
+            return cli.empty() ? std::string("claude auth login")
+                               : "\"" + cli + "\" auth login";
+        }
+        // </Lumen>
         switch (step)
         {
             case 0:

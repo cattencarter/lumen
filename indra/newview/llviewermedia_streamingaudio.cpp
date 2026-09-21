@@ -281,6 +281,7 @@ void LLStreamingAudio_MediaPlugins::playURL(const std::string& url, bool fresh_p
     }
 
     mActiveURL = url;
+    mPlayingFor.reset();
     mMediaPlugin->loadURI(url);
     mMediaPlugin->start();
     LL_INFOS() << "Playing stream..." << LL_ENDL;
@@ -323,7 +324,13 @@ void LLStreamingAudio_MediaPlugins::checkStreamHealth()
     {
         mEverPlayed = true;
         mFailureReason.clear();
-        mReconnectsLeft = LUMEN_RECONNECT_ATTEMPTS;
+        // Only a stream that has held for a while earns its reconnects back.
+        // Resetting on every PLAYING made a station that plays for a second
+        // and drops reconnect every three seconds for ever.
+        if (mPlayingFor.getElapsedTimeF32() > 60.f)
+        {
+            mReconnectsLeft = LUMEN_RECONNECT_ATTEMPTS;
+        }
         return;
     }
 

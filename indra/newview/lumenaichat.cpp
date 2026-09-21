@@ -51,6 +51,7 @@
 #include "llavatarnamecache.h"
 #include "llmutelist.h"
 #include "llavataractions.h"
+#include "rlvactions.h"        // <Lumen> @sendim, before the auto-responder answers
 #include "llimview.h"
 #include "bufferarray.h"
 #include "bufferstream.h"
@@ -1517,16 +1518,29 @@ void LumenAIChatFloater::sayAssistant(const std::string& text)
         mCatchUpDrawn = false;
         return;
     }
-    if (mCatchUpPending)
-    {
-        renderCatchUp(mLastCatchUp, LLSD());   // it never called show_waiting
-        mCatchUpPending = false;
-    }
+    // (A catch_up still pending is NOT drawn here any more. Text is said
+    // before the tools in the same reply run, so drawing the cards on the
+    // first text block and again when show_waiting arrived a moment later put
+    // them on screen twice. The fallback -- cards from the raw data when the
+    // model never calls show_waiting -- moved to the end of the turn, in
+    // flushCatchUp().)
     // </Lumen>
     mTranscript->appendText("\n", false);
     mTranscript->appendText("Lumen: ", false, nameStyle());
     mTranscript->appendText(linkifyKnownNames(body), false, bodyStyle());
 }
+
+// <Lumen> The cards, from the data as sent, if the model never worded them.
+void LumenAIChatFloater::flushCatchUp()
+{
+    if (mCatchUpPending)
+    {
+        renderCatchUp(mLastCatchUp, LLSD());
+        mCatchUpPending = false;
+    }
+    mCatchUpDrawn = false;
+}
+// </Lumen>
 
 void LumenAIChatFloater::setActivity(const std::string& what)
 {
@@ -2083,10 +2097,34 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         out["id"] = msg["id"];
         if (msg["method"].asString() == "mcpServer/elicitation/request")
         {
+            // <Lumen> Yes for OUR server only. Codex asks this before calling
+            // a tool on ANY MCP server in the user's own configuration, not
+            // only the `second_life` one registered for this thread -- and a
+            // blanket yes approved tools none of the viewer's safety checks
+            // ever see. The server's name is read from the request where it is
+            // given; a request that names none is treated as ours, which is
+            // the behaviour this had before.
+            std::string server;
+            for (const char* key : { "serverName", "server_name", "server", "name" })
+            {
+                if (msg["params"].has(key) && msg["params"][key].isString())
+                {
+                    server = msg["params"][key].asString();
+                    break;
+                }
+            }
+            const bool ours = server.empty() || server == "second_life";
             LLSD r;
-            r["action"] = "accept";
+            r["action"] = ours ? "accept" : "decline";
             r["content"] = LLSD::emptyMap();
             out["result"] = r;
+            if (!ours)
+            {
+                LL_INFOS("AICtl") << "codex asked to use MCP server '" << server
+                                  << "'; declined -- only second_life is approved from here"
+                                  << LL_ENDL;
+            }
+            // </Lumen>
         }
         else
         {
@@ -2679,6 +2717,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             sayNote("The " + LumenAIKeys::displayName(provider) + " request failed -- " + error);
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
+            flushCatchUp();
             setBusy(false);
             sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
             return;
@@ -2835,6 +2874,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             {
                 sayAssistant(assistant_text);
             }
+            flushCatchUp();
             setBusy(false);
             sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
             return;
@@ -2863,6 +2903,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                    "up a bill.";
     sayNote("I stopped after " + llformat("%d", max_turns)
             + " rounds of tool calls without finishing. " + why);
+    flushCatchUp();
     setBusy(false);
     sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
 }
@@ -3279,6 +3320,16 @@ void LumenAIAutoResponder::checkArrivals()
 {
     if (mOnly.empty()) return;   // never greet the whole world
 
+    // <Lumen> The same time limit the replies obey. Only shouldAnswer() read
+    // it, so an arrival greeting armed for "an hour" went on being sent for
+    // as long as the viewer stayed logged in.
+    const S32 minutes = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
+    if (minutes > 0 && (LLTimer::getTotalSeconds() - mArmedAt) > (F64)minutes * 60.0)
+    {
+        return;
+    }
+    // </Lumen>
+
     uuid_vec_t here;
     LLWorld::getInstance()->getAvatars(&here, NULL, gAgent.getPositionGlobal(),
                                        ARRIVAL_RANGE);
@@ -3541,10 +3592,25 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     const std::string key      = LumenAIKeys::get(provider);
-    if (key.empty())
+    // <Lumen> A local model has no key and needs none -- the same rule the
+    // Assistant window applies. Returning on an empty key silenced it here.
+    if (key.empty() && provider != LumenAIKeys::LOCAL)
     {
         return;                                  // nothing to answer with
     }
+    if (provider == LumenAIKeys::LOCAL && gSavedSettings.getString("LumenAILocalURL").empty())
+    {
+        return;
+    }
+    // The IM window checks this before it sends; LLIMModel::sendMessage does
+    // not, so an @sendim restriction was walked past whenever this answered.
+    if (!speak_aloud && RlvActions::isRlvEnabled() && !RlvActions::canSendIM(from_id))
+    {
+        LL_INFOS("AICtl") << "auto-respond: RLV forbids IMs to " << from_id << "; staying quiet"
+                          << LL_ENDL;
+        return;
+    }
+    // </Lumen>
 
     // Read the conversation SILENTLY. getMessages() would clear the unread
     // count, so the user would come back to a conversation that looks as
@@ -3639,8 +3705,9 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     if (!mSay.empty() && !mToldFirst.count(from_id))
     {
         mToldFirst.insert(from_id);
-        mRepliesTo[from_id]++;
-        ++mRepliesTotal;
+        // (The counters were already moved above; counting this reply a
+        // second time here used up two of the per-person allowance for one
+        // sentence.)
         if (speak_aloud)
         {
             FSNearbyChat::instance().sendChat(utf8str_to_wstring(mSay), CHAT_TYPE_NORMAL);
@@ -3650,6 +3717,12 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             LLIMModel::sendMessage(mSay, session_id, from_id, IM_NOTHING_SPECIAL);
         }
         LL_INFOS("LumenAIChat") << "Answered with the user's own words." << LL_ENDL;
+        // <Lumen> Nothing is in flight -- no coroutine was started -- so say
+        // so. This returned with the marker still set, and shouldAnswer() then
+        // refused every later line from that person as "already answering
+        // them" until the next arming: the exact words once, then silence.
+        mInFlight.erase(from_id);
+        // </Lumen>
         return;
     }
     // </Lumen>
@@ -3663,6 +3736,16 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     LLCoros::instance().launch("LumenAIAutoRespond",
         [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()
     {
+        // <Lumen> Whatever happens below, this person is answerable again
+        // afterwards. The erase used to sit at the very end, so a throw out
+        // of postJson left the marker set for the rest of the session.
+        struct ClearInFlight
+        {
+            LLUUID who;
+            ~ClearInFlight() { LumenAIAutoResponder::instance().mInFlight.erase(who); }
+        } clear_in_flight{ from_id };
+        // </Lumen>
+
         LLSD body;
         LLSD headers;
         body["model"] = model;
@@ -3677,7 +3760,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
 
             addReasoningEffort(body, model);
 
-            headers["Authorization"] = "Bearer " + key;
+            if (!key.empty()) headers["Authorization"] = "Bearer " + key;
         }
         else
         {
@@ -3766,7 +3849,6 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             LL_WARNS("AICtl") << "auto-response to " << from << " produced nothing"
                               << (error.empty() ? "" : (": " + error)) << LL_ENDL;
         }
-
-        LumenAIAutoResponder::instance().mInFlight.erase(from_id);
+        // mInFlight is cleared by clear_in_flight above, on every path out.
     });
 }

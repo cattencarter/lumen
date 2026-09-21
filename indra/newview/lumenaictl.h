@@ -354,6 +354,11 @@ private:
 
     bool        mRunning;
     U16         mPort;
+    // <Lumen> tick() switched the endpoint off after an exception. The pump it
+    // was servicing still holds the old socket, so the next start() must drop
+    // it rather than add a second server to it.
+    bool        mPumpStale = false;
+    // </Lumen>
 
     bool        mSubscribed;
     Stream      mMessages;   //< IM, group chat and ad-hoc, from one signal

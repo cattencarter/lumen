@@ -38,6 +38,8 @@ user's behalf.
 | `indra/newview/llviewermessage.cpp` | suppress auto-opening a notecard while it is still being written |
 | `indra/newview/llselectmgr.cpp` | record object names as the server reports them, for "what is nearby" |
 | `indra/newview/llpreviewnotecard.h` | made one method public so a preview can be refreshed |
+| `indra/newview/llgiveinventory.h` | made one method public so a give confirmed in conversation needs no second dialogue |
+| `indra/newview/llselectmgr.h` | made one method public so a delete confirmed in conversation needs no second dialogue |
 | `indra/newview/viewer_manifest.py` | package as `Lumen.app`; ship images alongside local HTML |
 | `indra/newview/fspanellogin.cpp` | show a local start page instead of Firestorm's |
 | `indra/newview/app_settings/settings.xml` | three settings: enable, port, optional token |
