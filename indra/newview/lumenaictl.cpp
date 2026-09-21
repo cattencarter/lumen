@@ -10358,9 +10358,8 @@ if (method == "camera")
             "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n"
             "Give show_waiting `items`: one entry per id in `waiting`, as {\"id\": that id, "
             "\"summary\": one or two short sentences saying what it is ABOUT}. Summarise, never quote -- 'a dance night on Friday, doors at eight, feather theme' rather than the notice's own words, and a long notice becomes one line. Keep every id and drop nothing.\n"
-            "And `headline`: ONE short line on whether anything needs doing -- who is waiting "
-            "on an answer, what expires. 'Nothing urgent. You may want to say hi back.' is the "
-            "right length.\n"
+            "And `headline`: ONE short line on what APPEARS to want attention -- who seems to be waiting on an answer, what looks time-critical.\n"
+            "**Say how it seems, not what it is.** 'Nothing else seems urgent' rather than 'nothing is urgent'; 'Maryam looks like she is waiting on an answer' rather than 'you need to reply to Maryam'. What matters is the user's to decide and you are reporting an impression -- the notice you read as routine may be the one they were waiting for, and you cannot know that.\n"
             "If nothing came in at all, call it with no items and a headline saying so.";
         return result;
     }

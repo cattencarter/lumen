@@ -376,7 +376,7 @@
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="126" width="480" height="26" word_wrap="true">
+       left="20" top="208" width="480" height="26" word_wrap="true">
           Ask the assistant: "answer my IMs until I get back". Tell it when you return and it stops.
       </text>
 
