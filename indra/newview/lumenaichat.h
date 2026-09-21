@@ -257,6 +257,7 @@ private:
     void onSend();
     void beginTurn(const std::string& text);
     void startCatchUp();
+    void renderCatchUp(const LLSD& result);   // <Lumen> draw it, do not narrate it
     static LLUUID sCaughtUpFor;   //< which login has already been summarised
     void onClear();
 

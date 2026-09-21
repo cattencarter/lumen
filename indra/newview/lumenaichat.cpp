@@ -68,6 +68,9 @@
 #include "llsdjson.h"
 #include "llsdutil.h"
 #include "lltextbox.h"
+#include "llpanel.h"            // <Lumen> catch-up cards
+#include "llavatariconctrl.h"    // <Lumen>
+#include "llgroupiconctrl.h"     // <Lumen>
 #include "lltexteditor.h"
 #include "lluicolortable.h"
 #include "llviewercontrol.h"
@@ -323,7 +326,8 @@ namespace
      * the same call carries the same id and is replayed rather than repeated.
      */
     std::string callTool(const std::string& name, const LLSD& args,
-                         const std::string& request_id, bool& is_error)
+                         const std::string& request_id, bool& is_error,
+                         LLSD* structured = nullptr)
     {
         is_error = false;
 
@@ -375,8 +379,142 @@ namespace
         {
             text = "(the tool returned nothing)";
         }
+
+        // <Lumen> The model is handed this as text, because that is what the
+        // protocol carries.  The viewer wants the structure back for anything
+        // it means to DRAW rather than narrate -- see renderCatchUp().  The
+        // endpoint put it there with llsdToJsonString, so this is a parse and
+        // not a guess; a failed parse simply leaves the caller with nothing.
+        if (structured && !is_error)
+        {
+            bool parsed_ok = false;
+            const LLSD back = jsonParse(text, parsed_ok);
+            if (parsed_ok) { *structured = back; }
+        }
+        // </Lumen>
         return text;
     }
+
+    // <Lumen>
+    /**
+     * One card in the catch-up summary: a picture, a heading, and the words.
+     *
+     * Built here rather than described to the model.  Everything on it is a
+     * fact the tool returned -- who wrote, which group, the text exactly as
+     * sent -- so none of it can be paraphrased or invented, and the layout
+     * does not drift between turns.  The model writes the one closing line
+     * underneath and nothing else.
+     *
+     * The viewer has done this for twenty years in its own chat history
+     * (`llchathistory.cpp` embeds a panel per message the same way), so this
+     * copies that rather than inventing a second mechanism.
+     */
+    LLPanel* buildCatchUpCard(S32 width,
+                              const LLUUID& agent_id,
+                              const LLUUID& group_id,
+                              const std::string& heading,
+                              const std::string& subject,
+                              const std::string& body)
+    {
+        const S32 PAD = 8, ICON = 36, GAP = 10;
+        const S32 text_left  = PAD + ICON + GAP;
+        const S32 text_width = llmax(64, width - text_left - PAD);
+
+        LLPanel::Params cp;
+        cp.name("catchup_card");
+        LLPanel* card = LLUICtrlFactory::create<LLPanel>(cp);
+        card->setBackgroundVisible(true);
+        card->setBackgroundOpaque(true);
+        card->setBackgroundColor(
+            LLUIColorTable::instance().getColor("PanelNotificationBackground"));
+
+        S32 y = PAD;   // measured from the top; flipped to view coords at the end
+
+        LLTextBox::Params hp;
+        hp.name("heading");
+        hp.font(LLFontGL::getFontSansSerifSmallBold());
+        hp.text_color(LLUIColorTable::instance().getColor("EmphasisColor"));
+        hp.wrap(true);
+        LLTextBox* head = LLUICtrlFactory::create<LLTextBox>(hp);
+        head->setRect(LLRect(text_left, 0, text_left + text_width, 0));
+        head->setValue(heading);
+        head->reshapeToFitText();
+        const S32 head_h = llmax(14, head->getTextPixelHeight());
+        y += head_h + 4;
+
+        LLTextBox* subj = NULL;
+        S32 subj_h = 0;
+        if (!subject.empty())
+        {
+            LLTextBox::Params sp;
+            sp.name("subject");
+            sp.font(LLFontGL::getFontSansSerifBold());
+            sp.wrap(true);
+            subj = LLUICtrlFactory::create<LLTextBox>(sp);
+            subj->setRect(LLRect(text_left, 0, text_left + text_width, 0));
+            subj->setValue(subject);
+            subj->reshapeToFitText();
+            subj_h = llmax(14, subj->getTextPixelHeight());
+            y += subj_h + 4;
+        }
+
+        LLTextBox::Params bp;
+        bp.name("body");
+        bp.font(LLFontGL::getFontSansSerif());
+        bp.wrap(true);
+        LLTextBox* text = LLUICtrlFactory::create<LLTextBox>(bp);
+        text->setRect(LLRect(text_left, 0, text_left + text_width, 0));
+        text->setValue(body);
+        text->reshapeToFitText();
+        const S32 body_h = llmax(14, text->getTextPixelHeight());
+        y += body_h + PAD;
+
+        const S32 height = llmax(PAD + ICON + PAD, y);
+        card->setRect(LLRect(0, height, width, 0));
+
+        // Everything above was measured downward; the viewer counts upward
+        // from the bottom of the panel, so each row is placed by subtraction.
+        S32 top = height - PAD;
+
+        head->setRect(LLRect(text_left, top, text_left + text_width, top - head_h));
+        card->addChild(head);
+        top -= head_h + 4;
+
+        if (subj)
+        {
+            subj->setRect(LLRect(text_left, top, text_left + text_width, top - subj_h));
+            card->addChild(subj);
+            top -= subj_h + 4;
+        }
+
+        text->setRect(LLRect(text_left, top, text_left + text_width, top - body_h));
+        card->addChild(text);
+
+        // A group insignia when it is a group's notice, the writer's face when
+        // it is a person's. Both controls fetch the picture themselves.
+        const LLRect icon_rect(PAD, height - PAD, PAD + ICON, height - PAD - ICON);
+        if (group_id.notNull())
+        {
+            LLGroupIconCtrl::Params ip;
+            ip.name("group_icon");
+            LLGroupIconCtrl* icon = LLUICtrlFactory::create<LLGroupIconCtrl>(ip);
+            icon->setRect(icon_rect);
+            icon->setValue(group_id);
+            card->addChild(icon);
+        }
+        else if (agent_id.notNull())
+        {
+            LLAvatarIconCtrl::Params ip;
+            ip.name("avatar_icon");
+            LLAvatarIconCtrl* icon = LLUICtrlFactory::create<LLAvatarIconCtrl>(ip);
+            icon->setRect(icon_rect);
+            icon->setValue(agent_id);
+            card->addChild(icon);
+        }
+
+        return card;
+    }
+    // </Lumen>
 
     /**
      * Flatten the Markdown a model reaches for by habit.
@@ -1570,6 +1708,69 @@ void LumenAIChatFloater::beginTurn(const std::string& text)
  * arrives as "there is no key saved" is worse than silence on the one
  * occasion nobody asked for anything.
  */
+// <Lumen>
+/**
+ * Draw what was waiting, from the tool's own data.
+ *
+ * The alternative was to ask the model for this layout, and this project has
+ * twice established that asking a model to emit an exact form does not work
+ * (`worn: true`, then `creator_link`): both only worked once the viewer did
+ * it. So the cards are built from the result and the model is left with the
+ * one line underneath -- which is the part a model is actually good at.
+ */
+void LumenAIChatFloater::renderCatchUp(const LLSD& result)
+{
+    if (!mTranscript) return;
+
+    const LLSD& msgs    = result["messages"];
+    const LLSD& notices = result["notices"];
+    if (!msgs.isArray() && !notices.isArray()) return;
+    if (msgs.size() == 0 && notices.size() == 0) return;
+
+    const S32 width = llmax(160, mTranscript->getRect().getWidth() - 28);
+
+    for (LLSD::array_const_iterator it = msgs.beginArray(); it != msgs.endArray(); ++it)
+    {
+        const LLSD& m = *it;
+        const std::string who = m.has("from_name") ? m["from_name"].asString()
+                                                   : m["from"].asString();
+        std::string heading = "IM";
+        if (!who.empty()) heading += "  \xc2\xb7  " + who;
+
+        LLPanel* card = buildCatchUpCard(width, m["from_id"].asUUID(), LLUUID::null,
+                                         heading, std::string(),
+                                         "\xe2\x80\x9c" + m["message"].asString() + "\xe2\x80\x9d");
+        LLInlineViewSegment::Params p;
+        p.view = card;
+        p.left_pad = 4;
+        p.right_pad = 4;
+        mTranscript->appendWidget(p, "\n", false);
+    }
+
+    for (LLSD::array_const_iterator it = notices.beginArray(); it != notices.endArray(); ++it)
+    {
+        const LLSD& n = *it;
+        const std::string group = n["group_name"].asString();
+        const std::string who   = n["from_name"].asString();
+
+        std::string heading = group.empty() ? "NOTICE" : "GROUP NOTICE";
+        if (!group.empty())     heading += "  \xc2\xb7  " + group;
+        else if (!who.empty())  heading += "  \xc2\xb7  " + who;
+
+        std::string body = n["text"].asString();
+        if (!body.empty()) body = "\xe2\x80\x9c" + body + "\xe2\x80\x9d";
+
+        LLPanel* card = buildCatchUpCard(width, n["from_id"].asUUID(), n["group_id"].asUUID(),
+                                         heading, n["subject"].asString(), body);
+        LLInlineViewSegment::Params p;
+        p.view = card;
+        p.left_pad = 4;
+        p.right_pad = 4;
+        mTranscript->appendWidget(p, "\n", false);
+    }
+}
+// </Lumen>
+
 void LumenAIChatFloater::startCatchUp()
 {
     if (mBusy) return;
@@ -2303,9 +2504,17 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     llcoro::suspend();
 
                     bool is_error = false;
+                    LLSD structured;   // <Lumen>
                     const std::string result = ok
-                        ? callTool(name, args, call_id, is_error)
+                        ? callTool(name, args, call_id, is_error, &structured)
                         : std::string("Could not read the arguments for this call.");
+                    // <Lumen> catch_up is drawn rather than described
+                    if (!is_error && name == "chat"
+                        && args["action"].asString() == "catch_up")
+                    {
+                        renderCatchUp(structured);
+                    }
+                    // </Lumen>
 
                     LLSD tr;
                     tr["role"]         = "tool";
@@ -2349,8 +2558,16 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     llcoro::suspend();
 
                     bool is_error = false;
+                    LLSD structured;   // <Lumen>
                     const std::string result =
-                        callTool(name, (*it)["input"], call_id, is_error);
+                        callTool(name, (*it)["input"], call_id, is_error, &structured);
+                    // <Lumen> catch_up is drawn rather than described
+                    if (!is_error && name == "chat"
+                        && (*it)["input"]["action"].asString() == "catch_up")
+                    {
+                        renderCatchUp(structured);
+                    }
+                    // </Lumen>
 
                     LLSD tr;
                     tr["type"]        = "tool_result";

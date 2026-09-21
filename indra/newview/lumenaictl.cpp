@@ -10098,6 +10098,7 @@ if (method == "camera")
                     {
                         const std::string link = profileLink(p[key].asUUID());
                         if (!link.empty()) one["from_link"] = link;
+                        one["from_id"] = p[key].asUUID();   // the card resolves a face from this
                         break;
                     }
                 }
@@ -10105,6 +10106,7 @@ if (method == "camera")
                 {
                     const std::string link = groupLink(p["group_id"].asUUID());
                     if (!link.empty()) one["group_link"] = link;
+                    one["group_id"] = p["group_id"].asUUID();
                 }
                 // </Lumen>
                 notices.append(one);
@@ -10162,18 +10164,16 @@ if (method == "camera")
             "and `notices_from_earlier_sessions` counts undismissed ones from previous days "
             "that were left out. Do not mention that count unless the user asks why something "
             "is missing.\n"
-            "**Keep the two apart and label them.** Write the instant messages first under a "
-            "short heading, then the notices under their own -- never mixed into one "
-            "paragraph, even when there is only one of each.\n"
-            "**Summarise in a few lines. Do not recite the list.** Anything that needs an "
-            "answer, or that expires, goes first. Then one line per person or group saying "
-            "what it was about -- not one line per notice. Several notices about the same "
-            "event are one line. Events whose date has already passed are worth a single "
-            "closing line together, never one each. Skip the routine entirely: a payment that "
-            "went through, an object returned, anything finished.\n"
-            "Name the person or the group plainly, exactly as `from_name` and `group_name` "
-            "give it. The viewer makes those names clickable itself, so write the name and "
-            "never a URL.\n"
+            "**The viewer has ALREADY shown these to the user, as cards with the sender's "
+            "picture and the words exactly as sent. Do not list them again.** Repeating them "
+            "is the one thing that makes this worse rather than better.\n"
+            "Write ONE short closing line underneath, and nothing else: what it adds up to, "
+            "and what -- if anything -- is worth doing. 'Nothing urgent. You may want to say "
+            "hi back.' is the right length. If something needs an answer or expires, that "
+            "line says so and names who. If nothing came in at all, no card was drawn, so "
+            "then say 'nothing came in while you were away' and stop.\n"
+            "Name a person or a group exactly as `from_name` and `group_name` give it -- the "
+            "viewer makes those names clickable itself, so write the name and never a URL.\n"
             "If nothing came in, 'nothing came in while you were away' is the whole reply -- "
             "no list, no offer to check again.\n"
             "A notice is still waiting whether or not it has been read, so do not call it "
