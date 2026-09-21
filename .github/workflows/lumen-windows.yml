@@ -91,8 +91,21 @@ jobs:
       # Web exactly as a real download would, and then the dialog says what it
       # says.
       #
-      # `PACKAGE:BOOL=OFF` above means there is no installer, so this is the
-      # build tree: unzip it and run the executable in place.
+      # There is no installer (`PACKAGE:BOOL=OFF`), but there IS an assembled
+      # viewer: `copy_w_viewer_manifest` is an ALL target the binary depends
+      # on, so viewer_manifest runs on every Windows build whether or not
+      # anything is packaged. It writes the shipped tree beside the build
+      # output and renames firestorm-bin.exe to Lumen.exe on the way.
+      #
+      # So the artifact was never missing the viewer -- it was the viewer
+      # buried in the build. This drops what nobody receiving it can use:
+      # ~700MB of .pdb and .map, the import libraries, the intermediate
+      # batch files, and firestorm-bin.exe itself, which is the unrenamed
+      # original of the executable beside it. The exclusions mirror
+      # viewer_manifest.py's own `exclude_pattern`, so the two agree about
+      # what is build detritus.
+      #
+      # Unzip it and run Lumen.exe in place.
       - name: Keep the viewer
         if: success()
         uses: actions/upload-artifact@v4
@@ -100,7 +113,31 @@ jobs:
           name: lumen-windows-x64
           if-no-files-found: error
           retention-days: 7
-          path: lumen/build-vc*/newview/Release/
+          path: |
+            lumen/build-vc*/newview/Release/
+            !lumen/build-vc*/newview/Release/**/*.pdb
+            !lumen/build-vc*/newview/Release/**/*.map
+            !lumen/build-vc*/newview/Release/**/*.lib
+            !lumen/build-vc*/newview/Release/**/*.exp
+            !lumen/build-vc*/newview/Release/**/*.bat
+            !lumen/build-vc*/newview/Release/**/*.nsi
+            !lumen/build-vc*/newview/Release/firestorm-bin.*
+
+      # What the build actually produced, so a run says plainly whether there
+      # is something to hand over rather than leaving it to be inferred from
+      # a zip's size.
+      - name: Say what came out
+        if: success()
+        shell: bash
+        run: |
+          cd lumen/build-vc*/newview/Release
+          echo "### Windows build" >> "$GITHUB_STEP_SUMMARY"
+          for exe in *.exe; do
+            printf -- "- %s  (%s)\n" "$exe" "$(du -h "$exe" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "artifact, without debug symbols: $(du -sh --exclude='*.pdb' --exclude='*.map' \
+            --exclude='*.lib' --exclude='*.exp' . | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
 
       # The errors are the product of this workflow, so keep them even when --
       # especially when -- the build fails.
