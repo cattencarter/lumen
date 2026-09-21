@@ -171,7 +171,9 @@ private:
     // <Lumen> "tell him I'm away when he arrives" -- a different trigger from
     // "when he writes". Someone who turns up and says nothing never writes.
     bool             mOnArrival = false;
-    std::set<LLUUID> mSeen;        //< already here when armed, or already told
+    std::set<LLUUID> mSeen;        //< already near when armed, or already told
+    std::set<LLUUID> mWasOnline;   //< online when armed, so logging in is not arriving
+    std::set<LLUUID> mToldFirst;   //< has had the note verbatim
     LLFrameTimer     mArrivalPoll;
     bool             mArrivalWatch = false;
     void watchForArrivals();

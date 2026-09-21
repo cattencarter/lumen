@@ -10705,7 +10705,15 @@ if (method == "camera")
         }
 
         const bool local_chat = params.has("local_chat") && params["local_chat"].asBoolean();
-        const bool ims = params.has("ims") ? params["ims"].asBoolean() : !local_chat;
+        // <Lumen> Naming somebody narrows it to them, so there is no reason to
+        // guess a channel as well: "if Catten comes" means wherever he turns
+        // up. Asked twice for both and told to choose both, the model still
+        // armed IMs alone -- so the default does it instead of the wording.
+        const bool named = params.has("only") && params["only"].isArray()
+                        && params["only"].size() > 0;
+        const bool local_chat_eff = local_chat || named;
+        const bool ims = params.has("ims") ? params["ims"].asBoolean()
+                                           : (named || !local_chat_eff);
 
         std::vector<std::string> also_called;
         if (params.has("called"))
@@ -10771,7 +10779,7 @@ if (method == "camera")
             LLSD w; w["__error"] = err; return w;
         }
 
-        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat, also_called,
+        LumenAIAutoResponder::instance().arm(on, note, ims, local_chat_eff, also_called,
                                              only, on_arrival);
 
         LLSD result;
@@ -10789,12 +10797,17 @@ if (method == "camera")
                 gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
             result["answering_ims"] = ims;
             result["telling_them_on_arrival"] = on_arrival;
+            if (local_chat_eff)
+            {
+                result["local_chat_is_public"] =
+                    "Answering in local chat is read by everyone nearby. Say so.";
+            }
             if (!only.empty())
             {
                 result["only_these_people"] = (LLSD::Integer)only.size();
                 if (not_found.size()) result["names_not_found"] = not_found;
             }
-            result["answering_local_chat"] = local_chat;
+            result["answering_local_chat"] = local_chat_eff;
             result["note"] =
                 "Now answering one-to-one IMs for them. Say so plainly, including that it "
                 "will not agree to anything on their behalf and will stop on its own after a "

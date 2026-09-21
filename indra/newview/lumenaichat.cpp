@@ -3117,6 +3117,9 @@ LumenAIAutoResponder::LumenAIAutoResponder()
 {
 }
 
+// <Lumen> /// A little wider than chat range: it should fire as somebody walks up.
+static const F32 ARRIVAL_RANGE = 30.f;
+
 void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool local_chat,
                             const std::vector<std::string>& also_called,
                                const std::set<LLUUID>& only,
@@ -3129,15 +3132,26 @@ void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool 
     mSeen.clear();
     if (mOnArrival)
     {
+        // Near ME, not "somewhere in the region". getAvatars with no radius
+        // answers for every known region, so the author -- standing at the far
+        // end of the same sim -- counted as already here, and running the
+        // whole way to her was not an arrival. ARRIVAL_RANGE is a little wider
+        // than chat range, so it fires as somebody walks up rather than once
+        // they are already talking.
         uuid_vec_t here;
-        LLWorld::getInstance()->getAvatars(&here);
+        LLWorld::getInstance()->getAvatars(&here, NULL, gAgent.getPositionGlobal(),
+                                           ARRIVAL_RANGE);
         for (uuid_vec_t::const_iterator it = here.begin(); it != here.end(); ++it)
         {
             mSeen.insert(*it);
         }
+        // Online ALREADY is not arriving either; only a change counts. Without
+        // this, arming moments after login fires for everybody, because the
+        // world is not populated yet and nobody looks present.
+        mWasOnline.clear();
         for (std::set<LLUUID>::const_iterator it = mOnly.begin(); it != mOnly.end(); ++it)
         {
-            if (LLAvatarTracker::instance().isBuddyOnline(*it)) mSeen.insert(*it);
+            if (LLAvatarTracker::instance().isBuddyOnline(*it)) mWasOnline.insert(*it);
         }
         watchForArrivals();
     }
@@ -3265,7 +3279,8 @@ void LumenAIAutoResponder::checkArrivals()
     if (mOnly.empty()) return;   // never greet the whole world
 
     uuid_vec_t here;
-    LLWorld::getInstance()->getAvatars(&here);
+    LLWorld::getInstance()->getAvatars(&here, NULL, gAgent.getPositionGlobal(),
+                                       ARRIVAL_RANGE);
     std::set<LLUUID> present(here.begin(), here.end());
 
     for (std::set<LLUUID>::const_iterator it = mOnly.begin(); it != mOnly.end(); ++it)
@@ -3273,8 +3288,9 @@ void LumenAIAutoResponder::checkArrivals()
         const LLUUID& who = *it;
         if (mSeen.count(who)) continue;
 
-        const bool arrived = present.count(who)
-                          || LLAvatarTracker::instance().isBuddyOnline(who);
+        const bool came_online = LLAvatarTracker::instance().isBuddyOnline(who)
+                              && !mWasOnline.count(who);
+        const bool arrived = present.count(who) || came_online;
         if (!arrived) continue;
 
         mSeen.insert(who);   // once each, whatever happens next
@@ -3555,6 +3571,25 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             }
         }
     }
+
+    // <Lumen> "tell him to wait and I'll be right there" is a message, not a
+    // brief. Generated from it, the model answered "was away for a bit --
+    // what's up?", which is a different thing and in the past tense. So when
+    // the user said what to say, the FIRST reply to each person is that
+    // sentence, word for word. Anything after it is conversation and is
+    // generated as before.
+    if (!mNote.empty() && !mToldFirst.count(from_id))
+    {
+        mToldFirst.insert(from_id);
+        mRepliesTo[from_id]++;
+        ++mRepliesTotal;
+        if (speak_aloud) FSNearbyChat::instance().sendChat(utf8str_to_wstring(mNote), CHAT_TYPE_NORMAL);
+        else             LLIMModel::instance().sendMessage(mNote, session_id, from_id,
+                                                           IM_NOTHING_SPECIAL);
+        LL_INFOS("LumenAIChat") << "Answered with the user's own words." << LL_ENDL;
+        return;
+    }
+    // </Lumen>
 
     const std::string system = autoRespondPrompt(memory, first_time, owner, call_them);
     // A local server speaks OpenAI's dialect; only the address differs.
