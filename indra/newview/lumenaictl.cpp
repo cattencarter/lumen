@@ -10815,14 +10815,30 @@ if (method == "camera")
                 LLAvatarName av;
                 if (!LLAvatarNameCache::get(*it, &av)) continue;
 
-                std::string first = av.getUserName();
-                const size_t dot = first.find('.');
-                if (dot != std::string::npos) first = first.substr(0, dot);
-                LLStringUtil::toLower(first);
-                if (first.size() < 3) continue;
+                // Every form of the name, not just the username. A person has
+                // four of them here and the one people use may be none of the
+                // ones you looked at: the account called kwanita by everybody
+                // has the username tyria06. Checking one form is how a guard
+                // misses the only spelling anybody writes.
+                std::vector<std::string> forms;
+                forms.push_back(av.getUserName());
+                forms.push_back(av.getDisplayName());
+                forms.push_back(av.getLegacyName());
 
-                const size_t at = lower_say.find(first);
-                if (at == std::string::npos || at == 0) continue;   // absent, or an address
+                size_t at = std::string::npos;
+                for (size_t f = 0; f < forms.size() && at == std::string::npos; ++f)
+                {
+                    std::string one = forms[f];
+                    const size_t cut = one.find_first_of(". ");
+                    if (cut != std::string::npos) one = one.substr(0, cut);
+                    LLStringUtil::toLower(one);
+                    if (one.size() < 3) continue;
+
+                    const size_t found = lower_say.find(one);
+                    if (found != std::string::npos && found != 0) at = found;
+                }
+                if (at == std::string::npos) continue;   // absent, or an opening address
+                std::string first = forms[0];
 
                 LLSD e; e["code"] = -32602;
                 e["message"] =
