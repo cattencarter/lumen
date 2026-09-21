@@ -10056,6 +10056,18 @@ if (method == "camera")
                     const std::string link = groupLink(g.mID);
                     if (!link.empty()) one["group_link"] = link;
                 }
+                else
+                {
+                    // An account in no groups -- a test avatar, usually --
+                    // would otherwise produce a card with no group at all,
+                    // which is a DIFFERENT layout from the one being judged.
+                    // Invented names keep the shape honest; the insignia is
+                    // simply missing, which is a case worth seeing too.
+                    static const char* MADE_UP[] = {
+                        "Raglan Shire Artisans", "Dreamshire Social", "Tiny Racers"
+                    };
+                    one["group_name"] = MADE_UP[i % 3];
+                }
                 demo_notices.append(one);
             }
 
