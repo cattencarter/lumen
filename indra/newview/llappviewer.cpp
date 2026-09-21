@@ -3197,28 +3197,37 @@ bool LLAppViewer::initConfiguration()
         // like determining screen DPI value and so on
         mIsFirstRun = true;
 
-        // <FS>
-        // <Lumen> One settings file, and anybody who ran an older build is
-        // pointed back at it. The Mode picker used to choose between five of
-        // Firestorm's layouts; four are deleted and the fifth is renamed, so a
-        // saved `SessionSettingsFile` naming any of them would now load
-        // nothing at all and silently take the viewer's defaults with it.
-        {
-            const std::string session = gSavedSettings.getString("SessionSettingsFile");
-            if (session != "settings_lumen.xml")
-            {
-                gSavedSettings.setString("SessionSettingsFile", "settings_lumen.xml");
-            }
-        }
-        if (gSavedSettings.getString("SessionSettingsFile").empty())
-        {
-            gSavedSettings.setString("SessionSettingsFile", "settings_lumen.xml");
-        }
-        // </FS>
-
-
         gSavedSettings.setBOOL("FirstRunThisInstall", false);
     }
+
+    // <Lumen> One settings file, and anybody who ran an older build is pointed
+    // back at it -- on EVERY launch, not only the first.
+    //
+    // The Mode picker used to choose between five of Firestorm's layouts; four
+    // are deleted and the fifth is renamed. `SessionSettingsFile` persists, so
+    // any profile that ever ran an older build still names
+    // `settings_firestorm.xml`; the load below then finds nothing, reports it
+    // at INFO, and carries on -- taking fourteen of our defaults with it, the
+    // navigation bar among them.
+    //
+    // This correction used to sit inside the FirstRunThisInstall block above,
+    // which is the one place it can do nothing: a fresh install has nothing
+    // stale to correct, and the profiles that break are exactly the ones that
+    // guard excludes. A command-line --sessionsettings still wins, because it
+    // is applied further down.
+    {
+        const std::string session_file = "settings_lumen.xml";
+        if (gSavedSettings.getString("SessionSettingsFile") != session_file)
+        {
+            gSavedSettings.setString("SessionSettingsFile", session_file);
+        }
+        const std::string user_session_file = "account_" + session_file;
+        if (gSavedSettings.getString("UserSessionSettingsFile") != user_session_file)
+        {
+            gSavedSettings.setString("UserSessionSettingsFile", user_session_file);
+        }
+    }
+    // </Lumen>
 
 // <FS:Beq> FIRE-29819 Set ForceShowGrid to true always, unless expressly disabled
 // FSOpenSimAlwaysForcesShowGrid is added to allow closed grids to soft disable the default behaviour
@@ -3256,6 +3265,21 @@ bool LLAppViewer::initConfiguration()
         LL_INFOS("Settings")    << "Using session settings filename: "
             << session_settings_filename << LL_ENDL;
     }
+    // <Lumen> A missing session file is reported at INFO and carried past, so
+    // fourteen defaults can go quietly missing. There is exactly one preset now
+    // and we ship it; if it is not there, that is a packaging fault and the log
+    // should say so out loud.
+    {
+        const std::string session_path = gDirUtilp->getExpandedFilename(
+            LL_PATH_APP_SETTINGS, gSavedSettings.getString("SessionSettingsFile"));
+        if (!gDirUtilp->fileExists(session_path))
+        {
+            LL_WARNS("Settings") << "Session settings file missing: " << session_path
+                                 << " -- the viewer's own defaults will be used instead."
+                                 << LL_ENDL;
+        }
+    }
+    // </Lumen>
     loadSettingsFromDirectory("Session",true); // AO The session file turns into the new defaults
 
     if (clp.hasOption("usersessionsettings"))
