@@ -134,9 +134,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lumen-windows-installer
-          if-no-files-found: warn
+          # NOT warn. The installer WAS built on 2026-09-21 -- the log says
+          # "Created base package Lumen-7-2-4-262642033_Setup.exe" -- and this
+          # step looked one directory too high, found nothing, and let the run
+          # report success anyway. NSIS writes the file beside its own .nsi, in
+          # the staging directory viewer_manifest builds INSIDE newview/Release.
+          # Three green runs and no installer to show for them.
+          if-no-files-found: error
           retention-days: 7
-          path: lumen/build-vc*/newview/*_Setup.exe
+          path: lumen/build-vc*/newview/Release/**/*_Setup.exe
 
       # What the build actually produced, so a run says plainly whether there
       # is something to hand over rather than leaving it to be inferred from
@@ -147,7 +153,7 @@ jobs:
         run: |
           cd lumen/build-vc*/newview/Release
           echo "### Windows build" >> "$GITHUB_STEP_SUMMARY"
-          for exe in *.exe ../*_Setup.exe; do
+          for exe in *.exe ../*_Setup.exe $(find . -name '*_Setup.exe'); do
             [ -e "$exe" ] || continue
             printf -- "- %s  (%s)\n" "$exe" "$(du -h "$exe" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           done
