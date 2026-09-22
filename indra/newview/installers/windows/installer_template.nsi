@@ -298,58 +298,9 @@ Call openLinkNewWindow
  
 !define OpenURL '!insertmacro "_OpenURL"'
 
-; Add the AVX2 check functions
-Function CheckCPUFlagsAVX2
-    Push $1
-    Push $2
-    Push $3
-    System::Call 'kernel32::IsProcessorFeaturePresent(i 40) i .r1'  ; 40 is PF_AVX2_INSTRUCTIONS_AVAILABLE
-    IntCmp $1 1 OK_AVX2
-    ; AVX2 not supported
-    ; Replace %DLURL% in the language string with the URL
-    ${WordReplace} "$(MissingAVX2)" "%DLURL%" "${DL_URL}" "+*" $3
-    MessageBox MB_OK "$3"
-    
-    MessageBox MB_YESNO $(AVX2OverrideConfirmation) IDNO NoInstall
-    MessageBox MB_OKCANCEL $(AVX2OverrideNote) IDCANCEL NoInstall
-
-    ; User chose to proceed
-    Pop $3
-    Pop $2
-    Pop $1
-    Return
-
-  NoInstall:
-    ${OpenURL} "${DL_URL}"
-    Quit
-
-  OK_AVX2:
-    Pop $3
-    Pop $2
-    Pop $1
-    Return
-FunctionEnd
-
-Function CheckCPUFlagsAVX2_Prompt
-    Push $1
-    Push $3
-    System::Call 'kernel32::IsProcessorFeaturePresent(i 40) i .r1'  ; 40 is PF_AVX2_INSTRUCTIONS_AVAILABLE
-    IntCmp $1 1 OK_AVX2 
-    Pop $1
-    Return
-  OK_AVX2:
-    ; Replace %DLURL% in the language string with the URL
-    ${WordReplace} "$(AVX2Available)" "%DLURL%" "${DL_URL}" "+*" $3
-
-    MessageBox MB_YESNO $3 IDYES DownloadAVX2 IDNO ContinueInstall
-    DownloadAVX2:
-      ${OpenURL} '${DL_URL}'
-      Quit
-    ContinueInstall:
-      Pop $3
-      Pop $1
-      Return
-FunctionEnd
+; <Lumen> CheckCPUFlagsAVX2 and CheckCPUFlagsAVX2_Prompt removed, with their
+; call sites below. CheckCPUFlags (SSE2) stays -- that one is a real
+; requirement of this binary rather than an advertisement for another build.
 
 # <FS:Ansariel> Optional start menu entry
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -411,14 +362,25 @@ after_instdir:
 
 Call CheckCPUFlags							# Make sure we have SSE2 support
 
-# Two checks here, if we are an AVX2 build we want to abort if no AVX2 support on this CPU.
-# If we are not an AVX2 build but the CPU can support it then we want to prompt them to download the AVX2 version
-# but also allow them to override.
-${If} ${ISAVX2} == 1
-  Call CheckCPUFlagsAVX2
-${Else}
-  Call CheckCPUFlagsAVX2_Prompt
-${EndIf}
+# <Lumen> No AVX2 branch, because there is no AVX2 build.
+#
+# Firestorm ships three Windows builds -- standard, AVX2 and legacy-CPU -- so
+# its installer offers you the faster one and refuses the wrong one. Lumen
+# ships ONE, with no AVX2 flag set anywhere in the build.
+#
+# With ISAVX2 at 0 the else-branch ran, and on a real machine it told the
+# author: "Your CPU supports AVX2 instructions. You can download the AVX2
+# optimized version for better performance from
+# github.com/cattencarter/lumen/releases" -- where the only asset is a macOS
+# disk image. The other branch is worse: it BLOCKS installation on a CPU this
+# build runs on perfectly well, and sends them to <url>-legacy-cpus/, which is
+# not even a real address.
+#
+# Both are Firestorm text that the de-branding sweep repointed at our download
+# page; moving the URL could not know the premise had gone with it. Removed
+# rather than left dormant -- a message naming a build that does not exist is
+# wrong whether or not anything calls it today. If Lumen ever ships a second
+# Windows build, put the check back with URLs that resolve.
 
 Call CheckWindowsVersion					# Don't install On unsupported systems
     Push $0
