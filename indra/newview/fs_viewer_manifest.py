@@ -154,11 +154,15 @@ class FSViewerManifest:
         except:
             print("Cannot run pdbcopy, packaging private symbols")
 
-        tarName = "%s/Phoenix_%s_%s_%s_pdbsymbols-windows-%d.tar.xz" % (self.args['configuration'].lower(),
+        # <Lumen> Not "Phoenix_", and not their channel word twice over. This
+        # file sits at the top of the build output, so it is the one symbol
+        # archive a person actually sees.
+        tarName = "%s/%s_%s_%s_pdbsymbols-windows-%d.tar.xz" % (self.args['configuration'].lower(),
                                                                         self.fs_channel_legacy_oneword(),
                                                                         '-'.join(self.args['version']),
                                                                         self.args['viewer_flavor'],
-                                                                        self.address_size)                                      
+                                                                        self.address_size)
+        # </Lumen>
         # Store windows symbols we want to keep for debugging in a tar file.
         symbolTar = tarfile.open( name=tarName, mode="w:xz")
         symbolTar.add( "%s/Firestorm-bin.exe" % self.args['configuration'].lower(), "firestorm-bin.exe" )
@@ -196,7 +200,7 @@ class FSViewerManifest:
                                                                        osname,
                                                                        self.address_size))):
             # Rename to add version numbers
-            sName = "%s/Phoenix_%s_%s_%s_symbols-%s-%d.tar.bz2" % (self.args['configuration'].lower(),
+            sName = "%s/%s_%s_%s_symbols-%s-%d.tar.bz2" % (self.args['configuration'].lower(),   # <Lumen/> not "Phoenix_"
                                                                        self.fs_channel_legacy_oneword(),
                                                                        '-'.join( self.args['version'] ),
                                                                        self.args['viewer_flavor'],

@@ -122,6 +122,13 @@ jobs:
             !lumen/build-vc*/newview/Release/**/*.bat
             !lumen/build-vc*/newview/Release/**/*.nsi
             !lumen/build-vc*/newview/Release/firestorm-bin.*
+            # The debug symbols. They are built beside the viewer rather than
+            # inside it, so they never reach the installer -- but they DO ride
+            # along in this artifact, and somebody who unpacks it finds a
+            # 100MB archive sitting next to the thing they wanted. Their own
+            # artifact below.
+            !lumen/build-vc*/newview/Release/*_pdbsymbols-*.tar.xz
+            !lumen/build-vc*/newview/Release/*_symbols-*.tar.bz2
 
       # The installer, which is the thing to actually hand somebody. NSIS is
       # preinstalled on the runner and viewer_manifest finds makensis itself,
@@ -143,6 +150,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: lumen/build-vc*/newview/Release/**/*_Setup.exe
+
+      # Kept, because a crash report from a tester is unreadable without them
+      # -- just not in the same download as the viewer.
+      - name: Keep the debug symbols
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen-windows-symbols
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            lumen/build-vc*/newview/Release/*_pdbsymbols-*.tar.xz
+            lumen/build-vc*/newview/Release/*_symbols-*.tar.bz2
 
       # What the build actually produced, so a run says plainly whether there
       # is something to hand over rather than leaving it to be inferred from
