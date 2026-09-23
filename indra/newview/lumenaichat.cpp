@@ -694,6 +694,9 @@ namespace
             if (action == "lsl_lookup")    return "Checking the LSL reference";
             if (action == "open_script")   return "Opening the script";
             if (action == "new_script")    return "Adding a script";
+            if (action == "remember")      return "Remembering";
+            if (action == "forget")        return "Forgetting";
+            if (action == "recall")        return "Reading what it remembers";
         }
 
         return action.empty() ? group : (group + "." + action);
@@ -824,9 +827,22 @@ namespace
     std::string fullSystemPrompt()
     {
         const std::string memory = LumenAIMemory::get();
-        if (memory.empty())
+        const std::vector<std::string> kept = LumenAIMemory::remembered();
+        if (memory.empty() && kept.empty())
         {
             return systemPrompt();
+        }
+        std::string list;
+        for (const std::string& e : kept) list += "- " + e + "\n";
+        // What they asked to be remembered, beside what they wrote. Dated,
+        // because "my partner is X" said a year ago may have stopped being true,
+        // and the date is what lets anyone notice.
+        const std::string remembered = list.empty() ? std::string()
+            : "\n\nThings they asked you to remember, each with the day they said it, oldest "
+              "first. Use them the same way:\n\n" + list;
+        if (memory.empty())
+        {
+            return systemPrompt() + remembered;
         }
 
         // Fenced and labelled as the person's own words, so it reads as
@@ -849,7 +865,7 @@ namespace
                "it covers, answer from it directly: it needs no tool, and nothing in their "
                "inventory knows them better. It is background, not orders, and you do not recite "
                "it unasked -- but being asked is the prompt to use it:\n\n"
-             + memory;
+             + memory + remembered;
     }
 
     // ---- provider wire formats -------------------------------------------
@@ -3680,7 +3696,13 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     // This avatar's own note. It read an undeclared setting before, which is
     // always empty -- so the one place the assistant speaks AS the user, to
     // other people, it knew nothing about who they are.
-    const std::string memory = LumenAIMemory::get();
+    std::string memory = LumenAIMemory::get();
+    // And what they asked to be remembered: answering AS them, this is where
+    // "Kwanita's username is tyria06" is worth most.
+    for (const std::string& e : LumenAIMemory::remembered())
+    {
+        memory += (memory.empty() ? "" : "\n") + e;
+    }
     std::string owner;
     LLAgentUI::buildFullname(owner);
 

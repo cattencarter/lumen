@@ -43,6 +43,7 @@
 namespace
 {
     const std::string MEMORY_FILE = "ai_memory.txt";
+    const std::string REMEMBERED_FILE = "ai_remembered.txt";
 
     /**
      * Cut to a byte budget without splitting a character in half.
@@ -140,6 +141,212 @@ namespace LumenAIMemory
         return true;
     }
 
+    namespace
+    {
+        std::string rememberedPath()
+        {
+            return available() ? gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, REMEMBERED_FILE)
+                               : std::string();
+        }
+
+        /** One line, trimmed: an entry that spans lines would become two on the next read. */
+        std::string oneLine(const std::string& in)
+        {
+            std::string out;
+            bool space = false;
+            for (unsigned char c : in)
+            {
+                if (c == '\n' || c == '\r' || c == '\t' || c == ' ') { space = !out.empty(); continue; }
+                if (space) { out += ' '; space = false; }
+                out += (char)c;
+            }
+            return out;
+        }
+
+        std::string today()
+        {
+            time_t now = time(nullptr);
+            char buf[16];
+            strftime(buf, sizeof(buf), "%Y-%m-%d", localtime(&now));
+            return buf;
+        }
+
+        /** An entry the person typed in the editor without a date gets today's. */
+        bool dated(const std::string& e)
+        {
+            return e.size() > 11 && isdigit((unsigned char)e[0]) && e[4] == '-' && e[7] == '-';
+        }
+
+        bool writeRemembered(const std::vector<std::string>& entries)
+        {
+            std::ofstream f(rememberedPath().c_str(), std::ios::binary | std::ios::trunc);
+            if (!f.good())
+            {
+                LL_WARNS("LumenAIMemory") << "Could not write " << rememberedPath() << LL_ENDL;
+                return false;
+            }
+            for (const std::string& e : entries) f << e << "\n";
+            return true;
+        }
+
+        std::string lowered(std::string s)
+        {
+            for (char& c : s) c = (char)tolower((unsigned char)c);
+            return s;
+        }
+    }
+
+    std::vector<std::string> remembered()
+    {
+        std::vector<std::string> out;
+        std::string text;
+        if (!available() || !readFile(rememberedPath(), text))
+        {
+            return out;
+        }
+        std::istringstream ss(text);
+        std::string line;
+        while (std::getline(ss, line))
+        {
+            line = oneLine(line);
+            if (!line.empty()) out.push_back(line);
+        }
+        return out;
+    }
+
+    size_t usedBytes()
+    {
+        size_t n = get().size();
+        for (const std::string& e : remembered()) n += e.size() + 1;
+        return n;
+    }
+
+    bool remember(const std::string& text, std::string& entry_out, std::string& why_not)
+    {
+        if (!available())
+        {
+            why_not = "Nobody is logged in, so there is no avatar it would belong to.";
+            return false;
+        }
+        const std::string what = oneLine(text);
+        if (what.empty())
+        {
+            why_not = "Nothing to remember -- give the words, as the person said them.";
+            return false;
+        }
+        std::vector<std::string> entries = remembered();
+        // The date and one space, then the words -- read back through oneLine,
+        // which is why the separator must be exactly one space: with two, the
+        // comparison cut a letter off every entry and never matched.
+        for (const std::string& e : entries)
+        {
+            if (lowered(dated(e) ? e.substr(11) : e) == lowered(what))
+            {
+                entry_out = e;
+                why_not = "That is already remembered, word for word, so it was not added twice.";
+                return false;
+            }
+        }
+        const std::string entry = today() + " " + what;
+        if (usedBytes() + entry.size() + 1 > MAX_BYTES)
+        {
+            why_not = llformat("Memory is full (%zu of %zu characters, counting the note they wrote "
+                               "themselves). Nothing was saved. Tell them, and that they can make "
+                               "room in Preferences > AI > Memory.", usedBytes(), MAX_BYTES);
+            return false;
+        }
+        entries.push_back(entry);
+        if (!writeRemembered(entries))
+        {
+            why_not = "The file could not be written.";
+            return false;
+        }
+        entry_out = entry;
+        LL_INFOS("LumenAIMemory") << "Remembered one thing for this avatar, "
+                                  << what.size() << " characters" << LL_ENDL;
+        return true;
+    }
+
+    bool forget(const std::string& which, std::string& removed, std::string& why_not,
+                std::vector<std::string>& candidates)
+    {
+        candidates.clear();
+        std::vector<std::string> entries = remembered();
+        if (entries.empty())
+        {
+            why_not = "Nothing has been remembered for this avatar.";
+            return false;
+        }
+        const std::string w = oneLine(which);
+        size_t hit = std::string::npos;
+        bool numeric = !w.empty();
+        for (unsigned char c : w) numeric = numeric && isdigit(c);
+        if (numeric)
+        {
+            const size_t n = (size_t)atoi(w.c_str());
+            if (n < 1 || n > entries.size())
+            {
+                why_not = llformat("There is no entry %zu; there are %zu.", n, entries.size());
+                candidates = entries;
+                return false;
+            }
+            hit = n - 1;
+        }
+        else
+        {
+            // Every word must appear, in any order -- and exactly one entry
+            // must hold them. Forgetting the wrong thing is not undoable here.
+            std::istringstream ss(lowered(w));
+            std::vector<std::string> words;
+            std::string word;
+            while (ss >> word) words.push_back(word);
+            if (words.empty())
+            {
+                why_not = "Say which entry: its number from recall, or words from it.";
+                candidates = entries;
+                return false;
+            }
+            for (size_t i = 0; i < entries.size(); ++i)
+            {
+                const std::string e = lowered(entries[i]);
+                bool all = true;
+                for (const std::string& x : words) all = all && e.find(x) != std::string::npos;
+                if (all) { candidates.push_back(entries[i]); hit = i; }
+            }
+            if (candidates.size() != 1)
+            {
+                why_not = candidates.empty()
+                    ? "No remembered entry holds those words. Nothing was removed."
+                    : "More than one entry holds those words, so nothing was removed. Ask which.";
+                if (candidates.empty()) candidates = entries;
+                return false;
+            }
+            candidates.clear();
+        }
+        removed = entries[hit];
+        entries.erase(entries.begin() + hit);
+        if (!writeRemembered(entries))
+        {
+            why_not = "The file could not be written.";
+            return false;
+        }
+        LL_INFOS("LumenAIMemory") << "Forgot one thing for this avatar." << LL_ENDL;
+        return true;
+    }
+
+    bool setRemembered(const std::vector<std::string>& in)
+    {
+        if (!available()) return false;
+        std::vector<std::string> entries;
+        for (const std::string& raw : in)
+        {
+            const std::string e = oneLine(raw);
+            if (e.empty()) continue;
+            entries.push_back(dated(e) ? e : today() + " " + e);
+        }
+        return writeRemembered(entries);
+    }
+
     std::string extractImportable(const std::string& raw)
     {
         // Not JSON by the look of it: take it as written.
@@ -214,11 +421,16 @@ LumenAIMemoryFloater::LumenAIMemoryFloater(const LLSD& key)
 bool LumenAIMemoryFloater::postBuild()
 {
     mText  = getChild<LLTextEditor>("memory");
+    mKept  = getChild<LLTextEditor>("remembered");
     mCount = getChild<LLTextBox>("count");
 
     if (mText)
     {
         mText->setKeystrokeCallback([this](LLTextEditor*) { updateCount(); });
+    }
+    if (mKept)
+    {
+        mKept->setKeystrokeCallback([this](LLTextEditor*) { updateCount(); });
     }
     if (LLButton* b = findChild<LLButton>("import_btn"))
     {
@@ -255,6 +467,16 @@ void LumenAIMemoryFloater::onOpen(const LLSD& key)
                                          "this is for, then open this again."));
         mText->setEnabled(can);
     }
+    if (mKept)
+    {
+        std::string lines;
+        if (can)
+        {
+            for (const std::string& e : LumenAIMemory::remembered()) lines += e + "\n";
+        }
+        mKept->setText(lines);
+        mKept->setEnabled(can);
+    }
     if (LLButton* b = findChild<LLButton>("save_btn"))   b->setEnabled(can);
     if (LLButton* b = findChild<LLButton>("import_btn")) b->setEnabled(can);
     updateCount();
@@ -267,7 +489,9 @@ void LumenAIMemoryFloater::updateCount()
         return;
     }
 
-    const size_t used = mText->getText().size();
+    // Both parts share the budget, because both are sent with every message.
+    size_t used = mText->getText().size();
+    if (mKept) used += mKept->getText().size();
     std::string text = llformat("%zu of %zu characters", used, LumenAIMemory::MAX_BYTES);
     if (used > LumenAIMemory::MAX_BYTES)
     {
@@ -311,6 +535,15 @@ void LumenAIMemoryFloater::onSave()
     if (mText)
     {
         LumenAIMemory::set(mText->getText());
+    }
+    if (mKept)
+    {
+        // One entry per line; a line typed here without a date gets today's.
+        std::vector<std::string> entries;
+        std::istringstream ss(mKept->getText());
+        std::string line;
+        while (std::getline(ss, line)) entries.push_back(line);
+        LumenAIMemory::setRemembered(entries);
     }
     closeFloater();
 }

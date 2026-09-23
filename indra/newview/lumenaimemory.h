@@ -31,6 +31,7 @@
 #include "llfloater.h"
 
 #include <string>
+#include <vector>
 
 class LLTextEditor;
 class LLTextBox;
@@ -79,6 +80,27 @@ namespace LumenAIMemory
     std::string path();
 
     /**
+     * What the person asked the assistant to remember -- "remember that Kwanita's
+     * username is tyria06" -- kept apart from the note they wrote themselves, so
+     * the assistant never rewrites their own words. One entry per line, dated,
+     * oldest first. Per avatar, like the note, and sharing its MAX_BYTES budget.
+     */
+    std::vector<std::string> remembered();
+    /** Add one entry. False, with a reason, when full, empty or nobody is logged in. */
+    bool remember(const std::string& text, std::string& entry_out, std::string& why_not);
+    /**
+     * Remove one entry: `which` is its number from remembered(), counting from
+     * 1, or words that pick out exactly one. More than one match removes
+     * nothing and returns the candidates instead.
+     */
+    bool forget(const std::string& which, std::string& removed, std::string& why_not,
+                std::vector<std::string>& candidates);
+    /** Replace the whole list, for the editor. */
+    bool setRemembered(const std::vector<std::string>& entries);
+    /** Note plus list, in bytes, against MAX_BYTES. */
+    size_t usedBytes();
+
+    /**
      * Pull usable text out of whatever the person picked.
      *
      * Plain text and Markdown come through as they are. A JSON export is
@@ -107,6 +129,7 @@ public:
 
 private:
     LLTextEditor* mText  = nullptr;
+    LLTextEditor* mKept  = nullptr;   // what they asked to be remembered, one per line
     LLTextBox*    mCount = nullptr;
 
     void onImport();

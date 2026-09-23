@@ -4,8 +4,8 @@
  can_minimize="false"
  can_close="true"
  can_resize="true"
- height="420"
- min_height="300"
+ height="560"
+ min_height="440"
  min_width="420"
  layout="topleft"
  name="floater_ai_memory"
@@ -20,30 +20,39 @@
         Paste what you want the assistant to remember: who you are, what you do in Second Life, how you like to be spoken to. If you use ChatGPT or Claude, open its memory or personalisation screen and copy the list from there.
     </text>
 
-    <text_editor follows="all" layout="topleft"
-     left="12" top="86" width="496" height="256"
+    <text_editor follows="left|top|right" layout="topleft"
+     left="12" top="86" width="496" height="220"
      name="memory" word_wrap="true" max_length="16384" />
 
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="12" top="314" width="496" height="32" word_wrap="true">
+        Things you asked the assistant to remember, one per line. Delete a line to forget it.
+    </text>
+
+    <text_editor follows="all" layout="topleft"
+     left="12" top="346" width="496" height="130"
+     name="remembered" word_wrap="true" max_length="16384" />
+
     <text type="string" follows="left|bottom" layout="topleft"
-     left="12" top="350" width="330" height="16" name="count">
+     left="12" top="484" width="330" height="16" name="count">
         0 characters
     </text>
 
     <text type="string" follows="left|bottom" layout="topleft"
-     left="12" top="368" width="496" height="16" word_wrap="true">
+     left="12" top="502" width="496" height="16" word_wrap="true">
         This avatar's alone, and sent with every message, so keep it short.
     </text>
 
     <button follows="left|bottom" layout="topleft"
-     left="12" top="390" width="120" height="22"
+     left="12" top="528" width="120" height="22"
      label="Import a file..." name="import_btn" />
 
     <button follows="right|bottom" layout="topleft"
-     left="350" top="390" width="70" height="22"
+     left="350" top="528" width="70" height="22"
      label="Save" name="save_btn" />
 
     <button follows="right|bottom" layout="topleft"
-     left="428" top="390" width="80" height="22"
+     left="428" top="528" width="80" height="22"
      label="Cancel" name="cancel_btn" />
 
 </floater>
