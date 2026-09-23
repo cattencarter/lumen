@@ -1478,9 +1478,13 @@ namespace
         return p;
     }
 
+    // Softer than what people type, never so dark it sinks into the
+    // background -- the author, 2026-09-23: "they shouldn't be completely white
+    // like the text you type, but it almost blends into the background".
+    // TitaniumGray did exactly that; the skin's light grey at 75% does not.
     LLStyle::Params dimStyle()
     {
-        return coloured("TextFgTentativeColor");
+        return coloured("LtGray_75");
     }
 
     /**
@@ -2510,10 +2514,7 @@ void LumenAIChatFloater::noticeCodexMemory()
         return;   // already said, for this same change
     }
     mCodexMemoryNoticed = fingerprint;
-    sayNote("Your memory has changed since this Codex conversation began, and Codex goes on "
-            "with the version it started with -- something forgotten may still be used, and "
-            "anything added in the Memory window is not known to it yet. Press Clear to start "
-            "a new conversation with your memory as it is now.");
+    sayNote("Your memory changed. Codex uses the old version until you press Clear.");
 }
 
 /**
