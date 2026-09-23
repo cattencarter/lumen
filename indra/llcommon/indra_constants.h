@@ -41,12 +41,20 @@ const std::string APP_NAME = "Lumen";
 
 // Lumen's own release number, shown BESIDE the Firestorm version rather than
 // instead of it. The author's call, and the right one: the 7.2.4 tells you
-// which base you are on, which is useful, while 0.1.0 tells you which Lumen.
+// which base you are on, which is useful, while this tells you which Lumen.
 //
 // It is deliberately NOT the viewer version. That string is reported to
 // Linden Lab's servers and compared against LastRunVersion, so it is
 // machinery rather than decoration and is left exactly as it was.
-const std::string LUMEN_VERSION = "0.1.0";
+//
+// BUMP THIS BEFORE TAGGING A RELEASE, not after. v0.1.1 shipped on both
+// platforms while this still read "0.1.0", and the two defects hid each
+// other: the release was flagged pre-release, so /releases/latest answered
+// v0.1.0 and the comparison was false. Clearing the flag made it live, and
+// every 0.1.1 install was then told at each login that 0.1.1 was available.
+// lumen/scripts/actions-check.py now fails when this is behind the newest
+// release tag, because a note here would not have survived.
+const std::string LUMEN_VERSION = "0.1.2";
 // </Lumen>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;

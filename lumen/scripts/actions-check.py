@@ -240,6 +240,64 @@ for p in sorted(xui.rglob("*.xml")):
     except ET.ParseError as e:
         fails.append("XUI does not parse: %s  (%s)" % (p.name, e))
 
+# ---------------------------------------------------------------------------
+# LUMEN_VERSION must not be BEHIND the newest release tag.
+#
+# v0.1.1 was tagged and published on both platforms while the constant still
+# read "0.1.0". Nothing ties the two together -- it is hand-edited -- and the
+# only reason it caused no symptom at first is that a SECOND defect hid it:
+# the release was flagged pre-release, so /releases/latest answered v0.1.0 and
+# isNewer() was false. Clearing the flag made both live at once, and every
+# install began reporting an update to the version it was already running.
+#
+# The invariant is one-sided on purpose. Between releases the constant should
+# be AHEAD of the newest tag -- that is what developing 0.1.2 looks like -- so
+# equal or ahead passes and only behind fails.
+#
+# The tag pattern is strict for a reason: this clone carries upstream's tags
+# too, and `v6.6.13.5623403350` sorts above anything of ours under a version
+# sort. Three numeric components only, which is the shape every Lumen release
+# has used. If upstream ever tags a bare three-part vN.N.N this needs
+# narrowing again -- to tags reachable from our own branch.
+import subprocess
+
+repo = pathlib.Path(__file__).resolve().parents[2]
+constants = repo / "indra" / "llcommon" / "indra_constants.h"
+
+m = re.search(r'LUMEN_VERSION\s*=\s*"([^"]+)"', constants.read_text(encoding="utf-8"))
+if not m:
+    fails.append("LUMEN_VERSION not found in %s" % constants.name)
+else:
+    lumen_version = m.group(1)
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "tag", "--list", "v*"],
+                             capture_output=True, text=True, timeout=15)
+        tags = [t.strip() for t in out.stdout.splitlines()] if out.returncode == 0 else None
+    except Exception:
+        tags = None
+
+    def numbers(v):
+        return [int(x) for x in v.lstrip("vV").split(".")]
+
+    if tags is None:
+        # Findings 35: a check that cannot run must say so as loudly as it
+        # would fail, or a skipped assertion reads as a passing one.
+        print("  NOT CHECKED: git would not list tags, so LUMEN_VERSION (%s) "
+              "was not compared against any release" % lumen_version)
+    else:
+        releases = [t for t in tags if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+        if not releases:
+            print("  NOT CHECKED: no vN.N.N release tag in this clone, so "
+                  "LUMEN_VERSION (%s) was not compared" % lumen_version)
+        else:
+            newest = max(releases, key=numbers)
+            if numbers(lumen_version) < numbers(newest):
+                fails.append(
+                    "LUMEN_VERSION is %s but %s is already tagged -- a build from here "
+                    "reports itself older than a release that exists, and every install "
+                    "is told at login to update to the version it is running"
+                    % (lumen_version, newest))
+
 print("  registered %d | advertised %d | methods %d | dispatched %d | phrased %d | params %d"
       % (len(registered), len(advertised), len(methods), len(dispatched), len(phrased),
          len(declared)))
