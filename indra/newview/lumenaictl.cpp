@@ -5364,10 +5364,47 @@ namespace
             if (!title.empty()) home.path = "the " + title + " window";
         }
 
-        std::vector<LLXMLNodePtr> stack(1, root);
+        // Each node travels with the caption printed just before it, if any.
+        //
+        // **A quarter of Preferences had no label to find it by.** 161 of 664
+        // bound controls carry no `label=`: the words on screen are a separate
+        // <text> element, so "chat window font size" -- read straight off the
+        // panel -- found nothing, because the radio group has no name and the
+        // caption binds no control. The caption is the immediately preceding
+        // <text> sibling; that is how the panels are laid out, and measured it
+        // names 116 of the 161. It must hold three letters, or the "(" printed
+        // before a number box would become somebody's label. Asked for by
+        // those words through show_setting, 102 of them open on the right page
+        // with the setting lit; of the rest, five ask (a shared word like
+        // "Model"), two sit on a tab this build lacks, two show only while the
+        // minimap's chat rings are on, and three are on a panel the viewer
+        // shows only on OpenSim grids -- all of which the tool reports.
+        auto captionOf = [](LLXMLNodePtr t)
+        {
+            std::string text = t->getTextContents();
+            if (text.empty()) t->getAttributeString("value", text);
+            std::string out;
+            bool space = false;
+            for (unsigned char c : text)
+            {
+                if (isspace(c)) { space = !out.empty(); continue; }
+                if (space) { out += ' '; space = false; }
+                out += (char)c;
+            }
+            while (!out.empty() && (out.back() == ':' || out.back() == ' ')) out.pop_back();
+            // And a caption is a few words, not a paragraph: two panels put a
+            // help text there instead, at 149 and 164 characters, where the
+            // longest real caption is about 70. Full stops are no test --
+            // "Max. Bandwidth" is a caption.
+            S32 letters = 0;
+            for (unsigned char c : out) letters += (isalpha(c) || c >= 0x80) ? 1 : 0;
+            return (letters >= 3 && out.size() <= 100) ? out : std::string();
+        };
+        std::vector<std::pair<LLXMLNodePtr, std::string> > stack(1, std::make_pair(root, std::string()));
         while (!stack.empty())
         {
-            LLXMLNodePtr node = stack.back();
+            LLXMLNodePtr node = stack.back().first;
+            const std::string caption = stack.back().second;
             stack.pop_back();
 
             // **A widget the XUI hides is not a place anybody can be sent.**
@@ -5383,8 +5420,9 @@ namespace
             }
 
             std::string ctrl, label;
+            node->getAttributeString("label", label);
+            if (label.empty() && is_preferences) label = caption;   // measured there only
             if (node->getAttributeString("control_name", ctrl)
-                && node->getAttributeString("label", label)
                 && !ctrl.empty() && !label.empty())
             {
                 noteLabel(label, ctrl);
@@ -5394,9 +5432,11 @@ namespace
                 node->getAttributeString("name", here.widget);
                 noteHome(ctrl, here);
             }
+            std::string before;   // the caption of the previous sibling, if it was one
             for (LLXMLNodePtr c = node->getFirstChild(); c.notNull(); c = c->getNextSibling())
             {
-                stack.push_back(c);
+                stack.push_back(std::make_pair(c, before));
+                before = c->hasName("text") ? captionOf(c) : std::string();
             }
         }
     }
