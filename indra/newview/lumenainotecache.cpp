@@ -41,9 +41,13 @@ namespace
 {
     const char* CACHE_FILE = "notecard_cache.db";
 
-    // Bumped whenever the shape of `cards` changes. A mismatch rebuilds rather
-    // than migrates: this is a cache, and a migration that goes wrong is a
-    // subtler problem than a refetch that takes a minute.
+    // Bumped whenever the shape of an EXISTING table changes. A mismatch
+    // rebuilds rather than migrates: this is a cache, and a migration that goes
+    // wrong is a subtler problem than a refetch that takes a minute.
+    //
+    // A NEW table does not bump it: SCHEMA runs on every open with IF NOT
+    // EXISTS, so an older file simply gains the table. `landmarks` arrived that
+    // way, and bumping for it would have thrown away every stored notecard.
     const int SCHEMA_VERSION = 1;
 
     const char* SCHEMA =
@@ -55,7 +59,13 @@ namespace
         "  asset_id TEXT NOT NULL,"
         "  name     TEXT NOT NULL,"
         "  body     TEXT NOT NULL,"
-        "  fetched  INTEGER NOT NULL);";
+        "  fetched  INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS landmarks ("
+        "  asset_id  TEXT PRIMARY KEY,"
+        "  region_id TEXT NOT NULL,"
+        "  region    TEXT NOT NULL,"
+        "  x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL,"
+        "  fetched   INTEGER NOT NULL);";
 }
 
 LumenAINoteCache::LumenAINoteCache()
@@ -233,7 +243,8 @@ bool LumenAINoteCache::open()
     exec(stamp);
 
     LL_INFOS("LumenAINoteCache") << "Notecard cache ready at " << mPath
-                              << " holding " << count() << " cards" << LL_ENDL;
+                              << " holding " << count() << " cards and "
+                              << landmarkCount() << " landmark destinations" << LL_ENDL;
     return true;
 }
 
@@ -344,6 +355,84 @@ void LumenAINoteCache::clear()
     if (mDb)
     {
         exec("DELETE FROM cards;");
+        exec("DELETE FROM landmarks;");
         exec("VACUUM;");
     }
+    mLandmarks.clear();
+}
+
+void LumenAINoteCache::loadLandmarks()
+{
+    mLandmarksLoaded = true;
+    if (!mDb)
+    {
+        return;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(mDb, "SELECT asset_id, region, x, y, z, fetched FROM landmarks;",
+                           -1, &st, nullptr) != SQLITE_OK)
+    {
+        return;
+    }
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const unsigned char* a = sqlite3_column_text(st, 0);
+        const unsigned char* r = sqlite3_column_text(st, 1);
+        if (!a || !r) continue;
+        Destination d;
+        d.region = (const char*)r;
+        d.x = sqlite3_column_int(st, 2);
+        d.y = sqlite3_column_int(st, 3);
+        d.z = sqlite3_column_int(st, 4);
+        d.fetched = (time_t)sqlite3_column_int64(st, 5);
+        mLandmarks[LLUUID((const char*)a)] = d;
+    }
+    sqlite3_finalize(st);
+}
+
+const LumenAINoteCache::Destination* LumenAINoteCache::landmark(const LLUUID& asset_id)
+{
+    if (!mLandmarksLoaded) loadLandmarks();
+    auto it = mLandmarks.find(asset_id);
+    return it == mLandmarks.end() ? nullptr : &it->second;
+}
+
+size_t LumenAINoteCache::landmarkCount()
+{
+    if (!mLandmarksLoaded) loadLandmarks();
+    return mLandmarks.size();
+}
+
+void LumenAINoteCache::putLandmark(const LLUUID& asset_id, const LLUUID& region_id,
+                                   const Destination& d)
+{
+    if (!mLandmarksLoaded) loadLandmarks();
+    Destination& kept = mLandmarks[asset_id];
+    kept = d;
+    kept.fetched = time(nullptr);
+    if (!mDb)
+    {
+        return;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(mDb,
+            "INSERT OR REPLACE INTO landmarks (asset_id,region_id,region,x,y,z,fetched) "
+            "VALUES (?,?,?,?,?,?,?);", -1, &st, nullptr) != SQLITE_OK)
+    {
+        return;
+    }
+    const std::string asset  = asset_id.asString();
+    const std::string region = region_id.asString();
+    sqlite3_bind_text(st, 1, asset.c_str(),    -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, region.c_str(),   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, d.region.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 4, d.x);
+    sqlite3_bind_int(st, 5, d.y);
+    sqlite3_bind_int(st, 6, d.z);
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)time(nullptr));
+    if (sqlite3_step(st) != SQLITE_DONE)
+    {
+        LL_WARNS("LumenAINoteCache") << "Could not store landmark " << asset << LL_ENDL;
+    }
+    sqlite3_finalize(st);
 }

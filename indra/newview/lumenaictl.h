@@ -328,7 +328,43 @@ private:
     /** Whether a name for this object is still on its way. */
     bool nameOnItsWay(const LLUUID& id) const;
 
+    /**
+     * Reading where every landmark goes, quietly, after login.
+     *
+     * The author's call, 2026-09-23: landmarks before anything else, because
+     * teleporting is what people do the moment they arrive. Only landmarks not
+     * already in the database are read, so after the first session this is a
+     * handful at most. Paced -- a few in flight at once -- and it stands aside
+     * during a teleport, whose region handles it would be asking for.
+     */
+    std::deque<LLUUID> mLandmarkQueue;              // assets still to read
+    std::unordered_set<LLUUID> mLandmarkQueued;
+    std::unordered_map<LLUUID, F64> mLandmarkInFlight;
+    std::unordered_set<LLUUID> mLandmarkNaming;     // loaded, waiting for the region's name
+    std::unordered_set<LLUUID> mRegionsNoAnswer;    // asked this session and never answered
+    std::unordered_set<LLUUID> mRegionsNowhere;     // answered: no such region
+    S32  mLandmarksNowhere = 0;
+    std::unordered_set<LLUUID> mLandmarkGaveUp;     // this session only
+    bool mLandmarkFillUp = false;
+    bool mLandmarkScanned = false;
+    F64  mLandmarkFillStarted = 0.0;
+    S32  mLandmarksReadThisSession = 0;
+    void startLandmarkFill();
+    void pumpLandmarks();
+    void queueLandmark(const LLUUID& asset_id);
+
 public:
+    /** A landmark asset loaded, or its region was named: the two halves of a read. */
+    static void landmarkLoaded(const LLUUID& asset_id);
+    static void landmarkNamed(const LLUUID& asset_id, const std::string& region,
+                              S32 x, S32 y, S32 z);
+    /** A landmark just arrived in inventory. */
+    static void landmarkAdded(const LLUUID& asset_id);
+    /** Landmarks still waiting to be read, for an honest answer meanwhile. */
+    size_t landmarksStillReading() const { return mLandmarkQueue.size() + mLandmarkInFlight.size(); }
+    /** Whether inventory has been looked through for landmarks at all yet. */
+    bool landmarksScanned() const { return mLandmarkScanned; }
+
     /**
      * Called from llselectmgr.cpp when an object's properties arrive.
      *

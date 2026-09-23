@@ -37,6 +37,9 @@
 #include "rlvactions.h"
 #include "llviewercamera.h"
 #include "lumenainotecache.h"
+#include "lllandmarklist.h"      // <Lumen> where landmarks go
+#include "lllandmarkactions.h"
+#include "llinventorymodelbackgroundfetch.h"
 
 #include "llagent.h"
 #include "llvoavatar.h"
@@ -625,6 +628,11 @@ namespace
         return at;
     }
 
+    /** What a landmark to a vanished region is shown as. */
+    const char* const LANDMARK_NOWHERE =
+        "nowhere -- the region it points at is not on this grid any more, or the "
+        "landmark itself is broken";
+
     std::string lowered(const std::string& in)
     {
         std::string out(in);
@@ -949,6 +957,16 @@ namespace
         // by where they sit -- five skirts called "Skirt" differ by the body
         // folder above them, and without this the caller cannot tell them apart.
         out["folder"] = folderPath(item->getParentUUID());
+        // <Lumen> And where a landmark actually goes, once it has been read.
+        if (item->getType() == LLAssetType::AT_LANDMARK)
+        {
+            if (const LumenAINoteCache::Destination* d =
+                    LumenAINoteCache::instance().landmark(item->getAssetUUID()))
+            {
+                out["goes_to"] = d->leadsNowhere() ? std::string(LANDMARK_NOWHERE)
+                    : safeUtf8(llformat("%s (%d, %d, %d)", d->region.c_str(), d->x, d->y, d->z));
+            }
+        }
         return out;
     }
 
@@ -1969,18 +1987,26 @@ namespace
             return LLUUID::null;
         }
 
+        // Where each one really goes, from the landmark itself, read in the
+        // background after login. The description only says where it was MADE,
+        // and only when somebody left it alone.
         std::vector<std::vector<std::vector<std::string> > > things;
         std::vector<std::string> folders;
+        std::vector<const LumenAINoteCache::Destination*> goes;
+        S32 unknown = 0;
         things.reserve(items.size());
         for (const auto& item : items)
         {
             folders.push_back(folderPath(item->getParentUUID()));
+            goes.push_back(LumenAINoteCache::instance().landmark(item->getAssetUUID()));
+            if (!goes.back()) ++unknown;
             things.push_back({ labelWords(item->getName()),
+                               goes.back() ? labelWords(goes.back()->region) : std::vector<std::string>(),
                                labelWords(item->getDescription()),
                                labelWords(folders.back()) });
         }
         WordRank wr;
-        wr.rank(words, things, { "name", "description", "folder" });
+        wr.rank(words, things, { "name", "destination", "description", "folder" });
 
         const S32 useful = wr.usefulTerms();
         auto describe = [&](const WordRank::Candidate& c)
@@ -1991,6 +2017,11 @@ namespace
             one["name"] = safeUtf8(item->getName());
             if (!item->getDescription().empty()) one["description"] = safeUtf8(item->getDescription());
             one["folder"] = safeUtf8(folders[c.index]);
+            if (const LumenAINoteCache::Destination* d = goes[c.index])
+            {
+                one["goes_to"] = d->leadsNowhere() ? std::string(LANDMARK_NOWHERE)
+                    : safeUtf8(llformat("%s (%d, %d, %d)", d->region.c_str(), d->x, d->y, d->z));
+            }
             one["matched"] = c.why;
             return one;
         };
@@ -2019,6 +2050,19 @@ namespace
 
         if (!full.empty() && destinations.size() == 1)
         {
+            const LumenAINoteCache::Destination* d = goes[full.front()->index];
+            if (d && d->leadsNowhere())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That is the landmark \"" + safeUtf8(items[full.front()->index]->getName())
+                    + "\", but it leads nowhere -- its region is not on this grid any more, or the "
+                      "landmark itself is broken -- so teleporting would fail. Tell the user, and ask whether they know where the "
+                      "place is now.";
+                LLSD one = LLSD::emptyArray(); one.append(describe(*full.front()));
+                e["data"] = one;
+                error = e;
+                return LLUUID::null;
+            }
             how = describe(*full.front());
             if (wr.corrections.size()) how["read_as"] = wr.corrections;
             if (wr.ignored.size())     how["words_not_in_any_landmark"] = wr.ignored;
@@ -2075,6 +2119,14 @@ namespace
                            "the place -- say its name and region -- and teleport with its item_id "
                            "only once they say yes. Do not pick one yourself: a near match to a "
                            "landmark is a different place, not a nearer one.";
+        }
+        if (unknown > 0 && LumenAIControl::instanceExists()
+            && (LumenAIControl::instance().landmarksStillReading() > 0
+                || !LumenAIControl::instance().landmarksScanned()))
+        {
+            e["message"] = e["message"].asString()
+                + llformat(" (Where %d landmarks go is still being read in the background -- "
+                           "asking again in a minute may settle this without the question.)", unknown);
         }
         e["data"] = candidates;
         error = e;
@@ -2310,7 +2362,9 @@ namespace
             "corrected, and the result then carries `spelling_corrected` -- when it does, say "
             "what was changed, because they may have meant a different brand. "
             "Partial and case-insensitive, so \"skirt\" finds "
-            "\"Blue Silk Skirt\". Returns each item's id, name, kind, folder, **who created it**, "
+            "\"Blue Silk Skirt\". A landmark is also found by the REGION IT GOES TO and carries "
+            "`goes_to` -- so \"my landmarks in Rio Solimoes\" is `kind: landmark`, query "
+            "\"rio solimoes\". Returns each item's id, name, kind, folder, **who created it**, "
             "whether it is worn and whether it is copyable. **You do not need to open anything in "
             "the viewer to find out who made something -- it is in every result, as `creator` and "
             "`creator_name`, with `creator_link` beside it -- **write that link value verbatim "
@@ -3379,6 +3433,10 @@ void LumenAIControl::watchForLogin()
             // <Lumen> and offer the summary -- counting is free, writing is not.
             LumenAIChatFloater::offerAtLogin();
 
+            // <Lumen> Where every landmark goes, first of anything read in the
+            // background: teleporting is what people do the moment they arrive.
+            startLandmarkFill();
+
             LLEventPumps::instance().obtain("mainloop")
                 .stopListening("LumenAIControlLoginClock");
             mLoginClockUp = false;
@@ -4012,6 +4070,289 @@ void LumenAIControl::pumpNaming()
         LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlNaming");
         mNamingListenerUp = false;
     }
+}
+
+namespace
+{
+    // Each read is one small asset, one tiny region-handle message and, the
+    // first time a region is seen, one map lookup. Four at once with a thirty
+    // second wait took hours over an old collection, because a region that is
+    // gone mostly does not answer at all and every such read waited it out.
+    // A reply normally takes a fraction of a second.
+    constexpr size_t LANDMARKS_IN_FLIGHT = 16;
+    constexpr F64    LANDMARK_READ_WAIT  = 10.0;
+    // Inventory arrives in the background after login. Wait for it, but not
+    // for ever -- an account whose fetch never reports done still has
+    // landmarks worth reading.
+    constexpr F64    LANDMARK_SCAN_WAIT  = 300.0;
+
+    /** Tells the reader when a landmark arrives in inventory mid-session. */
+    class LandmarkArrivals : public LLInventoryObserver
+    {
+    public:
+        void changed(U32 mask) override
+        {
+            if (!(mask & LLInventoryObserver::ADD))
+            {
+                return;
+            }
+            for (const LLUUID& id : gInventory.getAddedIDs())
+            {
+                LLViewerInventoryItem* item = gInventory.getItem(id);
+                if (item && !item->getIsLinkType() && item->getType() == LLAssetType::AT_LANDMARK)
+                {
+                    LumenAIControl::landmarkAdded(item->getAssetUUID());
+                }
+            }
+        }
+    };
+}
+
+void LumenAIControl::startLandmarkFill()
+{
+    if (mLandmarkFillUp)
+    {
+        return;
+    }
+    if (!mLandmarkScanned)
+    {
+        mLandmarkFillStarted = LLTimer::getTotalSeconds();
+    }
+
+    // The model owns observers and deletes them at cleanup, so this is never
+    // deleted here -- deleting our own was a crash on quit once already.
+    static bool watching = false;
+    if (!watching)
+    {
+        gInventory.addObserver(new LandmarkArrivals());
+        watching = true;
+    }
+
+    mLandmarkFillUp = true;
+    LLEventPumps::instance().obtain("mainloop").listen(
+        "LumenAIControlLandmarks",
+        [this](const LLSD&)
+        {
+            pumpLandmarks();
+            return false;
+        });
+}
+
+void LumenAIControl::queueLandmark(const LLUUID& asset_id)
+{
+    if (asset_id.isNull() || mLandmarkQueued.count(asset_id) || mLandmarkInFlight.count(asset_id)
+        || mLandmarkGaveUp.count(asset_id))
+    {
+        return;
+    }
+    // Known is known -- a landmark never changes where it points. A region
+    // reported gone is looked at again after a month, in case it came back.
+    if (const LumenAINoteCache::Destination* d = LumenAINoteCache::instance().landmark(asset_id))
+    {
+        if (!d->leadsNowhere() || time(nullptr) - d->fetched < 30 * 24 * 3600)
+        {
+            return;
+        }
+    }
+    mLandmarkQueue.push_back(asset_id);
+    mLandmarkQueued.insert(asset_id);
+}
+
+// static
+void LumenAIControl::landmarkAdded(const LLUUID& asset_id)
+{
+    if (!LumenAIControl::instanceExists())
+    {
+        return;
+    }
+    LumenAIControl& self = LumenAIControl::instance();
+    self.queueLandmark(asset_id);
+    // Before the first scan the reader is already waiting and will find it.
+    if (self.mLandmarkScanned && !self.mLandmarkQueue.empty())
+    {
+        self.startLandmarkFill();
+    }
+}
+
+void LumenAIControl::pumpLandmarks()
+{
+    const F64 now = LLTimer::getTotalSeconds();
+
+    // Not while arriving somewhere: the region handle for a landmark is asked
+    // of the region we are in, and mid-teleport there is none to ask.
+    if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+        || !gAgent.getRegion() || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE)
+    {
+        return;
+    }
+
+    if (!mLandmarkScanned)
+    {
+        if (!LLInventoryModelBackgroundFetch::instance().isEverythingFetched()
+            && now - mLandmarkFillStarted < LANDMARK_SCAN_WAIT)
+        {
+            return;
+        }
+        LLInventoryModel::cat_array_t cats;
+        LLInventoryModel::item_array_t items;
+        LandmarksOnly functor;
+        gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, functor);
+        for (const auto& item : items)
+        {
+            queueLandmark(item->getAssetUUID());
+        }
+        mLandmarkScanned = true;
+        LL_INFOS("AICtl") << "Landmarks: " << items.size() << " in inventory, "
+                          << LumenAINoteCache::instance().landmarkCount()
+                          << " destinations already known, " << mLandmarkQueue.size()
+                          << " to read." << LL_ENDL;
+    }
+
+    for (auto it = mLandmarkInFlight.begin(); it != mLandmarkInFlight.end(); )
+    {
+        const LLUUID& asset = it->first;
+        // The viewer drops its callback, silently, both when the asset is
+        // missing and when the region answers that it does not exist. Waiting
+        // out the full timeout for each made a collection of old landmarks take
+        // hours on the beta grid, where most main-grid regions are absent. So
+        // look: parsed or known-bad, and no longer waiting on anything, while
+        // we are still waiting -- the answer came, and it was "nowhere".
+        // A reply that is merely LOST leaves neither mark, so it still times out
+        // and is retried next session rather than recorded as gone.
+        if (!mLandmarkNaming.count(asset) && now - it->second > 1.0
+            && gLandmarkList.assetExists(asset))
+        {
+            LLLandmark* lm = gLandmarkList.getAsset(asset);
+            LLVector3d pos;
+            LLUUID region_id;
+            if (lm) lm->getRegionID(region_id);
+            const bool answered_nowhere = !gLandmarkList.isAssetInLoadedCallbackMap(asset)
+                                          && (!lm || !lm->getGlobalPos(pos));
+            // Another landmark to the same region has already been told.
+            if (answered_nowhere || (region_id.notNull() && mRegionsNowhere.count(region_id)))
+            {
+                if (region_id.notNull()) mRegionsNowhere.insert(region_id);
+                LumenAINoteCache::instance().putLandmark(asset, region_id, LumenAINoteCache::Destination());
+                ++mLandmarksNowhere;
+                it = mLandmarkInFlight.erase(it);
+                continue;
+            }
+            if (region_id.notNull() && mRegionsNoAnswer.count(region_id))
+            {
+                mLandmarkGaveUp.insert(asset);   // that region did not answer this session
+                it = mLandmarkInFlight.erase(it);
+                continue;
+            }
+        }
+        if (now - it->second > LANDMARK_READ_WAIT)
+        {
+            // Missing assets and lost replies both end here. Tried again next
+            // session, not every frame of this one -- and so is every other
+            // landmark to a region that did not answer.
+            if (LLLandmark* lm = gLandmarkList.getAsset(it->first))
+            {
+                LLUUID region_id;
+                if (lm->getRegionID(region_id) && region_id.notNull()
+                    && !mLandmarkNaming.count(it->first))
+                {
+                    mRegionsNoAnswer.insert(region_id);
+                }
+            }
+            mLandmarkGaveUp.insert(it->first);
+            mLandmarkNaming.erase(it->first);
+            it = mLandmarkInFlight.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    while (mLandmarkInFlight.size() < LANDMARKS_IN_FLIGHT && !mLandmarkQueue.empty())
+    {
+        const LLUUID asset = mLandmarkQueue.front();
+        mLandmarkQueue.pop_front();
+        mLandmarkQueued.erase(asset);
+        if (LumenAINoteCache::instance().landmark(asset))
+        {
+            continue;
+        }
+        mLandmarkInFlight[asset] = now;
+        LLLandmark* lm = gLandmarkList.getAsset(asset,
+            [asset](LLLandmark*) { LumenAIControl::landmarkLoaded(asset); });
+        LLVector3d ignored;
+        if (lm && lm->getGlobalPos(ignored))
+        {
+            // Already complete, and getAsset calls back only for the incomplete.
+            landmarkLoaded(asset);
+        }
+    }
+
+    if (mLandmarkQueue.empty() && mLandmarkInFlight.empty())
+    {
+        LL_INFOS("AICtl") << "Landmarks: read " << mLandmarksReadThisSession
+                          << " this session (" << mLandmarksNowhere << " lead to a region that "
+                          << "does not exist), " << mLandmarkGaveUp.size()
+                          << " did not answer; " << LumenAINoteCache::instance().landmarkCount()
+                          << " destinations known." << LL_ENDL;
+        // Searches match a landmark's destination too, so they need rebuilding.
+        if (mLandmarksReadThisSession > mLandmarksNowhere)
+        {
+            LumenAIIndex::instance().invalidate();
+        }
+        LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlLandmarks");
+        mLandmarkFillUp = false;
+    }
+}
+
+// static
+void LumenAIControl::landmarkLoaded(const LLUUID& asset_id)
+{
+    if (!LumenAIControl::instanceExists()
+        || !LumenAIControl::instance().mLandmarkInFlight.count(asset_id))
+    {
+        return;
+    }
+    LLLandmark* lm = gLandmarkList.getAsset(asset_id);
+    LLVector3d global;
+    if (!lm || !lm->getGlobalPos(global))
+    {
+        return;   // the timeout will account for it
+    }
+    // The viewer's own route from a position to a region's name: the world
+    // map's cache, or one map request the first time a region is seen.
+    LumenAIControl::instance().mLandmarkNaming.insert(asset_id);
+    LLLandmarkActions::getRegionNameAndCoordsFromPosGlobal(global,
+        [asset_id](std::string& region, S32 x, S32 y, S32 z)
+        {
+            LumenAIControl::landmarkNamed(asset_id, region, x, y, z);
+        });
+}
+
+// static
+void LumenAIControl::landmarkNamed(const LLUUID& asset_id, const std::string& region,
+                                   S32 x, S32 y, S32 z)
+{
+    if (!LumenAIControl::instanceExists())
+    {
+        return;
+    }
+    LumenAIControl& self = LumenAIControl::instance();
+    self.mLandmarkNaming.erase(asset_id);
+    if (!self.mLandmarkInFlight.erase(asset_id) || region.empty())
+    {
+        return;
+    }
+    LLUUID region_id;
+    if (LLLandmark* lm = gLandmarkList.getAsset(asset_id))
+    {
+        lm->getRegionID(region_id);
+    }
+    LumenAINoteCache::Destination d;
+    d.region = region;
+    d.x = x; d.y = y; d.z = z;
+    LumenAINoteCache::instance().putLandmark(asset_id, region_id, d);
+    ++self.mLandmarksReadThisSession;
 }
 
 void LumenAIControl::suppressAutoOpen(const std::string& name)
@@ -12417,7 +12758,31 @@ if (method == "camera")
         // would work until a notification had a form element that is not a
         // button, and then it would answer the wrong thing.
         LLSD response = n->getResponseTemplate();
-        if (!response.has(choice))
+        // The label is what read_dialogues shows and what anybody would say --
+        // "Quit", not "OK_okcancelignore". Accept it when exactly one button
+        // carries it; two buttons with the same words is a question, not a match.
+        std::string chosen = choice;
+        if (!response.has(chosen))
+        {
+            if (LLNotificationFormPtr form = n->getForm())
+            {
+                LLSD elements;
+                form->getElements(elements);
+                S32 hits = 0;
+                for (LLSD::array_const_iterator it = elements.beginArray(); it != elements.endArray(); ++it)
+                {
+                    const LLSD& el = *it;
+                    if (el["type"].asString() != "button" || !el.has("text")) continue;
+                    if (lowered(el["text"].asString()) == lowered(choice))
+                    {
+                        ++hits;
+                        chosen = el["name"].asString();
+                    }
+                }
+                if (hits != 1) chosen = choice;
+            }
+        }
+        if (!response.has(chosen))
         {
             LLSD offered = LLSD::emptyArray();
             for (LLSD::map_const_iterator it = response.beginMap(); it != response.endMap(); ++it)
@@ -12429,17 +12794,17 @@ if (method == "camera")
             e["data"] = offered;
             LLSD w; w["__error"] = e; return w;
         }
-        response[choice] = true;
+        response[chosen] = true;
 
         const std::string kind = n->getName();
         const std::string text = safeUtf8(n->getMessage());
         n->respond(response);
 
-        LL_INFOS("AICtl") << "answer_dialogue: " << kind << " answered with " << choice << LL_ENDL;
+        LL_INFOS("AICtl") << "answer_dialogue: " << kind << " answered with " << chosen << LL_ENDL;
 
         LLSD result;
         result["answered"] = kind;
-        result["choice"] = choice;
+        result["choice"] = chosen;
         result["confirm_with"] =
             "Answered. What follows depends on what it was -- an accepted offer arrives in "
             "inventory, an accepted teleport moves the avatar. Check with search_inventory or "
@@ -12450,7 +12815,7 @@ if (method == "camera")
         // to be able to look back at.
         LLSD summary;
         summary["dialogue"] = kind;
-        summary["choice"] = choice;
+        summary["choice"] = chosen;
         summary["said"] = text.size() > 200 ? text.substr(0, 200) + "..." : text;
         recordAction(std::string(), fingerprintOf("answer_dialogue", params),
                      "answer_dialogue", "ok", result, summary);

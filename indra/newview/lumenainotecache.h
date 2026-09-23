@@ -32,6 +32,7 @@
 #include "lluuid.h"
 
 #include <string>
+#include <unordered_map>
 
 struct sqlite3;
 
@@ -89,9 +90,45 @@ public:
     /** Throw the whole thing away and start again. */
     void clear();
 
+    /**
+     * Where a landmark takes you, as the landmark itself says.
+     *
+     * A landmark's name and description are whatever somebody typed or left
+     * behind; its DESTINATION is in the asset. Whisper's "Amazon Hut" had an
+     * empty description, so nothing the viewer could read said it was in Rio
+     * Solimoes -- and her "take me to my hut in Rio Solimoes" could only be
+     * answered with a question.
+     *
+     * Keyed by ASSET, not item: a landmark never changes where it points --
+     * editing makes a new asset -- so a row can never go stale, and every copy
+     * of one landmark shares it. The one thing that can drift is the region's
+     * NAME, if the region is renamed; the id is kept for that day.
+     */
+    struct Destination
+    {
+        std::string region;       // empty: the region answered that it does not exist
+        S32 x = 0, y = 0, z = 0;
+        time_t fetched = 0;
+        /** A landmark to a region that is gone -- worth knowing, not worth teleporting to. */
+        bool leadsNowhere() const { return region.empty(); }
+    };
+
+    /** The destination for this landmark asset, or NULL if not read yet. */
+    const Destination* landmark(const LLUUID& asset_id);
+
+    /** Remember a destination. Kept in memory even when the file is unavailable. */
+    void putLandmark(const LLUUID& asset_id, const LLUUID& region_id, const Destination& d);
+
+    /** How many landmark destinations are known. */
+    size_t landmarkCount();
+
 private:
     sqlite3*    mDb = nullptr;
     std::string mPath;
+
+    std::unordered_map<LLUUID, Destination> mLandmarks;
+    bool        mLandmarksLoaded = false;
+    void        loadLandmarks();
 
     bool open();
     void close();

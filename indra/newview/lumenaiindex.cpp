@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lumenaiindex.h"
+#include "lumenainotecache.h"   // <Lumen> landmark destinations
 
 #include "llinventorymodel.h"
 #include "llinventoryobserver.h"
@@ -162,6 +163,18 @@ void LumenAIIndex::build()
         e.lname   = lowered(it->getName());
         e.lfolder = folderPathLower(it->getParentUUID(), path_cache);
         e.type    = it->getType();
+        // <Lumen> A landmark is also found by where it GOES: "my landmarks in
+        // Rio Solimoes" is a question about destinations, which the name and
+        // folder often do not mention. Read in the background after login.
+        if (e.type == LLAssetType::AT_LANDMARK)
+        {
+            const LumenAINoteCache::Destination* d =
+                LumenAINoteCache::instance().landmark(it->getAssetUUID());
+            if (d && !d->leadsNowhere())
+            {
+                e.lfolder += " > " + lowered(d->region);
+            }
+        }
         e.creator  = it->getPermissions().getCreator();
         e.acquired = it->getCreationDate();
         mEntries.push_back(std::move(e));
