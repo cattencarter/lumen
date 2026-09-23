@@ -351,7 +351,7 @@ private:
     S32  mLandmarksReadThisSession = 0;
     void startLandmarkFill();
     void pumpLandmarks();
-    void queueLandmark(const LLUUID& asset_id);
+    void queueLandmark(const LLUUID& asset_id, bool first = false);
 
 public:
     /** A landmark asset loaded, or its region was named: the two halves of a read. */

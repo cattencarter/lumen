@@ -670,6 +670,7 @@ namespace
             if (action == "look_nearby")   return "Looking around";
             if (action == "worn_by")     return "Looking at what they are wearing";
             if (action == "where_am_i")    return "Checking location";
+            if (action == "landmark")      return "Making a landmark";
             if (action == "camera")        return "Setting up the shot";
             if (action == "follow")        return "Following";
             if (action == "pose")          return "Posing";

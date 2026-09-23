@@ -197,6 +197,11 @@ def main():
         ("build",    "remove"):         {"object_id": NULL_UUID},
         ("build",    "link"):           {"object_id": NULL_UUID},
         ("build",    "unlink"):         {"object_id": NULL_UUID},
+
+        # There is no harmless landmark either -- every call makes one. A name
+        # past Second Life's 63-character limit is refused by the handler
+        # before anything is created, which proves the action is reached.
+        ("movement", "landmark"):       {"name": "x" * 70},
     }
 
     # And a net, because the table above is hand-written and the next action

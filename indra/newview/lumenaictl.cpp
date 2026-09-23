@@ -39,6 +39,8 @@
 #include "lumenainotecache.h"
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
+#include "llagentui.h"
+#include "lldbstrings.h"    // <Lumen> the 63-character name limit
 #include "llinventorymodelbackgroundfetch.h"
 
 #include "llagent.h"
@@ -2217,6 +2219,7 @@ namespace
             if (action == "fly")           return "fly";
             if (action == "turn")          return "turn";
             if (action == "where_am_i")    return "where_am_i";
+            if (action == "landmark")      return "create_landmark";
             if (action == "follow")        return "follow";
             if (action == "camera")        return "camera";
             if (action == "pose")          return "pose";
@@ -2333,7 +2336,8 @@ namespace
         LLSD snm;  snm["type"]="string";
             snm["description"]="A name. What it names depends on the action: the item for wear, "
                                "detach and read_notecard; the folder for list_folder; the new "
-                               "card's title for create_notecard; the person for send_im. A name "
+                               "card's title for create_notecard; the new landmark's name for "
+                               "landmark; the person for send_im. A name "
                                "matching more than one thing is refused, with the candidates "
                                "returned, so you can ask which was meant.";
         LLSD srq;  srq["type"]="string";
@@ -2619,7 +2623,7 @@ namespace
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
               "follow", "camera", "pose", "stop_pose", "save_photo",
-              "fly", "turn", "where_am_i" };
+              "fly", "turn", "where_am_i", "landmark" };
         LLSD move;
         move["name"] = "movement";
         move["description"] =
@@ -2696,6 +2700,11 @@ namespace
             "- sit: on an object by `object_id`, or `ground: true` where the avatar stands. An "
             "object decides whether the avatar may sit and where it ends up.\n"
             "- stand: get up.\n"
+            "- landmark: make a landmark of where the avatar is standing, in the Landmarks folder "
+            "-- World > Landmark This Place. `name` is optional; without it the landmark is named "
+            "after the parcel, as the viewer does. Use it for \"landmark this\", \"remember this "
+            "place\", \"save where I am\". If this spot already has one, that one is returned "
+            "and no copy is made.\n"
             "- where_am_i: the parcel underfoot -- its name, who owns it, and what it allows. "
             "Check this when something did not work: flying, running scripts and taking damage "
             "are all things a parcel can forbid, and that is usually the reason rather than a "
@@ -4138,7 +4147,7 @@ void LumenAIControl::startLandmarkFill()
         });
 }
 
-void LumenAIControl::queueLandmark(const LLUUID& asset_id)
+void LumenAIControl::queueLandmark(const LLUUID& asset_id, bool first)
 {
     if (asset_id.isNull() || mLandmarkQueued.count(asset_id) || mLandmarkInFlight.count(asset_id)
         || mLandmarkGaveUp.count(asset_id))
@@ -4154,7 +4163,10 @@ void LumenAIControl::queueLandmark(const LLUUID& asset_id)
             return;
         }
     }
-    mLandmarkQueue.push_back(asset_id);
+    // One that just arrived goes first: it is the one somebody is about to ask
+    // about, and on a large collection it would otherwise wait behind the lot.
+    if (first) mLandmarkQueue.push_front(asset_id);
+    else       mLandmarkQueue.push_back(asset_id);
     mLandmarkQueued.insert(asset_id);
 }
 
@@ -4166,7 +4178,7 @@ void LumenAIControl::landmarkAdded(const LLUUID& asset_id)
         return;
     }
     LumenAIControl& self = LumenAIControl::instance();
-    self.queueLandmark(asset_id);
+    self.queueLandmark(asset_id, true);
     // Before the first scan the reader is already waiting and will find it.
     if (self.mLandmarkScanned && !self.mLandmarkQueue.empty())
     {
@@ -7434,6 +7446,93 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         summary["characters"] = (LLSD::Integer)text.size();
         recordAction(request_id, fingerprintOf("create_notecard", params),
                      "create_notecard", "ok", result, summary);
+        return result;
+    }
+
+    // <Lumen> World > Landmark This Place, from the conversation.
+    //
+    // The same function the menu's panel ends in, with the same two refusals the
+    // menu applies (llviewermenu.cpp, LLWorldEnableCreateLandmark): RLV hiding
+    // the location, and a landmark for this spot already existing -- returned
+    // rather than duplicated, because a second copy of "Blake Sea - Yellow" is
+    // never what "landmark this" meant.
+    if (method == "create_landmark")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+            || !gAgent.getRegion() || !LLViewerParcelMgr::getInstance()->getAgentParcel())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not standing anywhere yet -- not logged in, or mid-teleport.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_SHOWLOC))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing (an RLV restriction) hides where they "
+                           "are, so no landmark can be made here. Say that, rather than that it failed.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id already made a landmark; another was not created.";
+            return replay;
+        }
+        if (recallRecent(fingerprintOf("create_landmark", params), 60.0, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "A landmark was just made here, so this was treated as a retry. "
+                             "Nothing was created a second time.";
+            return replay;
+        }
+
+        std::string name = params.has("name") ? params["name"].asString() : std::string();
+        LLStringUtil::trim(name);
+        // Second Life cuts an inventory name at 63 bytes without saying so. A
+        // refusal the caller can act on beats a landmark quietly called
+        // something else.
+        if (name.size() > (size_t)DB_INV_ITEM_NAME_STR_LEN)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = llformat("A landmark name can be at most %d characters; that one is %d. "
+                                    "Shorten it, or leave it out to name it after the parcel.",
+                                    DB_INV_ITEM_NAME_STR_LEN, (S32)name.size());
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (LLViewerInventoryItem* existing = LLLandmarkActions::findLandmarkForAgentPos())
+        {
+            LLSD result = itemToLLSD(existing);
+            result["already_landmarked"] = true;
+            result["note"] = "There is already a landmark for this spot, so no copy was made. "
+                             "Tell the user its name.";
+            return result;
+        }
+
+        std::string where_name, where_full;
+        LLAgentUI::buildLocationString(where_name, LLAgentUI::LOCATION_FORMAT_LANDMARK);
+        LLAgentUI::buildLocationString(where_full, LLAgentUI::LOCATION_FORMAT_FULL);
+        if (name.empty()) name = where_name;
+        // The description is where Second Life writes the region and position,
+        // and it is what anyone reading the landmark later relies on -- so it is
+        // the viewer's own text whatever the name is.
+        const LLUUID folder = gInventory.findCategoryUUIDForType(LLFolderType::FT_LANDMARK);
+        LLLandmarkActions::createLandmarkHere(name, where_full, folder);
+
+        LLSD result;
+        result["asked"] = true;
+        result["name"] = safeUtf8(name);
+        result["description"] = safeUtf8(where_full);
+        result["folder"] = folderPath(folder);
+        result["note"] = "Second Life has been asked to make it; it appears in Landmarks within a "
+                         "few seconds. Say it is being made, not that it is done -- search for it "
+                         "by name if they want it confirmed.";
+        LLSD summary;
+        summary["name"] = safeUtf8(name);
+        recordAction(request_id, fingerprintOf("create_landmark", params),
+                     "create_landmark", "ok", result, summary);
         return result;
     }
 
