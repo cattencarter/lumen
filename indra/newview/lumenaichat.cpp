@@ -2417,6 +2417,7 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
 
     // Then read until the turn ends. Deltas are collected rather than printed
     // one letter at a time -- the transcript is a chat log, not a teletype.
+    S32 allowance_used = -1;
     std::string answer;
     const F64 until = LLTimer::getTotalSeconds() + 300.0;
     LLSD msg;
@@ -2464,11 +2465,14 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         else if (method == "account/rateLimits/updated")
         {
+            // Kept, not shown yet: written into the status line mid-turn it
+            // replaced "Working", and the window looked finished while Codex
+            // was still thinking -- the author's catch. It is shown once the
+            // answer is in.
             const LLSD& p = msg["params"]["rateLimits"]["primary"];
             if (p.has("usedPercent"))
             {
-                setActivity(llformat("%d%% of your Codex allowance used",
-                                     p["usedPercent"].asInteger()));
+                allowance_used = p["usedPercent"].asInteger();
             }
         }
     }
@@ -2477,6 +2481,10 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
     else                 sayNote("Codex finished without saying anything.");
     noticeCodexMemory();   // a forget during this reply
     setBusy(false);
+    if (allowance_used >= 0)
+    {
+        setActivity(llformat("%d%% of your Codex allowance used", allowance_used));
+    }
 }
 
 // <Lumen> The author's call: tell them, rather than start the conversation
