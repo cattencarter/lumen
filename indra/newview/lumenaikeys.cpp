@@ -866,6 +866,18 @@ void LumenPanelPreferenceAIKeys::followTheKey()
     {
         return;                                   // it can work; leave it alone
     }
+    // <Lumen> "Has a key" is the wrong question for the providers that never
+    // take one. Codex and Claude Code are the person's own subscription, and a
+    // local model has an address: none of them ever "has a key", so choosing
+    // one and pressing OK in Preferences silently switched to OpenAI whenever
+    // an OpenAI key was saved -- the author: "no idea why it changed away from
+    // codex". The same mistake Decisions 144 fixed for the away-responder.
+    // This only ever meant to rescue a key provider, or none, with no key.
+    if (chosen != LumenAIKeys::ANTHROPIC && chosen != LumenAIKeys::OPENAI && chosen != "none"
+        && !chosen.empty())
+    {
+        return;
+    }
 
     const std::string other = (chosen == LumenAIKeys::OPENAI)
                             ? LumenAIKeys::ANTHROPIC : LumenAIKeys::OPENAI;

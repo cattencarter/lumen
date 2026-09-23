@@ -2638,8 +2638,10 @@ namespace
             "It teleports only when one landmark matches all of them; otherwise it answers with "
             "candidates, and you ask the user which (name and region) before trying again with "
             "that landmark's item_id.\n"
-            "- walk_to: on foot within the region already occupied. Three ways to say where: x and "
-            "y; a person's name; or a `direction` and a `distance` in metres. Directions are "
+            "- walk_to: on foot within the region already occupied. Four ways to say where: "
+            "**`object_id` from look_nearby, for any thing**; x and y; a person's name; or a "
+            "`direction` and a `distance` in metres. Never invent coordinates for something you "
+            "found -- use its object_id. Directions are "
             "either fixed (north, south, east, west and the between ones) or relative to the way "
             "the avatar is facing (forward, back, left, right). For short distances in sight; use "
             "teleport to cross the grid.\n"
@@ -2745,7 +2747,7 @@ namespace
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
         LLSD mz;  mz["type"]="number";  mz["description"]="teleport: height; 0 means ground level.";
         LLSD mh;  mh["type"]="boolean"; mh["description"]="teleport: true goes home and ignores region.";
-        LLSD mo;  mo["type"]="string";  mo["description"]="sit: the object's id, from look_nearby.";
+        LLSD mo;  mo["type"]="string";  mo["description"]="sit / walk_to: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
         LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256.";
         LLSD mfind; mfind["type"]="string";
@@ -10320,26 +10322,11 @@ if (method == "camera")
         LLVector3d target;
         std::string described;
 
-        if (params.has("name") && !params["name"].asString().empty())
-        {
-            LLSD who_error;
-            const LLUUID person = resolvePerson(params, who_error);
-            if (person.isNull())
-            {
-                LLSD w; w["__error"] = who_error; return w;
-            }
-            LLVector3d where;
-            if (!LLWorld::getInstance()->getAvatar(person, where))
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "That person is not close enough to walk to. They may be in "
-                               "another region; teleport instead.";
-                LLSD w; w["__error"] = e; return w;
-            }
-            target = where;
-            described = params["name"].asString();
-        }
-        else if (params.has("object_id"))
+        // **An object first, then a name.** The name branch used to run first,
+        // so a call carrying an object_id AND a name went looking for a PERSON
+        // by that name and failed -- and the object branch's own use of `name`
+        // as a label could never run.
+        if (params.has("object_id"))
         {
             // Walking to a thing rather than a person or a coordinate. The id
             // comes from look_nearby, which is the only place the caller can
@@ -10355,8 +10342,67 @@ if (method == "camera")
             }
             target = obj->getPositionGlobal();
             described = "the object";
+            if (const ObjectLabel* label = objectLabel(obj_id))
+            {
+                if (!label->name.empty()) described = label->name;
+            }
             if (params.has("name") && !params["name"].asString().empty())
             {
+                described = params["name"].asString();
+            }
+        }
+        else if (params.has("name") && !params["name"].asString().empty())
+        {
+            LLSD who_error;
+            const LLUUID person = resolvePerson(params, who_error);
+            if (person.isNull())
+            {
+                // **Not a person -- perhaps a thing.** Asked to walk to "the
+                // metal anchor", a model passed the name look_nearby had just
+                // given it, was told nobody by that name was nearby, and then
+                // walked to x 0, y 0 -- the corner of the region -- and called it
+                // "the reported direction". A name that is exactly an object's
+                // near here is what it meant.
+                const std::string want = lowered(params["name"].asString());
+                const LLVector3d me = gAgent.getPositionGlobal();
+                LLViewerObject* best = NULL;
+                F32 best_d = 97.f;
+                S32 same = 0;
+                const S32 count = gObjectList.getNumObjects();
+                for (S32 i = 0; i < count; ++i)
+                {
+                    LLViewerObject* o = gObjectList.getObject(i);
+                    if (!o || o->isDead() || o->isAttachment() || o->getRootEdit() != o) continue;
+                    const ObjectLabel* label = objectLabel(o->getID());
+                    if (!label || lowered(label->name) != want) continue;
+                    const F32 d = (F32)(o->getPositionGlobal() - me).magVec();
+                    if (d > 96.f) continue;
+                    ++same;
+                    if (d < best_d) { best_d = d; best = o; }
+                }
+                if (!best)
+                {
+                    LLSD e = who_error;
+                    e["message"] = who_error["message"].asString()
+                        + " To walk to a THING, pass its object_id from look_nearby. Never make "
+                          "up coordinates to walk to instead.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                target = best->getPositionGlobal();
+                described = params["name"].asString();
+                if (same > 1) described += llformat(" (the nearest of %d)", same);
+            }
+            else
+            {
+                LLVector3d where;
+                if (!LLWorld::getInstance()->getAvatar(person, where))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "That person is not close enough to walk to. They may be in "
+                                   "another region; teleport instead.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                target = where;
                 described = params["name"].asString();
             }
         }
