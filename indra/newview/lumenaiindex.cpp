@@ -283,8 +283,8 @@ std::string LumenAIIndex::folderPathLower(const LLUUID& cat_id,
     return path;
 }
 
-/** Levenshtein distance, abandoned as soon as it exceeds @a cap. */
-static S32 editDistance(const std::string& a, const std::string& b, S32 cap)
+// static
+S32 LumenAIIndex::editDistance(const std::string& a, const std::string& b, S32 cap)
 {
     const size_t n = a.size(), m = b.size();
     if ((S32)(n > m ? n - m : m - n) > cap)

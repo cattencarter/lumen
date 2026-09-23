@@ -6224,6 +6224,13 @@ void LLSelectMgr::processObjectProperties(LLMessageSystem* msg, void** user_data
         std::string desc;
         msg->getStringFast(_PREHASH_ObjectData, _PREHASH_Description, desc, i);
 
+        // <Lumen> Names for the assistant's look_nearby, from every reply
+        // whoever asked -- our bulk requests, Area Search's, the user's own
+        // selections. True means look_nearby asked, so the warning below that
+        // the object is not selected is ours to skip, as it is Area Search's.
+        const bool lumen_asked = LumenAIControl::noteObjectName(id, name, desc);
+        // </Lumen>
+
         std::string touch_name;
         msg->getStringFast(_PREHASH_ObjectData, _PREHASH_TouchName, touch_name, i);
         std::string sit_name;
@@ -6262,7 +6269,8 @@ void LLSelectMgr::processObjectProperties(LLMessageSystem* msg, void** user_data
         {
             // <FS:Techwolf Lupindo> area search
             FSAreaSearch* area_search_floater = LLFloaterReg::findTypedInstance<FSAreaSearch>("area_search");
-            if (!area_search_floater || !area_search_floater->isActive()) // Don't spam the log when areasearch is active.
+            if ((!area_search_floater || !area_search_floater->isActive()) // Don't spam the log when areasearch is active.
+                && !lumen_asked) // <Lumen/> nor for look_nearby's own requests
             {
             // </FS:Techwolf Lupindo>
             LL_WARNS() << "Couldn't find object " << id << " selected." << LL_ENDL;
@@ -6439,7 +6447,7 @@ void LLSelectMgr::processObjectPropertiesFamily(LLMessageSystem* msg, void** use
     // <Lumen> Remember the name for the assistant endpoint's look_nearby.
     // These replies are the only place an object's name is ever given to the
     // viewer, and every existing consumer hands it straight to a floater.
-    LumenAIControl::noteObjectName(id, name);
+    LumenAIControl::noteObjectName(id, name, desc);
     // </Lumen>
 
     // the reporter widget askes the server for info about picked objects

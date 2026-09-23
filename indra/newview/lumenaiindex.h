@@ -145,6 +145,14 @@ public:
      */
     std::string correctWord(const std::string& word);
 
+    /**
+     * Levenshtein distance, abandoned as soon as it exceeds @a cap.
+     *
+     * Public because look_nearby and the landmark lookup need the same measure
+     * of "one letter wrong", and two copies of it would drift.
+     */
+    static S32 editDistance(const std::string& a, const std::string& b, S32 cap);
+
     /** Whether @a w appears anywhere in any name or folder. */
     bool known(const std::string& w) const;
 

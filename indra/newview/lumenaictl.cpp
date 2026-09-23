@@ -1565,6 +1565,277 @@ namespace
         delete want;
     }
 
+    /**
+     * The words in a name or description, lowercased: letters and digits, with
+     * anything past ASCII kept inside a word so a decorated or non-English name
+     * is not shredded into nothing.
+     */
+    std::vector<std::string> labelWords(const std::string& text)
+    {
+        std::vector<std::string> out;
+        std::string w;
+        for (unsigned char c : text)
+        {
+            if (isalnum(c) || c >= 0x80)
+            {
+                w += (char)tolower(c);
+            }
+            else if (!w.empty())
+            {
+                out.push_back(w);
+                w.clear();
+            }
+        }
+        if (!w.empty())
+        {
+            out.push_back(w);
+        }
+        return out;
+    }
+
+    /** "market" and "markets" are the same word to anybody looking for one. */
+    bool sameWord(const std::string& q, const std::string& t)
+    {
+        if (q == t)
+        {
+            return true;
+        }
+        auto plural = [](const std::string& a, const std::string& b)
+        {
+            if (b.size() <= a.size() || b.compare(0, a.size(), a) != 0)
+            {
+                return false;
+            }
+            const std::string tail = b.substr(a.size());
+            return tail == "s" || tail == "es";
+        };
+        return plural(q, t) || plural(t, q);
+    }
+
+    /**
+     * Ranking things by the words somebody used for them, loosely, and saying
+     * exactly how loosely each one matched.
+     *
+     * Shared by look_nearby and the landmark teleport, which failed the same
+     * way: a word the user said was matched literally or not at all, and the
+     * tool then answered as if that settled it. "Hut" exactly naming one
+     * landmark beat "Amazon Hut" in Rio Solimoes, which was the place she
+     * meant -- because "an exact name settles it" never asked whether the
+     * other words she used pointed somewhere else.
+     *
+     * Each thing has fields in order of how much they say about it: an
+     * object's name then its description; a landmark's name, its description
+     * (where Second Life writes the region) and its folder.
+     *
+     * Three kinds of match, and the difference is the point:
+     * - a WHOLE WORD ("hut", "huts");
+     * - INSIDE a longer word ("market" in "supermarket"), or in a lesser field;
+     * - SPELLED LIKE it, one letter off for a short word and two for a long
+     *   one -- tried only for a word that is nowhere at all, so a correctly
+     *   spelled search cannot be made worse, and always reported as a guess.
+     * A run-together word ("tapimarket") is split when both halves are real
+     * words here, which is a certainty rather than a guess.
+     */
+    struct WordRank
+    {
+        struct Candidate
+        {
+            size_t index = 0;           // into the caller's list
+            S32    score = 0;
+            S32    terms_matched = 0;   // how many of the useful terms found something
+            bool   whole_in_name = false;
+            bool   guessed = false;     // leaned on a spelling guess somewhere
+            LLSD   why = LLSD::emptyArray();
+            std::vector<size_t> terms_hit;
+        };
+
+        std::vector<Candidate> candidates;
+        std::vector<std::string> terms;       // after splitting
+        std::vector<bool> term_is_guess;
+        std::vector<S32> term_group;          // the halves of one split word share a group, else -1
+        std::vector<bool> term_found;         // matched at least one thing
+        LLSD corrections = LLSD::emptyArray();
+        LLSD ignored = LLSD::emptyArray();    // matched nothing and not guessable
+
+        S32 usefulTerms() const
+        {
+            S32 n = 0;
+            for (bool f : term_found) n += f ? 1 : 0;
+            return n;
+        }
+
+        /**
+         * @param query   the words, as given
+         * @param things  per thing, per field, that field's words
+         * @param fields  a name for each field, for the explanations
+         */
+        void rank(const std::string& query,
+                  const std::vector<std::vector<std::vector<std::string> > >& things,
+                  const std::vector<std::string>& fields)
+        {
+            std::unordered_set<std::string> vocab;
+            for (const auto& thing : things)
+                for (const auto& field : thing)
+                    for (const std::string& t : field)
+                        vocab.insert(t);
+
+            auto present = [&](const std::string& q)
+            {
+                for (const std::string& t : vocab)
+                {
+                    if (sameWord(q, t) || (q.size() >= 3 && t.find(q) != std::string::npos))
+                        return true;
+                }
+                return false;
+            };
+
+            std::unordered_set<std::string> seen;
+            for (const std::string& q : labelWords(query))
+            {
+                if (q.size() < 2 || !seen.insert(q).second)
+                {
+                    continue;
+                }
+                if (present(q))
+                {
+                    terms.push_back(q); term_is_guess.push_back(false); term_group.push_back(-1);
+                    continue;
+                }
+                bool split = false;
+                for (size_t at = 3; q.size() >= 6 && at + 3 <= q.size() && !split; ++at)
+                {
+                    const std::string a = q.substr(0, at), b = q.substr(at);
+                    if (vocab.count(a) && vocab.count(b))
+                    {
+                        // Both halves or neither: "sea" alone is not what
+                        // somebody who typed "sealettuce" was looking for.
+                        const S32 group = (S32)corrections.size();
+                        for (const std::string& part : { a, b })
+                        {
+                            if (seen.insert(part).second)
+                            {
+                                terms.push_back(part); term_is_guess.push_back(false);
+                                term_group.push_back(group);
+                            }
+                        }
+                        corrections.append(q + " -> " + a + " " + b);
+                        split = true;
+                    }
+                }
+                if (split)
+                {
+                    continue;
+                }
+                if (q.size() >= 4)
+                {
+                    terms.push_back(q); term_is_guess.push_back(true); term_group.push_back(-1);
+                }
+                else
+                {
+                    ignored.append(q);
+                }
+            }
+            term_found.assign(terms.size(), false);
+
+            const S32 nfields = (S32)fields.size();
+            // First every thing against every term, so we know how common each
+            // term is before anything is scored.
+            struct Hit { S32 pts = 0; std::string reason; bool whole = false; };
+            std::vector<std::vector<Hit> > hits(things.size(), std::vector<Hit>(terms.size()));
+            std::vector<S32> df(terms.size(), 0);
+            for (size_t i = 0; i < things.size(); ++i)
+            {
+                for (size_t k = 0; k < terms.size(); ++k)
+                {
+                    const std::string& q = terms[k];
+                    Hit& h = hits[i][k];
+                    for (S32 f = 0; f < nfields && f < (S32)things[i].size(); ++f)
+                    {
+                        const S32 weight = nfields - f;   // the name counts most
+                        for (const std::string& t : things[i][f])
+                        {
+                            S32 pts = 0; std::string r;
+                            if (!term_is_guess[k] && sameWord(q, t))
+                            {
+                                pts = 3 * weight;
+                                r = f == 0 ? q : q + " (in the " + fields[f] + ")";
+                            }
+                            else if (!term_is_guess[k] && q.size() >= 3 && t.find(q) != std::string::npos)
+                            {
+                                pts = 2 * weight;
+                                r = q + " (inside '" + t + "'" + (f == 0 ? "" : ", in the " + fields[f]) + ")";
+                            }
+                            else if (term_is_guess[k] && t.size() >= 3
+                                     && LumenAIIndex::editDistance(q, t, q.size() <= 5 ? 1 : 2)
+                                            <= (q.size() <= 5 ? 1 : 2))
+                            {
+                                pts = 1 * weight;
+                                r = q + " looks like '" + t + "'" + (f == 0 ? "" : " (in the " + fields[f] + ")");
+                            }
+                            if (pts > h.pts)
+                            {
+                                h.pts = pts; h.reason = r;
+                                h.whole = (f == 0 && pts == 3 * weight);
+                            }
+                        }
+                    }
+                }
+                // Both halves of a split word, or neither.
+                for (size_t k = 0; k < terms.size(); ++k)
+                {
+                    if (hits[i][k].pts <= 0 || term_group[k] < 0) continue;
+                    for (size_t j = 0; j < terms.size(); ++j)
+                    {
+                        if (term_group[j] == term_group[k] && hits[i][j].pts <= 0)
+                        {
+                            hits[i][k].pts = 0;
+                            break;
+                        }
+                    }
+                }
+                for (size_t k = 0; k < terms.size(); ++k)
+                {
+                    if (hits[i][k].pts > 0) ++df[k];
+                }
+            }
+
+            // A rare word says more than a common one. "amazon", "rio" and
+            // "solimoes" are on dozens of landmarks made in that region; "hut"
+            // is on three, and it is the one that names the place.
+            std::vector<F32> rarity(terms.size(), 1.f);
+            for (size_t k = 0; k < terms.size(); ++k)
+            {
+                rarity[k] = 1.f + logf((F32)(things.size() + 1) / (F32)(df[k] + 1));
+            }
+
+            for (size_t i = 0; i < things.size(); ++i)
+            {
+                Candidate c;
+                c.index = i;
+                for (size_t k = 0; k < terms.size(); ++k)
+                {
+                    const Hit& h = hits[i][k];
+                    if (h.pts <= 0) continue;
+                    c.score += (S32)(h.pts * rarity[k] * 10.f);
+                    ++c.terms_matched;
+                    c.why.append(h.reason);
+                    c.whole_in_name = c.whole_in_name || h.whole;
+                    c.guessed = c.guessed || term_is_guess[k];
+                    c.terms_hit.push_back(k);
+                    term_found[k] = true;
+                }
+                if (c.terms_matched > 0)
+                {
+                    candidates.push_back(c);
+                }
+            }
+            for (size_t k = 0; k < terms.size(); ++k)
+            {
+                if (!term_found[k]) ignored.append(terms[k]);
+            }
+        }
+    };
+
     LLUUID resolveItem(const LLSD& params, LLSD& error)
     {
         if (params.has("item_id"))
@@ -1632,6 +1903,179 @@ namespace
         LLSD e; e["code"] = -32000;
         e["message"] = "More than one inventory item matches \"" + name +
                        "\". Ask which one, then pass its item_id.";
+        e["data"] = candidates;
+        error = e;
+        return LLUUID::null;
+    }
+
+    /** Every landmark in inventory: not links, and nothing in the Trash. */
+    class LandmarksOnly : public LLInventoryCollectFunctor
+    {
+    public:
+        LandmarksOnly() : mTrash(gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH)) {}
+        bool operator()(LLInventoryCategory*, LLInventoryItem* item) override
+        {
+            return item && !item->getIsLinkType()
+                && item->getType() == LLAssetType::AT_LANDMARK
+                && !(mTrash.notNull() && gInventory.isObjectDescendentOf(item->getUUID(), mTrash));
+        }
+    private:
+        LLUUID mTrash;
+    };
+
+    /**
+     * Which landmark somebody means, from the words they used -- or a refusal
+     * carrying the candidates, so the assistant asks instead of guessing.
+     *
+     * Whisper asked to go to her hut in Rio Solimoes in the Amazon, and was
+     * sent to a different landmark called just "Hut": an exact name settled it,
+     * although "amazon" and "rio solimoes" both pointed at "Amazon Hut". Every
+     * word counts now, and it is looked for where Second Life actually keeps it
+     * -- the landmark's description holds the region it was made in, and
+     * people file landmarks in folders named for places.
+     *
+     * The rule: teleport only when ONE destination matches every word that
+     * matches anything at all. A word that matches no landmark ("my",
+     * "lovely") cannot tell two apart and is set aside; a spelling guess never
+     * teleports on its own. Anything else goes back as a question.
+     */
+    LLUUID resolveLandmark(const std::string& words, LLSD& error, LLSD& how)
+    {
+        // An id from an earlier answer: the user has already chosen.
+        LLUUID as_id;
+        if (LLUUID::validate(words) && as_id.set(words, false) && as_id.notNull())
+        {
+            LLViewerInventoryItem* item = gInventory.getItem(as_id);
+            if (!item || item->getType() != LLAssetType::AT_LANDMARK)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "That id is not a landmark in inventory.";
+                error = e;
+                return LLUUID::null;
+            }
+            how["matched"] = "chosen by id";
+            return as_id;
+        }
+
+        LLInventoryModel::cat_array_t cats;
+        LLInventoryModel::item_array_t items;
+        LandmarksOnly functor;
+        gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, functor);
+        if (items.empty())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "There are no landmarks in inventory.";
+            error = e;
+            return LLUUID::null;
+        }
+
+        std::vector<std::vector<std::vector<std::string> > > things;
+        std::vector<std::string> folders;
+        things.reserve(items.size());
+        for (const auto& item : items)
+        {
+            folders.push_back(folderPath(item->getParentUUID()));
+            things.push_back({ labelWords(item->getName()),
+                               labelWords(item->getDescription()),
+                               labelWords(folders.back()) });
+        }
+        WordRank wr;
+        wr.rank(words, things, { "name", "description", "folder" });
+
+        const S32 useful = wr.usefulTerms();
+        auto describe = [&](const WordRank::Candidate& c)
+        {
+            const LLViewerInventoryItem* item = items[c.index];
+            LLSD one;
+            one["item_id"] = item->getUUID();
+            one["name"] = safeUtf8(item->getName());
+            if (!item->getDescription().empty()) one["description"] = safeUtf8(item->getDescription());
+            one["folder"] = safeUtf8(folders[c.index]);
+            one["matched"] = c.why;
+            return one;
+        };
+
+        std::sort(wr.candidates.begin(), wr.candidates.end(),
+                  [&](const WordRank::Candidate& a, const WordRank::Candidate& b)
+                  {
+                      if (a.terms_matched != b.terms_matched) return a.terms_matched > b.terms_matched;
+                      if (a.guessed != b.guessed) return !a.guessed;
+                      if (a.score != b.score) return a.score > b.score;
+                      return items[a.index]->getName().size() < items[b.index]->getName().size();
+                  });
+
+        // Everything that matches every useful word, without a guess. Copies of
+        // one landmark share an asset, so they count as one destination.
+        std::vector<const WordRank::Candidate*> full;
+        std::set<LLUUID> destinations;
+        for (const auto& c : wr.candidates)
+        {
+            if (c.terms_matched == useful && !c.guessed && useful > 0)
+            {
+                full.push_back(&c);
+                destinations.insert(items[c.index]->getAssetUUID());
+            }
+        }
+
+        if (!full.empty() && destinations.size() == 1)
+        {
+            how = describe(*full.front());
+            if (wr.corrections.size()) how["read_as"] = wr.corrections;
+            if (wr.ignored.size())     how["words_not_in_any_landmark"] = wr.ignored;
+            return items[full.front()->index]->getUUID();
+        }
+
+        // The question has to contain the place they meant. Eight landmarks
+        // made in Rio Solimoes matched "amazon rio solimoes" and pushed the one
+        // called Amazon Hut off the list entirely. So every word the user used
+        // first gets its best landmark, then the rest fill up in order.
+        const size_t MAX_ASK = 8;
+        std::vector<size_t> pick;
+        std::vector<bool> covered(wr.terms.size(), false);
+        for (size_t k = 0; k < wr.terms.size() && pick.size() < MAX_ASK; ++k)
+        {
+            if (covered[k] || !wr.term_found[k]) continue;
+            for (size_t i = 0; i < wr.candidates.size(); ++i)
+            {
+                const auto& hit = wr.candidates[i].terms_hit;
+                if (std::find(hit.begin(), hit.end(), k) == hit.end()) continue;
+                if (std::find(pick.begin(), pick.end(), i) == pick.end()) pick.push_back(i);
+                for (size_t t : hit) covered[t] = true;
+                break;
+            }
+        }
+        for (size_t i = 0; i < wr.candidates.size() && pick.size() < MAX_ASK; ++i)
+        {
+            if (std::find(pick.begin(), pick.end(), i) == pick.end()) pick.push_back(i);
+        }
+        std::sort(pick.begin(), pick.end());
+        LLSD candidates = LLSD::emptyArray();
+        for (size_t i : pick)
+        {
+            candidates.append(describe(wr.candidates[i]));
+        }
+        LLSD e; e["code"] = -32000;
+        if (wr.candidates.empty())
+        {
+            e["message"] = "No landmark has any of the words \"" + words + "\" in its name, "
+                           "in its description (where the region it points at is written) or "
+                           "in its folder. Ask the user what the landmark is called or which "
+                           "region it is in. Do not teleport anywhere else instead.";
+        }
+        else if (full.size() > 1)
+        {
+            e["message"] = "More than one landmark matches \"" + words + "\" and they go to "
+                           "different places. Tell the user the candidates -- name and region -- "
+                           "ask which one, then teleport again with `landmark` set to its item_id.";
+        }
+        else
+        {
+            e["message"] = "No landmark matches everything in \"" + words + "\"; the closest are "
+                           "listed with what each one matched. Ask the user whether one of them is "
+                           "the place -- say its name and region -- and teleport with its item_id "
+                           "only once they say yes. Do not pick one yourself: a near match to a "
+                           "landmark is a different place, not a nearer one.";
+        }
         e["data"] = candidates;
         error = e;
         return LLUUID::null;
@@ -2127,7 +2571,11 @@ namespace
         move["description"] =
             "Move the avatar around. Pick one with `action`:\n"
             "- teleport: to a named region, optionally to a spot in it, to a `landmark` from "
-            "inventory by name, or `home: true`.\n"
+            "inventory, or `home: true`. For a landmark pass every word the user used about the "
+            "place -- its name, the region, anything -- because two landmarks can share a name. "
+            "It teleports only when one landmark matches all of them; otherwise it answers with "
+            "candidates, and you ask the user which (name and region) before trying again with "
+            "that landmark's item_id.\n"
             "- walk_to: on foot within the region already occupied. Three ways to say where: x and "
             "y; a person's name; or a `direction` and a `distance` in metres. Directions are "
             "either fixed (north, south, east, west and the between ones) or relative to the way "
@@ -2198,9 +2646,18 @@ namespace
             "Check this when something did not work: flying, running scripts and taking damage "
             "are all things a parcel can forbid, and that is usually the reason rather than a "
             "fault.\n"
-            "- look_nearby: people and objects around the avatar, with distances. Objects are "
-            "named only once the region answers, so a first call may show \"(unnamed)\" and a "
-            "second a moment later will not.\n"
+            "- look_nearby: people and objects around the avatar, with distances. **To look for "
+            "something, pass `find`** -- the user's own word PLUS the words that mean the same "
+            "thing, e.g. for \"is there a market here\" `find: \"market shop store vendor mall\"`. "
+            "Any one word is enough; spelling, plurals and run-together words are handled. Without "
+            "`find` it lists only the nearest 60, which cannot show that something is absent. "
+            "Names come from the region, so the first call often returns `pending: true`: call "
+            "again with the same arguments about two seconds later before saying anything.\n"
+            "  **Ask before acting on a possibility.** A result is the thing only when its `match` "
+            "is `word` AND that word is one the user said. For anything else -- a `near` match, a "
+            "word you added, or a name you picked from `names_nearby` -- tell them what you found "
+            "(name and distance) and ask whether that is what they mean, before walking or "
+            "teleporting there or saying it is there.\n"
             "- worn_by: what somebody ELSE is wearing, and WHO MADE each piece. Give `person` (a "
             "name) or `agent_id`. The viewer cannot see this at all -- it is read by a script in "
             "world, and selecting an object to learn its creator would draw a beam that person "
@@ -2223,7 +2680,12 @@ namespace
         LLSD mh;  mh["type"]="boolean"; mh["description"]="teleport: true goes home and ignores region.";
         LLSD mo;  mo["type"]="string";  mo["description"]="sit: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
-        LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look, default 20, at most 96.";
+        LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256.";
+        LLSD mfind; mfind["type"]="string";
+            mfind["description"]="look_nearby: words to look for in the names and descriptions of "
+                                 "objects nearby -- the user's word and others meaning the same, "
+                                 "e.g. \"market shop store vendor mall\". Any word counts.";
+        move_props["find"]=mfind;
         LLSD mdir; mdir["type"]="string";
             mdir["description"]="walk_to / turn: north, south, east, west, north-east, north-west, "
                                 "south-east, south-west, or -- relative to the way the avatar is "
@@ -2232,7 +2694,11 @@ namespace
             mdis["description"]="walk_to: how far to go in that direction, in metres.";
         LLSD mfly; mfly["type"]="boolean"; mfly["description"]="fly: true takes off, false lands.";
         LLSD mlm; mlm["type"]="string";
-            mlm["description"]="teleport: the name of a landmark in inventory, instead of a region.";
+            mlm["description"]="teleport: a landmark in inventory, instead of a region -- EVERY word the "
+                               "user used about the place (\"amazon hut rio solimoes\", not just "
+                               "\"hut\"), since its region and folder count too; or the item_id of a "
+                               "landmark this tool offered and the user chose. When it is not sure "
+                               "it refuses with candidates: ask the user, never pick one yourself.";
         move_props["landmark"]=mlm;
         LLSD mhd; mhd["type"]="number"; mhd["description"]="turn: a bearing in degrees, 0 north, 90 east.";
         move_props["direction"]=mdir; move_props["distance"]=mdis;
@@ -3353,22 +3819,199 @@ namespace
 
 
 
-void LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& name)
+namespace
+{
+    // Area Search's own figures (fsareasearch.cpp), which have run in every
+    // Firestorm for years: at most 255 objects in one message, and never more
+    // than about three messages' worth waiting on one region at once.
+    constexpr S32 NAMES_PER_MESSAGE = 255;
+    constexpr S32 NAMES_IN_FLIGHT   = NAMES_PER_MESSAGE * 3 - 3;
+    // A reply normally lands in a second or two. After this the ask counts as
+    // lost, and after the second figure it may be tried again.
+    constexpr F64 NAME_ANSWER_WAIT  = 10.0;
+    constexpr F64 NAME_RETRY_AFTER  = 30.0;
+
+    /**
+     * Select these objects and let go of them again, in as few messages as fit.
+     *
+     * Selecting is what makes the region send an object's properties; the
+     * immediate deselect is what Area Search does too. It goes straight to the
+     * region and never touches the viewer's own selection, so no beam is drawn
+     * -- the beam comes from LLSelectMgr's selection, which this leaves alone.
+     */
+    void sendSelection(const std::vector<U32>& local_ids, bool select, LLViewerRegion* region)
+    {
+        LLMessageSystem* msg = gMessageSystem;
+        S32 blocks = 0;
+        bool fresh = true;
+        for (U32 local_id : local_ids)
+        {
+            if (fresh)
+            {
+                msg->newMessageFast(select ? _PREHASH_ObjectSelect : _PREHASH_ObjectDeselect);
+                msg->nextBlockFast(_PREHASH_AgentData);
+                msg->addUUIDFast(_PREHASH_AgentID, gAgentID);
+                msg->addUUIDFast(_PREHASH_SessionID, gAgentSessionID);
+                fresh = false;
+                blocks = 0;
+            }
+            msg->nextBlockFast(_PREHASH_ObjectData);
+            msg->addU32Fast(_PREHASH_ObjectLocalID, local_id);
+            if (++blocks >= NAMES_PER_MESSAGE || msg->isSendFull(NULL))
+            {
+                msg->sendReliable(region->getHost());
+                fresh = true;
+            }
+        }
+        if (!fresh)
+        {
+            msg->sendReliable(region->getHost());
+        }
+    }
+}
+
+bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& name,
+                                    const std::string& desc)
 {
     // Called from the message path for every object anything asks about, so it
     // must be cheap and must not care whether we are running.
     if (!LumenAIControl::instanceExists() || object_id.isNull())
     {
-        return;
+        return false;
     }
-    LLSD& cache = LumenAIControl::instance().mObjectNames;
-    // Bounded: a busy region has thousands of objects and this is a
-    // convenience, not a database. Oldest naming wins until it is cleared.
-    if (cache.size() > 2000)
+    LumenAIControl& self = LumenAIControl::instance();
+
+    // Bounded, but by forgetting what has LEFT rather than by starting over.
+    // The old cap wiped everything at 2,000 -- fewer than one busy region --
+    // so a bulk fill would have erased itself halfway through.
+    if (self.mObjectLabels.size() > 20000)
     {
-        cache = LLSD::emptyMap();
+        for (auto it = self.mObjectLabels.begin(); it != self.mObjectLabels.end(); )
+        {
+            if (!gObjectList.findObject(it->first)) it = self.mObjectLabels.erase(it);
+            else ++it;
+        }
+        if (self.mObjectLabels.size() > 20000)
+        {
+            self.mObjectLabels.clear();
+        }
     }
-    cache[object_id.asString()] = name;
+    ObjectLabel& label = self.mObjectLabels[object_id];
+    label.name = name;
+    label.desc = desc;
+    self.mNameGaveUp.erase(object_id);
+    return self.mNameAsked.erase(object_id) > 0;
+}
+
+const LumenAIControl::ObjectLabel* LumenAIControl::objectLabel(const LLUUID& id) const
+{
+    auto it = mObjectLabels.find(id);
+    return it == mObjectLabels.end() ? NULL : &it->second;
+}
+
+bool LumenAIControl::nameOnItsWay(const LLUUID& id) const
+{
+    return mNameAsked.count(id) || mNameQueued.count(id);
+}
+
+void LumenAIControl::askNames(const std::vector<LLUUID>& ids)
+{
+    const F64 now = LLTimer::getTotalSeconds();
+    for (const LLUUID& id : ids)
+    {
+        if (mObjectLabels.count(id) || nameOnItsWay(id))
+        {
+            continue;
+        }
+        auto gave_up = mNameGaveUp.find(id);
+        if (gave_up != mNameGaveUp.end())
+        {
+            if (now - gave_up->second < NAME_RETRY_AFTER)
+            {
+                continue;
+            }
+            mNameGaveUp.erase(gave_up);
+        }
+        mNameQueue.push_back(id);
+        mNameQueued.insert(id);
+    }
+    pumpNaming();
+}
+
+void LumenAIControl::pumpNaming()
+{
+    const F64 now = LLTimer::getTotalSeconds();
+
+    // What never came back is lost, not pending: saying "still on its way"
+    // about a reply that will never arrive is how a tool waits for ever.
+    std::map<LLViewerRegion*, S32> in_flight;
+    for (auto it = mNameAsked.begin(); it != mNameAsked.end(); )
+    {
+        LLViewerObject* o = gObjectList.findObject(it->first);
+        if (!o || o->isDead() || now - it->second > NAME_ANSWER_WAIT)
+        {
+            mNameGaveUp[it->first] = now;
+            it = mNameAsked.erase(it);
+            continue;
+        }
+        if (o->getRegion()) ++in_flight[o->getRegion()];
+        ++it;
+    }
+
+    std::map<LLViewerRegion*, std::vector<U32> > batches;
+    std::deque<LLUUID> later;   // for a region already at its limit
+    while (!mNameQueue.empty())
+    {
+        const LLUUID id = mNameQueue.front();
+        mNameQueue.pop_front();
+        LLViewerObject* o = gObjectList.findObject(id);
+        LLViewerRegion* r = (o && !o->isDead()) ? o->getRegion() : NULL;
+        // Never one the user has selected: our deselect would take it out of
+        // THEIR selection on the region while their viewer still shows it held.
+        // A selected object is named by its own selection's reply anyway.
+        if (!r || o->isSelected() || mObjectLabels.count(id))
+        {
+            mNameQueued.erase(id);
+            continue;
+        }
+        if (in_flight[r] >= NAMES_IN_FLIGHT)
+        {
+            later.push_back(id);
+            continue;
+        }
+        batches[r].push_back(o->getLocalID());
+        mNameQueued.erase(id);
+        mNameAsked[id] = now;
+        ++in_flight[r];
+    }
+    mNameQueue.swap(later);
+
+    for (auto& batch : batches)
+    {
+        sendSelection(batch.second, true, batch.first);
+        sendSelection(batch.second, false, batch.first);
+    }
+
+    // Keep coming back while anything is queued or in flight, and only then.
+    const bool busy = !mNameQueue.empty() || !mNameAsked.empty();
+    if (busy && !mNamingListenerUp)
+    {
+        mNamingListenerUp = true;
+        LLEventPumps::instance().obtain("mainloop").listen(
+            "LumenAIControlNaming",
+            [this](const LLSD&)
+            {
+                pumpNaming();
+                return false;
+            });
+    }
+    else if (!busy && mNamingListenerUp)
+    {
+        // Usually called from inside that listener; the follow listener stops
+        // itself from inside its own call the same way.
+        LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlNaming");
+        mNamingListenerUp = false;
+    }
 }
 
 void LumenAIControl::suppressAutoOpen(const std::string& name)
@@ -6511,9 +7154,13 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
 
-        F32 radius = params.has("radius") ? (F32)params["radius"].asReal() : 20.f;
-        if (radius <= 0.f)  radius = 20.f;
-        if (radius > 96.f)  radius = 96.f;
+        const std::string find = params.has("find") ? params["find"].asString() : std::string();
+        const bool searching = !labelWords(find).empty();
+
+        // Looking for something reaches further than glancing around.
+        F32 radius = params.has("radius") ? (F32)params["radius"].asReal() : 0.f;
+        if (radius <= 0.f)  radius = searching ? 96.f : 20.f;
+        if (radius > 256.f) radius = 256.f;
 
         const LLVector3d me = gAgent.getPositionGlobal();
 
@@ -6535,9 +7182,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             people.append(who);
         }
 
-        LLSD things = LLSD::emptyArray();
-        S32 asked = 0;
-        S32 unnamed = 0;
+        // EVERY root in range, nearest first, and only then cut. Walking in
+        // index order and stopping at sixty kept an arbitrary sixty of 2,167,
+        // and the market 80 m away was simply never looked at.
+        struct Nearby { LLViewerObject* o; F32 d; };
+        std::vector<Nearby> around;
+        S32 physical = 0;
         const S32 count = gObjectList.getNumObjects();
         for (S32 i = 0; i < count; ++i)
         {
@@ -6546,54 +7196,241 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // only the root of a linked set -- otherwise a single chair shows
             // up once per prim and the list is useless.
             if (!o || o->isDead() || o->getPCode() != LL_PCODE_VOLUME
-                || o->isAttachment() || o->getRootEdit() != o)
+                || o->isAttachment() || o->getRootEdit() != o || !o->mbCanSelect)
             {
                 continue;
             }
-            const F32 distance = (F32)(o->getPositionGlobal() - me).magVec();
-            if (distance > radius)
+            const F32 d = (F32)(o->getPositionGlobal() - me).magVec();
+            if (d <= radius)
             {
-                continue;
-            }
-
-            LLSD thing;
-            thing["object_id"] = o->getID();
-            thing["distance"] = distance;
-            const std::string key = o->getID().asString();
-            if (mObjectNames.has(key))
-            {
-                thing["name"] = mObjectNames[key];
-            }
-            else
-            {
-                thing["name"] = "(unnamed)";
-                ++unnamed;
-                // Ask, but do not flood a busy region on one call.
-                if (asked < 32)
-                {
-                    LLSelectMgr::getInstance()->requestObjectPropertiesFamily(o);
-                    ++asked;
-                }
-            }
-            things.append(thing);
-            if (things.size() >= 60)
-            {
-                break;
+                around.push_back({ o, d });
             }
         }
+        std::sort(around.begin(), around.end(), [](const Nearby& a, const Nearby& b) { return a.d < b.d; });
+
+        const size_t LIST_CAP = 60;
+        const size_t scope = searching ? around.size() : std::min(around.size(), LIST_CAP);
+
+        // Ask the region for every name we lack, in bulk. Not for a PHYSICAL
+        // object: selecting one on the region is believed to hold it still
+        // while selected, and nobody looks for a vehicle or a ball by name.
+        std::vector<LLUUID> want;
+        for (size_t i = 0; i < scope; ++i)
+        {
+            if (around[i].o->flagUsePhysics())
+            {
+                if (!objectLabel(around[i].o->getID())) ++physical;
+                continue;
+            }
+            if (!objectLabel(around[i].o->getID()))
+            {
+                want.push_back(around[i].o->getID());
+            }
+        }
+        askNames(want);
+
+        S32 waiting = 0, lost = 0, generic = 0;
+        for (size_t i = 0; i < scope; ++i)
+        {
+            const LLUUID& id = around[i].o->getID();
+            if (const ObjectLabel* label = objectLabel(id))
+            {
+                const std::string n = lowered(label->name);
+                if (n.empty() || n == "object" || n == "primitive") ++generic;
+            }
+            else if (nameOnItsWay(id))
+            {
+                ++waiting;
+            }
+            else if (!around[i].o->flagUsePhysics())
+            {
+                ++lost;
+            }
+        }
+
+        auto shortDesc = [](const std::string& d)
+        {
+            if (d.empty() || d == "(No Description)") return std::string();
+            return d.size() > 100 ? d.substr(0, utf8Boundary(d, 100)) + "..." : d;
+        };
 
         LLSD result;
         result["people"] = people;
-        result["objects"] = things;
         result["radius"] = radius;
         result["region"] = region->getName();
-        if (unnamed > 0)
+        result["objects_in_radius"] = (S32)around.size();
+        if (waiting > 0)
         {
-            result["note"] = "Some objects have no name yet; the region has been asked for them. "
-                             "Call look_nearby again in a second or two and they will be named.";
+            result["pending"] = true;
+            result["names_still_coming"] = waiting;
         }
+        if (generic > 0) result["called_just_object"] = generic;
+        if (lost > 0)    result["never_answered"] = lost;
+        if (physical > 0) result["physical_not_asked"] = physical;
+        LLSD notes = LLSD::emptyArray();
+
+        if (!searching)
+        {
+            LLSD things = LLSD::emptyArray();
+            for (size_t i = 0; i < scope; ++i)
+            {
+                LLSD thing;
+                thing["object_id"] = around[i].o->getID();
+                thing["distance"] = around[i].d;
+                if (const ObjectLabel* label = objectLabel(around[i].o->getID()))
+                {
+                    thing["name"] = safeUtf8(label->name);
+                    const std::string d = shortDesc(label->desc);
+                    if (!d.empty()) thing["description"] = safeUtf8(d);
+                }
+                else
+                {
+                    thing["name"] = "(unnamed)";
+                }
+                things.append(thing);
+            }
+            result["objects"] = things;
+            result["objects_listed"] = (S32)things.size();
+            if (around.size() > scope)
+            {
+                notes.append(llformat("Only the nearest %d of %d objects are listed. This list "
+                                      "cannot show that something is NOT here -- to look for "
+                                      "something, call again with `find`, which searches all of them.",
+                                      (S32)scope, (S32)around.size()));
+            }
+            if (waiting > 0)
+            {
+                notes.append("Some names are still on their way from the region. Call look_nearby "
+                             "again in about two seconds and they will be there.");
+            }
+            result["notes"] = notes;
+            return result;
+        }
+
+        // Searching. The model supplies the meaning -- the user's word and the
+        // ones that mean the same -- and this supplies the facts and the
+        // sloppiness: any order, plurals, a letter wrong, words run together.
+        std::vector<std::vector<std::vector<std::string> > > things;
+        std::vector<size_t> which;   // candidate index -> index in around
+        for (size_t i = 0; i < around.size(); ++i)
+        {
+            if (const ObjectLabel* label = objectLabel(around[i].o->getID()))
+            {
+                things.push_back({ labelWords(label->name), labelWords(label->desc) });
+                which.push_back(i);
+            }
+        }
+        WordRank wr;
+        wr.rank(find, things, { "name", "description" });
+        std::sort(wr.candidates.begin(), wr.candidates.end(),
+                  [&](const WordRank::Candidate& a, const WordRank::Candidate& b)
+                  {
+                      if (a.whole_in_name != b.whole_in_name) return a.whole_in_name;
+                      if (a.terms_matched != b.terms_matched) return a.terms_matched > b.terms_matched;
+                      if (a.score != b.score) return a.score > b.score;
+                      return around[which[a.index]].d < around[which[b.index]].d;
+                  });
+
+        // One entry per NAME, nearest first, with how many there are: five
+        // identical sea lettuces are one answer, and letting them take five of
+        // twenty places is how the thing actually meant falls off the end.
+        LLSD found = LLSD::emptyArray();
+        std::map<std::string, S32> slot;   // lowered name -> index in found
+        for (size_t i = 0; i < wr.candidates.size(); ++i)
+        {
+            const WordRank::Candidate& c = wr.candidates[i];
+            const Nearby& n = around[which[c.index]];
+            const ObjectLabel* label = objectLabel(n.o->getID());
+            const std::string key = lowered(label->name);
+            auto dup = slot.find(key);
+            if (dup != slot.end())
+            {
+                LLSD& first = found[dup->second];
+                first["count"] = first.has("count") ? first["count"].asInteger() + 1 : 2;
+                continue;
+            }
+            if (found.size() >= 20)
+            {
+                continue;   // still counted above, just not listed
+            }
+            slot[key] = (S32)found.size();
+            LLSD hit;
+            hit["object_id"] = n.o->getID();
+            hit["name"] = safeUtf8(label->name);
+            const std::string d = shortDesc(label->desc);
+            if (!d.empty()) hit["description"] = safeUtf8(d);
+            hit["distance"] = n.d;
+            // Only a whole word in the NAME, not guessed, is a "word" match;
+            // anything looser is a possibility to put to the user.
+            hit["match"] = (c.whole_in_name && !c.guessed) ? "word" : "near";
+            hit["matched"] = c.why;
+            found.append(hit);
+        }
+        result["find"] = find;
+        result["found"] = found;
+        result["objects_matching"] = (S32)wr.candidates.size();
+        if (wr.corrections.size()) result["read_as"] = wr.corrections;
+        if (wr.ignored.size())     result["words_that_matched_nothing"] = wr.ignored;
+
+        if (waiting > 0)
+        {
+            notes.append("Names are still arriving from the region -- call look_nearby again with "
+                         "the same `find` in about two seconds. Do NOT tell the user anything is "
+                         "missing yet: what has not been named cannot have been searched.");
+        }
+        if (found.size() > 0)
+        {
+            notes.append("`match: word` means one of your words is a whole word in its name. Treat "
+                         "it as the thing only if that word is one THE USER used. For every other "
+                         "result -- `near`, or a word you added yourself -- say what you found and "
+                         "ASK whether that is what they mean, before walking or teleporting there "
+                         "or telling them it is there.");
+        }
+        else if (waiting == 0)
+        {
+            // Nothing matched. Hand over what IS here, so a meaning the words
+            // missed -- "food" for a "Pizza Stand" -- can still be seen.
+            std::map<std::string, std::pair<size_t, S32> > seen;   // lowered -> (around index, count)
+            std::vector<std::string> order;
+            for (size_t i = 0; i < around.size(); ++i)
+            {
+                const ObjectLabel* label = objectLabel(around[i].o->getID());
+                if (!label) continue;
+                const std::string key = lowered(label->name);
+                if (key.empty() || key == "object" || key == "primitive") continue;
+                auto it = seen.find(key);
+                if (it == seen.end()) { seen[key] = { i, 1 }; order.push_back(key); }
+                else ++it->second.second;
+            }
+            LLSD names = LLSD::emptyArray();
+            for (size_t k = 0; k < order.size() && k < 100; ++k)
+            {
+                const auto& entry = seen[order[k]];
+                LLSD one;
+                one["name"] = safeUtf8(objectLabel(around[entry.first].o->getID())->name);
+                one["object_id"] = around[entry.first].o->getID();
+                one["distance"] = around[entry.first].d;
+                if (entry.second > 1) one["count"] = entry.second;
+                names.append(one);
+            }
+            result["names_nearby"] = names;
+            notes.append(llformat("Nothing within %d m has those words in its name or description. "
+                                  "`names_nearby` is what IS here, nearest first. If one looks like "
+                                  "what they meant, suggest it and ASK -- never present it as the "
+                                  "answer. Do not say there is no such thing; say you found nothing "
+                                  "called that within %d metres.", (S32)radius, (S32)radius));
+        }
+        if (generic > 0 || lost > 0 || physical > 0)
+        {
+            notes.append(llformat("%d objects here cannot be found by name: %d are called just "
+                                  "\"Object\", %d never answered, and %d physical ones were not asked "
+                                  "so as not to disturb them.",
+                                  generic + lost + physical, generic, lost, physical));
+        }
+        result["notes"] = notes;
         return result;
     }
+
 
     // Everything that moves the avatar shares the login check, the request_id
     // replay and the sitting rules, so they share a branch. Adding a verb here
@@ -6905,8 +7742,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             if (obj_name.empty())
             {
-                const std::string key_s = openable[want[0]].first.asString();
-                if (mObjectNames.has(key_s)) obj_name = mObjectNames[key_s].asString();
+                if (const ObjectLabel* label = objectLabel(openable[want[0]].first))
+                {
+                    obj_name = label->name;
+                }
             }
             if (!obj_name.empty()) preview->setObjectName(safeUtf8(obj_name));
             preview->setObjectID(openable[want[0]].first);
@@ -7148,8 +7987,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 // prim's name; only `ObjectProperties`, sent when prims are
                 // selected, does. A promise the tool cannot keep is worse than
                 // the gap it was covering.
-                const std::string key = o->getID().asString();
-                if (mObjectNames.has(key)) L["name"] = mObjectNames[key];
+                if (const ObjectLabel* label = objectLabel(o->getID())) L["name"] = safeUtf8(label->name);
                 else ++unnamed_links;
             }
             if (i > 0) L["offset_from_root"] = V::sd(o->getPosition());
@@ -10871,9 +11709,8 @@ if (method == "camera")
             if (params.has("landmark") && !params["landmark"].asString().empty())
             {
                 LLSD lm_error;
-                LLSD lookup = LLSD::emptyMap();
-                lookup["name"] = params["landmark"];
-                const LLUUID lm_id = resolveItem(lookup, lm_error);
+                LLSD lm_how = LLSD::emptyMap();
+                const LLUUID lm_id = resolveLandmark(params["landmark"].asString(), lm_error, lm_how);
                 if (lm_id.isNull()) { LLSD w; w["__error"] = lm_error; return w; }
 
                 LLViewerInventoryItem* lm = gInventory.getItem(lm_id);
@@ -10889,6 +11726,7 @@ if (method == "camera")
                 LLSD result;
                 result["destination"] = safeUtf8(lm->getName());
                 result["by"] = "landmark";
+                result["landmark"] = lm_how;
                 result["confirm_with"] =
                     "Teleporting takes several seconds and can fail. Call status after a few "
                     "seconds and check the region before telling the user they arrived.";

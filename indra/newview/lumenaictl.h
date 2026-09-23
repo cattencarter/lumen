@@ -34,6 +34,8 @@
 #include <boost/signals2.hpp>
 #include <deque>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 class LLHTTPNode;
 class LLViewerInventoryItem;
@@ -288,20 +290,54 @@ private:
     LLSD mNotecards;
 
     /**
-     * Names of objects around the avatar, as the server tells us them.
+     * Names and descriptions of objects around the avatar, as the server tells
+     * us them.
      *
      * An LLViewerObject has no name of its own -- a name arrives only in reply
-     * to an ObjectProperties request, and the viewer's own code feeds those
-     * replies to whatever floater asked. So look_nearby asks, and a small hook
-     * in llselectmgr.cpp calls noteObjectName() when the answer comes back.
-     * The first call to look_nearby therefore sees unnamed objects and the
-     * next one sees them named, which is the same shape as read_notecard.
+     * to a properties request, and the viewer's own code feeds those replies to
+     * whatever floater asked. Two hooks in llselectmgr.cpp call noteObjectName()
+     * for EVERY reply, whoever asked: our own requests, Area Search's, and the
+     * user's own selections.
+     *
+     * look_nearby asks in bulk, the way Area Search does: many objects per
+     * message, a bounded number waiting at once. Asking one object per message
+     * and at most 32 of them, and answering before any reply had landed, is how
+     * a market 80 m away came back as "nothing like a market here".
      */
-    LLSD mObjectNames;
+    struct ObjectLabel
+    {
+        std::string name;
+        std::string desc;
+    };
+    std::unordered_map<LLUUID, ObjectLabel> mObjectLabels;
+    /** Asked and not yet answered, with when -- the in-flight count per region. */
+    std::unordered_map<LLUUID, F64> mNameAsked;
+    /** Asked and never answered, with when, so it is not re-asked on every call. */
+    std::unordered_map<LLUUID, F64> mNameGaveUp;
+    /** Waiting to be asked, oldest first, so a busy region is paced not flooded. */
+    std::deque<LLUUID> mNameQueue;
+    std::unordered_set<LLUUID> mNameQueued;
+    bool mNamingListenerUp = false;
+
+    /** Queue these objects for a name, skipping any known, waiting or given up on. */
+    void askNames(const std::vector<LLUUID>& ids);
+    /** Send what the pacing allows, expire what never came back. Runs per frame while busy. */
+    void pumpNaming();
+    /** What we know an object is called, or NULL. */
+    const ObjectLabel* objectLabel(const LLUUID& id) const;
+    /** Whether a name for this object is still on its way. */
+    bool nameOnItsWay(const LLUUID& id) const;
 
 public:
-    /** Called from llselectmgr.cpp when an object's properties arrive. */
-    static void noteObjectName(const LLUUID& object_id, const std::string& name);
+    /**
+     * Called from llselectmgr.cpp when an object's properties arrive.
+     *
+     * Returns true when look_nearby asked for this one, so the selection
+     * manager can skip warning that the object is not in its selection --
+     * the same courtesy it already extends to Area Search.
+     */
+    static bool noteObjectName(const LLUUID& object_id, const std::string& name,
+                               const std::string& desc);
 
 
     /**
