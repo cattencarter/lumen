@@ -1006,7 +1006,10 @@ class Windows_x86_64_Manifest(ViewerManifest):
         #installer_base = self.installer_base_name()
         #exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|secondlife-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
         installer_base = self.fs_installer_basename()
-        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|firestorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
+        # <Lumen> And a previous installer under the new name must stay out of the
+        # next one exactly as a *_Setup.exe did -- a rename without this line is
+        # an installer packed inside an installer.
+        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|firestorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe|Lumen-.*-Windows-.*\.exe'
         # </FS:TJ>
 
         # Channel-specific icon for the Velopack installer.
@@ -1126,7 +1129,8 @@ class Windows_x86_64_Manifest(ViewerManifest):
 
         # <FS:ND> Properly name OS version, also add Phoenix- in front of installer name
         #installer_file = self.installer_base_name() + '_Setup.exe'
-        installer_file = self.fs_installer_basename() + "_Setup.exe"
+        # <Lumen> The release name, so the upload needs no rename; see lumen_release_name.
+        installer_file = self.lumen_release_name("Windows-x64") + ".exe"
         # </FS:ND>
         
         substitution_strings['installer_file'] = installer_file

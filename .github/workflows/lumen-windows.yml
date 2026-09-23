@@ -122,6 +122,8 @@ jobs:
             !lumen/build-vc*/newview/Release/**/*.bat
             !lumen/build-vc*/newview/Release/**/*.nsi
             !lumen/build-vc*/newview/Release/firestorm-bin.*
+            # The installer has its own artifact below; not a second copy in here.
+            !lumen/build-vc*/newview/Release/**/Lumen-*-Windows-x64.exe
             # The debug symbols. They are built beside the viewer rather than
             # inside it, so they never reach the installer -- but they DO ride
             # along in this artifact, and somebody who unpacks it finds a
@@ -149,7 +151,9 @@ jobs:
           # Three green runs and no installer to show for them.
           if-no-files-found: error
           retention-days: 7
-          path: lumen/build-vc*/newview/Release/**/*_Setup.exe
+          # Named for the release since 2026-09-23 -- Lumen-<version>-Windows-x64.exe,
+          # the name it is uploaded under, so nobody renames it by hand.
+          path: lumen/build-vc*/newview/Release/**/Lumen-*-Windows-x64.exe
 
       # Kept, because a crash report from a tester is unreadable without them
       # -- just not in the same download as the viewer.

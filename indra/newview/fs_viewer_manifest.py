@@ -26,6 +26,26 @@ class FSViewerManifest:
         return "%(app_name)s-%(version_dashes)s" % substitution_strings
         # </Lumen>
 
+    # <Lumen> The name a person downloads: "Lumen-0.1.2-Windows-x64.exe", beside
+    # "Lumen-0.1.2-macOS-arm64.dmg" -- the release, then the platform, and
+    # nothing else. It was the internal build number with "_Setup" on the end
+    # and was renamed by hand at every upload, which is how the two platforms'
+    # names drifted apart ("-Setup" on one only). The version is read from the
+    # one place it is set, LUMEN_VERSION in indra_constants.h, which
+    # actions-check already keeps in step with the release tags.
+    def lumen_version(self):
+        import re
+        header = os.path.join(self.args['source'], os.pardir, 'llcommon', 'indra_constants.h')
+        with open(header) as f:
+            m = re.search(r'LUMEN_VERSION\s*=\s*"([0-9.]+)"', f.read())
+        if not m:
+            raise RuntimeError("LUMEN_VERSION not found in %s" % header)
+        return m.group(1)
+
+    def lumen_release_name(self, platform):
+        return "Lumen-%s-%s" % (self.lumen_version(), platform)
+    # </Lumen>
+
     def fs_is_opensim(self):
         return self.args['viewer_flavor'] == 'oss' #Havok would be hvk
     def fs_is_avx2(self):

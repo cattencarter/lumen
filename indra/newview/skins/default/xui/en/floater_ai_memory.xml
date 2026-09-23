@@ -20,18 +20,29 @@
         Paste what you want the assistant to remember: who you are, what you do in Second Life, how you like to be spoken to. If you use ChatGPT or Claude, open its memory or personalisation screen and copy the list from there.
     </text>
 
-    <text_editor follows="left|top|right" layout="topleft"
-     left="12" top="86" width="496" height="220"
-     name="memory" word_wrap="true" max_length="16384" />
-
-    <text type="string" follows="left|top|right" layout="topleft"
-     left="12" top="314" width="496" height="32" word_wrap="true">
-        Things you asked the assistant to remember, one per line. Delete a line to forget it.
-    </text>
-
-    <text_editor follows="all" layout="topleft"
-     left="12" top="346" width="496" height="130"
-     name="remembered" word_wrap="true" max_length="16384" />
+    <!-- Two parts sharing the height, so neither can be squeezed to nothing:
+         the window remembers its size, and a size saved before the list existed
+         left the list a single line tall. The divider between them can be dragged. -->
+    <layout_stack follows="all" layout="topleft"
+     left="12" top="86" width="496" height="390"
+     orientation="vertical" name="memory_stack">
+        <layout_panel name="note_panel" auto_resize="true" user_resize="true"
+         height="230" min_height="80">
+            <text_editor follows="all" layout="topleft"
+             left="0" top="0" width="496" height="226"
+             name="memory" word_wrap="true" max_length="16384" />
+        </layout_panel>
+        <layout_panel name="kept_panel" auto_resize="true" user_resize="true"
+         height="160" min_height="80">
+            <text type="string" follows="left|top|right" layout="topleft"
+             left="0" top="4" width="496" height="28" word_wrap="true">
+                Things you asked the assistant to remember, one per line. Delete a line to forget it.
+            </text>
+            <text_editor follows="all" layout="topleft"
+             left="0" top="32" width="496" height="128"
+             name="remembered" word_wrap="true" max_length="16384" />
+        </layout_panel>
+    </layout_stack>
 
     <text type="string" follows="left|bottom" layout="topleft"
      left="12" top="484" width="330" height="16" name="count">

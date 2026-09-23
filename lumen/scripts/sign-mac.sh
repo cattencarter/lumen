@@ -143,7 +143,17 @@ if [ "$MAKE_DMG" -eq 1 ]; then
     STAGE=$(mktemp -d)
     cp -R "$APP" "$STAGE/"
     ln -s /Applications "$STAGE/Applications"
-    OUT="$REPO/Lumen.dmg"
+    # The release name, so the upload needs no rename: Lumen-<version>-macOS-<arch>.dmg,
+    # the version from LUMEN_VERSION and the architecture from the binary itself.
+    VER=$(sed -n 's/.*LUMEN_VERSION *= *"\([0-9.]*\)".*/\1/p' "$FORK/indra/llcommon/indra_constants.h" | head -1)
+    ARCHS=$(lipo -archs "$APP/Contents/MacOS/Lumen" 2>/dev/null)
+    case "$ARCHS" in
+        *x86_64*arm64*|*arm64*x86_64*) ARCH=universal ;;
+        *arm64*) ARCH=arm64 ;;
+        *) ARCH=${ARCHS:-unknown} ;;
+    esac
+    [ -n "$VER" ] || { echo "LUMEN_VERSION not found" >&2; exit 1; }
+    OUT="$REPO/Lumen-$VER-macOS-$ARCH.dmg"
     rm -f "$OUT"
     hdiutil create -volname Lumen -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
     codesign --force --timestamp --sign "$IDENTITY" "$OUT"
