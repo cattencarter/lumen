@@ -10415,13 +10415,31 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, NULL, NULL, 1.5f);
+        // **Walking means on foot.** The viewer's autopilot switches flying on
+        // by itself for anything past 30 m, or a step up of more than a couple
+        // of metres, unless told not to -- and this never told it, so "walk
+        // over to the anchor" 60 m away lifted her into the air. Only someone
+        // already flying keeps flying.
+        const bool was_flying = gAgent.getFlying();
+        // Where they set off from, said in the reply: "take me back" was
+        // answered with a status read taken a moment AFTER setting off, 13 m
+        // up and mid-flight, because nothing had recorded the start.
+        const LLVector3 from = gAgent.getPositionAgent();
+        gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, NULL, NULL, 1.5f,
+                                    0.03f, was_flying);
 
         LL_INFOS("AICtl") << "walk_to: " << described << ", " << distance << "m" << LL_ENDL;
 
         LLSD result;
         result["walking_to"] = described;
         result["distance"] = distance;
+        LLSD start;
+        start["region"] = region->getName();
+        start["x"] = from.mV[VX]; start["y"] = from.mV[VY]; start["z"] = from.mV[VZ];
+        result["started_from"] = start;
+        result["note"] = "started_from is where they were when this walk began -- if they ask to "
+                         "go back, walk_to those x, y and z. A position read later is somewhere "
+                         "along the way, not the start.";
         result["confirm_with"] =
             "Walking takes time and can be blocked by walls, water or a ban line. Call status "
             "after several seconds and check the position before telling the user they arrived. "
