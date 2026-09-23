@@ -38,6 +38,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <set>
 #include "llagentui.h"
 
 namespace
@@ -194,6 +195,17 @@ namespace LumenAIMemory
             for (char& c : s) c = (char)tolower((unsigned char)c);
             return s;
         }
+
+        std::set<std::string>& sSavedByAssistant()
+        {
+            static std::set<std::string> saved;
+            return saved;
+        }
+    }
+
+    bool savedByAssistant(const std::string& entry)
+    {
+        return sSavedByAssistant().count(entry) > 0;
     }
 
     std::vector<std::string> remembered()
@@ -262,6 +274,7 @@ namespace LumenAIMemory
             return false;
         }
         entry_out = entry;
+        sSavedByAssistant().insert(entry);
         LL_INFOS("LumenAIMemory") << "Remembered one thing for this avatar, "
                                   << what.size() << " characters" << LL_ENDL;
         return true;

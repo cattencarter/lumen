@@ -101,6 +101,16 @@ namespace LumenAIMemory
     size_t usedBytes();
 
     /**
+     * Whether this entry was saved by the assistant's own remember this session.
+     *
+     * Codex reads memory once, when its conversation starts. An entry the
+     * assistant saved it has already heard in that conversation; one typed into
+     * the Memory window it has not -- and the difference decides whether the
+     * person needs telling.
+     */
+    bool savedByAssistant(const std::string& entry);
+
+    /**
      * Pull usable text out of whatever the person picked.
      *
      * Plain text and Markdown come through as they are. A JSON export is

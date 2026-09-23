@@ -7642,12 +7642,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["replayed"] = true;
             return replay;
         }
-        if (recallRecent(fingerprintOf(method, params), 60.0, replay))
-        {
-            replay["replayed"] = true;
-            replay["note"] = "The same request a moment ago already did this; it was not done twice.";
-            return replay;
-        }
+        // **No fingerprint window here**, unlike most writes. It treated "remember
+        // X" after "forget X" inside a minute as a retry and swallowed it -- and
+        // reported success, so the model said "Remembered" about nothing. The
+        // entries themselves already refuse a duplicate and a second forget of
+        // the same thing, which is the protection a window was standing in for.
 
         if (method == "remember")
         {

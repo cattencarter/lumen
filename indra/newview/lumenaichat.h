@@ -322,6 +322,13 @@ private:
     std::string mClaudeModel;     // what that session was started with
     std::string mCodexThread;
     std::string mCodexModel;   // what that thread was started with
+    // The memory that thread was started with. Codex reads it once, at
+    // thread/start, so a forget or an edit afterwards is invisible to it --
+    // and the person is told, rather than the conversation being thrown away.
+    std::string mCodexNote;
+    std::set<std::string> mCodexEntries;
+    std::string mCodexMemoryNoticed;   // the change already told about
+    void noticeCodexMemory();
     bool mWarmed = false;      // the local prefix has been sent once
 
     // **Per CONNECTION, not per turn.** The handshake is once and the request
