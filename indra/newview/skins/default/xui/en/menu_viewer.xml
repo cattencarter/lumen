@@ -950,6 +950,16 @@
              function="Floater.Toggle"
              parameter="ai_chat" />
         </menu_item_check>
+        <!-- What the assistant knows about this avatar: the note and the things
+             it was asked to remember. It only had a button deep in Preferences,
+             so neither a person nor the assistant could find it by name. -->
+        <menu_item_call
+         name="Assistant Memory"
+         label="Assistant Memory...">
+            <menu_item_call.on_click
+             function="Floater.Show"
+             parameter="ai_memory" />
+        </menu_item_call>
         <!-- </Lumen> -->
         <menu_item_check
          name="Conversation Log..."

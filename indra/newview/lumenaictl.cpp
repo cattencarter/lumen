@@ -2917,7 +2917,7 @@ namespace
             "ask which.\n"
             "- recall: the list, numbered, for \"what do you remember about me?\" and before "
             "forget. The note they wrote themselves is separate and only they edit it, in "
-            "Preferences > AI > Memory.\n"
+            "the Memory window -- Comm > Assistant Memory..., which open_window opens.\n"
             "\n- open_script: **opens a script that lives INSIDE an object**, so they do not "
             "have to find and open it first. Leave `object_id` out and it uses what they have "
             "selected; `name` picks one when there are several, and without it the reply lists "
@@ -5564,7 +5564,26 @@ namespace
             std::string label;
             node->getAttributeString("label", label);
 
-            if (!label.empty()
+            // **A menu item the viewer hides while running is not a place to send
+            // anybody.** The XUI is the truth about what CAN be there, not about
+            // what is: Developer > Consoles > Memory is in menu_viewer.xml, and
+            // llviewermenu.cpp hides it at startup -- so "open the memory window"
+            // was answered with a path to an item nobody can see. The live menu
+            // bar is asked, by name, whenever it exists; a context menu has no
+            // live instance to ask and is taken as written.
+            bool hidden_live = false;
+            if (menubar && gMenuBarView && !label.empty())
+            {
+                std::string item_name;
+                node->getAttributeString("name", item_name);
+                if (!item_name.empty())
+                {
+                    LLView* live = gMenuBarView->findChildView(item_name, true);
+                    hidden_live = live && !live->getVisible();
+                }
+            }
+
+            if (!label.empty() && !hidden_live
                 && (node->hasName("menu_item_check") || node->hasName("menu_item_call")))
             {
                 const std::string ctrl = menuControl(node);
@@ -7660,8 +7679,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD result;
             result["remembered"] = safeUtf8(entry);
             result["note"] = "Saved for this avatar. Tell them, in their words, exactly what you "
-                             "saved -- and that they can see or remove it in Preferences > AI > "
-                             "Memory, or by asking you to forget it.";
+                             "saved -- and that they can see or remove it in Comm > Assistant "
+                             "Memory..., or by asking you to forget it.";
             LLSD summary;   // the log records THAT, not what: it is theirs
             summary["characters"] = (S32)entry.size();
             recordAction(request_id, fingerprintOf(method, params), "remember", "ok", result, summary);
