@@ -76,10 +76,10 @@ namespace LumenAIMemory
     // shared settings folder, so Catten and Whisper -- two people with two
     // lives -- were described to the assistant by the same note.
     //
-    // The shared file is kept, as a seed: an avatar logging in with no note of
-    // its own is given a copy of it once, so nothing written before this change
-    // is lost. From then on each avatar's note is its own; an avatar that has
-    // cleared its note keeps an empty file and is not re-seeded.
+    // **The old shared file is ignored, not carried over**, the author's call:
+    // 0.1.1 had barely shipped, so nobody else is likely to have written one,
+    // and copying it to every avatar handed one avatar's note to all the rest.
+    // Anyone who did can bring it back with Import a file... in the editor.
 
     bool available()
     {
@@ -110,24 +110,12 @@ namespace LumenAIMemory
 
     std::string get()
     {
-        if (!available())
-        {
-            return std::string();   // nobody logged in: no one's note to give
-        }
         std::string text;
-        if (readFile(path(), text))
+        if (available() && readFile(path(), text))
         {
             return truncateUtf8(text, MAX_BYTES);
         }
-        const std::string shared = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, MEMORY_FILE);
-        if (readFile(shared, text) && !text.empty())
-        {
-            set(text);
-            LL_INFOS("LumenAIMemory") << "This avatar had no memory of its own; gave it a copy of "
-                                         "the note all avatars used to share." << LL_ENDL;
-            return truncateUtf8(text, MAX_BYTES);
-        }
-        return std::string();
+        return std::string();   // nothing saved, or nobody logged in to own it
     }
 
     bool set(const std::string& text)
