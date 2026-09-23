@@ -31,7 +31,7 @@
 
     <text type="string" follows="left|bottom" layout="topleft"
      left="12" top="368" width="496" height="16" word_wrap="true">
-        This is sent with every message, so keep it short.
+        This avatar's alone, and sent with every message, so keep it short.
     </text>
 
     <button follows="left|bottom" layout="topleft"

@@ -3663,7 +3663,10 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     mRepliesTo[from_id] += 1;
     mRepliesTotal += 1;
 
-    const std::string memory = gSavedPerAccountSettings.getString("LumenAIMemory");
+    // This avatar's own note. It read an undeclared setting before, which is
+    // always empty -- so the one place the assistant speaks AS the user, to
+    // other people, it knew nothing about who they are.
+    const std::string memory = LumenAIMemory::get();
     std::string owner;
     LLAgentUI::buildFullname(owner);
 

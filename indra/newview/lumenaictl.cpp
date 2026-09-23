@@ -37,6 +37,7 @@
 #include "rlvactions.h"
 #include "llviewercamera.h"
 #include "lumenainotecache.h"
+#include "lumenaimemory.h"
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
 #include "llagentui.h"
@@ -3445,6 +3446,11 @@ void LumenAIControl::watchForLogin()
             // <Lumen> Where every landmark goes, first of anything read in the
             // background: teleporting is what people do the moment they arrive.
             startLandmarkFill();
+
+            // <Lumen> And this avatar's own memory, now rather than on first
+            // use: an avatar with no note yet is given its copy of the old
+            // shared one at login, so it is in its own folder from the start.
+            LumenAIMemory::get();
 
             LLEventPumps::instance().obtain("mainloop")
                 .stopListening("LumenAIControlLoginClock");

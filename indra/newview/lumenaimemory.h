@@ -56,6 +56,7 @@ class LLTextBox;
  * Hence a hard cap, shown as you type rather than enforced by surprise
  * afterwards.
  *
+ * One per AVATAR, in that account's own folder -- see get().
  * Stored as plain text in the user's own settings directory, deliberately not
  * in the protected store: it is not a secret, and the person should be able to
  * open it, read it and edit it without going through this window.
@@ -65,12 +66,16 @@ namespace LumenAIMemory
     /** Bytes. Past this the model is paying rent on text it will not use. */
     const size_t MAX_BYTES = 8000;
 
-    /** Empty when nothing has been saved. */
+    /** Whether an avatar is logged in, so there is someone's note to read or write. */
+    bool available();
+
+    /** This avatar's note. Empty when nothing has been saved or nobody is logged in. */
     std::string get();
 
-    /** Overwrite, and write to disk. Truncated to MAX_BYTES on a character boundary. */
-    void set(const std::string& text);
+    /** Overwrite this avatar's note, truncated on a character boundary. False if nobody is logged in. */
+    bool set(const std::string& text);
 
+    /** This avatar's file, or empty before login. */
     std::string path();
 
     /**

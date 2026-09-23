@@ -38,6 +38,7 @@
 
 #include <fstream>
 #include <sstream>
+#include "llagentui.h"
 
 namespace
 {
@@ -70,36 +71,85 @@ namespace
 
 namespace LumenAIMemory
 {
+    // **Each avatar has its own.** The author, 2026-09-23: *"each avatar should
+    // have it's own memory, that is important."* It used to be one file in the
+    // shared settings folder, so Catten and Whisper -- two people with two
+    // lives -- were described to the assistant by the same note.
+    //
+    // The shared file is kept, as a seed: an avatar logging in with no note of
+    // its own is given a copy of it once, so nothing written before this change
+    // is lost. From then on each avatar's note is its own; an avatar that has
+    // cleared its note keeps an empty file and is not re-seeded.
+
+    bool available()
+    {
+        return !gDirUtilp->getLindenUserDir().empty();
+    }
+
     std::string path()
     {
-        return gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, MEMORY_FILE);
+        return available() ? gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, MEMORY_FILE)
+                           : std::string();
+    }
+
+    namespace
+    {
+        bool readFile(const std::string& file, std::string& out)
+        {
+            std::ifstream f(file.c_str(), std::ios::binary);
+            if (!f.good())
+            {
+                return false;
+            }
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            out = ss.str();
+            return true;
+        }
     }
 
     std::string get()
     {
-        std::ifstream f(path().c_str(), std::ios::binary);
-        if (!f.good())
+        if (!available())
         {
-            return std::string();
+            return std::string();   // nobody logged in: no one's note to give
         }
-        std::ostringstream ss;
-        ss << f.rdbuf();
-        return truncateUtf8(ss.str(), MAX_BYTES);
+        std::string text;
+        if (readFile(path(), text))
+        {
+            return truncateUtf8(text, MAX_BYTES);
+        }
+        const std::string shared = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, MEMORY_FILE);
+        if (readFile(shared, text) && !text.empty())
+        {
+            set(text);
+            LL_INFOS("LumenAIMemory") << "This avatar had no memory of its own; gave it a copy of "
+                                         "the note all avatars used to share." << LL_ENDL;
+            return truncateUtf8(text, MAX_BYTES);
+        }
+        return std::string();
     }
 
-    void set(const std::string& text)
+    bool set(const std::string& text)
     {
+        if (!available())
+        {
+            LL_WARNS("LumenAIMemory") << "Not saved: nobody is logged in, so there is no avatar "
+                                         "it would belong to." << LL_ENDL;
+            return false;
+        }
         const std::string clipped = truncateUtf8(text, MAX_BYTES);
 
         std::ofstream f(path().c_str(), std::ios::binary | std::ios::trunc);
         if (!f.good())
         {
             LL_WARNS("LumenAIMemory") << "Could not write " << path() << LL_ENDL;
-            return;
+            return false;
         }
         f << clipped;
 
-        LL_INFOS("LumenAIMemory") << "Memory saved, " << clipped.size() << " bytes" << LL_ENDL;
+        LL_INFOS("LumenAIMemory") << "Memory saved for this avatar, " << clipped.size() << " bytes" << LL_ENDL;
+        return true;
     }
 
     std::string extractImportable(const std::string& raw)
@@ -201,10 +251,24 @@ void LumenAIMemoryFloater::onOpen(const LLSD& key)
 {
     LLFloater::onOpen(key);
 
+    // Whose note this is, in the title -- two avatars, two notes, and editing
+    // the wrong one is the mistake to make impossible to miss.
+    const bool can = LumenAIMemory::available();
+    if (can)
+    {
+        std::string who;
+        LLAgentUI::buildFullname(who);
+        setTitle("What the assistant knows about " + who);
+    }
     if (mText)
     {
-        mText->setText(LumenAIMemory::get());
+        mText->setText(can ? LumenAIMemory::get()
+                           : std::string("Each avatar has its own memory. Log in as the avatar "
+                                         "this is for, then open this again."));
+        mText->setEnabled(can);
     }
+    if (LLButton* b = findChild<LLButton>("save_btn"))   b->setEnabled(can);
+    if (LLButton* b = findChild<LLButton>("import_btn")) b->setEnabled(can);
     updateCount();
 }
 
