@@ -17,6 +17,7 @@
 #include "llviewercontrol.h"
 #include "lumenaikeys.h"
 #include "lumenaiclaude.h"
+#include "lumenaicodex.h"
 #include "lumenaictl.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
@@ -87,6 +88,12 @@ int LumenAISetupFloater::steps() const
     return (mProvider == LumenAIKeys::CODEX) ? 3 : 2;
 }
 
+std::string LumenAISetupFloater::unavailableHere() const
+{
+    return (mProvider == LumenAIKeys::CODEX) ? LumenAICodex::unavailableHere()
+                                             : LumenAIClaude::unavailableHere();
+}
+
 LumenAISetupFloater::~LumenAISetupFloater()
 {
     // A half-finished install is worse than none, so a running step is NOT
@@ -132,8 +139,10 @@ bool LumenAISetupFloater::done(EStep step) const
         case STEP_SIGNIN:
             return gDirUtilp->fileExists(dir + "auth.json");
         case STEP_START:
-            return gDirUtilp->fileExists(dir + "app-server-control" + sep
-                                         + "app-server-control.sock");
+            // Somebody listening, not a file. A socket file outlives the
+            // process that made it, and a stale one marked this step done and
+            // greyed out its button -- the only fix short of Terminal.
+            return LumenAICodex::listening();
         default:
             return false;
     }
@@ -163,17 +172,21 @@ void LumenAISetupFloater::onOpen(const LLSD& key)
     mProvider = key.has("provider") ? key["provider"].asString() : LumenAIKeys::CODEX;
     mProved = false;
     mFailed = false;
-    mNote.clear();
+    // Said at once rather than after a button press, where it applies.
+    mNote = unavailableHere();
     refresh();
 }
 
-void LumenAISetupFloater::signedIn(bool ok)
+void LumenAISetupFloater::signedIn(bool ok, const std::string& why)
 {
     mProved = ok;
     mFailed = !ok;
     mNote   = ok ? std::string()
                  : "It installed, but signing in did not take. Try step 2 again "
                    "   the browser window has to be finished before it counts.";
+    // What Claude Code itself said, when it said anything: "did not take" with
+    // no reason sends somebody round the same step again for nothing.
+    if (!ok && !why.empty()) mNote += "\n\n" + why.substr(0, 300);
     refresh();
 }
 
@@ -188,6 +201,16 @@ void LumenAISetupFloater::run(EStep step)
 {
     mFailed = false;
     mNote.clear();
+
+    // Every step goes through /bin/sh, which Windows does not have, so there
+    // it could only ever fail with "could not start that" and no reason.
+    const std::string here = unavailableHere();
+    if (!here.empty())
+    {
+        mFailed = true;
+        mNote   = here;
+        return;
+    }
 
     LLProcess::Params p;
     p.executable = "/bin/sh";
@@ -238,35 +261,29 @@ void LumenAISetupFloater::draw()
             refresh();
 
             const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
-            const U16 port = LumenAIControl::instance().port();
+            // The question needs no tools, but Claude Code is still pointed at
+            // the endpoint, and with nothing started that is port 0. Opening it
+            // is harmless when it is already open, and the check does not
+            // depend on it succeeding.
+            LumenAIControl& ctl = LumenAIControl::instance();
+            if (!ctl.isRunning()) ctl.start();
+            const U16 port = ctl.port();
             LLHandle<LLFloater> h = getHandle();
             LLCoros::instance().launch("LumenAISetupClaude", [h, model, port]()
             {
                 LumenAIClaude cc;
+                LLSD result;
                 std::string why;
                 bool ok = false;
-                if (cc.start("Reply with the single word: ok", std::string(),
-                             model, std::string(), port, why))
+                if (cc.runToResult("Reply with the single word: ok", model, port, 120.0,
+                                   result, why))
                 {
-                    const F64 until = LLTimer::getTotalSeconds() + 120.0;
-                    LLSD msg;
-                    while (LLTimer::getTotalSeconds() < until)
-                    {
-                        if (!cc.poll(msg))
-                        {
-                            if (!cc.running() && !cc.poll(msg)) break;
-                            llcoro::suspend();
-                            continue;
-                        }
-                        if (msg["type"].asString() != "result") continue;
-                        ok = !msg["is_error"].asBoolean();
-                        break;
-                    }
-                    cc.stop();
+                    ok = !result["is_error"].asBoolean();
+                    if (!ok) why = result["result"].asString();
                 }
                 LumenAISetupFloater* f = dynamic_cast<LumenAISetupFloater*>(h.get());
                 if (!f) return;
-                f->signedIn(ok);
+                f->signedIn(ok, why);
             });
         }
         else if (mProc && !mProc->isRunning())
@@ -380,8 +397,13 @@ void LumenAISetupFloater::refresh()
         }
         else if (all)
         {
-            t = "All three are done. Close this window, then type to your assistant. "
-                "Your ChatGPT subscription pays for it, so there is no separate bill.";
+            // The one line here that did not ask which provider it was about,
+            // so a Claude Code user was told three steps and ChatGPT.
+            t = codex
+                ? "All three are done. Close this window, then type to your assistant. "
+                  "Your ChatGPT subscription pays for it, so there is no separate bill."
+                : "Both are done. Close this window, then type to your assistant. "
+                  "Your Claude subscription pays for it, so there is no separate bill.";
         }
         else if (mRunning != STEP_COUNT)
         {

@@ -144,10 +144,22 @@ public:
 
 private:
     bool shouldAnswer(const LLSD& data, std::string& why_not) const;
+    bool withinTimeLimit() const;
+    /**
+     * <Lumen> Asked again after every wait inside a reply. A reply takes
+     * seconds to write and seconds to "type", and the user can come back,
+     * switch answering off, or be put under RLV in between; everything
+     * shouldAnswer() checked was true when it started, not when it is sent.
+     */
+    bool stillWanted(U32 gen, bool speak_aloud, const LLUUID& to,
+                     std::string& why) const;
     void replyTo(const LLUUID& from_id, const std::string& from,
                  const LLUUID& session_id, bool speak_aloud,
                  const std::string& latest);
 
+    /// Bumped by every arm(), so a reply begun under an earlier arming is
+    /// dropped even when answering was switched off and straight back on.
+    U32                   mArmGen = 0;
     bool                  mArmed = false;
     bool                  mIMs = true;
     bool                  mLocalChat = false;
@@ -261,6 +273,19 @@ private:
     std::string mHistoryProvider;
 
     bool mBusy = false;
+    /**
+     * <Lumen> Which turn is current. A turn records it when it starts and asks
+     * again after every wait; Clear moves it on, so a turn still running when
+     * the conversation was cleared stops where it is instead of acting, and
+     * writing, into the new one.
+     */
+    S32  mTurnGen = 0;
+    /** Stop whatever turn is running, here and in Codex or Claude Code. */
+    void abandonTurn();
+    /** Tell Codex to stop the turn in flight, if it has one. */
+    void interruptCodexTurn();
+    /** Codex and Claude Code reach the tools over the endpoint; open it. */
+    bool ensureEndpoint(const std::string& provider);
     /// Whether the transcript currently carries a "no key" notice, so it is
     /// said once and withdrawn once rather than repeated or left standing.
     bool mSaidNoKey = false;
@@ -321,6 +346,7 @@ private:
     std::string mClaudeSession;   // Claude Code holds the conversation
     std::string mClaudeModel;     // what that session was started with
     std::string mCodexThread;
+    std::string mCodexTurn;    // the turn in flight, so it can be interrupted
     std::string mCodexModel;   // what that thread was started with
     // The memory that thread was started with. Codex reads it once, at
     // thread/start, so a forget or an edit afterwards is invisible to it --

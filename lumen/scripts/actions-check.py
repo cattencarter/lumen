@@ -85,6 +85,56 @@ for g in sorted(declared - accepted):
 for g in sorted(accepted - declared):
     counts.append("isGroup() accepts %s but no tool declares it" % g)
 
+# An EIGHTH: a parameter an action reads must be declared on THAT action's own
+# tool, not merely on some tool. Claude Code shows a model one tool at a time,
+# and every host validates arguments per tool, so `agent_id` declared on chat
+# is no use to movement / worn_by -- which said "call again with the same
+# agent_id" for as long as it existed. Three were found this way at once:
+# worn_by's agent_id, and pose's and rez's item_id, each named in a refusal the
+# model could read and not act on.
+#
+# Handlers are read as the text between one top-level `if (method == ...)` and
+# the next, so a shared branch counts for every method it names. That is
+# deliberately generous; it can only report too much, never too little.
+gparts = re.split(r'if \(group == "(\w+)"\)', ga)
+action_of = {}
+for i in range(1, len(gparts), 2):
+    for a, m in re.findall(r'action == "([a-z_]+)"\)\s*return "([a-z_]+)"', gparts[i + 1]):
+        action_of[(gparts[i], a)] = m
+props_of = {t: set(re.findall(r'\b%s_props\["([a-z_0-9]+)"\]' % p, s_src))
+            for t, p in (("inventory", "inv"), ("chat", "chat"), ("movement", "move"),
+                         ("viewer", "view"), ("build", "build"))}
+disp = s_src[s_src.index("LLSD LumenAIControl::dispatch("):]
+marks = list(re.finditer(r'\n    if \((method == "[a-z_]+"(?:\s*\|\|\s*method == "[a-z_]+")*)', disp))
+reads = {}
+for i, m in enumerate(marks):
+    seg = disp[m.start():marks[i + 1].start() if i + 1 < len(marks) else len(disp)]
+    ps = set(re.findall(r'params\.has\("([a-z_0-9]+)"\)', seg)) | \
+         set(re.findall(r'params\["([a-z_0-9]+)"\]', seg))
+    for meth in re.findall(r'method == "([a-z_]+)"', m.group(1)):
+        reads.setdefault(meth, set()).update(ps)
+# MCP's own envelope and the two every tool takes. `name` is NOT excluded
+# here as it is below: on a tool it is a real parameter.
+ENVELOPE = {"arguments", "capabilities", "protocolVersion", "clientInfo",
+            "action", "request_id"}
+for (tool, a), meth in sorted(action_of.items()):
+    if tool not in props_of:
+        continue
+    for p in sorted(reads.get(meth, set()) - props_of[tool] - ENVELOPE):
+        counts.append("%s / %s reads `%s`, which the %s tool does not declare "
+                      "(a model using that tool cannot pass it)" % (tool, a, p, tool))
+
+# A SEVENTH, outside this file: the tools Claude Code may call without asking.
+# It runs with nobody at a terminal, so a tool missing from --allowedTools is
+# refused with "you haven't granted it yet" -- `build` was, and the model asked
+# the user to approve a prompt that does not exist.
+cc = (pathlib.Path(__file__).resolve().parents[2] /
+      "indra/newview/lumenaiclaude.cpp").read_text(encoding="utf-8", errors="replace")
+cc_allowed = set(re.findall(r'mcp__second_life__([a-z]+)', cc))
+for g in sorted(declared - cc_allowed):
+    counts.append("tool %s is declared but not on Claude Code's --allowedTools "
+                  "(lumenaiclaude.cpp) -- the model can see it and never use it" % g)
+
 for g in re.finditer(r'static const char\* const (\w+)_actions\[\] =\s*\{(.*?)\};', s_src, re.S):
     name, body = g.group(1), g.group(2)
     n = len(re.findall(r'"[a-z_]+"', body))
@@ -306,4 +356,4 @@ if fails:
     for f in fails:
         print("  FAIL  " + f)
     sys.exit(1)
-print("  all six lists agree, no Windows-reserved identifier, and every English XUI file parses")
+print("  all eight lists agree, no Windows-reserved identifier, and every English XUI file parses")

@@ -46,6 +46,13 @@ public:
     static bool        installed();
 
     /**
+     * Why this provider cannot work on this platform at all, or empty when it
+     * can. On Windows the CLI is looked for under Unix names and the setup
+     * runs /bin/sh, so "not installed" would be the wrong reason to give.
+     */
+    static std::string unavailableHere();
+
+    /**
      * Start one turn. False sets `why`.
      *
      * `resume` continues an earlier conversation and may be empty for the
@@ -62,11 +69,36 @@ public:
     /** One complete JSON line from the child, or false when none is waiting. */
     bool poll(LLSD& out);
 
+    /**
+     * Start a turn and wait for its `result` line, from inside a coroutine.
+     *
+     * For the one-question checks (Preferences' Test, the setup window's
+     * sign-in check), which had each written this loop themselves and each
+     * thrown away a result line read after the process had exited. True with
+     * the result line in `result`; false with a reason in `why` -- including
+     * what Claude Code wrote on stderr, when it said anything there.
+     */
+    bool runToResult(const std::string& prompt, const std::string& model, U16 port,
+                     F64 seconds, LLSD& result, std::string& why);
+
     bool running() const;
     void stop();
 
+    /**
+     * What the process wrote on stderr, as of the last stop(). Empty when it
+     * said nothing there. A failure Claude Code reports only on stderr -- a
+     * bad argument, a sign-in problem -- otherwise leaves no reason anywhere.
+     */
+    const std::string& errorText() const { return mLastError; }
+
 private:
+    /** Whether a whole line is waiting on stdout. */
+    bool lineWaiting();
+    /** Move whatever stderr holds into mLastError; returns what was new. */
+    std::string collectError();
+
     LLProcessPtr mProc;
+    std::string  mLastError;
 };
 
 #endif // LUMEN_AICLAUDE_H

@@ -79,6 +79,8 @@
 #include "lltexteditor.h"
 #include "lluicolortable.h"
 #include "llviewercontrol.h"
+#include "lldir.h"       // <Lumen> Codex's own empty working directory
+#include "llfile.h"      // <Lumen>
 
 #include <boost/json.hpp>
 
@@ -139,6 +141,21 @@ namespace
             is_openai ? "LumenAIOpenAIURL" : "LumenAIAnthropicURL");
         if (!set.empty()) return set;
         return is_openai ? OPENAI_URL_DEFAULT : ANTHROPIC_URL_DEFAULT;
+    }
+
+    /**
+     * <Lumen> Where a Codex thread starts: an empty folder of our own.
+     *
+     * Codex reads an AGENTS.md out of its working directory the way Claude
+     * Code reads a CLAUDE.md, and a thread given no directory takes whatever
+     * the background service was started in. Same answer as the Claude Code
+     * path: a directory nobody else writes into has nothing to say.
+     */
+    std::string codexWorkDir()
+    {
+        const std::string d = gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "codex_work");
+        LLFile::mkdir(d);
+        return d;
     }
 
     // Anthropic pins its wire format with a date rather than a version number.
@@ -1126,7 +1143,70 @@ LumenAIChatFloater::LumenAIChatFloater(const LLSD& key)
 LumenAIChatFloater::~LumenAIChatFloater()
 {
     for (size_t i = 0; i < mModelConns.size(); ++i) mModelConns[i].disconnect();
+    // <Lumen> Closed, or quitting, mid-answer. The turn's coroutine sees the
+    // dead handle when it next wakes and touches nothing; this stops the half
+    // of it that runs somewhere else -- a Codex turn would otherwise go on
+    // calling tools with nobody reading.
+    if (mBusy) abandonTurn();
 }
+
+// <Lumen>
+void LumenAIChatFloater::interruptCodexTurn()
+{
+    if (mCodex && mCodex->connected() && !mCodexThread.empty() && !mCodexTurn.empty())
+    {
+        LLSD p;
+        p["threadId"] = mCodexThread;
+        p["turnId"]   = mCodexTurn;
+        LLSD m;
+        m["jsonrpc"] = "2.0";
+        m["id"]      = ++mCodexRpcId;
+        m["method"]  = "turn/interrupt";
+        m["params"]  = p;
+        mCodex->send(m);
+    }
+    mCodexTurn.clear();
+}
+
+void LumenAIChatFloater::abandonTurn()
+{
+    // The running coroutine compares this after every wait and returns
+    // without touching the history, the tools or the busy state.
+    ++mTurnGen;
+
+    if (mClaude) mClaude->stop();
+
+    if (mCodex && mCodex->connected())
+    {
+        interruptCodexTurn();
+        // Whatever it still sends belongs to an answer nobody is reading. A
+        // fresh connection for the next question cannot hand it over by
+        // mistake; the next turn reconnects and handshakes on its own.
+        mCodex->close();
+    }
+    mCodexTurn.clear();
+    mCatchUpPending = false;
+    mCatchUpDrawn   = false;
+}
+
+bool LumenAIChatFloater::ensureEndpoint(const std::string& provider)
+{
+    // Codex and Claude Code are separate programs and reach the viewer's
+    // tools over the endpoint, so it has to be listening before their turn
+    // rather than only from startup: the provider can be changed at any
+    // moment, and at startup the endpoint only opens for these two.
+    LumenAIControl& ctl = LumenAIControl::instance();
+    if ((!ctl.isRunning() && !ctl.start()) || ctl.port() == 0)
+    {
+        sayNote("Lumen could not open the local connection that "
+                + LumenAIKeys::displayName(provider) + " needs to reach the viewer. Try "
+                "again, or pick a different provider in Preferences > AI.");
+        setBusy(false);
+        return false;
+    }
+    return true;
+}
+// </Lumen>
 
 bool LumenAIChatFloater::postBuild()
 {
@@ -1735,6 +1815,14 @@ void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 
 void LumenAIChatFloater::onClear()
 {
+    // <Lumen> Clear is the only thing on screen that looks like "stop", and
+    // it did not stop anything: the running turn went on wearing, giving and
+    // teleporting, wrote into the new conversation, and -- with Send enabled
+    // again -- ran alongside the next one on the same history, socket or
+    // process. So a running turn is stopped first, for real.
+    const bool was_busy = mBusy;
+    if (was_busy) abandonTurn();
+    // </Lumen>
     mMessages = LLSD::emptyArray();
     mHistoryProvider.clear();
     // "Start a new conversation" has to mean it for the two providers that keep
@@ -1749,6 +1837,7 @@ void LumenAIChatFloater::onClear()
     }
     setBusy(false);
     sayHeader();
+    if (was_busy) sayNote("Stopped the answer that was still running.");
 }
 
 void LumenAIChatFloater::onSend()
@@ -1778,6 +1867,16 @@ void LumenAIChatFloater::onSend()
  */
 void LumenAIChatFloater::beginTurn(const std::string& text)
 {
+    // <Lumen> One turn at a time, and busy from THIS moment. Codex's handshake
+    // suspends for seconds before any provider path set busy itself, and a
+    // second Enter -- or the catch-up link -- in that gap started a second
+    // turn on the same socket, each throwing away the other's replies.
+    if (mBusy) return;
+    setBusy(true, "Thinking...");
+    // </Lumen>
+
+    // The handle is checked here only for the start; each turn keeps it and
+    // asks again after every wait (see stillMine in the run* functions).
     LLHandle<LLFloater> handle = getHandle();
     LLCoros::instance().launch("LumenAIChatTurn", [handle, text]()
     {
@@ -1786,11 +1885,11 @@ void LumenAIChatFloater::beginTurn(const std::string& text)
             const std::string who = gSavedSettings.getString("LumenAIProvider");
             if (who == LumenAIKeys::CODEX)
             {
-                self->runCodexTurn(text);
+                if (self->ensureEndpoint(who)) self->runCodexTurn(text);
             }
             else if (who == LumenAIKeys::CLAUDECODE)
             {
-                self->runClaudeCodeTurn(text);
+                if (self->ensureEndpoint(who)) self->runClaudeCodeTurn(text);
             }
             else
             {
@@ -2097,6 +2196,19 @@ void LumenAIChatFloater::startCatchUp()
  */
 void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
 {
+    // <Lumen> This may wake after the window was closed or the viewer began
+    // quitting -- a turn can wait five minutes -- or after Clear started a new
+    // conversation. Asked after every suspend, before any member is touched:
+    // once the handle is dead, `this` is gone.
+    const LLHandle<LLFloater> handle = getHandle();
+    const S32 gen = mTurnGen;
+    auto stillMine = [this, handle, gen]() -> bool
+    {
+        LLCoros::checkStop();   // quitting: stop here, not after one more tool
+        return !handle.isDead() && !isDead() && mTurnGen == gen;
+    };
+    // </Lumen>
+
     std::string why;
     if (!mCodex) mCodex.reset(new LumenAICodex());
     if (!mCodex->connected())
@@ -2141,10 +2253,11 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
     auto answerIfAsked = [&](const LLSD& msg) -> bool
     {
         if (!msg.has("id") || !msg.has("method")) return false;
+        const std::string method = msg["method"].asString();
         LLSD out;
         out["jsonrpc"] = "2.0";
         out["id"] = msg["id"];
-        if (msg["method"].asString() == "mcpServer/elicitation/request")
+        if (method == "mcpServer/elicitation/request")
         {
             // <Lumen> Yes for OUR server only. Codex asks this before calling
             // a tool on ANY MCP server in the user's own configuration, not
@@ -2175,9 +2288,47 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
             }
             // </Lumen>
         }
+        // <Lumen> Codex's own shell and file tools: an explicit no, logged.
+        //
+        // These went out as an empty result, which carries no decision at
+        // all. The thread is started read-only and asks before anything it
+        // does not consider safe (see thread/start), so these are the
+        // requests that matter -- and nobody here asked for a command to be
+        // run. Method names and answer shapes are the app-server's own
+        // schema (`codex app-server generate-json-schema`, 0.156).
+        else if (method == "item/commandExecution/requestApproval"
+                 || method == "item/fileChange/requestApproval")
+        {
+            out["result"] = LLSD().with("decision", "decline");
+        }
+        else if (method == "execCommandApproval" || method == "applyPatchApproval")
+        {
+            out["result"] = LLSD().with("decision",
+                LLSD().with("denied", LLSD().with("rejection",
+                    "Commands and file changes are not allowed in this viewer.")));
+        }
+        else if (method == "item/permissions/requestApproval")
+        {
+            out["result"] = LLSD().with("permissions", LLSD::emptyMap());   // grants nothing
+        }
+        else if (method == "item/tool/requestUserInput")
+        {
+            out["result"] = LLSD().with("answers", LLSD::emptyMap());
+        }
+        else if (method == "item/tool/call")
+        {
+            out["result"] = LLSD().with("contentItems", LLSD::emptyArray())
+                                  .with("success", false);
+        }
+        // </Lumen>
         else
         {
             out["result"] = LLSD::emptyMap();
+        }
+        if (method != "mcpServer/elicitation/request")
+        {
+            LL_INFOS("AICtl") << "codex asked '" << method << "'; answered "
+                              << jsonString(out["result"]) << LL_ENDL;
         }
         mCodex->send(out);
         return true;
@@ -2192,6 +2343,7 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
     // the server took the trouble to send is the most useful sentence
     // available, and it was being thrown away.
     std::string failed_because;
+    bool cancelled = false;   // <Lumen> set when stillMine() failed: touch nothing
     auto await = [&](S32 want, F32 seconds, LLSD& result) -> bool
     {
         failed_because.clear();
@@ -2218,21 +2370,38 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
                 return false;
             }
             llcoro::suspend();
+            if (!stillMine())
+            {
+                cancelled = true;
+                return false;
+            }
         }
         return false;
     };
 
-
+    // <Lumen> Say what is happening while the connection and the thread are
+    // set up -- seconds, the first time -- rather than a blank status bar.
+    if (!mCodexReady)
+    {
+        setBusy(true, "Starting Codex...");
+    }
+    // </Lumen>
 
     // **Once per connection.** Sending it again is an error, not a no-op:
     // the app-server answers `Already initialized` and refuses.
     if (!mCodexReady)
     {
         LLSD res;
-        if (!await(rpc("initialize", LLSD().with("clientInfo",
+        const bool ok = await(rpc("initialize", LLSD().with("clientInfo",
                        LLSD().with("name", "lumen").with("title", "Lumen")
                              .with("version", LLVersionInfo::instance().getShortVersion()))),
-                   20.f, res))
+                   20.f, res);
+        if (cancelled) return;
+        // <Lumen> "Already initialized" means exactly what it says: this
+        // connection is ready, so there is nothing to refuse.
+        const bool already = !ok && failed_because.find("Already initialized") != std::string::npos;
+        // </Lumen>
+        if (!ok && !already)
         {
             sayNote(failed_because.empty()
                     ? "Codex did not answer. Is its background service running?"
@@ -2259,6 +2428,8 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
 
     if (mCodexThread.empty())
     {
+        setBusy(true, "Starting Codex...");   // <Lumen> seconds, while its tools connect
+
         // **Register the viewer as an MCP server for THIS THREAD.** Codex
         // speaks streamable HTTP, and the endpoint already is one, so it
         // reaches the tools directly -- no bridge script, nothing that only
@@ -2328,6 +2499,35 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         const std::string want_model = gSavedSettings.getString("LumenAICodexModel");
         if (!want_model.empty()) start["model"] = want_model;
 
+        // <Lumen> **Codex's own shell and patch tools, pinned shut rather than
+        // left to a sentence in the prompt.** The model is handed them in
+        // every thread, and this one reads other people's words -- IMs,
+        // notecards, object names -- while holding tools that send text back
+        // into the world. Unpinned, the thread ran on whatever the user's own
+        // config.toml allows, which for plenty of people is "anything, never
+        // ask". Claude Code gets the same treatment through --restricted and
+        // an empty working directory.
+        //   - read-only: no writes and no network for anything Codex runs
+        //     (turn/start repeats the network part explicitly);
+        //   - untrusted: anything Codex does not already consider safe is
+        //     asked about first, and answerIfAsked declines every one. Not
+        //     "never": this project measured that Codex then refuses our own
+        //     MCP calls too, unless each server is set to approve on its own,
+        //     which could not be re-tested here;
+        //   - approvals go to us, not to Codex's automatic reviewer, which
+        //     could otherwise say yes on our behalf;
+        //   - an empty working directory of our own, so no AGENTS.md from
+        //     wherever the background service was started becomes instructions.
+        // Every field name is from the app-server's own schema (0.156).
+        // Codex's safe list still runs plain reads without asking, so the
+        // prompt's "do not run one" remains the last line against a read; the
+        // app-server offers no documented switch for the shell tool itself.
+        start["sandbox"]           = "read-only";
+        start["approvalPolicy"]    = "untrusted";
+        start["approvalsReviewer"] = "user";
+        start["cwd"]               = codexWorkDir();
+        // </Lumen>
+
         // **Lumen's own prompt, which this path was sending to nobody.**
         // Anthropic and OpenAI both get `fullSystemPrompt()`; Codex got
         // nothing, so the model ran as Codex's ordinary coding agent with no
@@ -2368,7 +2568,9 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
             "window; write `Avatar > Preferences`, not `**Avatar -> Preferences**`.";
 
         LLSD started;
-        if (!await(rpc("thread/start", start), 30.f, started))
+        const bool ok = await(rpc("thread/start", start), 30.f, started);
+        if (cancelled) return;   // <Lumen>
+        if (!ok)
         {
             sayNote(failed_because.empty()
                     ? std::string("Codex would not start a conversation.")
@@ -2408,19 +2610,35 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
     one["text"] = user_text;
     turn["input"] = LLSD::emptyArray();
     turn["input"].append(one);
-    if (rpc("turn/start", turn) < 0)
+    // <Lumen> No network for anything Codex runs, said explicitly: the
+    // thread's read-only sandbox implies it, and this is the one place the
+    // schema lets it be written down rather than inferred.
+    turn["sandboxPolicy"] = LLSD().with("type", "readOnly").with("networkAccess", false);
+    // </Lumen>
+    const S32 turn_rpc = rpc("turn/start", turn);
+    if (turn_rpc < 0)
     {
         sayNote("Could not send that to Codex.");
         setBusy(false);
         return;
     }
+    mCodexTurn.clear();
 
     setBusy(true, "Thinking...");
 
     // Then read until the turn ends. Deltas are collected rather than printed
     // one letter at a time -- the transcript is a chat log, not a teletype.
+    //
+    // <Lumen> **Only THIS turn's events.** Nothing tied what was read to the
+    // turn that asked: a turn abandoned at the five-minute mark kept running,
+    // and its late answer and turn/completed were then read as the reply to
+    // the next question. Events for another thread, or -- once the reply to
+    // turn/start has said which turn this is -- another turn, are skipped.
+    // </Lumen>
     S32 allowance_used = -1;
     std::string answer;
+    bool completed = false;   // <Lumen> Codex said this turn is over
+    bool timed_out = true;    // <Lumen> left the loop only because time ran out
     const F64 until = LLTimer::getTotalSeconds() + 300.0;
     LLSD msg;
     while (LLTimer::getTotalSeconds() < until)
@@ -2430,26 +2648,65 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
             if (!mCodex->connected())
             {
                 sayNote("Codex closed the connection.");
+                timed_out = false;
                 break;
             }
             llcoro::suspend();
+            if (!stillMine()) return;   // <Lumen> closed, quitting or cleared
             continue;
         }
 
         if (answerIfAsked(msg)) continue;
 
+        // <Lumen> The reply to turn/start itself: which turn this is, or why
+        // there is none. An error here matched nothing below, so a refused
+        // turn sat on "Thinking..." for five minutes and then claimed Codex
+        // had finished without saying anything.
+        if (!msg.has("method") && msg.has("id") && msg["id"].asInteger() == turn_rpc)
+        {
+            if (msg.has("error"))
+            {
+                std::string refused = msg["error"]["message"].asString();
+                if (refused.size() > 300) refused = refused.substr(0, 300);
+                sayNote(refused.empty() ? std::string("Codex would not start that answer.")
+                                        : "Codex would not start that answer -- " + refused);
+                timed_out = false;
+                break;
+            }
+            mCodexTurn = msg["result"]["turn"]["id"].asString();
+            continue;
+        }
+        // </Lumen>
+
         const std::string method = msg.has("method") ? msg["method"].asString() : std::string();
+
+        // <Lumen>
+        const LLSD params = msg["params"];
+        if (params.has("threadId") && params["threadId"].asString() != mCodexThread)
+        {
+            continue;   // another thread's
+        }
+        const std::string of_turn = params.has("turnId") ? params["turnId"].asString()
+                                                         : params["turn"]["id"].asString();
+        if (!mCodexTurn.empty() && !of_turn.empty() && of_turn != mCodexTurn)
+        {
+            continue;   // an earlier turn's
+        }
+        // </Lumen>
+
         if (method == "item/agentMessage/delta")
         {
-            answer += msg["params"]["delta"].asString();
+            answer += params["delta"].asString();
         }
         else if (method == "item/completed"
-                 && msg["params"]["item"]["type"].asString() == "agentMessage")
+                 && params["item"]["type"].asString() == "agentMessage")
         {
-            answer = msg["params"]["item"]["text"].asString();
+            answer = params["item"]["text"].asString();
         }
         else if (method == "turn/completed" || method == "turn/failed")
         {
+            completed = true;
+            timed_out = false;
             break;
         }
         // **A turn can fail without either of those.** A model name Codex does
@@ -2460,9 +2717,18 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         // deliberately wrong model name, before this branch existed.
         else if (method == "error")
         {
-            std::string why = msg["params"]["error"]["message"].asString();
+            // <Lumen> One Codex is going to retry is not the end of the turn;
+            // leaving then abandoned a turn that was still running.
+            if (params["willRetry"].asBoolean())
+            {
+                setActivity("Codex hit a problem and is trying again...");
+                continue;
+            }
+            // </Lumen>
+            std::string why = params["error"]["message"].asString();
             if (why.size() > 300) why = why.substr(0, 300);
             sayNote(why.empty() ? "Codex reported an error." : "Codex: " + why);
+            timed_out = false;
             break;
         }
         else if (method == "account/rateLimits/updated")
@@ -2471,7 +2737,7 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
             // replaced "Working", and the window looked finished while Codex
             // was still thinking -- the author's catch. It is shown once the
             // answer is in.
-            const LLSD& p = msg["params"]["rateLimits"]["primary"];
+            const LLSD& p = params["rateLimits"]["primary"];
             if (p.has("usedPercent"))
             {
                 allowance_used = p["usedPercent"].asInteger();
@@ -2479,8 +2745,33 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         }
     }
 
+    // <Lumen> Left without Codex saying the turn was over: it may still be
+    // working, and whatever it sends next would be read as the answer to the
+    // next question. Stop it, and give the next question a thread nobody
+    // else is writing into.
+    const bool abandoned = !completed;
+    if (abandoned)
+    {
+        interruptCodexTurn();
+        mCodexThread.clear();
+    }
+    mCodexTurn.clear();
+    // </Lumen>
+
     if (!answer.empty()) sayAssistant(answer);
-    else                 sayNote("Codex finished without saying anything.");
+    else if (completed)  sayNote("Codex finished without saying anything.");
+    // <Lumen>
+    if (timed_out)
+    {
+        sayNote(answer.empty()
+                ? "Stopped waiting for Codex after five minutes."
+                : "Stopped waiting for Codex after five minutes, so that answer may be unfinished.");
+    }
+    if (abandoned && mCodex->connected())
+    {
+        sayNote("Your next message starts a new conversation with Codex.");
+    }
+    // </Lumen>
     noticeCodexMemory();   // a forget during this reply
     setBusy(false);
     if (allowance_used >= 0)
@@ -2544,6 +2835,17 @@ void LumenAIChatFloater::noticeCodexMemory()
  */
 void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
 {
+    // <Lumen> The same guard as the Codex turn: this may wake after the
+    // window closed, the viewer began quitting, or Clear moved on.
+    const LLHandle<LLFloater> handle = getHandle();
+    const S32 gen = mTurnGen;
+    auto stillMine = [this, handle, gen]() -> bool
+    {
+        LLCoros::checkStop();
+        return !handle.isDead() && !isDead() && mTurnGen == gen;
+    };
+    // </Lumen>
+
     if (!LumenAIClaude::installed())
     {
         sayNote("Claude Code is not installed. Preferences > AI.");
@@ -2595,6 +2897,9 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
             else
             {
                 llcoro::suspend();
+                // <Lumen> Cleared: abandonTurn() already stopped the process,
+                // and the next turn may own mClaude by now.
+                if (!stillMine()) return;
                 continue;
             }
         }
@@ -2656,11 +2961,32 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
     if (!failed.empty())      sayNote("Claude Code: " + failed);
     else if (!answer.empty()) sayAssistant(answer);
     else                      sayNote("Claude Code finished without saying anything.");
+    // <Lumen> Cut off at five minutes, or the process ended without its final
+    // line: whatever streamed so far was shown as if it were the whole answer.
+    if (!finished && failed.empty() && !answer.empty())
+    {
+        sayNote("Claude Code stopped before it finished, so that answer may be incomplete.");
+    }
+    // </Lumen>
     setBusy(false);
 }
 
 void LumenAIChatFloater::runTurn(const std::string& user_text)
 {
+    // <Lumen> Asked after every suspend: the provider call and the frame
+    // before each tool. A closed window, a quitting viewer or a Clear all
+    // happen during those, and each used to resume straight into the history
+    // and the next tool call -- on a deleted window, or into the conversation
+    // that replaced this one.
+    const LLHandle<LLFloater> handle = getHandle();
+    const S32 gen = mTurnGen;
+    auto stillMine = [this, handle, gen]() -> bool
+    {
+        LLCoros::checkStop();   // quitting: no tool runs during teardown
+        return !handle.isDead() && !isDead() && mTurnGen == gen;
+    };
+    // </Lumen>
+
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
 
     // <Lumen> "None" is a real choice, so it gets a real answer rather than
@@ -2672,22 +2998,8 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
         return;
     }
 
-    // <Lumen> Codex and Claude Code are separate programs and reach the
-    // viewer's tools over the endpoint, so it has to be listening before a turn
-    // rather than only from startup: the provider can be changed at any moment,
-    // and requiring a restart to make a freshly chosen one work is exactly the
-    // kind of silent nothing this project keeps writing down.
-    if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
-    {
-        if (!LumenAIControl::instance().isRunning() && !LumenAIControl::instance().start())
-        {
-            sayNote("Lumen could not open the local connection that "
-                    + LumenAIKeys::displayName(provider) + " needs. Try again, or "
-                    "pick a different provider in Preferences > AI.");
-            setBusy(false);
-            return;
-        }
-    }
+    // (Codex and Claude Code never come here: beginTurn() opens the endpoint
+    // for them and hands them their own turn functions.)
 
     // A local server speaks OpenAI's dialect; only the address differs.
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
@@ -2708,6 +3020,14 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
         setBusy(false);
         return;
     }
+
+    // <Lumen> Where this turn's requests go, decided ONCE, beside the key.
+    // providerUrl() reads the setting live, so a provider changed in
+    // Preferences mid-turn sent this provider's key and the whole conversation
+    // so far to the new one's address -- an Anthropic key to a local server,
+    // a local-only conversation to OpenAI.
+    const std::string url = providerUrl(is_openai);
+    // </Lumen>
 
     // Switching provider mid-conversation would mean rewriting every tool
     // call already in the history into the other dialect. Start fresh and be
@@ -2821,8 +3141,25 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
         }
 
         std::string error;
-        const LLSD reply = postJson(providerUrl(is_openai),
-                                    body, headers, error);
+        const LLSD reply = postJson(url, body, headers, error);
+
+        // <Lumen>
+        if (!stillMine()) return;
+        if (gSavedSettings.getString("LumenAIProvider") != provider)
+        {
+            // Changed in Preferences while this was being answered. Carrying on
+            // would run this provider's tool calls for a conversation the user
+            // has moved away from, so it stops here, and the next message
+            // starts clean in the new provider's dialect.
+            mHistoryProvider.clear();
+            sayNote("The assistant was changed in Preferences while this answer was "
+                    "running, so it was stopped. Your next message starts a new conversation.");
+            flushCatchUp();
+            setBusy(false);
+            sayUsage(turn_in, turn_out, turn_cached, turn_created, calls, !is_openai);
+            return;
+        }
+        // </Lumen>
 
         if (!error.empty())
         {
@@ -2883,6 +3220,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     // loop next repaints -- only the last label of a batch
                     // would ever have been seen. One frame is enough.
                     llcoro::suspend();
+                    if (!stillMine()) return;   // <Lumen> never a tool for a turn nobody owns
 
                     bool is_error = false;
                     LLSD structured;   // <Lumen>
@@ -2933,6 +3271,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
 
                     setActivity(toolLabel(name, (*it)["input"]));
                     llcoro::suspend();
+                    if (!stillMine()) return;   // <Lumen>
 
                     bool is_error = false;
                     LLSD structured;   // <Lumen>
@@ -3281,6 +3620,7 @@ void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool 
                                bool on_arrival,
                                const std::string& say)
 {
+    ++mArmGen;   // <Lumen> any reply still being written belongs to the old arming
     mSay = on ? say : std::string();
     mToldFirst.clear();
     mArrivedAt.clear();
@@ -3330,6 +3670,41 @@ void LumenAIAutoResponder::arm(bool on, const std::string& note, bool ims, bool 
                                 + "]") : std::string()) << LL_ENDL;
 }
 
+// A time limit as well as the two counts, because they answer different
+// questions. Six replies to one person can stretch across an entire
+// afternoon; "stop after an hour" is what somebody actually means by how
+// long it should cover for them. 0 switches it off.
+bool LumenAIAutoResponder::withinTimeLimit() const
+{
+    const S32 minutes = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
+    return minutes <= 0
+        || (LLTimer::getTotalSeconds() - mArmedAt) <= (F64)minutes * 60.0;
+}
+
+// <Lumen>
+bool LumenAIAutoResponder::stillWanted(U32 gen, bool speak_aloud, const LLUUID& to,
+                                       std::string& why) const
+{
+    if (!mArmed || gen != mArmGen)
+    {
+        why = "answering was switched off or changed while it was being written"; return false;
+    }
+    if (!(speak_aloud ? mLocalChat : mIMs))
+    {
+        why = "that channel was switched off"; return false;
+    }
+    if (!withinTimeLimit())
+    {
+        why = "the time limit passed while it was being written"; return false;
+    }
+    if (!speak_aloud && RlvActions::isRlvEnabled() && !RlvActions::canSendIM(to))
+    {
+        why = "RLV now forbids IMs to them"; return false;
+    }
+    return true;
+}
+// </Lumen>
+
 bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) const
 {
     if (!mArmed)
@@ -3337,13 +3712,7 @@ bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) 
         why_not = "not armed"; return false;
     }
 
-    // A time limit as well as the two counts, because they answer different
-    // questions. Six replies to one person can stretch across an entire
-    // afternoon; "stop after an hour" is what somebody actually means by how
-    // long it should cover for them. 0 switches it off.
-    const S32 minutes = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
-    if (minutes > 0
-        && (LLTimer::getTotalSeconds() - mArmedAt) > (F64)minutes * 60.0)
+    if (!withinTimeLimit())
     {
         why_not = "the time limit has passed"; return false;
     }
@@ -3364,8 +3733,15 @@ bool LumenAIAutoResponder::shouldAnswer(const LLSD& data, std::string& why_not) 
     {
         why_not = "muted"; return false;
     }
+    // <Lumen> Somebody the user NAMED is answered whether or not they are on
+    // the friends list: being named is the permission. Without this, "if
+    // Kwanita writes, tell her I'll be right back" was reported as armed,
+    // greeted her on arrival, and then silently never answered a word she
+    // wrote -- friends-only is on by default.
     if (gSavedPerAccountSettings.getBOOL("LumenAIAutoRespondFriendsOnly")
-        && !LLAvatarActions::isFriend(from_id))
+        && !LLAvatarActions::isFriend(from_id)
+        && !mOnly.count(from_id))
+    // </Lumen>
     {
         why_not = "not a friend"; return false;
     }
@@ -3435,8 +3811,7 @@ void LumenAIAutoResponder::checkArrivals()
     // <Lumen> The same time limit the replies obey. Only shouldAnswer() read
     // it, so an arrival greeting armed for "an hour" went on being sent for
     // as long as the viewer stayed logged in.
-    const S32 minutes = gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes");
-    if (minutes > 0 && (LLTimer::getTotalSeconds() - mArmedAt) > (F64)minutes * 60.0)
+    if (!withinTimeLimit())
     {
         return;
     }
@@ -3467,6 +3842,27 @@ void LumenAIAutoResponder::checkArrivals()
 
         mSeen.insert(who);   // once each, whatever happens next
 
+        // <Lumen> Somebody who wrote first has already been answered, and the
+        // exact words -- or "I stepped away" -- already reached them. Walking
+        // up is not news, so the greeting is not sent a second time.
+        if (mRepliesTo.count(who) || mToldFirst.count(who))
+        {
+            continue;
+        }
+
+        // The IM window refuses under @sendim, @startim and @startimto, and
+        // LLIMModel::sendMessage checks none of them -- so the greeting went
+        // out in the user's name where they could not have sent it by hand.
+        // Already marked seen above, so this is not asked again every 3 s.
+        if (RlvActions::isRlvEnabled()
+            && (!RlvActions::canStartIM(who) || !RlvActions::canSendIM(who)))
+        {
+            LL_INFOS("AICtl") << "arrival greeting to " << who
+                              << " withheld: RLV forbids IMs to them" << LL_ENDL;
+            continue;
+        }
+        // </Lumen>
+
         // NEVER the note. `note` is a brief -- "how long they will be, what to
         // say, what not to" -- and sending it verbatim put "User is away; let
         // Catten know if he arrives or messages" in front of somebody who does
@@ -3489,6 +3885,15 @@ void LumenAIAutoResponder::checkArrivals()
         if (LLAvatarNameCache::get(who, &av)) name = av.getUserName();
         const LLUUID session = gIMMgr->addSession(name, IM_NOTHING_SPECIAL, who);
         LLIMModel::sendMessage(text, session, who, IM_NOTHING_SPECIAL);
+
+        // <Lumen> They have been told now, in both of the ways replyTo() asks.
+        // Without this their first "ok!" was answered with the exact same
+        // sentence again -- aloud to the room, if they said it in local chat --
+        // and the next generated reply was written as a first contact.
+        if (!mSay.empty()) mToldFirst.insert(who);
+        mRepliesTo[who] += 1;
+        mRepliesTotal += 1;
+        // </Lumen>
 
         LL_INFOS("LumenAIChat") << "Told " << who << " that the user is away, on arrival."
                                 << LL_ENDL;
@@ -3667,6 +4072,10 @@ void LumenAIAutoResponder::considerChat(const LLSD& data)
     as_im["session_type"] = (S32)LLIMModel::LLIMSession::P2P_SESSION;
     if (!shouldAnswer(as_im, why_not))
     {
+        // <Lumen> Spoken to and not answered: say why, somewhere. Silence here
+        // looked exactly like working.
+        LL_INFOS("AICtl") << "not answering " << data["from"].asString()
+                          << " in local chat: " << why_not << LL_ENDL;
         return;
     }
 
@@ -3684,6 +4093,14 @@ void LumenAIAutoResponder::consider(const LLSD& data)
     std::string why_not;
     if (!shouldAnswer(data, why_not))
     {
+        // <Lumen> Logged for one-to-one IMs while armed -- the case somebody
+        // asks about afterwards. Group chat is refused on every line by
+        // design and would bury the rest.
+        if (mArmed && data["session_type"].asInteger() == LLIMModel::LLIMSession::P2P_SESSION)
+        {
+            LL_INFOS("AICtl") << "not answering " << data["from"].asString()
+                              << ": " << why_not << LL_ENDL;
+        }
         return;
     }
     replyTo(data["from_id"].asUUID(), data["from"].asString(),
@@ -3853,18 +4270,50 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
     const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
     const std::string model = gSavedSettings.getString(modelSetting(provider));
+    // <Lumen> Where to send it, decided now, beside the key: providerUrl()
+    // reads the setting live, and the provider can change during the wait.
+    const std::string url = providerUrl(is_openai);
+    // Which arming this reply belongs to. See stillWanted().
+    const U32 gen = mArmGen;
+    // </Lumen>
 
     LLCoros::instance().launch("LumenAIAutoRespond",
-        [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud]()
+        [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud,
+         url, gen]()
     {
         // <Lumen> Whatever happens below, this person is answerable again
         // afterwards. The erase used to sit at the very end, so a throw out
         // of postJson left the marker set for the rest of the session.
+        // Not during teardown, though: instance() there would build the
+        // responder again from nothing.
         struct ClearInFlight
         {
             LLUUID who;
-            ~ClearInFlight() { LumenAIAutoResponder::instance().mInFlight.erase(who); }
+            ~ClearInFlight()
+            {
+                if (LumenAIAutoResponder::instanceExists())
+                {
+                    LumenAIAutoResponder::instance().mInFlight.erase(who);
+                }
+            }
         } clear_in_flight{ from_id };
+
+        // Everything replyTo() checked was true when the reply started. The
+        // user can come back and switch answering off, run out the time
+        // limit, or be put under RLV during the wait for the provider or the
+        // "typing" pause -- and the reply went out anyway, a few seconds
+        // after they were told it had stopped.
+        auto withdrawn = [&]() -> bool
+        {
+            LLCoros::checkStop();
+            std::string why;
+            if (LumenAIAutoResponder::instance().stillWanted(gen, speak_aloud, from_id, why))
+            {
+                return false;
+            }
+            LL_INFOS("AICtl") << "auto-reply to " << from << " dropped: " << why << LL_ENDL;
+            return true;
+        };
         // </Lumen>
 
         LLSD body;
@@ -3893,8 +4342,8 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
         }
 
         std::string error;
-        const LLSD reply = postJson(providerUrl(is_openai),
-                                    body, headers, error);
+        const LLSD reply = postJson(url, body, headers, error);
+        if (withdrawn()) return;   // <Lumen>
 
         std::string text;
         if (error.empty())
@@ -3943,6 +4392,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             }
 
             llcoro::suspendUntilTimeout(seconds);
+            LLCoros::checkStop();   // <Lumen> quitting: nothing more is sent
 
             if (speak_aloud)
             {
@@ -3952,6 +4402,11 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             {
                 LLIMModel::sendTypingState(session_id, from_id, false);
             }
+
+            // <Lumen> The typing has been taken down either way; the words go
+            // only if they are still wanted.
+            if (withdrawn()) return;
+            // </Lumen>
 
             if (speak_aloud)
             {

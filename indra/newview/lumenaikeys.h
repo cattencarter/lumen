@@ -158,7 +158,13 @@ public:
     /** What the panel shows WHILE a test is in flight. */
     void busy(const std::string& text);
 
-    CodexState codexStatus();
+    /**
+     * `probe` connects to Codex's socket to see that somebody is listening;
+     * without it only the file is looked at. The once-a-second heartbeat
+     * passes false, and probes only while the files say ready and the panel
+     * says not -- see draw().
+     */
+    CodexState codexStatus(bool probe = true);
     CodexState claudeStatus();
 
     // **A button that changes nothing visible is a button that looks broken.**

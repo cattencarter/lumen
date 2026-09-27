@@ -151,7 +151,7 @@ private:
 
         void append(const LLSD& data);
 
-        /** Everything after `since`, oldest first, at most `limit`. */
+        /** Everything after `since`, oldest first, at most `limit`; with `since` 0, the newest `limit`. */
         LLSD read(U64 since, size_t limit) const;
 
     private:

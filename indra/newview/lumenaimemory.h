@@ -142,6 +142,17 @@ private:
     LLTextEditor* mKept  = nullptr;   // what they asked to be remembered, one per line
     LLTextBox*    mCount = nullptr;
 
+    /**
+     * The list as it was when the window opened. The assistant can remember
+     * or forget while this window is open, and writing the editor back as it
+     * stands would undo that without a word -- so Save applies only what the
+     * person changed here, to the list as it is now.
+     */
+    std::vector<std::string> mLoaded;
+
+    /** The list in the editor, one trimmed entry per non-empty line. */
+    std::vector<std::string> keptFromEditor() const;
+
     void onImport();
     void onSave();
     void updateCount();

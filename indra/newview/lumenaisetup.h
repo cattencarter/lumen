@@ -40,8 +40,9 @@ public:
     ~LumenAISetupFloater() override;
 
     bool postBuild() override;
-    /** The asynchronous Claude Code check reports here. */
-    void signedIn(bool ok);
+    /** The asynchronous Claude Code check reports here, with Claude Code's own
+        reason when it gave one. */
+    void signedIn(bool ok, const std::string& why = std::string());
     void onOpen(const LLSD& key) override;
     void draw() override;
 
@@ -55,6 +56,8 @@ private:
     std::string mProvider;
     /** How many of the three apply to it. */
     int steps() const;
+    /** Why this provider cannot be set up on this platform at all, or empty. */
+    std::string unavailableHere() const;
 
     /**
      * Is this step already satisfied?

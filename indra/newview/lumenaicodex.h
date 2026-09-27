@@ -66,6 +66,21 @@ public:
     static std::string cliPath();
     static bool        cliInstalled();
 
+    /** Why Codex cannot work on this platform at all, or empty when it can. */
+    static std::string unavailableHere();
+
+    /**
+     * Whether something is actually listening on the socket -- a connect, not
+     * a file check, closed again at once without a handshake.
+     *
+     * A unix socket's file outlives the process that made it: a crash, a
+     * force-quit or a restart leaves it on disk with nobody behind it, and a
+     * file check then says "running" about a service every Assistant turn
+     * finds dead. Cheap, but not free, so the once-a-second heartbeat in
+     * Preferences keeps to socketPresent().
+     */
+    static bool        listening();
+
     /**
      * The plugins the user's own Codex has switched on, by name.
      *

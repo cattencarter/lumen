@@ -16,6 +16,11 @@ import argparse
 # The all-zero uuid: names no object, so any handler that takes one refuses
 # before it does anything. See the build entries in SAFE below.
 NULL_UUID = "00000000-0000-0000-0000-000000000000"
+# A uuid that is NOT null and names nothing. Some handlers read the null uuid
+# as "not given" and fall back to whatever is selected -- new_script would then
+# put a running script into the user's own object -- so those get this one,
+# which every handler looks up, fails to find, and refuses.
+NOWHERE_UUID = "5eed0000-c4ec-4000-8000-00000000c4ec"
 import json
 import sys
 import urllib.error
@@ -23,6 +28,7 @@ import urllib.request
 
 PASS = 0
 FAIL = 0
+SKIP = 0
 
 
 def check(label, ok, detail=""):
@@ -57,6 +63,7 @@ def call(url, payload, expect_body=True, headers=None):
 
 
 def main():
+    global SKIP
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
@@ -175,11 +182,33 @@ def main():
     #
     # So: a neutral argument for every action that would otherwise do something,
     # chosen to be a no-op rather than a reversal.
+    #
+    # **Three of these used to BE reversals** and were described as no-ops:
+    # camera `shot: reset` undid a framed shot, lighting `preset: region` threw
+    # away a sky the user had chosen, and answer_while_away `on: false`
+    # disarmed a responder they had armed. Each now gets an argument the
+    # handler REFUSES before touching anything, the way rez does -- a refusal
+    # proves the action was reached just as well, and changes nothing.
     SAFE = {
-        ("movement", "fly"):            {"enabled": False},   # landing while landed
-        ("movement", "camera"):         {"shot": "reset"},    # Decisions 92
-        ("viewer",   "lighting"):       {"preset": "region"}, # the place's own light
-        ("viewer",   "answer_while_away"): {"on": False},
+        # `fly` is set below, from status: landing while landed is a no-op,
+        # but landing somebody who was flying is the reversal this avoids.
+        # An object id that names nothing is refused before the camera moves.
+        ("movement", "camera"):         {"object_id": NOWHERE_UUID},
+        # A saved setting by an item id that does not exist: refused before
+        # the sky is touched. `name` is what sends it down that path.
+        ("viewer",   "lighting"):       {"name": "mcp-check", "item_id": NOWHERE_UUID},
+        # on_arrival with nobody named is refused before anything is armed.
+        ("viewer",   "answer_while_away"): {"on": True, "on_arrival": True},
+
+        # Both would otherwise act on the SELECTION: new_script puts Linden
+        # Lab's default script, already running, into the selected object --
+        # it says "Hello, Avatar!" in public chat -- and open_script opens an
+        # editor on it. The null uuid is read as "not given" by both, so it
+        # has to be an id that is real in shape and names nothing.
+        ("viewer",   "new_script"):     {"object_id": NOWHERE_UUID},
+        ("viewer",   "open_script"):    {"object_id": NOWHERE_UUID},
+        # remember and forget with no text are refused by LumenAIMemory itself
+        # ("Nothing to remember", "Say which entry"), so they need no entry.
 
         # `build` makes things other people can see, and `remove` deletes
         # whatever is selected -- which, on a run while the user had something
@@ -204,9 +233,25 @@ def main():
         ("movement", "landmark"):       {"name": "x" * 70},
     }
 
+    # And the ones with no refusing argument at all, which are NOT called.
+    # Each acts whatever it is given, so the only harmless call is none -- and
+    # a check that is not run must say so as loudly as it would fail
+    # (Findings 35), so each is printed as NOT CHECKED rather than dropped.
+    NOT_CALLED = {
+        ("movement", "stop_pose"):
+            "stops every animation playing, for everyone watching",
+        ("movement", "save_photo"):
+            "writes a new picture to the Desktop on every run",
+        ("movement", "stop_walking"):
+            "stops a walk or a follow under way, and status cannot say whether one is",
+    }
+
     # And a net, because the table above is hand-written and the next action
     # with a harmless-looking default will not be in it. Decisions 97 is the
     # same lesson: a list maintained by hand is a list that goes stale.
+    # It watches flying, sitting and position ONLY -- not animations, the
+    # camera, the sky, the selection or files on disk. Those are covered by
+    # the tables above or by not calling the action at all, never by this.
     def agent_state():
         _s, b = call(url, {"jsonrpc": "2.0", "id": 90, "method": "tools/call",
                            "params": {"name": "viewer", "arguments": {"action": "status"}}})
@@ -220,9 +265,30 @@ def main():
 
     before = agent_state()
 
+    # `stand` is a no-op for somebody already standing -- the handler says so
+    # and changes nothing -- so it is called only when status said so. Seated,
+    # it would stand them up, and the net below only notices afterwards.
+    if before is None or before[1] is not False:
+        NOT_CALLED[("movement", "stand")] = (
+            "would stand them up" if before is not None
+            else "status could not say whether they are sitting")
+
+    # And `fly` asks for the state they are already in, which it answers with
+    # "already" and changes nothing. A fixed `enabled: False` landed anybody
+    # who happened to be flying when the check ran.
+    if before is not None and isinstance(before[0], bool):
+        SAFE[("movement", "fly")] = {"enabled": before[0]}
+    else:
+        NOT_CALLED[("movement", "fly")] = "status could not say whether they are flying"
+
     for t in tools:
         acts = t.get("inputSchema", {}).get("properties", {}).get("action", {}).get("enum") or []
         for a in acts:
+            why = NOT_CALLED.get((t["name"], a))
+            if why:
+                SKIP += 1
+                print(f"  NOT CHECKED  {t['name']}/{a} was not called -- {why}")
+                continue
             args = {"action": a}
             args.update(SAFE.get((t["name"], a), {}))
             status, body = call(url, {
@@ -344,7 +410,7 @@ def main():
     status, body = call(url, {"jsonrpc": "2.0", "id": 8, "method": "ping"})
     check("still answering after all of that", status == 200, f"got {status}")
 
-    print(f"\n  {PASS} passed, {FAIL} failed")
+    print(f"\n  {PASS} passed, {FAIL} failed, {SKIP} actions NOT CHECKED (listed above)")
     return 1 if FAIL else 0
 
 

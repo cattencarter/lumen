@@ -73,6 +73,7 @@ public:
         S32    score = 0;
         time_t acquired = 0;
         S32    copies   = 1;   // how many items share this exact name
+        bool   in_trash = false;   // the copy kept is in the Trash (none elsewhere)
     };
 
     /**
@@ -81,7 +82,8 @@ public:
      * Unlike the walk it replaces, this looks at everything before choosing,
      * so the answer is the best matches rather than the first found.
      * `total_matches` reports how many matched altogether, which the old path
-     * could not know without walking twice.
+     * could not know without walking twice -- counted after copies sharing a
+     * name are collapsed into one, so it compares with what is returned.
      */
     enum Order
     {
@@ -195,6 +197,7 @@ private:
         LLAssetType::EType type = LLAssetType::AT_NONE;
         LLUUID             creator;
         time_t             acquired = 0;
+        bool               in_trash = false;
     };
 
     std::vector<Entry> mEntries;

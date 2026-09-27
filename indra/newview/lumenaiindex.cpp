@@ -73,13 +73,20 @@ namespace
         return left && right;
     }
 
-    /** Everything, including the trash: an item there is still findable. */
+    /**
+     * Everything, including the trash: an item there is still findable.
+     *
+     * But not LINKS. A link takes its name and type from the item it points
+     * at and keeps its own date, so the worn skirt's link in Current Outfit
+     * (or in a saved outfit) collapsed into the real skirt as a "copy", and
+     * lent it today's date. The real item is always indexed beside it.
+     */
     class EverythingFunctor : public LLInventoryCollectFunctor
     {
     public:
         bool operator()(LLInventoryCategory*, LLInventoryItem* item) override
         {
-            return item != nullptr;
+            return item != nullptr && !item->getIsLinkType();
         }
     };
 }
@@ -148,7 +155,17 @@ void LumenAIIndex::build()
     EverythingFunctor everything;
 
     // No cap: this is the one walk that is supposed to see all of it.
-    gInventory.collectDescendentsIf(LLUUID::null, cats, items, true, everything);
+    //
+    // From the user's own root, not from null. Null holds the Linden Library
+    // as well, so its free gestures, landmarks and clothes were presented as
+    // things the user owns -- and a delete of one reported "moved to Trash"
+    // about an item nobody can move. Every other walk starts here too.
+    gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, true, everything);
+
+    // Whether a folder is in the Trash, asked once per folder rather than
+    // walking up the tree for each of seventy thousand items.
+    const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+    std::map<LLUUID, bool> trash_cache;
 
     std::map<LLUUID, std::string> path_cache;
     mEntries.reserve(items.size());
@@ -177,6 +194,15 @@ void LumenAIIndex::build()
         }
         e.creator  = it->getPermissions().getCreator();
         e.acquired = it->getCreationDate();
+        const LLUUID parent = it->getParentUUID();
+        std::map<LLUUID, bool>::const_iterator tc = trash_cache.find(parent);
+        if (tc == trash_cache.end())
+        {
+            const bool under = trash.notNull()
+                && (parent == trash || gInventory.isObjectDescendentOf(parent, trash));
+            tc = trash_cache.insert(std::make_pair(parent, under)).first;
+        }
+        e.in_trash = tc->second;
         mEntries.push_back(std::move(e));
     }
 
@@ -637,6 +663,24 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
 
     total_matches = 0;
 
+    // Whether a word occurs, exactly as typed, in some name or folder -- the
+    // test matching itself uses. The vocabulary below is runs of letters and
+    // digits, so a word with an apostrophe or a hyphen ("whisper's", "men's",
+    // "t-shirt") was never "known", and was "corrected" to a nearby word that
+    // then dropped the very item named, with a note saying they mistyped.
+    auto occurs = [this](const std::string& w)
+    {
+        for (const Entry& e : mEntries)
+        {
+            if (e.lname.find(w) != std::string::npos
+                || e.lfolder.find(w) != std::string::npos)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
     const std::string whole = lowered(query);
     std::vector<std::string> words = wordsOf(whole);
 
@@ -655,7 +699,7 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
         rebuilt.reserve(words.size() + 1);
         for (const std::string& w : words)
         {
-            if (known(w))
+            if (known(w) || occurs(w))
             {
                 rebuilt.push_back(w);   // matched something: never touched
                 continue;
@@ -762,8 +806,6 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
             continue;
         }
 
-        ++total_matches;
-
         S32 sc = score(e.lname, words, corrected_whole, e.lfolder);
 
         // What the avatar is already wearing outranks everything else that
@@ -858,22 +900,48 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
         // needs a name lookup per hit, and with 1,658 matches over 72,431
         // entries that is a quadratic walk on the frame loop. One hash lookup
         // per match instead.
+        //
+        // **The copy kept is kept whole: id, score and date together.** The
+        // date used to be taken from the newest copy while the id stayed with
+        // the first, so a list sorted by date was sorted by one copy and
+        // showed another.
         auto found = seen.find(e.lname);
         if (found != seen.end())
         {
             Hit& existing = hits[found->second];
             ++existing.copies;
-            if (sc > existing.score)
+
+            bool better;
+            if (e.in_trash != existing.in_trash)
+            {
+                // A copy in the Trash is never kept over one that is not:
+                // "wear my X" would be handed an item the viewer refuses.
+                better = !e.in_trash;
+            }
+            else if (order == BY_NEWEST && e.acquired != existing.acquired)
+            {
+                better = e.acquired > existing.acquired;
+            }
+            else if (order == BY_OLDEST && e.acquired != existing.acquired)
+            {
+                better = e.acquired < existing.acquired;
+            }
+            else if (sc != existing.score)
+            {
+                better = sc > existing.score;
+            }
+            else
+            {
+                // Same name and as good a match: keep the newest, so "wear my
+                // X" reaches for the copy most recently acquired.
+                better = e.acquired > existing.acquired;
+            }
+            if (better)
             {
                 existing.id       = e.id;
                 existing.score    = sc;
                 existing.acquired = e.acquired;
-            }
-            else if (e.acquired > existing.acquired)
-            {
-                // Same name and no better match: keep the newest, so "wear my
-                // X" reaches for the copy most recently acquired.
-                existing.acquired = e.acquired;
+                existing.in_trash = e.in_trash;
             }
             continue;
         }
@@ -882,9 +950,14 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
         h.id       = e.id;
         h.score    = sc;
         h.acquired = e.acquired;
+        h.in_trash = e.in_trash;
         seen[e.lname] = hits.size();
         hits.push_back(h);
     }
+
+    // Distinct names, not items: copies were collapsed above, so counting
+    // them made "showing the best 20 of 30" appear with all 20 on the list.
+    total_matches = hits.size();
 
     // Best first, and only then cut. This is the whole difference: the walk
     // this replaces cut first and never saw the rest.

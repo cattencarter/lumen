@@ -105,6 +105,45 @@ std::vector<std::string> LumenAICodex::enabledPlugins()
 bool LumenAICodex::socketPresent() { const std::string p = socketPath(); return !p.empty() && gDirUtilp->fileExists(p); }
 bool LumenAICodex::cliInstalled()  { const std::string p = cliPath();    return !p.empty() && gDirUtilp->fileExists(p); }
 
+std::string LumenAICodex::unavailableHere()
+{
+#if LL_WINDOWS
+    // Not ported: cliPath() has no .exe, the setup runs /bin/sh, and the
+    // app-server's Windows transport is a named pipe connect() does not speak.
+    return "Codex does not work in Lumen on Windows yet. Anthropic, OpenAI or a local "
+           "model work on every platform.";
+#else
+    return std::string();
+#endif
+}
+
+bool LumenAICodex::listening()
+{
+#if LL_WINDOWS
+    return false;   // see connect(): not available on Windows here
+#else
+    if (!socketPresent()) return false;
+    const std::string path = socketPath();
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (path.size() >= sizeof(addr.sun_path)) return false;
+    strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+
+    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    // Non-blocking, so a listener with a full backlog cannot hold the frame
+    // loop; that answers EAGAIN or EINPROGRESS, which still means somebody is
+    // there. A stale file with nobody behind it answers ECONNREFUSED at once.
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    const int rc = ::connect(fd, (struct sockaddr*)&addr, sizeof(addr));
+    const bool up = (rc == 0) || errno == EAGAIN || errno == EINPROGRESS;
+    ::close(fd);
+    return up;
+#endif
+}
+
 LumenAICodex::LumenAICodex() : mFd(-1), mUpgraded(false) {}
 LumenAICodex::~LumenAICodex() { close(); }
 
@@ -121,7 +160,7 @@ void LumenAICodex::close()
 bool LumenAICodex::connect(std::string& why)
 {
 #if LL_WINDOWS
-    why = "Codex is not available on Windows in this viewer yet.";
+    why = unavailableHere();
     return false;
 #else
     close();

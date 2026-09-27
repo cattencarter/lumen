@@ -36,6 +36,7 @@
 #include "lltextbox.h"
 #include "lltexteditor.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <set>
@@ -426,6 +427,28 @@ namespace LumenAIMemory
 
 // ---------------------------------------------------------------------------
 
+namespace
+{
+    /**
+     * What note plus list will cost once saved, counted the way usedBytes()
+     * counts the files: a line typed without a date is saved with one.
+     */
+    size_t savedBytes(const std::string& note, const std::vector<std::string>& entries)
+    {
+        size_t n = note.size();
+        for (const std::string& e : entries)
+        {
+            n += (LumenAIMemory::dated(e) ? e.size() : e.size() + 11) + 1;
+        }
+        return n;
+    }
+
+    bool holds(const std::vector<std::string>& v, const std::string& e)
+    {
+        return std::find(v.begin(), v.end(), e) != v.end();
+    }
+}
+
 LumenAIMemoryFloater::LumenAIMemoryFloater(const LLSD& key)
 :   LLFloater(key)
 {
@@ -480,13 +503,11 @@ void LumenAIMemoryFloater::onOpen(const LLSD& key)
                                          "this is for, then open this again."));
         mText->setEnabled(can);
     }
+    mLoaded = can ? LumenAIMemory::remembered() : std::vector<std::string>();
     if (mKept)
     {
         std::string lines;
-        if (can)
-        {
-            for (const std::string& e : LumenAIMemory::remembered()) lines += e + "\n";
-        }
+        for (const std::string& e : mLoaded) lines += e + "\n";
         mKept->setText(lines);
         mKept->setEnabled(can);
     }
@@ -503,14 +524,31 @@ void LumenAIMemoryFloater::updateCount()
     }
 
     // Both parts share the budget, because both are sent with every message.
-    size_t used = mText->getText().size();
-    if (mKept) used += mKept->getText().size();
+    const size_t used = savedBytes(mText->getText(), keptFromEditor());
     std::string text = llformat("%zu of %zu characters", used, LumenAIMemory::MAX_BYTES);
     if (used > LumenAIMemory::MAX_BYTES)
     {
-        text += "  -- too long; the end will be cut off when you save.";
+        // It used to say "the end will be cut off when you save", which was
+        // not what Save did: only an over-long note was ever cut, and the
+        // list was written whole, so the total went on over the budget.
+        text += llformat("  -- %zu too many. Shorten the note or the list; Save waits "
+                         "until it fits.", used - LumenAIMemory::MAX_BYTES);
     }
     mCount->setText(text);
+}
+
+std::vector<std::string> LumenAIMemoryFloater::keptFromEditor() const
+{
+    std::vector<std::string> out;
+    if (!mKept) return out;
+    std::istringstream ss(mKept->getText());
+    std::string line;
+    while (std::getline(ss, line))
+    {
+        line = LumenAIMemory::oneLine(line);
+        if (!line.empty()) out.push_back(line);
+    }
+    return out;
 }
 
 void LumenAIMemoryFloater::onImport()
@@ -545,17 +583,62 @@ void LumenAIMemoryFloater::onImport()
 
 void LumenAIMemoryFloater::onSave()
 {
+    const std::string note = mText ? mText->getText() : LumenAIMemory::get();
+
+    std::vector<std::string> entries;
+    if (mKept)
+    {
+        const std::vector<std::string> edited = keptFromEditor();
+        const std::vector<std::string> now    = LumenAIMemory::remembered();
+        if (now == mLoaded)
+        {
+            entries = edited;   // nothing changed underneath: theirs as it stands
+        }
+        else
+        {
+            // The assistant remembered or forgot something while this was
+            // open. Apply only what was changed HERE -- lines removed, lines
+            // added -- to the list as it is now, so neither side loses.
+            for (const std::string& e : now)
+            {
+                if (holds(mLoaded, e) && !holds(edited, e)) continue;   // removed here
+                entries.push_back(e);
+            }
+            for (const std::string& e : edited)
+            {
+                if (!holds(mLoaded, e) && !holds(entries, e)) entries.push_back(e);
+            }
+            LL_INFOS("LumenAIMemory") << "The list changed while the window was open; "
+                                         "saved the edits on top of it." << LL_ENDL;
+        }
+    }
+    else
+    {
+        entries = LumenAIMemory::remembered();
+    }
+
+    // The budget is shared, and it is enforced here rather than promised:
+    // nothing is saved until note and list fit together.
+    const size_t used = savedBytes(note, entries);
+    if (used > LumenAIMemory::MAX_BYTES)
+    {
+        if (mCount)
+        {
+            mCount->setText(llformat("%zu of %zu characters -- %zu too many. Nothing was saved. "
+                                     "Shorten the note or the list, then save again.",
+                                     used, LumenAIMemory::MAX_BYTES,
+                                     used - LumenAIMemory::MAX_BYTES));
+        }
+        return;
+    }
+
     if (mText)
     {
-        LumenAIMemory::set(mText->getText());
+        LumenAIMemory::set(note);
     }
     if (mKept)
     {
-        // One entry per line; a line typed here without a date gets today's.
-        std::vector<std::string> entries;
-        std::istringstream ss(mKept->getText());
-        std::string line;
-        while (std::getline(ss, line)) entries.push_back(line);
+        // A line typed here without a date gets today's.
         LumenAIMemory::setRemembered(entries);
     }
     closeFloater();

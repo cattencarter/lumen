@@ -49,6 +49,7 @@
 #include "llagentcamera.h"
 #include "llappearancemgr.h"
 #include "llavatarnamecache.h"
+#include "llcachename.h"      // <Lumen> a group owner's name, for where_am_i
 #include "llcallingcard.h"
 #include "llparcel.h"
 #include "llgiveinventory.h"
@@ -56,10 +57,13 @@
 #include "llinventorymodel.h"
 #include "llinventorypanel.h"
 #include "llfloaterreg.h"
+#include "llfloatersidepanelcontainer.h"   // <Lumen> open_window: a People tab, opened not toggled
+#include "fsfloatercontacts.h"
 #include "llscrolllistcell.h"
 #include "llscrolllistitem.h"
 #include "lltexteditor.h"
 #include "llscrolllistctrl.h"
+#include "llscriptruntimeperms.h"   // <Lumen> the debit bit, for answer_dialogue
 #include "llfilesystem.h"
 #include "llnotecard.h"
 #include "llregionhandle.h"
@@ -75,6 +79,7 @@
 #include "llinventorydefines.h"
 #include "llviewerassettype.h"
 #include "rlvlocks.h"
+#include "rlvextensions.h"    // <Lumen> the settings @setdebug locks, for set_setting
 #include "rlvcommon.h"        // <Lumen> rlvCanDeleteOrReturn, for `remove`
 #include "llsdutil.h"         // <Lumen> llsd_equals, for set_setting's read-back
 #include "llsdserialize.h"
@@ -216,6 +221,19 @@ namespace
      * closes the hole without a token for anyone to copy. Sec-Fetch-Site is
      * checked too, which browsers send and other callers do not.
      */
+    // <Lumen> True while a request that arrived over the socket is being
+    // answered. Codex, Claude Code and any outside host come in that way; the
+    // Assistant's own Anthropic, OpenAI and local loop calls handleRequest
+    // directly. Only that loop draws catch-up cards, so show_waiting must not
+    // claim anything was shown to a caller whose words nobody draws.
+    bool sRequestFromSocket = false;
+    struct FromSocketScope
+    {
+        FromSocketScope()  { sRequestFromSocket = true; }
+        ~FromSocketScope() { sRequestFromSocket = false; }
+    };
+    // </Lumen>
+
     bool fromBrowser(const LLSD& context)
     {
         const LLSD& headers = context[CONTEXT_REQUEST][CONTEXT_HEADERS];
@@ -258,8 +276,11 @@ namespace
                 }
 
                 const std::string body = input.asString();
-                const std::string reply =
-                    LumenAIControl::instance().handleRequest(body);
+                std::string reply;
+                {
+                    FromSocketScope from_socket;   // <Lumen>
+                    reply = LumenAIControl::instance().handleRequest(body);
+                }
 
                 if (reply.empty())
                 {
@@ -351,7 +372,21 @@ LLSD LumenAIControl::Stream::read(U64 since, size_t limit) const
 {
     LLSD entries = LLSD::emptyArray();
 
-    for (std::deque<Event>::const_iterator it = mEvents.begin(); it != mEvents.end(); ++it)
+    // <Lumen> With no `since`, the NEWEST `limit` lines, still oldest first.
+    // Walking forward from the front handed back the start of the session --
+    // an hour-old line answered "what did she just say" -- and nothing said
+    // newer ones had been left out. catch_up met this first and was fixed on
+    // its own; this is the one place every reader goes through.
+    std::deque<Event>::const_iterator start = mEvents.begin();
+    bool older_available = false;
+    if (since == 0 && mEvents.size() > limit)
+    {
+        start = mEvents.end() - (std::ptrdiff_t)limit;
+        older_available = true;
+    }
+    bool more_after = false;
+    U64 last_returned = since;
+    for (std::deque<Event>::const_iterator it = start; it != mEvents.end(); ++it)
     {
         if (it->seq <= since)
         {
@@ -359,16 +394,31 @@ LLSD LumenAIControl::Stream::read(U64 since, size_t limit) const
         }
         if (entries.size() >= (S32)limit)
         {
+            more_after = true;
             break;
         }
         LLSD entry = it->data;
         entry["seq"] = LLSD::Integer(it->seq);
         entries.append(entry);
+        last_returned = it->seq;
     }
 
     LLSD result;
     result["entries"] = entries;
     result["latest_seq"] = LLSD::Integer(mNextSeq - 1);
+    if (older_available)
+    {
+        // Only the newest were returned; older ones are still held.
+        result["older_available"] = true;
+    }
+    if (more_after)
+    {
+        // The limit cut this read: page on from here, not from latest_seq,
+        // or everything in between is skipped for good.
+        result["more_after"] = true;
+        result["last_returned_seq"] = LLSD::Integer(last_returned);
+    }
+    // </Lumen>
 
     // Say plainly when a reader has fallen behind far enough to have lost
     // lines, rather than handing back a gap that looks like quiet.
@@ -569,8 +619,17 @@ namespace
     }
 
     /** Map the word back, for filtering. AT_NONE means "no filter". */
-    LLAssetType::EType kindFromWord(const std::string& w)
+    LLAssetType::EType kindFromWord(const std::string& word)
     {
+        // <Lumen> Lowercased, and a plural accepted: "Settings" or "notecards"
+        // used to fall through to AT_NONE, which is "no filter", so the search
+        // quietly covered everything and said nothing.
+        std::string w = word;
+        LLStringUtil::trim(w);
+        LLStringUtil::toLower(w);
+        if (w == "settings" || w == "setting") return LLAssetType::AT_SETTINGS;
+        if (w == "material" || w == "materials") return LLAssetType::AT_MATERIAL;
+        if (w.size() > 1 && w[w.size() - 1] == 's') w.erase(w.size() - 1);
         if (w == "texture")   return LLAssetType::AT_TEXTURE;
         if (w == "sound")     return LLAssetType::AT_SOUND;
         if (w == "landmark")  return LLAssetType::AT_LANDMARK;
@@ -1041,6 +1100,24 @@ namespace
         return out;
     }
 
+    /**
+     * Is `want` (lowercased) one of this person's names in full -- username,
+     * the "First Last" form, the display name, or the legacy first name?
+     * Only the name cache is asked; an uncached person never matched anyway.
+     */
+    bool personNameIsExactly(const LLUUID& id, const std::string& want)
+    {
+        LLAvatarName av;
+        if (want.empty() || !LLAvatarNameCache::get(id, &av)) return false;
+        if (lowered(av.getAccountName()) == want)  return true;
+        if (lowered(av.getUserName()) == want)     return true;
+        if (lowered(av.getDisplayName(true)) == want) return true;
+        const std::string legacy = lowered(av.getLegacyName());
+        if (legacy == want) return true;
+        const size_t sp = legacy.find(' ');
+        return sp != std::string::npos && legacy.substr(0, sp) == want;
+    }
+
     /** Same discipline as resolveItem: an id wins, a name must be unambiguous. */
     LLUUID resolvePerson(const LLSD& params, LLSD& error)
     {
@@ -1076,13 +1153,34 @@ namespace
             error = e;
             return LLUUID::null;
         }
+        const std::string want = lowered(name);
         if (matches.size() == 1)
         {
-            return matches[0]["agent_id"].asUUID();
+            // <Lumen> One match is only settled when it is that person's name
+            // in full. A name merely CONTAINING the words -- "kim" inside
+            // Kimberly -- is often somebody else entirely: the person meant is
+            // not a friend and has left, so the only candidate left is the
+            // wrong one, and an IM or an offer cannot be taken back.
+            if (personNameIsExactly(matches[0]["agent_id"].asUUID(), want))
+            {
+                return matches[0]["agent_id"].asUUID();
+            }
+            std::string who = matches[0]["name"].asString();
+            if (matches[0].has("display_name"))
+            {
+                who = matches[0]["display_name"].asString() + " (" + who + ")";
+            }
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The only person the viewer knows matching \"" + name + "\" is "
+                         + who + ", and that is not an exact match -- it may not be who the user "
+                           "means. Confirm with the user, then pass their agent_id.";
+            e["data"] = matches;
+            error = e;
+            return LLUUID::null;
+            // </Lumen>
         }
 
         // An exact username settles it.
-        const std::string want = lowered(name);
         S32 exact = 0;
         LLUUID exact_id;
         for (S32 i = 0; i < (S32)matches.size(); ++i)
@@ -1864,16 +1962,24 @@ namespace
         }
     };
 
-    LLUUID resolveItem(const LLSD& params, LLSD& error)
+    /**
+     * `kind` narrows a NAME lookup to one asset type, so a same-named texture
+     * or landmark cannot make a unique saved sky ambiguous. `in_trash` looks
+     * ONLY inside the Trash: the ordinary walk skips it entirely, which made
+     * undelete by name unable to find the one thing it exists to find.
+     */
+    LLUUID resolveItem(const LLSD& params, LLSD& error,
+                       LLAssetType::EType kind = LLAssetType::AT_NONE,
+                       bool in_trash = false)
     {
-        if (params.has("item_id"))
+        if (params.has("item_id") && !params["item_id"].asString().empty())
         {
             const LLUUID id(params["item_id"].asString());
             LLViewerInventoryItem* item = gInventory.getItem(id);
             if (!item)
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "No inventory item with that id. Find it with search_inventory.";
+                e["message"] = "No inventory item with that id. Find it with inventory / search.";
                 error = e;
                 return LLUUID::null;
             }
@@ -1891,13 +1997,26 @@ namespace
 
         LLInventoryModel::cat_array_t cats;
         LLInventoryModel::item_array_t items;
-        NameAndKind match(name, LLAssetType::AT_NONE);
-        gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, match);
+        NameAndKind match(name, kind);
+        const LLUUID trash_id = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+        if (in_trash)
+        {
+            if (trash_id.notNull())
+            {
+                gInventory.collectDescendentsIf(trash_id, cats, items, true, match);
+            }
+        }
+        else
+        {
+            gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, match);
+        }
 
         if (items.empty())
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nothing in inventory matches \"" + name + "\".";
+            e["message"] = in_trash
+                ? "Nothing in the Trash matches \"" + name + "\"."
+                : "Nothing in inventory matches \"" + name + "\".";
             error = e;
             return LLUUID::null;
         }
@@ -2348,11 +2467,16 @@ namespace
             sid["description"]="An inventory item's id, from a search. Prefer this to a name.";
         LLSD snm;  snm["type"]="string";
             snm["description"]="A name. What it names depends on the action: the item for wear, "
-                               "detach and read_notecard; the folder for list_folder; the new "
+                               "detach, read_notecard, show, open, delete, undelete (looked for "
+                               "in the Trash) and save_image; the outfit for wear_outfit; the "
+                               "folder for list_folder; the new "
                                "card's title for create_notecard; the new landmark's name for "
                                "landmark; the person for send_im. A name "
                                "matching more than one thing is refused, with the candidates "
-                               "returned, so you can ask which was meant.";
+                               "returned, so you can ask which was meant. A PERSON is only taken "
+                               "on their own when the name is theirs in full -- username, "
+                               "display name, or first name; a partial match is refused with "
+                               "the one candidate, to confirm with the user.";
         LLSD srq;  srq["type"]="string";
             srq["description"]="An id you choose for this one request. If a call times out and you "
                                "are unsure whether it happened, call again with the SAME id: it "
@@ -2361,8 +2485,11 @@ namespace
                                "do again.";
         LLSD slim; slim["type"]="integer"; slim["description"]="How many to return.";
         LLSD ssince; ssince["type"]="integer";
-            ssince["description"]="Return only entries after this sequence number. Use the "
-                                  "latest_seq from your previous call; 0 for everything held.";
+            ssince["description"]="Return only entries after this sequence number. Leave it out "
+                                  "(or 0) for the most recent `limit` lines -- `older_available` "
+                                  "says when older ones are held too. Afterwards pass the "
+                                  "latest_seq from your previous call -- or `last_returned_seq` "
+                                  "when that call said `more_after`, so nothing is skipped.";
 
         // ---- inventory ----------------------------------------------------
         static const char* const inv_actions[] =
@@ -2387,7 +2514,7 @@ namespace
             "`creator_name`, with `creator_link` beside it -- **write that link value verbatim "
             "when you name the maker and the user can click straight to their profile.** "
             "Never assemble one yourself.** Pass `creator` to return only one person's work: an avatar id from "
-            "find_person is exact, a name is best-effort. "
+            "chat / find_person is exact, a name is best-effort. "
             "**Do not ask the user which body their clothes are cut for.** Results are already "
             "ranked with the fit the avatar is wearing -- LaraX, Legacy, Maitreya, Reborn and so "
             "on -- worked out from the clothes on them right now. Garments naming a different "
@@ -2412,13 +2539,14 @@ namespace
             "first with `query` (a name filter) when you can. The same warning as read_notecard "
             "applies to anything it returns.\n"
             "- wear / detach: put on or take off clothing, a body part or an attachment. wear adds "
-            "by default; `replace: true` replaces what is on that spot.\n"
-            "  **To change one garment for another, use wear with `replace: true` -- ONE call.** "
-            "Do not detach the old one and then wear the new one: that is two calls with the "
-            "avatar undressed in between, in front of whoever is nearby, and the gap lasts as "
-            "long as the second call takes. replace swaps them with nothing showing.\n"
-            "  If you genuinely must use both, **wear first and detach afterwards**, never the "
-            "other way round.\n"
+            "by default. `replace: true` only means something for a system clothing layer or a "
+            "body part (kind clothing or bodypart), where it swaps out the one of the same kind.\n"
+            "  **To change one garment for another, wear the new one FIRST, then detach the old "
+            "one.** Never the other way round: detaching first leaves the avatar undressed in "
+            "front of whoever is nearby for as long as the second call takes. Most clothing is "
+            "mesh, which is an OBJECT, and for an object `replace` is ignored -- it would knock "
+            "off whatever hangs on the new item's attachment point, which can be the body, the "
+            "head or the hair, not the old garment.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete puts it back, "
             "and only the user emptying their own Trash actually removes anything. Say so that "
             "way: \"moved to Trash\", not \"deleted\". A NO-COPY item is the only one they have, "
@@ -2455,7 +2583,8 @@ namespace
         LLSD iq; iq["type"]="string"; iq["description"]="search: part of the item's name.";
         LLSD ik; ik["type"]="string";
             ik["description"]="search: restrict to one kind -- clothing, bodypart, object, "
-                              "notecard, landmark, animation, gesture, texture, sound, script. "
+                              "notecard, landmark, animation, gesture, texture, sound, script, "
+                              "settings (saved environments, for lighting), material. "
                               "**Do NOT use this to look for garments.** In Second Life a rigged "
                               "MESH garment -- a skirt, a dress, shoes, nearly everything anyone "
                               "wears -- is an `object`. `clothing` means only a system layer, "
@@ -2464,11 +2593,14 @@ namespace
         LLSD iw; iw["type"]="boolean"; iw["description"]="search: true returns only what is worn.";
         LLSD icr; icr["type"]="string";
             icr["description"]="search: only items made by this person. An avatar id is exact and "
-                               "complete -- get one from find_person. A name also works but can "
+                               "complete -- get one from chat / find_person. A name also works but can "
                                "only match creators the viewer already has a name for, and the "
                                "result says how many it could not check.";
         LLSD ifd; ifd["type"]="string"; ifd["description"]="list_folder: the folder's id.";
-        LLSD irp; irp["type"]="boolean"; irp["description"]="wear: replace what is already on that spot.";
+        LLSD irp; irp["type"]="boolean";
+            irp["description"]="wear: for a system clothing layer or a body part, swap out the one "
+                               "of the same kind. Ignored for objects, which is most mesh "
+                               "clothing -- wear the new one, then detach the old.";
         LLSD itx; itx["type"]="string";
             itx["description"]="create_notecard: the text to put in it. search_notecards: the "
                                "words to look for inside them, case-insensitive.";
@@ -2587,6 +2719,11 @@ namespace
         LLSD cag;  cag["type"]="string"; cag["description"]="send_im: the recipient's avatar id.";
         chat_props["message"]=cmsg; chat_props["channel"]=cch; chat_props["type"]=cty;
         chat_props["agent_id"]=cag; chat_props["name"]=snm;
+        LLSD cps; cps["type"]="string";
+            cps["description"]="profile / web_presence: the person's name, instead of agent_id "
+                               "-- it is looked up for you. Pass the same one again to collect "
+                               "the answer.";
+        chat_props["person"]=cps;
         LLSD cgid; cgid["type"]="string"; cgid["description"]="send_group_notice: the group's id, from list_groups.";
         LLSD cgn;  cgn["type"]="string";  cgn["description"]="send_group_notice: the group's name, if you have no id.";
         LLSD csub; csub["type"]="string"; csub["description"]="send_group_notice: the subject line.";
@@ -2603,7 +2740,17 @@ namespace
                                "said yes: the item's exact name. Without it the call is refused.";
         chat_props["confirm"]=ccf;
         // <Lumen> show_waiting: the reply to catch_up, as data rather than prose
+        // Every array says what it holds: OpenAI refuses a whole request
+        // whose schema has an array without `items`.
         LLSD cit; cit["type"]="array";
+        {
+            LLSD one; one["type"]="object";
+            LLSD one_props;
+            one_props["id"]      = LLSD().with("type", "string");
+            one_props["summary"] = LLSD().with("type", "string");
+            one["properties"] = one_props;
+            cit["items"] = one;
+        }
             cit["description"]="show_waiting: one entry per thing catch_up returned, as "
                                "{\"id\": the id that item carries, \"summary\": one short "
                                "sentence saying what it is ABOUT}. Summarise, do not quote. "
@@ -2655,10 +2802,10 @@ namespace
             "either fixed (north, south, east, west and the between ones) or relative to the way "
             "the avatar is facing (forward, back, left, right). For short distances in sight; use "
             "teleport to cross the grid.\n"
-            "- fly: `enabled: true` to take off, false to land. status reports flying.\n"
+            "- fly: `enabled: true` to take off, false to land. viewer / status reports flying.\n"
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
-            "mean something -- status reports facing and heading_degrees.\n"
+            "mean something -- viewer / status reports facing and heading_degrees.\n"
             "- pose: play an animation from their inventory -- a pose for a photograph, a "
             "dance, a gesture. `name` is the animation in inventory; find it with inventory "
             "search and `kind: \"animation\"`. Calling pose with NO name instead reports what "
@@ -2696,8 +2843,8 @@ namespace
             "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
             "surroundings), or \"reset\" to give the camera back. The ordinary words work too "
             "-- \"portrait\", \"upper body\", \"full body\", \"close-up\". "
-            "`subject` is who or what to aim at -- a person's `name`, an `object_id` from "
-            "look_nearby, or nothing for the user themselves. `angle` turns around them in "
+            "To aim at someone or something else, pass a person as `person` (or `agent_id`), "
+            "or an `object_id` from look_nearby; nothing means the user themselves. `angle` turns around them in "
             "degrees (0 in front, 90 to their left, 180 behind) and `height` raises or lowers "
             "the camera in metres.\n"
             "  **It does NOT take a photo.** It aims; the person presses Save in the Snapshot "
@@ -2763,8 +2910,8 @@ namespace
             "  What is returned follows the rating they chose in Preferences > General (\"I want "
             "to access content rated\") -- it is not a way to see more than they would see.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
-            "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
-            "status before telling the user where they are.";
+            "blocked by a wall, and an object can refuse a sit. Check with viewer / status "
+            "before telling the user where they are.";
         LLSD move_props;
         move_props["action"] = actionProperty(move_actions, LL_ARRAY_SIZE(move_actions), "What to do. Required.");
         LLSD mrg; mrg["type"]="string"; mrg["description"]="teleport: the region's name.";
@@ -2807,6 +2954,19 @@ namespace
             mcf["description"]="teleport with place_id: the place's name or its region, exactly, "
                                "which says the user agreed to go there.";
         move_props["place_id"]=mpid; move_props["confirm"]=mcf;
+        // Read by worn_by and pose, and declared on no tool they belong to:
+        // worn_by says "call again with the same agent_id" and pose's refusal
+        // for an ambiguous name says "pass its item_id" -- instructions the
+        // model could read and not carry out.
+        LLSD mag; mag["type"]="string";
+            mag["description"]="worn_by, camera and follow: the person's avatar id, from "
+                               "look_nearby or chat / find_person, or from the candidates a "
+                               "refusal lists. For worn_by, pass the same one again to collect "
+                               "the answer.";
+        LLSD mii; mii["type"]="string";
+            mii["description"]="pose: the item_id of an animation, from inventory / search or "
+                               "from the candidates a refusal lists.";
+        move_props["agent_id"]=mag; move_props["item_id"]=mii;
         LLSD mtx; mtx["type"]="string";
         mtx["description"]="search_places / search_events: the words to look for in Second "
                            "Life's own search. Pass the same text again to collect the "
@@ -2836,8 +2996,9 @@ namespace
             che["description"]="camera: how far above eye level to put the lens, in metres. "
                                "Small values only -- a lens far below rolls the eyes down.";
         LLSD cga; cga["type"]="string";
-            cga["description"]="camera: where the subject looks -- `camera` (at the lens, the "
-                               "default) or `away`.";
+            cga["description"]="camera: where the user looks, in a shot of the user -- `camera` "
+                               "(at the lens, the default), `away` (off along the way they face), "
+                               "or `free` (left alone).";
         LLSD cpe; cpe["type"]="string";
             cpe["description"]="Somebody's name, for the actions that are about a person: whose "
                                "attachments to read, or who to point the camera at. Leave it out "
@@ -2882,13 +3043,17 @@ namespace
             "\"answer my IMs\" is `ims: true` alone. \"answer in local chat\" or \"keep the "
             "scene going\" is `local_chat: true` alone -- do NOT also start answering their "
             "private messages because it seemed helpful. Both only if they asked for both. "
-            "Local chat speaks where everyone nearby can see it, and only when somebody says "
-            "their name. "
+            "**Naming someone in `only` turns on both** unless you pass `local_chat: false`, "
+            "which is how to answer a named person by IM alone. "
+            "Local chat speaks where everyone nearby can see it, and answers a line that says "
+            "the user's name -- or any line from a person named in `only`, or from the one other "
+            "person nearby when there is only one. "
             "`on`, and `note` for anything they said about how to handle it or how long they will "
-            "be. While it is on, each incoming IM from a friend gets one short reply that never "
+            "be. While it is on, each incoming IM gets one short reply -- only from friends while "
+            "the user's \"only answer friends\" setting is on, which is the default -- that never "
             "agrees to anything for them and never claims to be them. It stops by itself after a "
             "few replies to any one person. **Tell them plainly when you switch it on and off**, "
-            "and if they say they are back, turn it off even if they did not ask. Naming people in `only` answers them and nobody else, and `on_arrival` tells those same people when they turn up rather than waiting for them to write.\n"
+            "and if they say they are back, turn it off even if they did not ask. Naming people in `only` answers them and nobody else, and `on_arrival` tells those same people once when they come within about 30 metres of the user, rather than waiting for them to write -- coming online somewhere else does not count.\n"
             "- read_scripts: the LSL script windows the user has open, with the script's text, "
             "whatever they have SELECTED in it, and the compiler errors from the last save. "
             "Call this before answering anything about a script -- do not ask them to paste it, "
@@ -2910,8 +3075,9 @@ namespace
             "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
             "\"region\" to give the place its own light back -- and the ordinary words, so "
             "\"golden hour\" and \"dusk\" work. `name` applies one of the user's own saved "
-            "environment settings instead; find them with inventory search, "
-            "`kind: \"settings\"`. It changes what THEY see, nobody else, and the region is "
+            "environment settings instead (or `item_id`, from a search or from the candidates a "
+            "refusal lists); find them with inventory / search, `kind: \"settings\"`. It "
+            "changes what THEY see, nobody else, and the region is "
             "untouched. Pair it with movement/camera to set up a photograph.\n"
             "- set_setting / show_setting: **two different jobs, and picking the wrong one is the "
             "mistake to avoid.** \"Set my draw distance to 64\" is set_setting -- it changes it and "
@@ -2981,9 +3147,10 @@ namespace
             "every prim's faces with their textures, colours, alpha, glow and repeats, the "
             "permissions, and which prim and face the user has SELECTED. **Leave `object_id` out "
             "and it uses the selection**, which is what \"this object\", \"this prim\" and "
-            "\"this face\" mean. Selecting is also the only way the viewer learns an object's "
-            "name, description and permissions at all, so if those are missing the answer is to "
-            "ask them to click it. Link 1 is the root and the numbering is the one scripts use, "
+            "\"this face\" mean. To find an object by its NAME, use movement / look_nearby with "
+            "`find` first and pass the id it returns -- never ask the user to click something so "
+            "you can see it, because movement / look_nearby names what is around them and "
+            "build / select selects by id. Link 1 is the root and the numbering is the one scripts use, "
             "so it cross-references straight into LSL: `llSetLinkAlpha(4, 0, 2)` is link 4, "
             "face 2, and this tells you what those are.\n"
             "\n- open_window: **when they ask you to OPEN something, open it.** \"Can you open my "
@@ -3032,7 +3199,9 @@ namespace
             "changed, and ask.\n"
             "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
             "the user what they want first.** These grant permission to take things, move the "
-            "avatar, or run scripts on it. Never choose for them.";
+            "avatar, or run scripts on it. Never choose for them. Granting a script permission "
+            "to take their money is refused until you pass `confirm` with the object's exact "
+            "name, which you do only after they have said yes.";
         LLSD view_props;
         LLSD vsc; vsc["type"]="string";
             vsc["description"]="edit_script: which open script window to write into, by title. "
@@ -3065,7 +3234,8 @@ namespace
                                "can read it. Off unless asked for. **\"If Catten writes\" does "
                                "not say which channel** -- somebody can write to you in an IM or "
                                "say your name out loud, and only one of those is private. With a "
-                               "named person, turning BOTH on is usually what was meant; say "
+                               "named person in `only` BOTH are turned on unless this is "
+                               "passed as false -- false is how to answer them by IM alone. Say "
                                "which you turned on, and that local chat is public.";
         view_props["local_chat"]=vlc;
         LLSD vim; vim["type"]="boolean";
@@ -3076,15 +3246,19 @@ namespace
             vnt["description"]="answer_while_away: anything they said on the way out -- how long "
                                "they will be, what to say, what not to. Optional.";
         LLSD vonly; vonly["type"]="array";
+            vonly["items"] = LLSD().with("type", "string");   // OpenAI refuses an array without items
             vonly["description"]="answer_while_away: answer ONLY these people, by name. "
                                  "\"if Catten writes, tell him I'll be right back\" is this, "
                                  "not everyone. Leave it out to answer anybody who writes.";
         view_props["only"]=vonly;
         LLSD varr; varr["type"]="boolean";
-            varr["description"]="answer_while_away: also send `note` to the people in `only` "
-                                "when they ARRIVE -- come online, or turn up nearby -- rather "
-                                "than waiting for them to write. \"Tell him I'm away when he "
-                                "gets here\" is this. Once each. Requires `only`.";
+            varr["description"]="answer_while_away: also send `say` -- or, without it, a short "
+                                "first-person default -- to the people in `only` when they "
+                                "come within about 30 metres of the user, rather than waiting "
+                                "for them to write. \"Tell him I'm away when he gets here\" is "
+                                "this. Once each, and never `note`. Coming ONLINE somewhere "
+                                "else does not count, so do not promise a message at login. "
+                                "Requires `only`.";
         view_props["on_arrival"]=varr;
         LLSD vsay; vsay["type"]="string";
             vsay["description"]="answer_while_away: the EXACT words the other person will "
@@ -3103,6 +3277,11 @@ namespace
         LLSD vch;  vch["type"]="string";
             vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
         view_props["id"]=vdid; view_props["choice"]=vch;
+        LLSD vcf; vcf["type"]="string";
+            vcf["description"]="answer_dialogue: when granting a script permission to take the "
+                               "user's money, the object's exact name -- only after the user "
+                               "has said yes.";
+        view_props["confirm"]=vcf;
         view_props["limit"] = slim;
 
         // lighting. None of these were declared, which meant a host validating
@@ -3144,7 +3323,8 @@ namespace
             lpa["description"]="lighting: reflection probe ambiance, 0 to 10. Above 0 it switches "
                                "the sky out of classic mode, which is what makes `contrast` "
                                "behave as contrast rather than as a dimmer.";
-        LLSD lsa; lsa["type"]="string";
+        // Deliberately untyped: a word or a number are both valid.
+        LLSD lsa;
             lsa["description"]="lighting: where the sun is, RELATIVE to the way the user faces -- "
                                "`front`, `behind`, `left`, `right`. That is almost always what is "
                                "meant. A number is accepted as an absolute bearing, but working "
@@ -3154,21 +3334,27 @@ namespace
                                "straight overhead, negative is below and dark.";
         LLSD voi; voi["type"]="string";
             voi["description"]="inspect_object: the object to look at. Leave it out to use what "
-                               "the user has SELECTED, which is almost always what is meant and "
-                               "is also the only way the viewer knows an object's name, "
-                               "description and permissions.";
+                               "the user has SELECTED, which is almost always what is meant. "
+                               "Next-owner permissions and the creator are only known for a "
+                               "selected object.";
         view_props["object_id"]=voi;
         view_props["brightness"]=lbr; view_props["ambient"]=lam; view_props["contrast"]=lco;
         view_props["haze"]=lha; view_props["clouds"]=lcl; view_props["probe_ambiance"]=lpa;
         view_props["sun_azimuth"]=lsa; view_props["sun_elevation"]=lse;
             LLSD ln; ln["type"]="string";
                 ln["description"]="lighting: one of the user's own saved environment settings, "
-                                  "by name. Find them with inventory search, kind \"settings\". "
+                                  "by name. Find them with inventory / search, kind \"settings\". "
                                   "set_setting: the words on the Preferences panel. show_setting: "
                                   "what they called it, in their own words -- a whole question is "
                                   "fine, and it covers menus and windows, not only settings. "
                                   "like \"draw distance\" or \"music\" -- NOT the internal name.";
             view_props["name"]=ln;
+            // A same-named pair of saved skies is refused with "pass its
+            // item_id", which this tool did not declare.
+            LLSD lii; lii["type"]="string";
+                lii["description"]="lighting: a saved environment setting's item_id, from "
+                                   "inventory / search or from the candidates a refusal lists.";
+            view_props["item_id"]=lii;
 
             // <Lumen> set_setting's value, which was missing.
             //
@@ -3207,9 +3393,8 @@ namespace
                                     "the reflection probes and `ambient` stops working." },
                 { "sun_elevation",  "lighting: degrees. 90 overhead, 10 low and raking, "
                                     "negative below the horizon." },
-                { "sun_azimuth",    "lighting: \"front\", \"behind\", \"left\" or "
-                                    "\"right\" relative to the way they face -- or a compass "
-                                    "bearing in degrees, 0 north, 90 east." },
+                // sun_azimuth is NOT here: it takes words as well as a number,
+                // and this table would have overwritten its schema as a number.
             };
             for (size_t i = 0; i < LL_ARRAY_SIZE(nums); ++i)
             {
@@ -3246,21 +3431,23 @@ namespace
             "- rez: put a new prim on the ground in front of the user. `shape` chooses what "
             "(box, sphere, cylinder, cone, torus, prism; box if you do not say). `distance` is "
             "how far in front, in metres, default 2.\n"
-            "- select: point the other actions at an object, by `object_id` from look_nearby or "
-            "inspect_object. **Everything below works on the selection**, and until this existed "
+            "- select: point the other actions at an object, by `object_id` from look_nearby "
+            "(an action of the **movement** tool -- give it `find` with the object's name) or "
+            "viewer / inspect_object. **Everything below works on the selection**, and until this existed "
             "the only way to select anything was for the USER to click it -- which is the "
             "interface barrier this project exists to remove. `add: true` selects a second and a "
             "third without letting go of the first, which is how you link things that are "
             "already in the world. `edit: true` also opens the build tools on it, which is what "
             "somebody means by \"edit that\".\n"
-            "- set: change what is selected -- `name`, `description`, `size` (metres, one number "
-            "for a cube or three for x/y/z), `colour` (a name like \"red\", or three numbers "
-            "0-1), `position` and `rotation`.\n"
-            "- remove: `take: true` puts it in inventory, otherwise it is deleted.\n"
+            "- set: change what is selected -- `name`, `description`, `size` (metres: one number "
+            "for a cube, or three for x/y/z), `colour` (three numbers 0-1) or `colour_name` (a "
+            "name like \"red\"), `position` and `rotation`.\n"
+            "- remove: deletes it to the Trash, where it can be recovered. Taking it back into "
+            "inventory is not available yet, and `take: true` is refused.\n"
             "\n"
             "`set` and `remove` also accept `object_id` directly and select it for you, so "
             "\"delete that\" is one call and not two. **Never ask the user to click an object to "
-            "select it** -- find it with look_nearby or inspect_object and pass its id.\n"
+            "select it** -- find it with movement / look_nearby and `find`, then pass its id.\n"
             "- link / unlink: join objects into one, or take one apart. **Right after rezzing, "
             "just call link with no arguments** -- it joins the prims this assistant made. "
             "Otherwise pass `object_ids`. Linking needs at least two.\n"
@@ -3286,24 +3473,38 @@ namespace
                                    "making a new prim. Find it with inventory / search first.";
             LLSD bcf; bcf["type"]="string";
                 bcf["description"]="rez: a no-copy object leaves inventory when rezzed, so it is "
-                                   "refused until this carries the item's exact name.";
+                                   "refused until this carries the item's exact name. remove: a "
+                                   "no-copy or locked object is refused until this carries the "
+                                   "object's exact name, which the refusal gives.";
             build_props["item"]=bit; build_props["confirm"]=bcf;
+            // A name matching several objects is refused with "pass its
+            // item_id", which this tool did not declare.
+            LLSD bii; bii["type"]="string";
+                bii["description"]="rez: the item_id of the inventory object, from inventory / "
+                                   "search or from the candidates a refusal lists.";
+            build_props["item_id"]=bii;
             LLSD bnm; bnm["type"]="string"; bnm["description"]="set: the object's new name.";
             LLSD bde; bde["type"]="string"; bde["description"]="set: the object's new description.";
-            LLSD bsz; bsz["type"]="array";
+            // <Lumen> Every array says what it holds: OpenAI's function
+            // validator refuses a whole request whose schema has an array
+            // with no `items`, so one missing line broke every turn there.
+            LLSD num_items; num_items["type"]="number";
+            LLSD str_items; str_items["type"]="string";
+            LLSD bsz; bsz["type"]="array"; bsz["items"]=num_items;
                 bsz["description"]="set: size in metres. One number makes a cube, three give "
                                    "x, y and z. Second Life allows 0.01 to 64.";
-            LLSD bco; bco["type"]="array";
+            LLSD bco; bco["type"]="array"; bco["items"]=num_items;
                 bco["description"]="set: colour as three numbers 0-1, red green blue.";
             LLSD bcn; bcn["type"]="string";
                 bcn["description"]="set: a colour by name instead of numbers -- red, green, blue, "
                                    "white, black, yellow, orange, purple, pink, grey, brown.";
-            LLSD bpo; bpo["type"]="array";
+            LLSD bpo; bpo["type"]="array"; bpo["items"]=num_items;
                 bpo["description"]="set: where to put it, as x, y, z in the region.";
-            LLSD bro; bro["type"]="array";
+            LLSD bro; bro["type"]="array"; bro["items"]=num_items;
                 bro["description"]="set: rotation in degrees, as x, y, z.";
             LLSD btk; btk["type"]="boolean";
-                btk["description"]="remove: true takes it into inventory instead of deleting it.";
+                btk["description"]="remove: taking an object back into inventory is not built "
+                                   "yet, so true is refused -- say so rather than trying it.";
             build_props["shape"]=bsh;   build_props["distance"]=bds;
             build_props["name"]=bnm;    build_props["description"]=bde;
             build_props["size"]=bsz;    build_props["colour"]=bco;
@@ -3311,15 +3512,15 @@ namespace
             build_props["position"]=bpo; build_props["rotation"]=bro;
             LLSD bid; bid["type"]="string";
                 bid["description"]="select, set, remove: the object to act on, as an object_id "
-                                   "from look_nearby or inspect_object. Without it these work on "
-                                   "whatever is already selected.";
+                                   "from movement / look_nearby or viewer / inspect_object. "
+                                   "Without it these work on whatever is already selected.";
             LLSD bad; bad["type"]="boolean";
                 bad["description"]="select: true adds to the selection instead of replacing it, "
                                    "so several objects can be linked.";
             LLSD bed; bed["type"]="boolean";
                 bed["description"]="select: true also opens the build tools on it, which is what "
                                    "a person means by \"edit that\".";
-            LLSD bids; bids["type"]="array";
+            LLSD bids; bids["type"]="array"; bids["items"]=str_items;
                 bids["description"]="link, unlink: the objects to act on, as object_ids. Leave "
                                     "it out right after rezzing and link joins the prims this "
                                     "assistant just made.";
@@ -4926,7 +5127,7 @@ bool LumenAIControl::photoGaze(LLVector3& world_dir_out)
         return false;
     }
 
-    if (me.mPhotoGazeMode == "ahead")
+    if (me.mPhotoGazeMode == "ahead" || me.mPhotoGazeMode == "away")   // <Lumen> "away" too
     {
         // Two metres in front of her, in agent coordinates.
         world_dir_out = gAgent.getPosAgentFromGlobal(gAgent.getPositionGlobal())
@@ -6477,6 +6678,57 @@ namespace
         sRecentRez.swap(keep);
         return out;
     }
+
+    // RLV's edit gate, as the viewer's own click applies it
+    // (lltoolselect.cpp, handleObjectSelection: canEdit and @fartouch) and as
+    // the frame loop's fallback applies it (deselectAllIfTooFar: canEdit, and
+    // nothing at all under @interact). Selecting by id goes through
+    // selectObjectAndFamily, which asks neither -- and the region message
+    // leaves in the same call, before that fallback has run once.
+    bool rlvForbidsEditing(const LLViewerObject* obj)
+    {
+        if (!obj || !rlv_handler_t::isEnabled()) return false;
+        return !RlvActions::canEdit(obj) || !RlvActions::canInteract(obj);
+    }
+
+    // True when anything in the current selection fails that gate.
+    bool rlvSelectionForbidsEditing()
+    {
+        if (!rlv_handler_t::isEnabled()) return false;
+        struct CannotEdit : public LLSelectedNodeFunctor
+        {
+            bool apply(LLSelectNode* node) override
+            {
+                return node && rlvForbidsEditing(node->getObject());
+            }
+        } f;
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        return sel.notNull() && sel->getFirstRootNode(&f, true) != NULL;
+    }
+
+    // Held down by @unsit and sitting on something selected: the viewer
+    // disables Link and Unlink for exactly this (enableLinkObjects /
+    // enableUnlinkObjects), because taking apart or moving the furniture is
+    // the way out that @unsit exists to close.
+    bool rlvSittingOnSelection()
+    {
+        if (!rlv_handler_t::isEnabled() || RlvActions::canStand() || !isAgentAvatarValid())
+        {
+            return false;
+        }
+        RlvSelectIsSittingOn f(gAgentAvatarp);
+        LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+        return sel.notNull() && sel->getFirstRootNode(&f, true) != NULL;
+    }
+
+    LLSD rlvEditRefusal()
+    {
+        LLSD e; e["code"] = -32000;
+        e["message"] = "An RLV restriction the user is wearing forbids editing that object, so "
+                       "nothing was changed. Tell them plainly -- it is their own attachment "
+                       "doing it, not the land or a permission.";
+        LLSD w; w["__error"] = e; return w;
+    }
 }
 // </Lumen>
 
@@ -7171,6 +7423,35 @@ namespace
 
 LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 {
+    // <Lumen> A request_id is replayed only for the SAME call. The log lives
+    // for the whole session and survives Clear, so a model that numbers its
+    // ids from 1 again reused "req-1" for an IM after using it for a say --
+    // and got the old say back as "already sent", with nothing sent. Every
+    // handler's own replay looks the id up and nothing else, so the tool and
+    // the arguments are compared once, here, before any of them runs.
+    if (params.isMap() && params.has("request_id"))
+    {
+        const std::string rid = params["request_id"].asString();
+        if (!rid.empty())
+        {
+            for (std::deque<Action>::const_reverse_iterator it = mActions.crbegin();
+                 it != mActions.crend(); ++it)
+            {
+                if (it->request_id != rid) continue;
+                if (it->tool != method || it->fingerprint != fingerprintOf(method, params))
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "That request_id was already used for a different call ("
+                                 + it->tool + "), so nothing was done. Use a new request_id for "
+                                   "a new request; repeat an id only to retry the very same call.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                break;   // the same call: its own handler replays it
+            }
+        }
+    }
+    // </Lumen>
+
     // ---- MCP ----------------------------------------------------------
     if (method == "initialize")
     {
@@ -7395,6 +7676,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         S32 limit = params.has("limit") ? params["limit"].asInteger() : 25;
         if (limit <= 0)  limit = 25;
         if (limit > 100) limit = 100;
+
+        // <Lumen> A kind nobody recognises is refused, not dropped: dropping it
+        // searched everything and handed back worn garments to "which light
+        // settings do I have", which read as "none".
+        {
+            std::string k = kind;
+            LLStringUtil::trim(k);
+            if (!k.empty() && kindFromWord(k) == LLAssetType::AT_NONE)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "\"" + kind + "\" is not a kind search knows. Use one of: "
+                               "object, clothing, bodypart, notecard, landmark, animation, "
+                               "gesture, texture, sound, script, settings, material -- or leave "
+                               "kind out.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
 
         const bool worn_only = params.has("worn") && params["worn"].asBoolean();
         // Declared out here rather than in the index branch: the result is
@@ -7717,7 +8016,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                              "for who made them, so they could not be checked against \"" +
                              creator_name + "\". Their names have been requested: searching again "
                              "in a moment will cover more. For an exact, complete answer, use "
-                             "find_person to get the creator's id and pass that as creator.";
+                             "chat / find_person to get the creator's id and pass that as creator.";
         }
         if (!worn_only)
         {
@@ -7780,6 +8079,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLViewerInventoryItem* item = gInventory.getItem(id);
         const std::string item_name = item ? item->getName() : std::string();
         const bool was_worn = get_is_item_worn(id);
+        bool replace_ignored = false;   // <Lumen> see below
 
         if (method == "wear")
         {
@@ -7792,7 +8092,19 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 result["note"] = "It was already being worn, so nothing changed.";
                 return result;
             }
-            const bool replace = params.has("replace") ? params["replace"].asBoolean() : false;
+            bool replace = params.has("replace") ? params["replace"].asBoolean() : false;
+            // <Lumen> Never `replace` for an OBJECT. Upstream cannot tell which
+            // attachment point an inventory object uses, so replace attaches it
+            // at its own saved point and pushes off whatever is already there
+            // (rez_attachment with no joint, is_add false) -- the mesh body,
+            // the head or the hair -- while the old garment on another point
+            // stays on. Added instead; the reply says to detach the old one.
+            if (replace && item && item->getType() == LLAssetType::AT_OBJECT)
+            {
+                replace = false;
+                replace_ignored = true;
+            }
+            // </Lumen>
             LLAppearanceMgr::instance().wearItemOnAvatar(id, true, replace);
         }
         else
@@ -7818,8 +8130,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // Appearance changes go to the server and come back. Saying "worn" here
         // would be a guess, and the caller has a cheap way to actually look.
         result["confirm_with"] =
-            "Appearance takes a moment to settle. Call search_inventory for this item and check "
+            "Appearance takes a moment to settle. Call inventory / search for this item and check "
             "its worn flag to confirm.";
+        if (replace_ignored)
+        {
+            result["replace_ignored"] = true;
+            result["note"] = "This is an object, so it was ADDED rather than replacing anything: "
+                             "replace would have knocked off whatever hangs on its attachment "
+                             "point, which can be the body or the head. If it was meant to take "
+                             "the place of something, that is still on -- detach the old item "
+                             "now with inventory / detach.";
+        }
 
         LLSD summary;
         summary["item_id"] = id;
@@ -7865,6 +8186,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             e["message"] = "An RLV restriction the user is wearing forbids sending instant "
                            "messages to that person right now. Nothing was sent -- say it is "
                            "their own attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // @startim is a separate restriction from @sendim: it forbids OPENING
+        // a conversation, which every one of the viewer's own ways to start an
+        // IM checks (llavataractions.cpp, startIM). canStartIM allows a session
+        // that is already open, so replies are unaffected.
+        if (RlvActions::isRlvEnabled() && !RlvActions::canStartIM(to))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids starting a new "
+                           "instant-message conversation with that person right now. Nothing "
+                           "was sent -- say it is their own attachment doing it.";
             LLSD w; w["__error"] = e; return w;
         }
         // </Lumen>
@@ -7944,6 +8277,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> @viewnote is enforced only at the preview window (rlvui.cpp);
+        // the asset fetch underneath is not gated, and neither is our cache of
+        // text read earlier. `open` already refuses; this is the same rule.
+        if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_VIEWNOTE))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing forbids reading notecards (an RLV "
+                           "restriction). Say that, rather than that it failed.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         LLSD error;
         const LLUUID id = resolveItem(params, error);
@@ -8031,6 +8375,16 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> Snippets are notecard text too; same @viewnote rule as read_notecard.
+        if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_VIEWNOTE))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing forbids reading notecards (an RLV "
+                           "restriction), so none were searched. Say that, rather than that "
+                           "nothing was found.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
         const std::string needle = lowered(params["text"].asString());
         if (needle.empty())
         {
@@ -8221,7 +8575,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         result["characters"] = (LLSD::Integer)text.size();
         result["confirm_with"] =
             "The notecard is being created and its text uploaded, which takes a moment and "
-            "happens in two steps. Find it with search_inventory kind=notecard, then read_notecard "
+            "happens in two steps. Find it with inventory / search, kind notecard, then read_notecard "
             "it, before telling the user it is there.";
 
         LLSD summary;
@@ -8264,13 +8618,32 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["note"] = "This request_id already made a landmark; another was not created.";
             return replay;
         }
-        if (recallRecent(fingerprintOf("create_landmark", params), 60.0, replay))
+        // <Lumen> The retry window is only a retry at the SAME place. With no
+        // name, every call has identical arguments, so "landmark this", a
+        // teleport, and "landmark this one too" inside a minute replayed the
+        // first landmark and made none. Where the avatar stands -- region and
+        // parcel, the viewer's own test for "already landmarked" -- is part of
+        // what a repeat has to match.
+        static std::string s_last_landmark_place;
+        std::string here_place;
+        if (LLViewerRegion* region = gAgent.getRegion())
+        {
+            here_place = region->getRegionID().asString();
+            if (LLParcel* parcel = LLViewerParcelMgr::getInstance()->getAgentParcel())
+            {
+                here_place += llformat("/%d", parcel->getLocalID());
+            }
+        }
+        if (!here_place.empty() && here_place == s_last_landmark_place
+            && recallRecent(fingerprintOf("create_landmark", params), 60.0, replay))
         {
             replay["replayed"] = true;
-            replay["note"] = "A landmark was just made here, so this was treated as a retry. "
-                             "Nothing was created a second time.";
+            replay["note"] = "A landmark was just made here, called \"" + replay["name"].asString()
+                           + "\", so this was treated as a retry. Nothing was created a second "
+                             "time.";
             return replay;
         }
+        // </Lumen>
 
         std::string name = params.has("name") ? params["name"].asString() : std::string();
         LLStringUtil::trim(name);
@@ -8303,6 +8676,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // the viewer's own text whatever the name is.
         const LLUUID folder = gInventory.findCategoryUUIDForType(LLFolderType::FT_LANDMARK);
         LLLandmarkActions::createLandmarkHere(name, where_full, folder);
+        s_last_landmark_place = here_place;   // <Lumen>
 
         LLSD result;
         result["asked"] = true;
@@ -8614,10 +8988,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                       "page only, ranked by the directory and not by us. A name matching "
                       "is not evidence it is the place they meant, so ask before acting.";
                 result["cannot_teleport_yet"] = true;
-                result["how_to_go"] = "There is no teleport from a search result yet: the "
-                                      "directory gives a parcel id, and turning that into a "
-                                      "place needs a further lookup that is not built. Say "
-                                      "the name and offer to find it another way.";
+                result["how_to_go"] = "These directory results carry no location, so they "
+                                      "cannot be teleported to by place_id. Say the name; if "
+                                      "they want to go, teleport by the region if they know "
+                                      "it, or search again later when the web search answers.";
             }
             result["source"] = "directory";
             auto failed = sWebPlacesFailed.find(key);
@@ -8681,11 +9055,29 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLViewerRegion* region = gAgent.getRegion();
         LLParcel* parcel = LLViewerParcelMgr::getInstance()->getAgentParcel();
 
+        // <Lumen> Under @showloc the viewer blanks the region, the parcel and
+        // the coordinates everywhere it shows them (llagentui.cpp, the location
+        // bar, the world map). Answering them here would read out exactly what
+        // the restriction hides; what the parcel ALLOWS is not location, so it
+        // is still given.
+        const bool location_hidden =
+            rlv_handler_t::isEnabled() && !RlvActions::canShowLocation();
+
         LLSD result;
-        if (region) result["region"] = region->getName();
-        const LLVector3 pos = gAgent.getPositionAgent();
-        LLSD p; p.append(pos.mV[VX]); p.append(pos.mV[VY]); p.append(pos.mV[VZ]);
-        result["position"] = p;
+        if (location_hidden)
+        {
+            result["location_hidden"] = true;
+            result["location_note"] = "Something the user is wearing (an RLV restriction) hides "
+                                      "where they are, so the region, parcel and position are left "
+                                      "out. Say that, rather than guessing or that it failed.";
+        }
+        else
+        {
+            if (region) result["region"] = region->getName();
+            const LLVector3 pos = gAgent.getPositionAgent();
+            LLSD p; p.append(pos.mV[VX]); p.append(pos.mV[VY]); p.append(pos.mV[VZ]);
+            result["position"] = p;
+        }
 
         if (!parcel)
         {
@@ -8693,11 +9085,53 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
-        result["parcel"] = safeUtf8(parcel->getName());
+        if (!location_hidden)
+        {
+            result["parcel"] = safeUtf8(parcel->getName());
+            // <Lumen> Who owns it, which the tool description has always
+            // promised and nothing returned. A group-owned parcel's owner id is
+            // the group's. Left out under @showloc with the rest, since About
+            // Land is hidden there too.
+            const LLUUID owner = parcel->getOwnerID();
+            if (owner.notNull())
+            {
+                LLSD o;
+                o["id"] = owner;
+                if (parcel->getIsGroupOwned())
+                {
+                    o["is_group"] = true;
+                    std::string group_name;
+                    if (gCacheName && gCacheName->getGroupName(owner, group_name))
+                    {
+                        o["name"] = safeUtf8(group_name);
+                    }
+                    o["link"] = groupLink(owner);
+                }
+                else
+                {
+                    o["is_group"] = false;
+                    S32 asked = 0;
+                    const std::string owner_name = creatorName(owner, asked);
+                    if (!owner_name.empty()) o["name"] = owner_name;
+                    o["link"] = profileLink(owner);
+                }
+                if (!o.has("name"))
+                {
+                    o["name_note"] = "The owner's name is still being fetched; ask again in a "
+                                     "moment for it.";
+                }
+                result["owner"] = o;
+            }
+            // </Lumen>
+        }
+        // </Lumen>
         LLSD allows;
         // These are the usual reason something "did not work": a parcel can
         // forbid it, and that is not a fault to go hunting for.
-        allows["flying"] = parcel->getAllowFly();
+        // <Lumen> The whole question the viewer asks -- RLV, a region that
+        // blocks flying, the owner's exception -- not only the parcel flag,
+        // which said "allowed" where take-off was refused and the reverse.
+        allows["flying"] = gAgent.canFly();
         allows["other_peoples_scripts"] = parcel->getAllowOtherScripts();
         allows["damage"] = parcel->getAllowDamage();
         // `build` was missing here until a rez failed for an unrelated reason
@@ -8742,7 +9176,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD people = LLSD::emptyArray();
         uuid_vec_t ids;
         std::vector<LLVector3d> positions;
-        LLWorld::getInstance()->getAvatars(&ids, &positions, me, radius);
+        // <Lumen> The viewer's own nearby list and radar are emptied under
+        // @shownearby (llpanelpeople.cpp, fsradar.cpp) and anonymise every name
+        // under @shownames. The name cache below is NOT anonymised -- RLVa does
+        // that in the display layers -- so without these checks this read out
+        // exactly who the restriction hides.
+        const bool rlv_on = rlv_handler_t::isEnabled();
+        const bool nearby_hidden = rlv_on && !RlvActions::canShowNearbyAgents();
+        bool names_hidden = false;
+        if (!nearby_hidden)
+        {
+            LLWorld::getInstance()->getAvatars(&ids, &positions, me, radius);
+        }
         for (size_t i = 0; i < ids.size() && i < positions.size(); ++i)
         {
             if (ids[i] == gAgentID)
@@ -8750,12 +9195,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 continue;
             }
             LLSD who;
-            who["agent_id"] = ids[i];
             LLAvatarName av;
-            who["name"] = LLAvatarNameCache::get(ids[i], &av) ? av.getUserName() : "(unnamed)";
+            const bool known = LLAvatarNameCache::get(ids[i], &av);
+            if (rlv_on && !RlvActions::canShowName(RlvActions::SNC_DEFAULT, ids[i]))
+            {
+                // The id is left out too: any tool given it would name them.
+                who["name"] = known ? RlvStrings::getAnonym(av) : std::string("(hidden)");
+                who["name_hidden"] = true;
+                names_hidden = true;
+            }
+            else
+            {
+                who["agent_id"] = ids[i];
+                who["name"] = known ? av.getUserName() : "(unnamed)";
+            }
             who["distance"] = (F32)(positions[i] - me).magVec();
             people.append(who);
         }
+        // </Lumen>
 
         // EVERY root in range, nearest first, and only then cut. Walking in
         // index order and stopping at sixty kept an arbitrary sixty of 2,167,
@@ -8832,7 +9289,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD result;
         result["people"] = people;
         result["radius"] = radius;
-        result["region"] = region->getName();
+        if (!(rlv_on && !RlvActions::canShowLocation()))   // @showloc hides the region
+        {
+            result["region"] = region->getName();
+        }
         result["objects_in_radius"] = (S32)around.size();
         if (waiting > 0)
         {
@@ -8843,6 +9303,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (lost > 0)    result["never_answered"] = lost;
         if (physical > 0) result["physical_not_asked"] = physical;
         LLSD notes = LLSD::emptyArray();
+        if (nearby_hidden)
+        {
+            result["people_hidden"] = true;
+            notes.append("Something the user is wearing (an RLV restriction) hides the people "
+                         "nearby, so none are listed. Say that -- it does not mean nobody is here.");
+        }
+        else if (names_hidden)
+        {
+            notes.append("Something the user is wearing (an RLV restriction) hides people's "
+                         "names, so those are shown the way the viewer shows them, anonymised. "
+                         "Do not try to find out who they are.");
+        }
 
         if (!searching)
         {
@@ -9069,6 +9541,22 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
 
+        // <Lumen> A retried call with the same request_id used to run saveScript
+        // again: two running default scripts in somebody's build. No
+        // fingerprint window, because two scripts of the same name can be a
+        // genuine request.
+        {
+            LLSD replay;
+            if (recallAction(request_id, replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id already added a script; nothing was added a "
+                                 "second time.";
+                return replay;
+            }
+        }
+        // </Lumen>
+
         LLViewerObject* object = NULL;
         LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
         if (params.has("object_id") && params["object_id"].asUUID().notNull())
@@ -9082,8 +9570,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (!object)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
-                           "the object first.";
+            e["message"] = "Nothing is selected and no `object_id` was given. Find the object "
+                           "with movement / look_nearby and `find` (its name), then pass its "
+                           "`object_id` -- do not ask them to click it.";
             LLSD w; w["__error"] = e; return w;
         }
         if (!object->permModify())
@@ -9094,6 +9583,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> The button checks no @edit restriction because it can only be
+        // reached through a selection RLV has already filtered; an object_id
+        // skips that filter, so the edit gate is asked here.
+        if (rlvForbidsEditing(object))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids editing that object, "
+                           "so no script was added. Tell them plainly -- it is their own "
+                           "attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
         // The RLV cases the viewer's own New Script button checks, copied
         // rather than reasoned about: a locked attachment, and a linkset the
         // avatar is sitting on while unsit or sittp is restricted.
@@ -9171,8 +9672,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (!root)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
-                           "the object first.";
+            e["message"] = "Nothing is selected and no `object_id` was given. Find the object "
+                           "with movement / look_nearby and `find` (its name), then pass its "
+                           "`object_id` -- do not ask them to click it.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -9190,6 +9692,19 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             e["message"] = "An RLV restriction is stopping scripts being viewed right now.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> The Contents tab is only reachable through a selection RLV has
+        // filtered, and the script editor re-checks nothing but @viewscript --
+        // so an object_id would otherwise open, and let the user save over, the
+        // script of an object they are forbidden to edit.
+        if (rlvForbidsEditing(root))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids editing that object, "
+                           "so its scripts cannot be opened. Tell them plainly -- it is their own "
+                           "attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         std::vector<LLViewerObject*> chain;
         chain.push_back(root);
@@ -9445,9 +9960,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (!root)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nothing is selected and no `object_id` was given. Ask them to click "
-                           "the object first -- selecting it is also what makes its name, "
-                           "description and permissions readable at all.";
+            e["message"] = "Nothing is selected and no `object_id` was given. Find the object "
+                           "with movement / look_nearby and `find` (its name), then pass its "
+                           "`object_id` -- do not ask them to click it.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -9520,9 +10035,40 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         }
         else
         {
-            r["properties_note"] = "The viewer has not been told this object's name, description "
-                                   "or permissions. It learns them when the object is SELECTED -- "
-                                   "ask them to click it.";
+            // <Lumen> No select node -- the object is not selected, and a
+            // selection made for it would be dropped by the next frame unless
+            // the build tools are open. So the name and description come from
+            // the viewer's own cache of object names, which keeps them after a
+            // deselect, and the user's OWN permissions from the object's
+            // flags. Next-owner permissions and the creator arrive only with a
+            // real selection, and the note says honestly what that costs.
+            const ObjectLabel* label = objectLabel(root->getID());
+            if (label)
+            {
+                r["name"] = safeUtf8(label->name);
+                r["description"] = safeUtf8(label->desc);
+            }
+            else
+            {
+                askNames(std::vector<LLUUID>(1, root->getID()));
+            }
+            LLSD you;
+            you["modify"]   = root->permModify();
+            you["copy"]     = root->permCopy();
+            you["transfer"] = root->permTransfer();
+            LLSD perm;
+            perm["you_can"] = you;
+            perm["yours"]   = root->permYouOwner();
+            r["permissions"] = perm;
+            r["properties_note"] =
+                std::string(label ? "" : "The name and description have been asked for; call "
+                                         "inspect_object again in a second or two. ")
+                + "`permissions` here is only what the USER may do with it. Next-owner "
+                  "permissions and the creator are sent only while the object is selected in the "
+                  "build tools: build / select with this object_id and `edit: true` opens them "
+                  "-- tell the user that is what will happen -- then call inspect_object again a "
+                  "moment later. Do not ask them to click it.";
+            // </Lumen>
         }
 
         r["position"] = V::sd(root->getPositionRegion());
@@ -9615,8 +10161,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             r["links_without_a_name"] = unnamed_links;
             r["names_note"] = "Those prims have no name here because the viewer is only ever told "
                               "a prim's name when that prim is SELECTED. Calling again will not "
-                              "change it. If they want every prim named, ask them to select the "
-                              "whole object -- right-click, Edit, without isolating one prim.";
+                              "change it. build / select with this object_id selects the whole "
+                              "linkset; call inspect_object again a second later and the names "
+                              "will have arrived.";
         }
         if ((S32)chain.size() > kMaxLinks)
         {
@@ -9726,6 +10273,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         bool opened = false;
+        bool confirmed = false;
         if (e.open_is_floater)
         {
             // showInstance, never the menu's own toggle: asked to OPEN
@@ -9733,6 +10281,41 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLFloaterReg::showInstance(e.openparam);
             LLFloater* f = LLFloaterReg::findInstance(e.openparam);
             opened = (f != NULL && f->getVisible());
+            confirmed = opened;
+        }
+        else if (e.openfn == "SideTray.PanelPeopleTab")
+        {
+            // <Lumen> The menu's People-tab callback is a TOGGLE too: asked to
+            // open the Block List while it was already up, it hid it, and this
+            // reported it opened. The same destinations the callback chooses
+            // (llviewermenu.cpp, LLTogglePanelPeopleTab), shown rather than
+            // toggled, and then asked whether they are on screen.
+            const std::string panel = e.openparam;
+            LLSD key; key["people_panel_tab_name"] = panel;
+            const bool v2 = gSavedSettings.getBOOL("FSUseV2Friends")
+                         && gSavedSettings.getString("FSInternalSkinCurrent") != "Vintage";
+            if (panel == "blocked_panel" && gSavedSettings.getBOOL("FSUseStandaloneBlocklistFloater"))
+            {
+                LLFloaterReg::showInstance("fs_blocklist");
+                LLFloater* f = LLFloaterReg::findInstance("fs_blocklist");
+                opened = (f != NULL && f->getVisible());
+            }
+            else if (!v2 && (panel == "friends_panel" || panel == "groups_panel"
+                             || panel == "contact_sets_panel"))
+            {
+                FSFloaterContacts* contacts = FSFloaterContacts::getInstance();
+                contacts->openTab(panel == "friends_panel" ? "friends"
+                                  : panel == "groups_panel" ? "groups" : "contact_sets");
+                opened = contacts->isInVisibleChain();
+            }
+            else
+            {
+                LLFloaterSidePanelContainer::showPanel("people", "panel_people", key);
+                LLPanel* p = LLFloaterSidePanelContainer::getPanel("people", panel);
+                opened = (p != NULL && p->isInVisibleChain());
+            }
+            confirmed = opened;
+            // </Lumen>
         }
         else if (LLUICtrl::commit_callback_t* cb =
                      LLUICtrl::CommitCallbackRegistry::getValue(e.openfn))
@@ -9747,9 +10330,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         r["called"] = e.label;
         r["where"]  = where;
         r["opened"] = opened;
-        r["confirmed_on_screen"] = (e.open_is_floater && opened);
+        r["confirmed_on_screen"] = confirmed;
         r["note"] = opened
-            ? (e.open_is_floater
+            ? (confirmed
                ? "The window was opened and confirmed on screen. Tell them it is open and where it "
                  "lives (`where`), so they can get to it themselves next time."
                : "The viewer's own menu command was run. There is no handle to check afterwards, "
@@ -10038,6 +10621,49 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> RLV locks a setting only by HIDING it from Debug Settings --
+        // @setdebug hides the ones it may force (RenderResolutionDivisor, the
+        // blindfold's blur, and AvatarSex; rlvhandler.cpp), and @sendim hides
+        // the busy reply, which Preferences also disables. Nothing re-applies a
+        // forced value afterwards, so writing it here would simply undo the
+        // restriction. Asked before anything is written.
+        bool rlv_locked = false;
+        if (rlv_handler_t::isEnabled())
+        {
+            if (gRlvHandler.hasBehaviour(RLV_BHVR_SETDEBUG))
+            {
+                const auto dbg = RlvExtGetSet::m_DbgAllowed.find(ctrl);
+                rlv_locked = dbg != RlvExtGetSet::m_DbgAllowed.end()
+                             && (dbg->second & RlvExtGetSet::DBG_WRITE);
+            }
+            if (ctrl == "DoNotDisturbModeResponse" && gRlvHandler.hasBehaviour(RLV_BHVR_SENDIM))
+            {
+                rlv_locked = true;
+            }
+        }
+        if (rlv_locked)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing keeps that setting locked, so "
+                           "nothing was changed. Tell them plainly -- it is their own attachment "
+                           "doing it, not a fault.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // A control named literally that the viewer's own Debug Settings will
+        // not show: RLVa's own controls, and internal state no panel offers.
+        // One that some panel does show was found through the label index
+        // instead, and is not affected.
+        if (at < 0 && var->isHiddenFromSettingsEditor())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That setting is hidden from the viewer's own Debug Settings -- it is "
+                           "locked (possibly by an RLV restriction the user is wearing) or it is "
+                           "internal state -- so it is not one to change from here. Nothing was "
+                           "changed.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
         const LLSD before = var->getValue();
 
         // Refuse a value the panel itself would not allow.
@@ -10204,11 +10830,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         LLEnvironment& env = LLEnvironment::instance();
 
-        // One of their own saved settings, by name.
-        if (params.has("name") && !params["name"].asString().empty())
+        // One of their own saved settings, by name -- or by the item_id a
+        // search or an ambiguous-name refusal hands back. <Lumen> Entering on
+        // `name` alone sent an id-only call on to the preset, which defaults
+        // to midday: the user's sky replaced and reported as a success. And
+        // only SETTINGS items are looked at by name, so a same-named texture
+        // or landmark can neither make a saved sky ambiguous nor show up as a
+        // candidate.
+        if ((params.has("name") && !params["name"].asString().empty())
+            || (params.has("item_id") && !params["item_id"].asString().empty()))
         {
             LLSD item_error;
-            const LLUUID item_id = resolveItem(params, item_error);
+            const LLUUID item_id = resolveItem(params, item_error, LLAssetType::AT_SETTINGS);
             if (item_id.isNull()) { LLSD w; w["__error"] = item_error; return w; }
 
             LLViewerInventoryItem* item = gInventory.getItem(item_id);
@@ -10216,7 +10849,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 LLSD e; e["code"] = -32602;
                 e["message"] = "That is not an environment setting. Their saved ones are "
-                               "inventory items of kind \"settings\" -- search for those.";
+                               "inventory items of kind \"settings\" -- find them with "
+                               "inventory / search, kind settings.";
                 LLSD w; w["__error"] = e; return w;
             }
 
@@ -10442,7 +11076,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     // model asked for exactly that set an absolute bearing
                     // instead and reported success while the light did not move.
                     // Relative is the common case, so it is the one that reads.
-                    const std::string w = lowered(params["sun_azimuth"].asString());
+                    std::string w = lowered(params["sun_azimuth"].asString());
+                    LLStringUtil::trim(w);
+                    // <Lumen> "behind me" and "in front of me" are the same words.
+                    for (const char* tail : { " of me", " me" })
+                    {
+                        const std::string t(tail);
+                        if (w.size() > t.size() && w.compare(w.size() - t.size(), t.size(), t) == 0)
+                        {
+                            w.erase(w.size() - t.size());
+                            break;
+                        }
+                    }
                     F32 rel = -1.f;
                     if      (w == "front" || w == "ahead" || w == "in front") rel = 0.f;
                     else if (w == "behind" || w == "back")                    rel = 180.f;
@@ -10458,7 +11103,33 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     }
                     else
                     {
-                        az = (F32)params["sun_azimuth"].asReal();
+                        // <Lumen> A number, or a string that IS one -- never
+                        // anything else. asReal() of an unknown word is 0, so
+                        // "front-left" silently put the sun due north and was
+                        // reported as a change.
+                        const LLSD& raw = params["sun_azimuth"];
+                        bool numeric = raw.isReal() || raw.isInteger();
+                        if (!numeric && !w.empty())
+                        {
+                            char* end = NULL;
+                            const double v = strtod(w.c_str(), &end);
+                            numeric = (end && *end == '\0');
+                            if (numeric) az = (F32)v;
+                        }
+                        else if (numeric)
+                        {
+                            az = (F32)raw.asReal();
+                        }
+                        if (!numeric)
+                        {
+                            LLSD e; e["code"] = -32602;
+                            e["message"] = "sun_azimuth \"" + raw.asString() + "\" is not "
+                                           "understood, so the light was not changed. Use "
+                                           "front, behind, left or right -- relative to the "
+                                           "way they face -- or a compass bearing in degrees.";
+                            LLSD fail; fail["__error"] = e; return fail;
+                        }
+                        // </Lumen>
                     }
 
                     // Measured, not derived: the value this quaternion wants is
@@ -10804,18 +11475,50 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 LLSD w; w["__error"] = e; return w;
             }
 
+            // <Lumen> setFlying returns without a word under RLV @fly, on a
+            // region that blocks flying and on a parcel that forbids it
+            // (LLAgent::canFly), and this used to answer "requested" and log
+            // it as done. Ask the same question first and name the real cause.
+            if (want && RlvActions::isRlvEnabled() && !RlvActions::canFly())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing forbids flying, so they "
+                               "stayed on the ground. Say it is their own attachment doing it, "
+                               "not the land.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (want && !gAgent.canFly())
+            {
+                LLViewerRegion* fly_region = gAgent.getRegion();
+                LLSD e; e["code"] = -32000;
+                e["message"] = (fly_region && fly_region->getBlockFly())
+                    ? "This whole region does not allow flying, so they stayed on the ground. "
+                      "That is the region's rule, not a fault."
+                    : "This parcel does not allow flying, so they stayed on the ground. That is "
+                      "the land's rule, not a fault -- flying works again on land that permits it.";
+                LLSD w; w["__error"] = e; return w;
+            }
+
             gAgent.setFlying(want);
 
-            LL_INFOS("AICtl") << (want ? "fly: taking off" : "fly: landing") << LL_ENDL;
+            // setFlying changes the flag at once, so this is the real outcome
+            // rather than a request that may have been ignored.
+            const bool now_flying = gAgent.getFlying();
+            LL_INFOS("AICtl") << (want ? "fly: taking off" : "fly: landing")
+                              << (now_flying == want ? "" : " -- the viewer did not change it")
+                              << LL_ENDL;
 
             LLSD result;
             result["requested"] = want ? "fly" : "land";
-            // A region can forbid flying, and then this silently does nothing.
-            result["confirm_with"] =
-                "Some parcels do not allow flying, and there the request simply has no effect. "
-                "Call status and check flying before telling the user they are in the air.";
+            result["flying"] = now_flying;
+            result["confirm_with"] = (now_flying == want)
+                ? std::string(want ? "They are flying now." : "They are no longer flying.")
+                : std::string("The viewer did not change it -- they are ")
+                  + (now_flying ? "still flying." : "still on the ground.")
+                  + " Say so rather than that it worked.";
             LLSD summary; summary["action"] = want ? "fly" : "land";
-            recordAction(request_id, fingerprintOf("fly", params), "fly", "ok", result, summary);
+            recordAction(request_id, fingerprintOf("fly", params), "fly",
+                         now_flying == want ? "ok" : "refused", result, summary);
             return result;
         }
 
@@ -10963,20 +11666,43 @@ if (method == "camera")
                 focus_id = id;
                 who      = "the object";
             }
-            else if (params.has("name") && !params["name"].asString().empty())
+            else if ((params.has("name") && !params["name"].asString().empty())
+                     || (params.has("person") && !params["person"].asString().empty())
+                     || (params.has("agent_id") && !params["agent_id"].asString().empty()))
             {
-                LLSD who_error;
-                const LLUUID person = resolvePerson(params, who_error);
-                if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
-                if (!LLWorld::getInstance()->getAvatar(person, subject))
+                // <Lumen> `person` is what this tool's own schema calls "who to
+                // point the camera at", and an ambiguous name is refused with
+                // "pass their agent_id" -- both were ignored, and the user was
+                // framed instead with "the camera is set". All three count.
+                LLSD pick = params;
+                if (!(pick.has("name") && !pick["name"].asString().empty()) && pick.has("person"))
                 {
-                    LLSD e; e["code"] = -32000;
-                    e["message"] = "They are not close enough to point the camera at.";
-                    LLSD w; w["__error"] = e; return w;
+                    pick["name"] = pick["person"];
                 }
-                height   = 1.8f;             // other avatars' exact height is not ours to read
-                focus_id = person;
-                who      = params["name"].asString();
+                LLSD who_error;
+                const LLUUID person = resolvePerson(pick, who_error);
+                if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+                if (person == gAgent.getID())
+                {
+                    // Themselves by name: the ordinary shot of the user.
+                }
+                else
+                {
+                    if (!LLWorld::getInstance()->getAvatar(person, subject))
+                    {
+                        LLSD e; e["code"] = -32000;
+                        e["message"] = "They are not close enough to point the camera at.";
+                        LLSD w; w["__error"] = e; return w;
+                    }
+                    height   = 1.8f;             // other avatars' exact height is not ours to read
+                    focus_id = person;
+                    LLAvatarName av;
+                    who = (pick.has("name") && !pick["name"].asString().empty())
+                        ? pick["name"].asString()
+                        : (LLAvatarNameCache::get(person, &av) ? av.getUserName()
+                                                               : person.asString());
+                }
+                // </Lumen>
             }
 
             // Framing.
@@ -11101,12 +11827,18 @@ if (method == "camera")
             // Take the gaze while the shot stands. Only for a shot of the user
             // themselves: pointing somebody else's avatar is not ours to do,
             // and the viewer never did it anyway.
-            const std::string gaze = params.has("gaze")
-                                   ? lowered(params["gaze"].asString()) : std::string("camera");
-            if (focus_id.isNull() || focus_id == gAgent.getID())
+            std::string gaze = params.has("gaze")
+                             ? lowered(params["gaze"].asString()) : std::string("camera");
+            // <Lumen> "away" was documented and fell through to the lens. It
+            // means what "ahead" does: looking off along her own facing.
+            if (gaze == "away") gaze = "ahead";
+            if (gaze != "ahead" && gaze != "free") gaze = "camera";
+            const bool own_gaze = focus_id.isNull() || focus_id == gAgent.getID();
+            if (own_gaze)
             {
                 setPhotoGaze(gaze != "free", eye, gaze);
             }
+            // </Lumen>
 
             // The Snapshot window, with its live preview, is the shutter. We
             // never take a picture: no file is written, nothing is uploaded,
@@ -11118,6 +11850,7 @@ if (method == "camera")
             result["framed"]  = framed;
             result["subject"] = who;
             result["angle"]   = deg;
+            if (own_gaze) result["gaze"] = gaze == "ahead" ? "away" : gaze;   // <Lumen> what was applied
             result["took_a_photo"] = false;
             result["note"] = "The camera is set and the Snapshot window is open, previewing "
                              "live. THEY press Save -- nothing has been written or uploaded. "
@@ -11182,7 +11915,7 @@ if (method == "camera")
             gAgent.standUp();
             LLSD result;
             result["requested"] = "stand";
-            result["confirm_with"] = "Call status and check sitting to confirm.";
+            result["confirm_with"] = "Call viewer / status and check sitting to confirm.";
             LLSD summary; summary["action"] = "stand";
             recordAction(request_id, fingerprintOf("stand", params), "stand", "ok", result, summary);
             return result;
@@ -11204,7 +11937,7 @@ if (method == "camera")
                 gAgent.sitDown();
                 LLSD result;
                 result["requested"] = "sit on the ground";
-                result["confirm_with"] = "Call status and check sitting to confirm.";
+                result["confirm_with"] = "Call viewer / status and check sitting to confirm.";
                 LLSD summary; summary["action"] = "sit"; summary["on"] = "ground";
                 recordAction(request_id, fingerprintOf("sit", params), "sit", "ok", result, summary);
                 return result;
@@ -11255,7 +11988,7 @@ if (method == "camera")
             // The object decides. It can refuse, it can be full, it can be too
             // far, and it can put the avatar somewhere unexpected.
             result["confirm_with"] =
-                "The object decides whether the avatar may sit and where. Call status after a "
+                "The object decides whether the avatar may sit and where. Call viewer / status after a "
                 "second or two and check sitting before telling the user it worked.";
             LLSD summary; summary["action"] = "sit"; summary["on"] = object_id;
             recordAction(request_id, fingerprintOf("sit", params), "sit", "ok", result, summary);
@@ -11444,7 +12177,7 @@ if (method == "camera")
                          "go back, walk_to those x, y and z. A position read later is somewhere "
                          "along the way, not the start.";
         result["confirm_with"] =
-            "Walking takes time and can be blocked by walls, water or a ban line. Call status "
+            "Walking takes time and can be blocked by walls, water or a ban line. Call viewer / status "
             "after several seconds and check the position before telling the user they arrived. "
             "stop_walking gives up.";
         LLSD summary;
@@ -11471,7 +12204,7 @@ if (method == "camera")
         if (want.empty())
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "Give the outfit's name. search_inventory will not list outfits -- "
+            e["message"] = "Give the outfit's name. inventory / search will not list outfits -- "
                            "they are folders -- so use list_folder on \"My Outfits\" to see them.";
             LLSD w; w["__error"] = e; return w;
         }
@@ -11539,7 +12272,7 @@ if (method == "camera")
         result["outfit"] = safeUtf8(outfit_name);
         result["added"] = add;
         result["confirm_with"] =
-            "Getting dressed takes several seconds and happens item by item. Call search_inventory "
+            "Getting dressed takes several seconds and happens item by item. Call inventory / search "
             "with worn: true after a moment to see what is actually on, rather than saying it is "
             "done.";
         LLSD summary;
@@ -12058,6 +12791,17 @@ if (method == "camera")
                            "until it reports saved, then ask for the next.";
             LLSD w; w["__error"] = e; return w;
         }
+        // @viewtexture is enforced only at the preview window (rlvui.cpp), and
+        // the texture fetch below is not gated -- so a picture the user may not
+        // look at went to the Desktop, where Preview opens it. `open` refuses.
+        if (RlvActions::isRlvEnabled() && !RlvActions::canPreviewTextures())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing forbids viewing pictures (an RLV "
+                           "restriction), so nothing was saved. Say that, rather than that it "
+                           "failed.";
+            LLSD w; w["__error"] = e; return w;
+        }
         // </Lumen>
 
         LLSD item_error;
@@ -12148,11 +12892,30 @@ if (method == "camera")
         }
 
         LLSD error;
-        const LLUUID id = resolveItem(params, error);
+        // <Lumen> Undelete by NAME looks in the Trash and only there. The
+        // ordinary name walk skips the Trash, so it could never find the item
+        // being put back: it answered "nothing matches" about something
+        // sitting in the Trash, or found a same-named copy elsewhere and said
+        // there was nothing to undo.
+        const bool undelete_by_name = method == "undelete_item"
+            && !(params.has("item_id") && !params["item_id"].asString().empty());
+        const LLUUID id = resolveItem(params, error, LLAssetType::AT_NONE, undelete_by_name);
         if (id.isNull())
         {
+            if (undelete_by_name && !error.has("data"))
+            {
+                LLSD outside_err;
+                const LLUUID outside = resolveItem(params, outside_err);
+                if (outside.notNull() || outside_err.has("data"))
+                {
+                    error["message"] = error["message"].asString()
+                        + " Something by that name IS in inventory outside the Trash, so it may "
+                          "never have been deleted -- inventory / search will show where it is.";
+                }
+            }
             LLSD w; w["__error"] = error; return w;
         }
+        // </Lumen>
         LLViewerInventoryItem* item = gInventory.getItem(id);
         if (!item)
         {
@@ -12200,7 +12963,7 @@ if (method == "camera")
             result["item_id"] = id;
             result["name"] = item_name;
             result["restored"] = true;
-            result["confirm_with"] = "Call search_inventory for it to confirm it is back.";
+            result["confirm_with"] = "Call inventory / search for it to confirm it is back.";
             LLSD summary;
             summary["action"] = "undelete_item";
             summary["item_id"] = id;
@@ -12220,6 +12983,47 @@ if (method == "camera")
             result["note"] = "It was already in the Trash, so nothing changed.";
             return result;
         }
+
+        // <Lumen> The viewer's own Delete asks get_is_item_removable first, and
+        // removeItem does not: an item in an RLV-locked folder went to the
+        // Trash, one in a protected Firestorm folder silently stayed where it
+        // was while this reported it moved, and a Library item was "moved"
+        // on this screen only. Asked before the no-copy confirmation, so the
+        // user is never asked to agree to something that cannot happen. The
+        // separate tests only choose the words; the viewer's own function
+        // decides.
+        if (!get_is_item_removable(&gInventory, id, true))
+        {
+            std::string why;
+            if (!gInventory.isObjectDescendentOf(id, gInventory.getRootFolderID()))
+            {
+                why = "It is in the Library, which belongs to Second Life and not to the user, "
+                      "so it cannot be deleted.";
+            }
+            else if (RlvActions::isRlvEnabled()
+                     && RlvFolderLocks::instance().hasLockedFolder(RLV_LOCK_ANY)
+                     && !RlvFolderLocks::instance().canRemoveItem(id))
+            {
+                why = "An RLV restriction the user is wearing locks the folder it is in. Say it "
+                      "is their own attachment doing it.";
+            }
+            else if (get_is_item_worn(id))
+            {
+                why = "It is being worn. Detach it first, then delete it.";
+            }
+            else
+            {
+                why = "It is inside one of the folders the viewer protects from deletion -- the "
+                      "AO, the LSL bridge or the wearable favourites folder. That protection is "
+                      "a setting the user can switch off in Preferences; do not suggest it "
+                      "unless they ask.";
+            }
+            LLSD e; e["code"] = -32000;
+            e["message"] = "\"" + safeUtf8(item_name) + "\" cannot be deleted, so nothing was "
+                           "moved. " + why;
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         // A no-copy item is the only one there is. The assistant does not get
         // to decide on its own -- but the confirmation belongs in the
@@ -12269,6 +13073,19 @@ if (method == "camera")
         // emptying the Trash stays the user's own deliberate act.
         gInventory.removeItem(id);
 
+        // <Lumen> Checked rather than assumed: the local move is immediate
+        // (changeItemParent updates the model at once), so if it is not in
+        // the Trash now, it did not go.
+        if (!gInventory.getItem(id) || !gInventory.isObjectDescendentOf(id, trash))
+        {
+            LL_WARNS("AICtl") << "delete_item: " << id << " did not move to the Trash" << LL_ENDL;
+            LLSD e; e["code"] = -32000;
+            e["message"] = "\"" + safeUtf8(item_name) + "\" did not move to the Trash -- the "
+                           "viewer refused it -- so nothing was deleted. Say so plainly.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
         LL_INFOS("AICtl") << "delete_item: " << id << " to Trash" << LL_ENDL;
 
         LLSD result;
@@ -12277,7 +13094,7 @@ if (method == "camera")
         result["moved_to_trash"] = true;
         result["recoverable"] = true;
         result["confirm_with"] =
-            "It is in the Trash, not destroyed. undelete_item puts it back. Tell the user it was "
+            "It is in the Trash, not destroyed. inventory / undelete puts it back. Tell the user it was "
             "moved to Trash rather than saying it was deleted.";
         if (is_link)
         {
@@ -12440,6 +13257,21 @@ if (method == "camera")
             LLAvatarNameCache::get(to, &av) ? av.getUserName() : to.asString();
         const std::string item_name = item->getName();
 
+        // <Lumen> @share, asked once for BOTH roads below and before anyone is
+        // asked to confirm. It used to be checked only on the no-copy road; a
+        // copyable offer then failed inside commitGiveInventoryItem's own RLV
+        // test and was reported as Second Life refusing it, when nothing had
+        // been sent and the user's own attachment was the cause.
+        if (RlvActions::isRlvEnabled() && !RlvActions::canGiveInventory(to))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids giving inventory "
+                           "to that person. Nothing was offered -- say it is their own "
+                           "attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
         // Giving away a no-copy item is the most final thing this endpoint can
         // do: it leaves this inventory and there is no Trash to fetch it from.
         // isInventoryGiveAcceptable() checks transfer, not copy, so the
@@ -12485,19 +13317,15 @@ if (method == "camera")
         }
         else
         {
-            if (RlvActions::isRlvEnabled() && !RlvActions::canGiveInventory(to))
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "An RLV restriction the user is wearing forbids giving inventory "
-                               "to that person. Nothing was offered.";
-                LLSD w; w["__error"] = e; return w;
-            }
+            // RLV was asked above, which is the same test the dialogue's own
+            // Yes button makes.
             offered = LLGiveInventory::commitGiveInventoryItem(to, item);
         }
         if (!offered)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Second Life refused the offer.";
+            e["message"] = "The viewer's own give check refused the offer, so nothing was "
+                           "offered.";
             LLSD w; w["__error"] = e; return w;
         }
         // </Lumen>
@@ -12747,6 +13575,22 @@ if (method == "camera")
         const LLUUID group_id = resolveGroup(params, group_error);
         if (group_id.isNull()) { LLSD w; w["__error"] = group_error; return w; }
 
+        // <Lumen> The viewer's own group chat refuses to open the session under
+        // @startim (llgroupactions.cpp) and swaps the words for RLV's "blocked"
+        // text under @sendim (fsfloaterim.cpp); addSession and sendMessage below
+        // check neither. Both take a group id as well as an agent id, and
+        // canStartIM allows a group chat that is already open.
+        if (RlvActions::isRlvEnabled()
+            && (!RlvActions::canStartIM(group_id) || !RlvActions::canSendIM(group_id)))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids messaging that group "
+                           "right now. Nothing was sent -- say it is their own attachment doing "
+                           "it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
         const std::string print = fingerprintOf("send_group_message", params);
@@ -12908,8 +13752,23 @@ if (method == "camera")
         // the links, the pictures -- still comes from the viewer's own copy of
         // catch_up, so the only thing this call contributes is the wording.
         LLSD result;
-        result["shown"]    = params.has("items") ? (LLSD::Integer)params["items"].size() : 0;
         result["headline"] = params["headline"].asString();
+        // <Lumen> Only the Assistant's own Anthropic, OpenAI and local loop
+        // draws cards. Over the socket -- Codex, Claude Code, an outside host
+        // -- nothing is drawn, and "Shown... write nothing" left the user with
+        // an empty reply.
+        if (sRequestFromSocket)
+        {
+            result["shown"] = 0;
+            result["drawn"] = false;
+            result["note"]  = "Nothing was drawn: this conversation has no cards. Give the user "
+                              "the headline and one short line per person or group from your "
+                              "summaries, in words, as your reply.";
+            return result;
+        }
+        // </Lumen>
+        result["shown"]    = params.has("items") ? (LLSD::Integer)params["items"].size() : 0;
+        result["drawn"]    = true;
         result["note"]     = "Shown. The user is looking at it now. Write nothing further.";
         return result;
     }
@@ -13132,19 +13991,39 @@ if (method == "camera")
         result["waiting"] = waiting;
         // </Lumen>
 
-        result["note"] =
+        const std::string intro =
             "What arrived while the user was away. `notices` is the notification well -- group "
             "notices, offers, payments, anything that is not a conversation -- and `messages` "
             "is the instant messages, which straight after a login is the offline backlog. "
             "Both are limited to THIS login; `since` is when the session reached the world.\n"
+            "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n";
+        const std::string seems =
+            "**Say how it seems, not what it is.** 'Nothing else seems urgent' rather than 'nothing is urgent'; 'Maryam looks like she is waiting on an answer' rather than 'you need to reply to Maryam'. What matters is the user's to decide and you are reporting an impression -- the notice you read as routine may be the one they were waiting for, and you cannot know that.\n";
+        // <Lumen> Over the socket nothing draws cards (see show_waiting), so
+        // that caller is asked for words rather than told its words are
+        // thrown away.
+        if (sRequestFromSocket)
+        {
+            result["note"] = intro +
+                "**Answer in words, briefly** -- nothing draws cards in this conversation, so do "
+                "not call show_waiting. One short line per entry in `waiting`, saying what it is "
+                "ABOUT. Summarise, never quote -- 'a dance night on Friday, doors at eight, "
+                "feather theme' rather than the notice's own words.\n"
+                "Then ONE short line on what APPEARS to want attention -- who seems to be waiting "
+                "on an answer, what looks time-critical.\n"
+                + seems +
+                "If nothing came in at all, say so in one line.";
+            return result;
+        }
+        // </Lumen>
+        result["note"] = intro +
             "**Do not answer in prose. Answer by calling `chat` / `show_waiting` once.** That "
             "call IS the reply -- the viewer draws it, and any text you write beside it is "
             "thrown away.\n"
-            "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n"
             "Give show_waiting `items`: one entry per id in `waiting`, as {\"id\": that id, "
             "\"summary\": one or two short sentences saying what it is ABOUT}. Summarise, never quote -- 'a dance night on Friday, doors at eight, feather theme' rather than the notice's own words, and a long notice becomes one line. Keep every id and drop nothing.\n"
             "And `headline`: ONE short line on what APPEARS to want attention -- who seems to be waiting on an answer, what looks time-critical.\n"
-            "**Say how it seems, not what it is.** 'Nothing else seems urgent' rather than 'nothing is urgent'; 'Maryam looks like she is waiting on an answer' rather than 'you need to reply to Maryam'. What matters is the user's to decide and you are reporting an impression -- the notice you read as routine may be the one they were waiting for, and you cannot know that.\n"
+            + seems +
             "If nothing came in at all, call it with no items and a headline saying so.";
         return result;
     }
@@ -13365,7 +14244,7 @@ if (method == "camera")
                 result["by"] = "landmark";
                 result["landmark"] = lm_how;
                 result["confirm_with"] =
-                    "Teleporting takes several seconds and can fail. Call status after a few "
+                    "Teleporting takes several seconds and can fail. Call viewer / status after a few "
                     "seconds and check the region before telling the user they arrived.";
                 LLSD summary;
                 summary["destination"] = safeUtf8(lm->getName());
@@ -13479,7 +14358,7 @@ if (method == "camera")
         // issued, and the teleport itself takes seconds more. Reporting success
         // here would be reporting that a request was made.
         result["confirm_with"] =
-            "Teleporting takes several seconds and can fail. Call status after a few seconds and "
+            "Teleporting takes several seconds and can fail. Call viewer / status after a few seconds and "
             "check the region and position before telling the user it worked.";
 
         LLSD summary;
@@ -13574,14 +14453,16 @@ if (method == "camera")
             }
         }
 
-        const bool local_chat = params.has("local_chat") && params["local_chat"].asBoolean();
         // <Lumen> Naming somebody narrows it to them, so there is no reason to
         // guess a channel as well: "if Catten comes" means wherever he turns
         // up. Asked twice for both and told to choose both, the model still
         // armed IMs alone -- so the default does it instead of the wording.
+        // A DEFAULT: an explicit local_chat:false wins, or "only by IM" could
+        // not be asked for at all.
         const bool named = params.has("only") && params["only"].isArray()
                         && params["only"].size() > 0;
-        const bool local_chat_eff = local_chat || named;
+        const bool local_chat_eff = params.has("local_chat")
+                                  ? params["local_chat"].asBoolean() : named;
         const bool ims = params.has("ims") ? params["ims"].asBoolean()
                                            : (named || !local_chat_eff);
 
@@ -13619,6 +14500,7 @@ if (method == "camera")
         std::set<LLUUID> only;
         std::vector<std::string> only_as_written;
         LLSD not_found = LLSD::emptyArray();
+        LLSD unsettled = LLSD::emptyArray();   // <Lumen> the resolver's own reasons
         if (on && params.has("only") && params["only"].isArray())
         {
             for (LLSD::array_const_iterator it = params["only"].beginArray();
@@ -13639,15 +14521,33 @@ if (method == "camera")
                     // guesses. This is not a guess: the user just told us.
                     only_as_written.push_back((*it).asString());
                 }
-                else              not_found.append((*it).asString());
+                else
+                {
+                    not_found.append((*it).asString());
+                    // <Lumen> Keep WHY. A name matching two people, or one
+                    // person only in part, is not "nobody", and the candidates
+                    // are what the user needs to be asked about.
+                    if (e.has("data"))
+                    {
+                        LLSD u;
+                        u["name"] = (*it).asString();
+                        u["reason"] = e["message"];
+                        u["candidates"] = e["data"];
+                        unsettled.append(u);
+                    }
+                }
             }
             if (only.empty())
             {
                 LLSD err; err["code"] = -32000;
-                err["message"] = "Nobody by that name could be found, so nothing was "
-                                 "switched on. Answering everyone is wider than what was "
-                                 "asked -- say who, or say to answer everyone.";
-                err["data"] = LLSD().with("not_found", not_found);
+                err["message"] = unsettled.size()
+                    ? "That name did not settle on one person, so nothing was switched on: "
+                      + unsettled[0]["reason"].asString()
+                      + " Answering everyone is wider than what was asked."
+                    : std::string("Nobody by that name could be found, so nothing was "
+                                  "switched on. Answering everyone is wider than what was "
+                                  "asked -- say who, or say to answer everyone.");
+                err["data"] = LLSD().with("not_found", not_found).with("unsettled", unsettled);
                 LLSD w; w["__error"] = err; return w;
             }
         }
@@ -13748,17 +14648,61 @@ if (method == "camera")
                 result["local_chat_is_public"] =
                     "Answering in local chat is read by everyone nearby. Say so.";
             }
+            // <Lumen> Replies go only to friends while "only answer friends"
+            // is on (the default), and that is checked before `only` -- so a
+            // named person who is not a friend was armed for, reported as
+            // armed, and then never answered. Say so rather than promise it.
+            LLSD not_friends = LLSD::emptyArray();
+            if (gSavedPerAccountSettings.getBOOL("LumenAIAutoRespondFriendsOnly"))
+            {
+                for (std::set<LLUUID>::const_iterator it = only.begin(); it != only.end(); ++it)
+                {
+                    if (!LLAvatarTracker::instance().isBuddy(*it))
+                    {
+                        LLAvatarName av;
+                        not_friends.append(LLAvatarNameCache::get(*it, &av)
+                                           ? LLSD(av.getUserName()) : LLSD(it->asString()));
+                    }
+                }
+            }
+            // </Lumen>
             if (!only.empty())
             {
                 result["only_these_people"] = (LLSD::Integer)only.size();
                 if (not_found.size()) result["names_not_found"] = not_found;
+                if (unsettled.size()) result["names_unsettled"] = unsettled;
+                if (not_friends.size()) result["not_friends"] = not_friends;
             }
             result["answering_local_chat"] = local_chat_eff;
-            result["note"] =
-                "Now answering one-to-one IMs for them. Say so plainly, including that it "
-                "will not agree to anything on their behalf and will stop on its own after a "
-                "few replies to any one person. It answers only; it cannot wear, give or move "
-                "anything. Turn this off the moment they say they are back.";
+            std::string channels;
+            if (ims && local_chat_eff) channels = "one-to-one IMs and local chat";
+            else if (local_chat_eff)   channels = "local chat";
+            else if (ims)              channels = "one-to-one IMs";
+            std::string note_text =
+                channels.empty()
+                ? std::string("Neither IMs nor local chat were switched on, so nothing will be "
+                              "answered -- only the arrival message, if one was asked for. Say "
+                              "so.")
+                : "Now answering " + channels + " for them. Say so plainly, including that it "
+                  "will not agree to anything on their behalf and will stop on its own after a "
+                  "few replies to any one person. It answers only; it cannot wear, give or move "
+                  "anything. Turn this off the moment they say they are back.";
+            if (not_friends.size())
+            {
+                note_text += " `not_friends` are NOT on the user's friends list, and \"only "
+                             "answer friends\" is on in Preferences > AI, so they will not be "
+                             "answered unless that is switched off. Tell the user plainly.";
+                if (on_arrival)
+                {
+                    note_text += " The arrival message still goes to them.";
+                }
+            }
+            if (unsettled.size())
+            {
+                note_text += " Some names in `names_unsettled` did not settle on one person and "
+                             "are NOT covered -- ask which was meant.";
+            }
+            result["note"] = note_text;
         }
         else
         {
@@ -13883,10 +14827,9 @@ if (method == "camera")
         result["count"] = (S32)windows.size();
         if (windows.size() == 0)
         {
-            result["note"] = "No script window is open. Ask them to open the script -- "
-                             "inventory/open does it for one in their inventory, or they can "
-                             "edit an object's contents themselves -- rather than asking them "
-                             "to paste the text.";
+            result["note"] = "No script window is open. Open it yourself: inventory / open for a "
+                             "script in their inventory, open_script for one inside an object. "
+                             "Never ask them to paste the text.";
         }
         else
         {
@@ -13976,8 +14919,9 @@ if (method == "camera")
         if (!ed)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "No script window is open, so there is nothing to write into. "
-                           "Ask them to open the script first.";
+            e["message"] = "No script window is open, so there is nothing to write into. Open it "
+                           "first: inventory / open for a script in their inventory, open_script "
+                           "for one inside an object.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14169,6 +15113,43 @@ if (method == "camera")
 
         const std::string kind = n->getName();
         const std::string text = safeUtf8(n->getMessage());
+
+        // <Lumen> A script asking to TAKE MONEY is granted in one click, and
+        // the dialogue's words were written by the script's author. Every
+        // other act that cannot be taken back -- a no-copy delete or give, a
+        // locked object -- needs `confirm` carrying the thing's exact name, and
+        // this is at least as final. Denying needs nothing.
+        const bool script_question = (kind == "ScriptQuestion" || kind == "ScriptQuestionCaution"
+                                      || kind == "ScriptQuestionExperience");
+        if (script_question
+            && ((U32)n->getPayload()["questions"].asInteger()
+                & SCRIPT_PERMISSIONS[SCRIPT_PERMISSION_DEBIT].permbit) != 0
+            && LLNotification::getSelectedOption(n->asLLSD(), response) == 0)
+        {
+            const std::string object_name = n->getPayload()["object_name"].asString();
+            const std::string confirm = params.has("confirm")
+                ? params["confirm"].asString() : std::string();
+            if (object_name.empty() || lowered(confirm) != lowered(object_name))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = object_name.empty()
+                    ? std::string("That script is asking permission to TAKE MONEY from the user, "
+                                  "and it does not say what object it is, so it cannot be "
+                                  "confirmed from here. Nothing was answered. Tell them, and let "
+                                  "them answer the dialogue themselves.")
+                    : "\"" + safeUtf8(object_name) + "\" is asking permission to TAKE MONEY "
+                      "from the user's account whenever its script likes. Nothing was answered. "
+                      "Do not grant this on your own -- tell them exactly that, and ask. If they "
+                      "say yes, call again with confirm set to the object's exact name.";
+                e["data"] = LLSD().with("needs_confirmation", true)
+                                  .with("object", safeUtf8(object_name))
+                                  .with("reason", "debit");
+                LLSD w; w["__error"] = e; return w;
+            }
+            LL_INFOS("AICtl") << "answer_dialogue: money permission, confirmed for "
+                              << object_name << LL_ENDL;
+        }
+        // </Lumen>
         n->respond(response);
 
         LL_INFOS("AICtl") << "answer_dialogue: " << kind << " answered with " << chosen << LL_ENDL;
@@ -14178,8 +15159,8 @@ if (method == "camera")
         result["choice"] = chosen;
         result["confirm_with"] =
             "Answered. What follows depends on what it was -- an accepted offer arrives in "
-            "inventory, an accepted teleport moves the avatar. Check with search_inventory or "
-            "status rather than assuming.";
+            "inventory, an accepted teleport moves the avatar. Check with inventory / search or "
+            "viewer / status rather than assuming.";
 
         // The text is kept here, unlike most of the log: a permission the
         // assistant granted on someone's behalf is exactly the thing they need
@@ -14243,6 +15224,25 @@ if (method == "camera")
             e["message"] = "Building is not allowed on this parcel, so nothing was made. "
                            "Tell the user plainly -- they need to move somewhere that permits "
                            "it, a sandbox or their own land.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // RLV: `LLToolPlacer` answers a rez restriction by returning TRUE and
+        // doing nothing, because its caller only wants to know whether the
+        // click was handled. Inherit that silence and an assistant reports a
+        // prim it never made. <Lumen> Asked here, before the inventory branch
+        // as well as the prim one: rezzing from inventory is refused for a
+        // drag too (lltooldraganddrop.cpp, dad3dRezObjectOnLand and
+        // dropObject), and the simulator knows nothing of @rez, so nothing
+        // further down would stop it.
+        if (rlv_handler_t::isEnabled()
+            && (gRlvHandler.hasBehaviour(RLV_BHVR_REZ)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_INTERACT)))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids rezzing, so nothing "
+                           "was made. Tell them plainly -- it is their own attachment doing it, "
+                           "not the land.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14316,10 +15316,15 @@ if (method == "camera")
         // be the better shape anyway -- `BypassRaycast` lets us give the exact
         // spot, where the prim path has to go through a screen point and so
         // depends on where the camera happens to be looking.
-        if (params.has("item") && !params["item"].asString().empty())
+        // <Lumen> `item_id` alone counts too: it is what a search or an
+        // ambiguous-name refusal hands back, and entering only on `item` made
+        // a call carrying just the id fall through and build a plain box.
+        const bool from_inv = (params.has("item") && !params["item"].asString().empty())
+                           || (params.has("item_id") && !params["item_id"].asString().empty());
+        if (from_inv)
         {
             LLSD lookup;
-            lookup["name"] = params["item"];
+            if (params.has("item")) lookup["name"] = params["item"];
             if (params.has("item_id")) lookup["item_id"] = params["item_id"];
             LLSD err;
             const LLUUID item_id = resolveItem(lookup, err);
@@ -14446,21 +15451,6 @@ if (method == "camera")
         if (!regionp)
         {
             LLSD e; e["code"] = -32000; e["message"] = "No region yet.";
-            LLSD w; w["__error"] = e; return w;
-        }
-
-        // RLV: `LLToolPlacer` answers a rez restriction by returning TRUE and
-        // doing nothing, because its caller only wants to know whether the
-        // click was handled. Inherit that silence and an assistant reports a
-        // prim it never made.
-        if (rlv_handler_t::isEnabled()
-            && (gRlvHandler.hasBehaviour(RLV_BHVR_REZ)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_INTERACT)))
-        {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "An RLV restriction the user is wearing forbids rezzing, so nothing "
-                           "was made. Tell them plainly -- it is their own attachment doing it, "
-                           "not the land.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14608,7 +15598,7 @@ if (method == "camera")
                             + ". To build something out of several prims: rez them one after "
                               "another and then call `link` with NO arguments -- it joins the "
                               "ones just made. To change this one, pass its object_id to `set`; "
-                              "look_nearby will give you the id, and it lags a change by tens "
+                              "movement / look_nearby will give you the id, and it lags a change by tens "
                               "of seconds so do not use it as proof of anything. Do not claim "
                               "the prim is there -- say it was asked for. **Tell the user which "
                               "parcel it is on**: an object left on somebody else's land can be "
@@ -14638,8 +15628,8 @@ if (method == "camera")
         if (!params.has("object_id") || params["object_id"].asString().empty())
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "select needs `object_id`. Get one from look_nearby or "
-                           "inspect_object -- do not ask the user to click the thing.";
+            e["message"] = "select needs `object_id`. Get one from movement / look_nearby or "
+                           "viewer / inspect_object -- do not ask the user to click the thing.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14660,7 +15650,7 @@ if (method == "camera")
             LLSD e; e["code"] = -32000;
             e["message"] = "No object with that id is in view. The viewer only knows about "
                            "objects near the user, and an id from an earlier session or another "
-                           "region is not one of them. Call look_nearby again -- an object that "
+                           "region is not one of them. Call movement / look_nearby again -- an object that "
                            "was re-rezzed has a NEW id.";
             LLSD w; w["__error"] = e; return w;
         }
@@ -14670,6 +15660,14 @@ if (method == "camera")
             e["message"] = "That id is a person, not an object.";
             LLSD w; w["__error"] = e; return w;
         }
+
+        // <Lumen> Asked before anything is selected: selectObjectAndFamily has
+        // no RLV check of its own, and `edit: true` opens the build tools on it.
+        if (rlvForbidsEditing(obj))
+        {
+            return rlvEditRefusal();
+        }
+        // </Lumen>
 
         const bool add  = params.has("add")  && params["add"].asBoolean();
         const bool edit = params.has("edit") && params["edit"].asBoolean();
@@ -14684,8 +15682,7 @@ if (method == "camera")
             LLSD e; e["code"] = -32000;
             e["message"] = "The viewer would not select that object. Usually that is a setting "
                            "on the user's side -- \"select only my objects\" or \"select only "
-                           "movable objects\" under the build tools -- or an RLV restriction "
-                           "they are wearing. Nothing was changed.";
+                           "movable objects\" under the build tools. Nothing was changed.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14763,19 +15760,25 @@ if (method == "camera")
             {
                 LLSD e; e["code"] = -32000;
                 e["message"] = "No object with that id is in view, so nothing was done. Call "
-                               "look_nearby again -- an object that was re-rezzed has a new id.";
+                               "movement / look_nearby again -- an object that was re-rezzed has a new id.";
                 LLSD w; w["__error"] = e; return w;
             }
             if (method == "set_object" || method == "remove_object")
             {
+                // <Lumen> `remove` has its own RLV test further down
+                // (rlvCanDeleteOrReturn, which includes this one); `set` had none.
+                if (method == "set_object" && rlvForbidsEditing(target))
+                {
+                    return rlvEditRefusal();
+                }
                 LLSelectMgr::getInstance()->deselectAll();
                 LLSelectMgr::getInstance()->selectObjectAndFamily(target, true);
                 if (!target->isSelected())
                 {
                     LLSD e; e["code"] = -32000;
                     e["message"] = "The viewer would not select that object, so nothing was "
-                                   "changed. A \"select only my objects\" setting or an RLV "
-                                   "restriction is the usual reason.";
+                                   "changed. A \"select only my objects\" setting is the usual "
+                                   "reason.";
                     LLSD w; w["__error"] = e; return w;
                 }
             }
@@ -14795,11 +15798,10 @@ if (method == "camera")
         if (count == 0 && !brings_its_own)
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nothing is selected, so there is nothing to change. `rez` leaves "
-                           "the new object selected; otherwise find the object with look_nearby "
-                           "or inspect_object and pass its `object_id`, either here or to "
-                           "`select` first. Do not ask the user to click it, and do not guess "
-                           "at an object.";
+            e["message"] = "Nothing is selected, so there is nothing to change. Find the "
+                           "object with movement / look_nearby or viewer / inspect_object and "
+                           "pass its `object_id` here. Do not ask the user to click it, and do "
+                           "not guess at an object.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -14839,6 +15841,13 @@ if (method == "camera")
                 {
                     LLViewerObject* o = gObjectList.findObject(id);
                     if (!o || o->isAvatar()) { missing.append(id); continue; }
+                    if (rlvForbidsEditing(o))
+                    {
+                        // One forbidden object refuses the whole call: linking
+                        // or unlinking the rest would be a different request.
+                        LLSelectMgr::getInstance()->deselectAll();
+                        return rlvEditRefusal();
+                    }
                     LLSelectMgr::getInstance()->selectObjectAndFamily(o, true);
                     if (!o->isSelected()) missing.append(id);
                 }
@@ -14859,7 +15868,7 @@ if (method == "camera")
             {
                 LLSD e; e["code"] = -32000;
                 e["message"] = "Nothing is selected and no `object_ids` were given, so there is "
-                               "nothing to unlink. Pass the object's id from look_nearby.";
+                               "nothing to unlink. Pass the object's id from movement / look_nearby.";
                 LLSD w; w["__error"] = e; return w;
             }
             // </Lumen>
@@ -14869,19 +15878,36 @@ if (method == "camera")
                 e["message"] = from_memory
                     ? std::string("Linking needs at least two objects, and I can account for ")
                       + llformat("%d", have) + " of the ones rezzed here. Find them with "
-                      "look_nearby and pass their ids as `object_ids`."
+                      "movement / look_nearby and pass their ids as `object_ids`."
                     : std::string("Linking needs at least two objects; I could reach ")
-                      + llformat("%d", have) + ". Pass `object_ids` from look_nearby.";
+                      + llformat("%d", have) + ". Pass `object_ids` from movement / look_nearby.";
                 LLSD w; w["__error"] = e; return w;
             }
 
+            // <Lumen> The selection may also be the user's own, and the viewer's
+            // Link and Unlink buttons are disabled while the avatar sits on it
+            // under @unsit -- that is the escape @unsit exists to close.
+            if (rlvSelectionForbidsEditing())
+            {
+                return rlvEditRefusal();
+            }
+            if (rlvSittingOnSelection())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing keeps them sitting, and "
+                               "they are sitting on this object, so it cannot be linked or taken "
+                               "apart. Nothing was changed -- say it is their own attachment "
+                               "doing it.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            // </Lumen>
             if (linking) LLSelectMgr::getInstance()->sendLink();
             else         LLSelectMgr::getInstance()->sendDelink();
             if (linking) sRecentRez.clear();
             result["from"] = from_memory ? "the prims rezzed here" : "the ids given";
             result["note"] = linking
                 ? "Asked the simulator to link them into one object. It takes a moment; "
-                  "look_nearby lags a change by several seconds, so do not use it as proof."
+                  "movement / look_nearby lags a change by several seconds, so do not use it as proof."
                 : "Asked the simulator to take it apart.";
         }
         else if (method == "remove_object")
@@ -14921,10 +15947,29 @@ if (method == "camera")
                 LLViewerObject* o = (*it)->getObject();
                 if (!o || o->isAttachment()) continue;
                 any = true;
+                const bool flagged = !o->permMove() || !o->permCopy();
                 if (!o->permMove())     locked   = true;
                 if (!o->permCopy())     no_copy  = true;
                 if (!o->permYouOwner()) not_mine = true;
-                if (first_name.empty() && !(*it)->mName.empty()) first_name = (*it)->mName;
+                // <Lumen> The name asked for is that of the object actually
+                // found locked or no-copy -- its linkset's, from the root. A
+                // node selected in this very call has no name yet (it arrives
+                // with the simulator's reply on a later frame), so the
+                // viewer's own cache of object names is asked too. Comparing
+                // against an always-empty name refused every confirmation for
+                // ever, however right `confirm` was.
+                if (flagged && first_name.empty())
+                {
+                    LLViewerObject* root = o->getRootEdit();
+                    LLSelectNode* rnode = root ? sel->findNode(root) : NULL;
+                    if (rnode && !rnode->mName.empty()) first_name = rnode->mName;
+                    if (first_name.empty() && root)
+                    {
+                        if (const ObjectLabel* l = objectLabel(root->getID())) first_name = l->name;
+                    }
+                    if (first_name.empty()) first_name = (*it)->mName;
+                }
+                // </Lumen>
             }
             if (!any)
             {
@@ -14954,7 +15999,7 @@ if (method == "camera")
                         : "That object is locked, which the user did to protect it. ")
                         + "Do not do this on your own. Tell them, and if they say yes call "
                           "again with `confirm` set to the object's exact name"
-                        + (first_name.empty() ? " (call look_nearby first to learn it)."
+                        + (first_name.empty() ? " (call movement / look_nearby first to learn it)."
                                               : ": \"" + safeUtf8(first_name) + "\".");
                     LLSD d; d["needs_confirmation"] = true;
                     if (!first_name.empty()) d["object"] = safeUtf8(first_name);
@@ -14974,26 +16019,75 @@ if (method == "camera")
         }
         else // set_object
         {
-            LLSD changed = LLSD::emptyArray();
-
-            if (params.has("name") && !params["name"].asString().empty())
+            // <Lumen> The same RLV gate over whatever ended up selected, which
+            // may be the user's own selection; and moving or resizing the
+            // thing they are held sitting on is the @unsit escape again.
+            if (rlvSelectionForbidsEditing())
             {
-                LLSelectMgr::getInstance()->selectionSetObjectName(params["name"].asString());
-                changed.append("name");
+                return rlvEditRefusal();
             }
-            if (params.has("description"))
+            if (rlvSittingOnSelection())
             {
-                LLSelectMgr::getInstance()->selectionSetObjectDescription(
-                    params["description"].asString());
-                changed.append("description");
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing keeps them sitting, and "
+                               "they are sitting on this object, so it cannot be changed. Nothing "
+                               "was changed -- say it is their own attachment doing it.";
+                LLSD w; w["__error"] = e; return w;
             }
-
+            // </Lumen>
             // Colour, by name or by three numbers. The names are the ones people
             // actually say; anything else is refused rather than guessed at,
             // because a wrong colour looks like the tool working.
+            // <Lumen> A name in `colour` counts too -- the tool's own text once
+            // said to put it there, and it was silently dropped. And this, with
+            // the size's shape, is decided BEFORE anything is sent, so a refusal
+            // here changes nothing rather than half the request.
             LLColor4 colour;
             bool have_colour = false;
+            std::string colour_word;
             if (params.has("colour_name") && !params["colour_name"].asString().empty())
+            {
+                colour_word = params["colour_name"].asString();
+            }
+            else if (params.has("colour") && params["colour"].isString())
+            {
+                colour_word = params["colour"].asString();
+            }
+            std::vector<F32> size_vals;
+            if (params.has("size"))
+            {
+                const LLSD& sz = params["size"];
+                if (sz.isArray())
+                {
+                    for (LLSD::array_const_iterator it = sz.beginArray(); it != sz.endArray(); ++it)
+                    {
+                        size_vals.push_back((F32)it->asReal());
+                    }
+                }
+                else if (sz.isReal() || sz.isInteger())
+                {
+                    size_vals.push_back((F32)sz.asReal());
+                }
+                if (size_vals.size() != 1 && size_vals.size() != 3)
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "`size` is one number for a cube, or three for x, y and z, in "
+                                   "metres. Nothing was changed.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                for (F32 v : size_vals)
+                {
+                    if (v < 0.01f || v > 64.f)
+                    {
+                        LLSD e; e["code"] = -32602;
+                        e["message"] = "Second Life allows 0.01 to 64 metres on a side; that size "
+                                       "is outside it, so nothing was changed.";
+                        LLSD w; w["__error"] = e; return w;
+                    }
+                }
+            }
+            // </Lumen>
+            if (!colour_word.empty())
             {
                 static const struct { const char* n; F32 r, g, b; } kNamed[] = {
                     {"red",1.f,0.f,0.f},      {"green",0.f,1.f,0.f},   {"blue",0.f,0.f,1.f},
@@ -15001,7 +16095,7 @@ if (method == "camera")
                     {"orange",1.f,0.55f,0.f}, {"purple",0.5f,0.f,0.5f},{"pink",1.f,0.6f,0.8f},
                     {"grey",0.5f,0.5f,0.5f},  {"gray",0.5f,0.5f,0.5f}, {"brown",0.45f,0.25f,0.1f},
                 };
-                std::string want = params["colour_name"].asString();
+                std::string want = colour_word;
                 LLStringUtil::toLower(want);
                 for (const auto& c : kNamed)
                 {
@@ -15024,6 +16118,20 @@ if (method == "camera")
                                   (F32)params["colour"][2].asReal(), 1.f);
                 have_colour = true;
             }
+            LLSD changed = LLSD::emptyArray();
+
+            if (params.has("name") && !params["name"].asString().empty())
+            {
+                LLSelectMgr::getInstance()->selectionSetObjectName(params["name"].asString());
+                changed.append("name");
+            }
+            if (params.has("description"))
+            {
+                LLSelectMgr::getInstance()->selectionSetObjectDescription(
+                    params["description"].asString());
+                changed.append("description");
+            }
+
             if (have_colour)
             {
                 LLSelectMgr::getInstance()->selectionSetColor(colour);
@@ -15036,12 +16144,11 @@ if (method == "camera")
             LLViewerObject* obj = sel->getFirstRootObject();
             if (obj)
             {
-                if (params.has("size") && params["size"].isArray() && params["size"].size() >= 1)
+                if (!size_vals.empty())
                 {
-                    const LLSD& sz = params["size"];
-                    F32 x = (F32)sz[0].asReal();
-                    F32 y = (sz.size() >= 3) ? (F32)sz[1].asReal() : x;
-                    F32 z = (sz.size() >= 3) ? (F32)sz[2].asReal() : x;
+                    F32 x = size_vals[0];
+                    F32 y = (size_vals.size() >= 3) ? size_vals[1] : x;
+                    F32 z = (size_vals.size() >= 3) ? size_vals[2] : x;
                     // Second Life's own limits. Out of range is refused rather
                     // than clamped: clamping reports success for a size nobody
                     // asked for, which is the lie this project keeps removing.

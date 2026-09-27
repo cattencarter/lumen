@@ -33,6 +33,8 @@
 #include "lumenaictl.h"
 #include "lumenaichat.h"
 #include "lumenaiclaude.h"
+#include "lumenaicodex.h"
+#include "llsdjson.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
 
@@ -71,6 +73,32 @@ namespace
         }
         const size_t last = in.find_last_not_of(ws);
         return in.substr(first, last - first + 1);
+    }
+
+    /**
+     * This session's check value, asked of the endpoint through its own front
+     * door, the way the in-viewer Assistant asks everything. It is what a
+     * caller that really reached the tools can repeat and one guessing cannot.
+     */
+    std::string liveSessionCheck()
+    {
+        const std::string reply = LumenAIControl::instance().handleRequest(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"status\"}");
+        try
+        {
+            const LLSD r = LlsdFromJson(boost::json::parse(reply));
+            return r["result"]["session_check"].asString();
+        }
+        catch (...)
+        {
+        }
+        return std::string();
+    }
+
+    std::string lowercased(std::string s)
+    {
+        LLStringUtil::toLower(s);
+        return s;
     }
 }
 
@@ -313,60 +341,91 @@ bool LumenPanelPreferenceAIKeys::postBuild()
 
             if (provider == LumenAIKeys::CLAUDECODE)
             {
+                const std::string here = LumenAIClaude::unavailableHere();
+                if (!here.empty())
+                {
+                    refresh();
+                    say(false, here);
+                    return;
+                }
                 if (!LumenAIClaude::installed())
                 {
                     refresh();
                     say(false, "Claude Code is not installed on this computer.");
                     return;
                 }
+
+                // **Open the viewer's own connection first.** It listens only
+                // while Codex or Claude Code is the chosen provider, and only
+                // once something starts it -- at launch, or before an Assistant
+                // turn. Switching to Claude Code here and pressing Test started
+                // nothing, so Claude Code was pointed at port 0, reached no
+                // tools, said so in plain words, and that sentence was shown as
+                // this session's check value under "It works".
+                LumenAIControl& ctl = LumenAIControl::instance();
+                if (!ctl.isRunning() && !ctl.start())
+                {
+                    say(false, "The viewer could not open its own local connection, so Claude "
+                               "Code would have had no tools to reach. Nothing was asked.");
+                    return;
+                }
                 busy("Asking Claude Code... this takes a few seconds.");
 
                 const std::string model = gSavedSettings.getString("LumenAIClaudeCodeModel");
                 // The LIVE port: it is picked at random each start.
-                const U16 port = LumenAIControl::instance().port();
+                const U16 port = ctl.port();
+                // And the value to compare against. Without it any six
+                // characters passed, which is the one thing it exists to stop.
+                const std::string expect = liveSessionCheck();
                 LLHandle<LLPanel> h = getHandle();
-                LLCoros::instance().launch("LumenAIClaudeTest", [h, model, port]()
+                LLCoros::instance().launch("LumenAIClaudeTest", [h, model, port, expect]()
                 {
                     LumenAIClaude cc;
+                    LLSD result;
                     std::string why, said;
-                    bool ok = false;
+                    bool ran = false;
 
-                    if (!cc.start("Call the second_life viewer tool with action=status and "
-                                  "reply with ONLY the session_check value, nothing else.",
-                                  std::string(), model, std::string(), port, why))
+                    if (!cc.runToResult("Call the second_life viewer tool with action=status and "
+                                        "reply with ONLY the session_check value, nothing else.",
+                                        model, port, 120.0, result, why))
                     {
                         said = why;
                     }
                     else
                     {
-                        const F64 until = LLTimer::getTotalSeconds() + 120.0;
-                        LLSD msg;
-                        while (LLTimer::getTotalSeconds() < until)
-                        {
-                            if (!cc.poll(msg))
-                            {
-                                if (!cc.running() && !cc.poll(msg)) break;
-                                llcoro::suspend();
-                                continue;
-                            }
-                            if (msg["type"].asString() != "result") continue;
-                            ok   = !msg["is_error"].asBoolean();
-                            said = msg["result"].asString();
-                            break;
-                        }
-                        if (said.empty()) said = "Claude Code did not answer.";
-                        cc.stop();
+                        said = result["result"].asString();
+                        ran  = !result["is_error"].asBoolean();
+                        if (said.empty()) said = "Claude Code answered with nothing.";
                     }
 
                     LumenPanelPreferenceAIKeys* p =
                         dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
                     if (!p) return;
                     if (said.size() > 220) said = said.substr(0, 220);
-                    p->say(ok,
-                        ok ? "Claude Code ran, is signed in, and reached the viewer's own "
-                             "tools. It answered with this session's check value: " + said
-                           : said + "\n\nIf it says not logged in, run  claude auth login  "
-                             "in Terminal once.");
+
+                    const bool reached = ran && !expect.empty()
+                        && lowercased(said).find(lowercased(expect)) != std::string::npos;
+                    if (reached)
+                    {
+                        p->say(true, "Claude Code ran, is signed in, and reached the viewer's own "
+                                     "tools: it answered with this session's check value, "
+                                     + expect + ".");
+                    }
+                    else if (ran)
+                    {
+                        p->say(false, expect.empty()
+                            ? "Claude Code ran and is signed in, but the viewer could not read "
+                              "its own check value, so whether it reached the tools is not "
+                              "known. It said: " + said
+                            : "Claude Code ran and is signed in, but did not reach the viewer's "
+                              "own tools: its answer is not this session's check value. It "
+                              "said: " + said);
+                    }
+                    else
+                    {
+                        p->say(false, said + "\n\nIf it says not logged in, run  claude auth "
+                                             "login  in Terminal once.");
+                    }
                     p->refresh();
                 });
                 return;
@@ -574,9 +633,18 @@ void LumenPanelPreferenceAIKeys::busy(const std::string& text)
     }
 }
 
-LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus()
+LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(bool probe)
 {
     CodexState st;
+
+    // Say that it cannot work here at all, rather than "not set up yet" about
+    // a program that may well be installed.
+    const std::string here = LumenAICodex::unavailableHere();
+    if (!here.empty())
+    {
+        st.text = here;
+        return st;
+    }
 
     // **`getOSUserDir()` is NOT the home directory.** On macOS it is
     // ~/Library/Application Support/Lumen, so the first version of this check
@@ -619,6 +687,16 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus()
     {
         st.text = "Almost. Codex is installed and signed in, but it is not running "
                   "yet.";
+        st.command = "codex app-server daemon start";
+        return st;
+    }
+    // **The file is not the service.** A socket file outlives the process that
+    // made it -- a crash, a force-quit, a restart -- and this used to call that
+    // "running" while every Assistant turn found nobody there.
+    if (probe && !LumenAICodex::listening())
+    {
+        st.text = "Almost. Codex is installed and signed in, but its background service "
+                  "is not answering -- it may have stopped without tidying up.";
         st.command = "codex app-server daemon start";
         return st;
     }
@@ -674,8 +752,16 @@ void LumenPanelPreferenceAIKeys::draw()
         const std::string provider = gSavedSettings.getString("LumenAIProvider");
         if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
         {
-            const bool ready = (provider == LumenAIKeys::CODEX) ? codexStatus().ready
-                                                             : claudeStatus().ready;
+            // Codex: files every second, and the socket knocked on only while
+            // the files say ready and the panel does not -- a stale socket
+            // waiting for its service to come back. A healthy service is never
+            // connected to from here, and a dead one refuses at once.
+            bool ready = (provider == LumenAIKeys::CODEX) ? codexStatus(false).ready
+                                                       : claudeStatus().ready;
+            if (provider == LumenAIKeys::CODEX && ready && !mWasReady)
+            {
+                ready = codexStatus(true).ready;
+            }
             if (ready != mWasReady)
             {
                 refresh();      // which re-seeds mWasReady
@@ -710,7 +796,9 @@ void LumenPanelPreferenceAIKeys::refresh()
     // offer. The box below is left for the transient "Asking..." while a test
     // is in flight, because a button that goes quiet for twenty seconds looks
     // broken.
-    if (LLTextBox* cs = findChild<LLTextBox>("codex_status")) cs->setText(std::string());
+    // Except where it cannot work at all: then that is the one thing to say.
+    if (LLTextBox* cs = findChild<LLTextBox>("codex_status"))
+        cs->setText(LumenAICodex::unavailableHere());
     // <Lumen> No command, and no Copy button. The author, looking at the
     // panel: *"this can all go, including the copy button and then we just
     // place 'set it up for me' at the top. we can put the manual steps on the
@@ -742,7 +830,8 @@ void LumenPanelPreferenceAIKeys::refresh()
     mWasReady = (provider == LumenAIKeys::CODEX)      ? codex.ready
               : (provider == LumenAIKeys::CLAUDECODE) ? claude.ready
               : false;
-    if (LLTextBox* cs = findChild<LLTextBox>("claude_status")) cs->setText(std::string());
+    if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
+        cs->setText(LumenAIClaude::unavailableHere());
 
     for (Row& row : mRows)
     {
@@ -872,9 +961,14 @@ void LumenPanelPreferenceAIKeys::followTheKey()
     // one and pressing OK in Preferences silently switched to OpenAI whenever
     // an OpenAI key was saved -- the author: "no idea why it changed away from
     // codex". The same mistake Decisions 144 fixed for the away-responder.
-    // This only ever meant to rescue a key provider, or none, with no key.
-    if (chosen != LumenAIKeys::ANTHROPIC && chosen != LumenAIKeys::OPENAI && chosen != "none"
-        && !chosen.empty())
+    // This only ever means to rescue a KEY provider that has no key.
+    //
+    // **None is a choice too, and the most deliberate one on this panel**: it
+    // is how somebody switches the assistant off. Rescuing it turned None back
+    // into OpenAI on every OK whenever an OpenAI key was saved, so the next
+    // thing typed was sent and billed although the panel said the assistant
+    // was off. An empty setting reads as None everywhere else, so it stays.
+    if (chosen != LumenAIKeys::ANTHROPIC && chosen != LumenAIKeys::OPENAI)
     {
         return;
     }
