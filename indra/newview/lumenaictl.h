@@ -37,6 +37,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+class LLMessageSystem;
+
 class LLHTTPNode;
 class LLViewerInventoryItem;
 class LLPumpIO;
@@ -329,6 +331,39 @@ private:
     bool nameOnItsWay(const LLUUID& id) const;
 
     /**
+     * Second Life's own search -- places and events.
+     *
+     * This is the one kind of "find" that reaches outside the user's own
+     * things. Everything else the assistant can search is theirs already:
+     * inventory, landmarks, notecards, chat logs, what is nearby.
+     *
+     * The directory answers over UDP against a query id we mint, so it is
+     * Findings 19's shape, like worn_by and web_presence: the first call
+     * sends and answers `pending`, the second collects. Keyed by WHAT WAS
+     * ASKED rather than by one "current search", so two questions in flight
+     * cannot collect each other's answers.
+     */
+    struct DirSearch
+    {
+        LLUUID query_id;
+        F64    asked      = 0.0;
+        /** When the LAST reply landed: the directory answers in several. */
+        F64    last_reply = 0.0;
+        bool   answered   = false;
+        U32    status   = 0;
+        LLSD   rows;
+    };
+    /** Keyed "places|tapi market" / "events|market". */
+    std::unordered_map<std::string, DirSearch> mDirSearches;
+    /** The query id back to that key, because the reply carries only the id. */
+    std::unordered_map<LLUUID, std::string> mDirByQuery;
+
+    /** Send a directory query and remember it; returns the key to collect by. */
+    std::string startDirSearch(const std::string& kind, const std::string& text);
+    /** Record a reply against whichever search asked for it. */
+    void noteDirRows(const LLUUID& query_id, const LLSD& rows, U32 status);
+
+    /**
      * Reading where every landmark goes, quietly, after login.
      *
      * The author's call, 2026-09-23: landmarks before anything else, because
@@ -360,6 +395,16 @@ public:
                               S32 x, S32 y, S32 z);
     /** A landmark just arrived in inventory. */
     static void landmarkAdded(const LLUUID& asset_id);
+
+    /**
+     * The directory answered. Chained from llstartup.cpp, which is where the
+     * one handler per message name is registered -- so ours calls upstream's
+     * first and then reads the same message again. Reading a message twice is
+     * safe and is already what Firestorm does: their own search panel is
+     * chained inside LLPanelDirBrowser's handler the same way.
+     */
+    static void onDirPlacesReply(LLMessageSystem* msg, void** user);
+    static void onDirEventsReply(LLMessageSystem* msg, void** user);
     /** Landmarks still waiting to be read, for an honest answer meanwhile. */
     size_t landmarksStillReading() const { return mLandmarkQueue.size() + mLandmarkInFlight.size(); }
     /** Whether inventory has been looked through for landmarks at all yet. */

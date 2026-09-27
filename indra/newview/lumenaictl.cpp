@@ -126,6 +126,11 @@
 #include "llviewercontrol.h"
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
+// <Lumen> Second Life's own search: the query flags, and the handler we chain.
+#include "llqueryflags.h"
+#include "lleventflags.h"
+#include "llpaneldirbrowser.h"
+// </Lumen>
 #include "fslslbridge.h"   // <Lumen> worn_by
 #include "llavatarpropertiesprocessor.h"  // <Lumen> profile
 #include "lldiriterator.h"                 // <Lumen> settings lookup
@@ -2220,6 +2225,8 @@ namespace
             if (action == "fly")           return "fly";
             if (action == "turn")          return "turn";
             if (action == "where_am_i")    return "where_am_i";
+            if (action == "search_places") return "search_places";
+            if (action == "search_events") return "search_events";
             if (action == "landmark")      return "create_landmark";
             if (action == "follow")        return "follow";
             if (action == "camera")        return "camera";
@@ -2627,7 +2634,8 @@ namespace
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
               "follow", "camera", "pose", "stop_pose", "save_photo",
-              "fly", "turn", "where_am_i", "landmark" };
+              "fly", "turn", "where_am_i", "landmark",
+              "search_places", "search_events" };
         LLSD move;
         move["name"] = "movement";
         move["description"] =
@@ -2737,6 +2745,18 @@ namespace
             "`creator_link` value exactly as given instead of the name** -- the viewer turns it "
             "into the person's name with their profile one click away. Copy it verbatim; never "
             "build one yourself, and if there is no creator_link just use the name.\n"
+            "- search_places / search_events: **Second Life's OWN directory** -- the world, not "
+            "this person's things. Everything else here searches what is already theirs: their "
+            "inventory, their landmarks, what is around them. Use these only when the thing "
+            "wanted is somewhere out in the world. Give the words in `text`.\n"
+            "  The directory answers over the network, so the first call returns `pending: true` "
+            "and you call again with the SAME text a second or two later to collect it.\n"
+            "  **These are strangers' listings.** A place named like the thing they asked for is "
+            "not evidence it is that thing. Say what the directory lists, say it is from search "
+            "rather than from their own places, and ask before treating any of it as the answer. "
+            "There is no teleport from a result yet, and the reply says so.\n"
+            "  What is returned honours this account's own maturity settings, exactly as the "
+            "viewer's own search would -- it is not a way to see more than they would see.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
@@ -2775,6 +2795,11 @@ namespace
         move_props["region"]=mrg; move_props["x"]=mx; move_props["y"]=my; move_props["z"]=mz;
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
+        LLSD mtx; mtx["type"]="string";
+        mtx["description"]="search_places / search_events: the words to look for in Second "
+                           "Life's own directory. Pass the same text again to collect the "
+                           "answer.";
+        move_props["text"]=mtx;
 
         // **The camera's own parameters, which were never declared.** `camera`
         // reads `shot`, `angle`, `height`, `gaze` and `person`, and not one of
@@ -4387,6 +4412,225 @@ void LumenAIControl::landmarkNamed(const LLUUID& asset_id, const std::string& re
     d.x = x; d.y = y; d.z = z;
     LumenAINoteCache::instance().putLandmark(asset_id, region_id, d);
     ++self.mLandmarksReadThisSession;
+}
+
+// ---- Second Life's own search: places and events ---------------------------
+//
+// Every other "find" in this file searches the user's OWN things -- inventory,
+// landmarks, notecards, chat logs, what is nearby. This one asks the world
+// directory, which is the question the assistant could not answer at all:
+// "where is the tapi market" when it is not near them and not theirs.
+//
+// The directory answers over UDP against a query id we mint, so this is
+// Findings 19's shape: send, answer `pending`, collect on the next call.
+//
+// MATURITY IS NOT OURS TO CHOOSE. The query carries exactly what the viewer's
+// own search would carry: the account's entitlement (gAgent.canAccessMature /
+// canAccessAdult, which Linden Lab sets) narrowed by the person's own
+// Show*Sims / Show*Events preferences. So the assistant sees what that person
+// would see searching by hand -- no more, and no less either.
+
+std::string LumenAIControl::startDirSearch(const std::string& kind, const std::string& text)
+{
+    const std::string key = kind + "|" + lowered(text);
+
+    DirSearch& search = mDirSearches[key];
+    search.query_id   = LLUUID::generateNewID();
+    search.asked      = LLTimer::getElapsedSeconds();
+    search.answered   = false;
+    search.status     = 0;
+    search.rows       = LLSD::emptyArray();
+    mDirByQuery[search.query_id] = key;
+
+    const bool mature_ok = gAgent.canAccessMature();
+    const bool adult_ok  = gAgent.canAccessAdult();
+
+    U32 scope = 0;
+    if (gAgent.wantsPGOnly())
+    {
+        scope |= DFQ_PG_SIMS_ONLY;
+    }
+
+    if (kind == "events")
+    {
+        const bool inc_pg     = gSavedSettings.getBOOL("ShowPGEvents");
+        const bool inc_mature = gSavedSettings.getBOOL("ShowMatureEvents");
+        const bool inc_adult  = gSavedSettings.getBOOL("ShowAdultEvents");
+        scope |= DFQ_DATE_EVENTS;
+        if (inc_pg)                      scope |= DFQ_INC_PG;
+        if (inc_mature && mature_ok)     scope |= DFQ_INC_MATURE;
+        if (inc_adult  && adult_ok)      scope |= DFQ_INC_ADULT;
+
+        // The events query packs its filters into the text: day offset ("u"
+        // for every upcoming day), category, then the words. Copied from the
+        // viewer's own search rather than invented.
+        std::ostringstream query;
+        query << "u|" << "0|" << text;
+
+        gMessageSystem->newMessage("DirFindQuery");
+        gMessageSystem->nextBlock("AgentData");
+        gMessageSystem->addUUID("AgentID", gAgentID);
+        gMessageSystem->addUUID("SessionID", gAgentSessionID);
+        gMessageSystem->nextBlock("QueryData");
+        gMessageSystem->addUUID("QueryID", search.query_id);
+        gMessageSystem->addString("QueryText", query.str());
+        gMessageSystem->addU32("QueryFlags", scope);
+        gMessageSystem->addS32("QueryStart", 0);
+        gAgent.sendReliableMessage();
+    }
+    else
+    {
+        const bool inc_pg     = gSavedSettings.getBOOL("ShowPGSims");
+        const bool inc_mature = gSavedSettings.getBOOL("ShowMatureSims");
+        const bool inc_adult  = gSavedSettings.getBOOL("ShowAdultSims");
+        if (inc_pg)                      scope |= DFQ_INC_PG;
+        if (inc_mature && mature_ok)     scope |= DFQ_INC_MATURE;
+        if (inc_adult  && adult_ok)      scope |= DFQ_INC_ADULT;
+
+        gMessageSystem->newMessage("DirPlacesQuery");
+        gMessageSystem->nextBlock("AgentData");
+        gMessageSystem->addUUID("AgentID", gAgentID);
+        gMessageSystem->addUUID("SessionID", gAgentSessionID);
+        gMessageSystem->nextBlock("QueryData");
+        gMessageSystem->addUUID("QueryID", search.query_id);
+        gMessageSystem->addString("QueryText", text);
+        gMessageSystem->addU32("QueryFlags", scope);
+        gMessageSystem->addS8("Category", LLParcel::C_ANY);
+        gMessageSystem->addString("SimName", "");
+        gMessageSystem->addS32("QueryStart", 0);
+        gAgent.sendReliableMessage();
+    }
+
+    LL_INFOS("LumenAISearch") << "asked the directory for " << kind << " matching '"
+                              << text << "', query " << search.query_id << LL_ENDL;
+    return key;
+}
+
+void LumenAIControl::noteDirRows(const LLUUID& query_id, const LLSD& rows, U32 status)
+{
+    // Every directory reply in the session reaches us, because the handler is
+    // registered per message name. Ours are the ones whose query id we minted.
+    auto which = mDirByQuery.find(query_id);
+    if (which == mDirByQuery.end())
+    {
+        return;
+    }
+    auto found = mDirSearches.find(which->second);
+    if (found == mDirSearches.end())
+    {
+        return;
+    }
+    DirSearch& search = found->second;
+    search.answered   = true;
+    search.status     = status;
+    search.last_reply = LLTimer::getElapsedSeconds();
+    for (LLSD::array_const_iterator it = rows.beginArray(); it != rows.endArray(); ++it)
+    {
+        search.rows.append(*it);
+    }
+    LL_INFOS("LumenAISearch") << which->second << ": " << search.rows.size()
+                              << " so far, status " << status << LL_ENDL;
+}
+
+// static
+void LumenAIControl::onDirPlacesReply(LLMessageSystem* msg, void** user)
+{
+    // Upstream first, so the viewer's own search panels are untouched. Reading
+    // the same message twice is safe -- the getters are random access by block
+    // and field -- and Firestorm already does exactly this, chaining their own
+    // panel inside this handler.
+    LLPanelDirBrowser::processDirPlacesReply(msg, user);
+
+    if (!LumenAIControl::instanceExists())
+    {
+        return;
+    }
+    LLUUID query_id;
+    msg->getUUID("QueryData", "QueryID", query_id);
+
+    U32 status = 0;
+    if (msg->getNumberOfBlocks("StatusData"))
+    {
+        msg->getU32("StatusData", "Status", status);
+    }
+
+    LLSD rows = LLSD::emptyArray();
+    const S32 count = msg->getNumberOfBlocks("QueryReplies");
+    for (S32 i = 0; i < count; ++i)
+    {
+        LLUUID      parcel_id;
+        std::string name;
+        bool        for_sale = false;
+        bool        auction  = false;
+        F32         dwell    = 0.f;
+        msg->getUUID(  "QueryReplies", "ParcelID", parcel_id, i);
+        msg->getString("QueryReplies", "Name",     name,      i);
+        msg->getBOOL(  "QueryReplies", "ForSale",  for_sale,  i);
+        msg->getBOOL(  "QueryReplies", "Auction",  auction,   i);
+        msg->getF32(   "QueryReplies", "Dwell",    dwell,     i);
+        if (parcel_id.isNull() || name.empty())
+        {
+            continue;   // the directory pads its replies with empty rows
+        }
+        LLSD row;
+        row["parcel_id"] = parcel_id;
+        row["name"]      = safeUtf8(name);
+        row["for_sale"]  = for_sale;
+        row["auction"]   = auction;
+        row["dwell"]     = (F64)dwell;
+        rows.append(row);
+    }
+    LumenAIControl::instance().noteDirRows(query_id, rows, status);
+}
+
+// static
+void LumenAIControl::onDirEventsReply(LLMessageSystem* msg, void** user)
+{
+    LLPanelDirBrowser::processDirEventsReply(msg, user);
+
+    if (!LumenAIControl::instanceExists())
+    {
+        return;
+    }
+    LLUUID query_id;
+    msg->getUUID("QueryData", "QueryID", query_id);
+
+    U32 status = 0;
+    if (msg->getNumberOfBlocks("StatusData"))
+    {
+        msg->getU32("StatusData", "Status", status);
+    }
+
+    LLSD rows = LLSD::emptyArray();
+    const S32 count = msg->getNumberOfBlocks("QueryReplies");
+    for (S32 i = 0; i < count; ++i)
+    {
+        LLUUID      owner_id;
+        std::string name;
+        std::string date;
+        U32         event_id    = 0;
+        U32         unix_time   = 0;
+        U32         event_flags = 0;
+        msg->getUUID(  "QueryReplies", "OwnerID",    owner_id,    i);
+        msg->getString("QueryReplies", "Name",       name,        i);
+        msg->getU32(   "QueryReplies", "EventID",    event_id,    i);
+        msg->getString("QueryReplies", "Date",       date,        i);
+        msg->getU32(   "QueryReplies", "UnixTime",   unix_time,   i);
+        msg->getU32(   "QueryReplies", "EventFlags", event_flags, i);
+        if (owner_id.isNull() || name.empty())
+        {
+            continue;
+        }
+        LLSD row;
+        row["event_id"]  = (LLSD::Integer)event_id;
+        row["name"]      = safeUtf8(name);
+        row["date"]      = safeUtf8(date);
+        row["starts_at"] = (LLSD::Integer)unix_time;
+        row["maturity"]  = (event_flags & EVENT_FLAG_ADULT)  ? "adult"
+                         : (event_flags & EVENT_FLAG_MATURE) ? "mature" : "general";
+        rows.append(row);
+    }
+    LumenAIControl::instance().noteDirRows(query_id, rows, status);
 }
 
 void LumenAIControl::suppressAutoOpen(const std::string& name)
@@ -7711,6 +7955,137 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD summary;
         summary["characters"] = (S32)removed.size();
         recordAction(request_id, fingerprintOf(method, params), "forget", "ok", result, summary);
+        return result;
+    }
+
+    // ---- Second Life's own search -----------------------------------------
+    //
+    // Deliberately OUTSIDE the shared movement branch. That branch exists for
+    // the verbs that move the avatar -- login state, replay, the sitting rules
+    // -- and it has swallowed two handlers whole already. Searching moves
+    // nothing, so it stands on its own like where_am_i.
+    if (method == "search_places" || method == "search_events")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const bool events = (method == "search_events");
+        const std::string kind = events ? "events" : "places";
+
+        std::string text = params.has("text") ? params["text"].asString() : std::string();
+        LLStringUtil::trim(text);
+        if (text.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Say what to search for in `text`.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string key = kind + "|" + lowered(text);
+        const F64 now = LLTimer::getElapsedSeconds();
+        auto it = mDirSearches.find(key);
+
+        // The directory replies in several messages -- "market" arrived as 58,
+        // 79, 97 then 101 rows. Collecting on the first would return a third of
+        // the answer and then erase the search, so the rest lands nowhere.
+        if (it != mDirSearches.end() && it->second.answered
+            && (now - it->second.last_reply) < 0.75)
+        {
+            LLSD result;
+            result["pending"]      = true;
+            result["searched_for"] = text;
+            result["count_so_far"] = (LLSD::Integer)it->second.rows.size();
+            result["note"] = "The directory is still sending. Call again in a second "
+                             "with the same text.";
+            return result;
+        }
+
+        if (it != mDirSearches.end() && it->second.answered)
+        {
+            const U32 status = it->second.status;
+            LLSD result;
+            result["searched_for"] = text;
+            result["results"]      = it->second.rows;
+            result["count"]        = (LLSD::Integer)it->second.rows.size();
+
+            // The directory says WHY it returned nothing, and the reasons are
+            // different answers. "Nobody has listed this" and "search is off
+            // in this estate" must not read the same.
+            if (status & (events ? STATUS_SEARCH_EVENTS_BANNEDWORD
+                                 : STATUS_SEARCH_PLACES_BANNEDWORD))
+            {
+                result["refused"] = "Second Life's search refused a word in that query.";
+            }
+            else if (status & (events ? STATUS_SEARCH_EVENTS_SHORTSTRING
+                                      : STATUS_SEARCH_PLACES_SHORTSTRING))
+            {
+                result["refused"] = "Second Life's search wants a longer query than that.";
+            }
+            else if (status & (events ? STATUS_SEARCH_EVENTS_SEARCHDISABLED
+                                      : STATUS_SEARCH_PLACES_SEARCHDISABLED))
+            {
+                result["refused"] = "Search is switched off here.";
+            }
+            // These two mean the QUERY was wrong, not that the world is empty.
+            // Without them an ill-formed query reads exactly like "nothing
+            // listed", which is the failure this project keeps meeting.
+            else if (events && (status & STATUS_SEARCH_EVENTS_NODATEOFFSET))
+            {
+                result["refused"] = "The events query went out without a date; that is our "
+                                    "bug, not an empty result.";
+            }
+            else if (events && (status & STATUS_SEARCH_EVENTS_NOCATEGORY))
+            {
+                result["refused"] = "The events query went out without a category; that is "
+                                    "our bug, not an empty result.";
+            }
+
+            if (result["count"].asInteger() == 0 && !result.has("refused"))
+            {
+                result["note"] = "Second Life's own search has nothing listed under that. "
+                                 "That is about the WORLD directory only -- it is not about "
+                                 "their inventory, their landmarks, or what is around them, "
+                                 "which are separate searches. Say which you checked.";
+            }
+            else
+            {
+                result["note"] = events
+                    ? "Upcoming events the DIRECTORY lists under those words -- other "
+                      "people's listings, not the user's own. The first page only. Times "
+                      "are Second Life time. Ask which one they meant before acting."
+                    : "Places the DIRECTORY lists under those words -- other people's "
+                      "parcels, not the user's own landmarks or anything nearby. The first "
+                      "page only, ranked by the directory and not by us. A name matching "
+                      "is not evidence it is the place they meant, so ask before acting.";
+                result["cannot_teleport_yet"] = true;
+                result["how_to_go"] = "There is no teleport from a search result yet: the "
+                                      "directory gives a parcel id, and turning that into a "
+                                      "place needs a further lookup that is not built. Say "
+                                      "the name and offer to find it another way.";
+            }
+            mDirByQuery.erase(it->second.query_id);
+            mDirSearches.erase(it);
+            return result;
+        }
+
+        if (it != mDirSearches.end() && (now - it->second.asked) < 30.0)
+        {
+            LLSD result;
+            result["pending"]      = true;
+            result["searched_for"] = text;
+            result["note"] = "Asked Second Life's search; the answer comes back over the "
+                             "network. Call again in a second or two with the same text.";
+            return result;
+        }
+
+        startDirSearch(kind, text);
+        LLSD result;
+        result["pending"]      = true;
+        result["searched_for"] = text;
+        result["note"] = "Asked Second Life's search. Call again in a second or two with "
+                         "the same text to collect the answer.";
         return result;
     }
 

@@ -126,7 +126,8 @@
 #include "llinventorybridge.h"
 #include "llinventorymodel.h"
 #include "llinventorymodelbackgroundfetch.h"
-#include "lumenfolders.h"   // <Lumen>
+#include "lumenfolders.h"
+#include "lumenaictl.h"   // <Lumen> the directory-reply hooks   // <Lumen>
 #include "llkeyboard.h"
 #include "llloginhandler.h"         // gLoginHandler, SLURL support
 #include "lllogininstance.h" // Host the login module.
@@ -3952,9 +3953,13 @@ void register_viewer_callbacks(LLMessageSystem* msg)
 
     msg->setHandlerFunc("AvatarPickerReply", LLFloaterAvatarPicker::processAvatarPickerReply);
 
-    msg->setHandlerFunc("DirPlacesReply", LLPanelDirBrowser::processDirPlacesReply);
+    // <Lumen> Chain the directory replies so the assistant can search the world too.
+    // One handler per message name, so ours calls upstream's first rather than
+    // replacing it -- which is how Firestorm already attaches their own search.
+    msg->setHandlerFunc("DirPlacesReply", LumenAIControl::onDirPlacesReply);
+    // </Lumen>
     msg->setHandlerFunc("DirPeopleReply", LLPanelDirBrowser::processDirPeopleReply);
-    msg->setHandlerFunc("DirEventsReply", LLPanelDirBrowser::processDirEventsReply);
+    msg->setHandlerFunc("DirEventsReply", LumenAIControl::onDirEventsReply);  // <Lumen>
     msg->setHandlerFunc("DirGroupsReply", LLPanelDirBrowser::processDirGroupsReply);
     msg->setHandlerFunc("DirClassifiedReply", LLPanelDirBrowser::processDirClassifiedReply);
     msg->setHandlerFunc("DirLandReply", LLPanelDirBrowser::processDirLandReply);
