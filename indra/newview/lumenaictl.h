@@ -355,6 +355,8 @@ private:
     };
     /** Keyed "places|tapi market" / "events|market". */
     std::unordered_map<std::string, DirSearch> mDirSearches;
+    /** Directory searches are spaced like the web ones: none sooner than this. */
+    F64 mNextDirSearchAt = 0.0;
     /** The query id back to that key, because the reply carries only the id. */
     std::unordered_map<LLUUID, std::string> mDirByQuery;
 

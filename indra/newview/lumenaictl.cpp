@@ -88,6 +88,8 @@
 #include "llcorehttputil.h"   // <Lumen> web_presence: the two lookups outside SL
 #include "lluri.h"
 #include "llcoros.h"
+#include "lleventcoro.h"
+#include "llviewernetwork.h"
 #include "llfloatertools.h"   // <Lumen> is the build panel up? the selection only lives while it is
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
@@ -2745,16 +2747,19 @@ namespace
             "`creator_link` value exactly as given instead of the name** -- the viewer turns it "
             "into the person's name with their profile one click away. Copy it verbatim; never "
             "build one yourself, and if there is no creator_link just use the name.\n"
-            "- search_places / search_events: **Second Life's OWN directory** -- the world, not "
+            "- search_places / search_events: **Second Life's OWN search** -- the world, not "
             "this person's things. Everything else here searches what is already theirs: their "
             "inventory, their landmarks, what is around them. Use these only when the thing "
             "wanted is somewhere out in the world. Give the words in `text`.\n"
-            "  The directory answers over the network, so the first call returns `pending: true` "
-            "and you call again with the SAME text a second or two later to collect it.\n"
-            "  **These are strangers' listings.** A place named like the thing they asked for is "
-            "not evidence it is that thing. Say what the directory lists, say it is from search "
-            "rather than from their own places, and ask before treating any of it as the answer. "
-            "There is no teleport from a result yet, and the reply says so.\n"
+            "  It answers over the network and searches are spaced a few seconds apart, so the "
+            "first call returns `pending: true` and you call again with the SAME text a few "
+            "seconds later to collect it. Search once and read the answer before searching "
+            "again with other words.\n"
+            "  **These are strangers' listings, and search is full of spam.** A place named like "
+            "the thing they asked for is not evidence it is that thing. Say what search lists, "
+            "say it is from search rather than their own places, and **ask before going "
+            "anywhere**: a place is reached with teleport, `place_id` = its `id` and `confirm` = "
+            "its name or region exactly, and only after they say yes.\n"
             "  What is returned honours this account's own maturity settings, exactly as the "
             "viewer's own search would -- it is not a way to see more than they would see.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
@@ -2795,9 +2800,16 @@ namespace
         move_props["region"]=mrg; move_props["x"]=mx; move_props["y"]=my; move_props["z"]=mz;
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
+        LLSD mpid; mpid["type"]="string";
+            mpid["description"]="teleport: the `id` of a place search_places returned -- only after "
+                                "the user has said yes to going there.";
+        LLSD mcf; mcf["type"]="string";
+            mcf["description"]="teleport with place_id: the place's name or its region, exactly, "
+                               "which says the user agreed to go there.";
+        move_props["place_id"]=mpid; move_props["confirm"]=mcf;
         LLSD mtx; mtx["type"]="string";
         mtx["description"]="search_places / search_events: the words to look for in Second "
-                           "Life's own directory. Pass the same text again to collect the "
+                           "Life's own search. Pass the same text again to collect the "
                            "answer.";
         move_props["text"]=mtx;
 
@@ -6723,6 +6735,417 @@ namespace
                               ? "yes" : "no")
                           << ", " << stores.size() << " store(s)" << LL_ENDL;
     }
+
+    // ---- Second Life's WEB search, for places ------------------------------
+    //
+    // The world directory the viewer's Places tab asks over UDP matches the
+    // words as one PHRASE in the parcel NAME and nowhere else: "raglan tiny"
+    // found nothing, while the viewer's own Web tab put "Raglan Commons --
+    // Residential Sim of Tinies" first, because it searches the description
+    // too and ranks by relevance. So places come from search.secondlife.com,
+    // the page that tab shows, and the directory is kept for when it cannot be
+    // read. Every answer says which of the two it came from.
+    //
+    // Events stay on the directory, and that is measured rather than assumed:
+    // on 2026-09-27 the web's 74 events for "live music" started two days out
+    // and ran to December, while the directory had nine on right then.
+    //
+    // The site needs an anonymous session before it answers. A cold request
+    // goes through six redirects -- search, id.secondlife.com and back, twice
+    // -- and each hop on the search host hands back a `sessionid`. The hops are
+    // followed here one at a time, because the HTTP layer keeps no cookies of
+    // its own. Once the session exists every later search is a single GET.
+    const char* const SEARCH_HOST = "search.secondlife.com";
+
+    // Searches are spaced out, whoever asks. A model that fans out -- places,
+    // then another wording, then another -- would otherwise put a burst of
+    // requests on Linden Lab's search from one address, and a site that locks
+    // out a burst locks out this viewer's search for everybody using it.
+    // The author's rule, 2026-09-27: a few seconds between each. The
+    // handshake's redirects are ONE search and are not spaced; the viewer's
+    // own Web tab follows them at once too.
+    const F64 SEARCH_GAP_SECONDS = 3.0;
+    F64 sNextWebSearchAt = 0.0;
+
+    std::string                        sSearchSession;       // "sessionid=..."
+    std::map<std::string, LLSD>        sWebPlaces;           // key -> finished answer
+    std::map<std::string, F64>         sWebPlacesAsked;      // key -> when asked
+    std::map<std::string, std::string> sWebPlacesFailed;     // key -> why the web did not answer
+    /** Every place a web search returned this session, by its id, so that a
+     *  teleport to one can be held until the user has said yes to it. */
+    std::map<std::string, LLSD>        sSearchPlaceById;
+
+    struct WebReply
+    {
+        S32         http = 0;       // 0 when nothing answered at all
+        std::string location;
+        std::string session;
+        std::string body;
+    };
+
+    // One hop, redirects NOT followed.
+    //
+    // The HTTP code is in HTTP_RESULTS_TYPE, not HTTP_RESULTS_STATUS -- LLCore
+    // stores a reply's code as the status TYPE and puts success-or-error in the
+    // other field, so reading "status" gives 0 or a library code, never 302.
+    WebReply webFetchOnce(const std::string& url, const std::string& cookie)
+    {
+        static const LLCore::HttpRequest::policy_t search_policy =
+            LLCore::HttpRequest::createPolicyClass();
+
+        LLCore::HttpRequest::ptr_t request(new LLCore::HttpRequest);
+        LLCore::HttpOptions::ptr_t options(new LLCore::HttpOptions);
+        LLCore::HttpHeaders::ptr_t headers(new LLCore::HttpHeaders);
+        options->setTimeout(20);
+        options->setRetries(0);
+        options->setFollowRedirects(false);
+        options->setWantHeaders(true);
+        headers->append("User-Agent", "Lumen Viewer");
+        headers->append("Accept", "text/html");
+        if (!cookie.empty()) headers->append("Cookie", cookie);
+
+        LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenSearch", search_policy);
+        LLSD raw = adapter.getRawAndSuspend(request, url, options, headers);
+
+        WebReply out;
+        const LLSD http = raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
+        const S32 type = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_TYPE].asInteger();
+        out.http = (type >= 100 && type <= 999) ? type : 0;
+
+        // Headers arrive as a map, so two Set-Cookie lines in one reply keep
+        // only the last. The first hop sends `locale` then `sessionid`; every
+        // later hop sends `sessionid` alone, and the last of those is the one
+        // that matters, so this is enough -- but it is why nothing here may
+        // rely on the first hop's cookie.
+        const LLSD hdrs = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_HEADERS];
+        for (LLSD::map_const_iterator it = hdrs.beginMap(); it != hdrs.endMap(); ++it)
+        {
+            std::string key = it->first;
+            LLStringUtil::toLower(key);
+            if (key == "location")
+            {
+                out.location = it->second.asString();
+            }
+            else if (key == "set-cookie")
+            {
+                std::string v = it->second.asString();
+                const size_t semi = v.find(';');
+                if (semi != std::string::npos) v = v.substr(0, semi);
+                if (v.find("sessionid=") == 0) out.session = v;
+            }
+        }
+
+        for (const std::string& key : { LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW,
+                                        LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_CONTENT })
+        {
+            if (raw.has(key) && raw[key].isBinary())
+            {
+                const LLSD::Binary& bytes = raw[key].asBinary();
+                if (!bytes.empty()) { out.body.assign(bytes.begin(), bytes.end()); break; }
+            }
+        }
+        return out;
+    }
+
+    std::string hostOf(const std::string& url)
+    {
+        const size_t scheme = url.find("://");
+        if (scheme == std::string::npos) return std::string();
+        const size_t start = scheme + 3;
+        const size_t end = url.find_first_of("/?#", start);
+        return url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+
+    std::string resolveLocation(const std::string& from, const std::string& location)
+    {
+        if (location.find("://") != std::string::npos) return location;
+        const size_t scheme = from.find("://");
+        const size_t path = (scheme == std::string::npos)
+            ? std::string::npos : from.find('/', scheme + 3);
+        const std::string origin = (path == std::string::npos) ? from : from.substr(0, path);
+        if (!location.empty() && location[0] == '/') return origin + location;
+        return origin + "/" + location;
+    }
+
+    // Text between `open` and `close`, starting the search at `from`, and not
+    // past `limit`. Empty when either is missing.
+    std::string between(const std::string& s, const std::string& open,
+                        const std::string& close, size_t from = 0,
+                        size_t limit = std::string::npos)
+    {
+        const size_t a = s.find(open, from);
+        if (a == std::string::npos || a >= limit) return std::string();
+        const size_t b = s.find(close, a + open.size());
+        if (b == std::string::npos || b > limit) return std::string();
+        return s.substr(a + open.size(), b - a - open.size());
+    }
+
+    std::string htmlText(const std::string& in)
+    {
+        std::string out = stripTags(in);
+        LLStringUtil::replaceString(out, "&lt;", "<");
+        LLStringUtil::replaceString(out, "&gt;", ">");
+        LLStringUtil::replaceString(out, "&nbsp;", " ");
+        LLStringUtil::replaceString(out, "&#8226;", "-");
+        LLStringUtil::replaceString(out, "&#x27;", "'");
+        return safeUtf8(out);
+    }
+
+    // Marked, never hidden: the listing may be exactly what somebody wants,
+    // and a filter that silently drops things is the failure this project
+    // keeps meeting. Measured on real results -- "free", "sandbox", "club" --
+    // before any threshold was written: the keyword lists repeat themselves
+    // (only 57% of their words are distinct, against 73-100% for ordinary
+    // descriptions) or are written entirely in capitals.
+    LLSD advertisingSigns(const std::string& name, const std::string& description)
+    {
+        LLSD why = LLSD::emptyArray();
+        const std::string text = name + " " + description;
+
+        std::vector<std::string> words;
+        std::string word;
+        S32 upper = 0, letters = 0;
+        for (char c : text)
+        {
+            const unsigned char u = (unsigned char)c;
+            if (isalnum(u) || u >= 0x80 || c == '$')
+            {
+                if (isalpha(u)) { ++letters; if (isupper(u)) ++upper; }
+                word += (char)tolower(u);
+            }
+            else if (!word.empty())
+            {
+                words.push_back(word);
+                word.clear();
+            }
+        }
+        if (!word.empty()) words.push_back(word);
+
+        if (words.size() >= 20)
+        {
+            std::set<std::string> distinct(words.begin(), words.end());
+            if ((F32)distinct.size() / (F32)words.size() < 0.65f)
+            {
+                why.append("the description repeats the same words over and over");
+            }
+            if (letters > 0 && (F32)upper / (F32)letters > 0.8f)
+            {
+                why.append("the description is a list of search words in capitals");
+            }
+        }
+
+        std::string lower = text;
+        LLStringUtil::toLower(lower);
+        for (const char* lure : { "free l$", "free lindens", "free linden", "free money",
+                                  "earn l$", "earn lindens", "earn money" })
+        {
+            if (lower.find(lure) != std::string::npos)
+            {
+                why.append("it promises free or easy Linden dollars");
+                break;
+            }
+        }
+        return why;
+    }
+
+    // One result block, from `<div id="result_` to the next.
+    LLSD parseWebPlace(const std::string& b)
+    {
+        LLSD row;
+        const std::string id = between(b, "data-result-id=\"", "\"");
+        row["id"]   = id;
+        row["type"] = between(b, "data-result-type=\"", "\"");
+        row["exact_match"] = (between(b, "data-result-exact-match=\"", "\"") == "True");
+
+        const size_t h2 = b.find("<h2");
+        if (h2 != std::string::npos)
+        {
+            const size_t gt = b.find('>', h2);
+            const size_t end = b.find("</h2>", h2);
+            if (gt != std::string::npos && end != std::string::npos && gt < end)
+            {
+                row["name"] = htmlText(b.substr(gt + 1, end - gt - 1));
+            }
+        }
+
+        const std::string tp = between(b, "href=\"secondlife:///app/teleport/", "\"");
+        if (!tp.empty())
+        {
+            // Region/x/y/z, the region %-escaped. The region name can itself
+            // contain nothing but letters, digits and spaces, so splitting on
+            // '/' is safe.
+            std::vector<std::string> parts;
+            size_t from = 0;
+            while (from <= tp.size())
+            {
+                const size_t slash = tp.find('/', from);
+                parts.push_back(tp.substr(from, slash == std::string::npos
+                                                    ? std::string::npos : slash - from));
+                if (slash == std::string::npos) break;
+                from = slash + 1;
+            }
+            if (parts.size() >= 1) row["region"] = safeUtf8(LLURI::unescape(parts[0]));
+            if (parts.size() >= 4)
+            {
+                row["x"] = atof(parts[1].c_str());
+                row["y"] = atof(parts[2].c_str());
+                row["z"] = atof(parts[3].c_str());
+            }
+        }
+
+        std::string desc = between(b, "search-result__content__description\">", "</p>");
+        if (!desc.empty()) row["description"] = htmlText(desc);
+
+        const size_t owned = b.find("Owned By:");
+        if (owned != std::string::npos)
+        {
+            const std::string link = between(b, "href=\"secondlife:///app/", "\"", owned);
+            const std::string label = between(b, ">", "</a>",
+                                               b.find("href=\"secondlife:///app/", owned));
+            if (!label.empty()) row["owner"] = htmlText(label);
+            if (link.find("group/") == 0)      row["owner_is"] = "group";
+            else if (link.find("agent/") == 0) row["owner_is"] = "person";
+        }
+
+        const std::string size = htmlText(between(b, "Size :</span>", "</p>"));
+        if (!size.empty()) row["size"] = size;
+        const std::string traffic = htmlText(between(b, "Traffic :</span>", "</p>"));
+        if (!traffic.empty()) row["traffic"] = atoi(traffic.c_str());
+        const std::string category = htmlText(between(b, "Category :</span>", "</p>"));
+        if (!category.empty()) row["category"] = category;
+
+        if      (b.find("\">G</span>") != std::string::npos) row["maturity"] = "general";
+        else if (b.find("\">M</span>") != std::string::npos) row["maturity"] = "moderate";
+        else if (b.find("\">A</span>") != std::string::npos) row["maturity"] = "adult";
+
+        const LLSD why = advertisingSigns(row["name"].asString(), row["description"].asString());
+        if (why.size() > 0)
+        {
+            row["looks_like_advertising"] = true;
+            row["why"] = why;
+        }
+        return row;
+    }
+
+    // Runs as a coroutine. Writes its answer, or why there is none, and the
+    // dispatcher collects it on the next call.
+    void searchPlacesOnWeb(std::string key, std::string text, std::string maturity,
+                           std::set<std::string> allowed)
+    {
+        // `lang=en` on purpose: the result count and the "no matches" sentence
+        // are the page's own words, and they are what tells a page with
+        // nothing on it apart from a page this cannot read.
+        const std::string first = std::string("https://") + SEARCH_HOST
+            + "/viewer/?query_term=" + LLURI::escape(text)
+            + "&search_type=standard&collection_chosen=places&maturity=" + maturity
+            + "&lang=en";
+
+        // Take the next free slot and wait for it. Coroutines here take turns
+        // rather than run at once, so claiming the slot before sleeping is
+        // what keeps two searches asked together three seconds apart.
+        const F64 now_s = LLTimer::getElapsedSeconds();
+        const F64 slot = std::max(now_s, sNextWebSearchAt);
+        sNextWebSearchAt = slot + SEARCH_GAP_SECONDS;
+        if (slot > now_s)
+        {
+            llcoro::suspendUntilTimeout((F32)(slot - now_s));
+        }
+
+        std::string next = first;
+        std::string body;
+        std::string why;
+        S32 hops = 0;
+        for (; hops < 10; ++hops)
+        {
+            const bool to_search = (hostOf(next) == SEARCH_HOST);
+            const WebReply r = webFetchOnce(next, to_search ? sSearchSession : std::string());
+            if (to_search && !r.session.empty()) sSearchSession = r.session;
+
+            if (r.http == 200) { body = r.body; break; }
+            if (r.http >= 300 && r.http < 400 && !r.location.empty())
+            {
+                next = resolveLocation(next, r.location);
+                continue;
+            }
+            why = r.http ? ("search.secondlife.com answered HTTP " + std::to_string(r.http))
+                         : std::string("search.secondlife.com did not answer");
+            break;
+        }
+        if (body.empty() && why.empty())
+        {
+            why = "search.secondlife.com kept redirecting -- the anonymous sign-in did not finish";
+            sSearchSession.clear();
+        }
+
+        LLSD out;
+        S32 total = -1;
+        if (!body.empty())
+        {
+            // "74 Results". The first " Results" on the page is not
+            // necessarily the count, so take the first one with a number.
+            size_t results = body.find(" Results");
+            while (results != std::string::npos && total < 0)
+            {
+                size_t start = results;
+                while (start > 0 && isdigit((unsigned char)body[start - 1])) --start;
+                if (start < results) total = atoi(body.substr(start, results - start).c_str());
+                results = body.find(" Results", results + 1);
+            }
+            if (total < 0 && body.find("did not return any matches") != std::string::npos)
+            {
+                total = 0;
+            }
+            if (total < 0)
+            {
+                why = "search.secondlife.com answered with a page Lumen could not read -- "
+                      "its layout may have changed";
+            }
+        }
+
+        if (!why.empty())
+        {
+            LL_WARNS("LumenAISearch") << "web search for '" << text << "' failed after "
+                                      << hops << " hop(s): " << why
+                                      << " -- falling back to the directory" << LL_ENDL;
+            sWebPlacesFailed[key] = why;
+            sWebPlacesAsked.erase(key);
+            return;
+        }
+
+        LLSD rows = LLSD::emptyArray();
+        S32 filtered = 0;
+        size_t at = body.find("<div id=\"result_");
+        while (at != std::string::npos)
+        {
+            const size_t end = body.find("<div id=\"result_", at + 1);
+            const LLSD row = parseWebPlace(body.substr(at, end == std::string::npos
+                                                               ? std::string::npos : end - at));
+            at = end;
+            if (row["name"].asString().empty()) continue;
+            // The site offers g, gm, gma and a; any other mix is asked for
+            // as the nearest wider one and narrowed here.
+            if (row.has("maturity") && !allowed.count(row["maturity"].asString()))
+            {
+                ++filtered;
+                continue;
+            }
+            rows.append(row);
+            sSearchPlaceById[row["id"].asString()] = row;
+        }
+
+        out["results"]      = rows;
+        out["count"]        = (LLSD::Integer)rows.size();
+        out["total_listed"] = total;
+        out["maturity_asked"] = maturity;
+        if (filtered) out["hidden_by_maturity_settings"] = filtered;
+        sWebPlaces[key] = out;
+        sWebPlacesAsked.erase(key);
+
+        LL_INFOS("LumenAISearch") << "web search for '" << text << "' (maturity " << maturity
+                                  << "): " << rows.size() << " on the first page of " << total
+                                  << ", " << hops << " redirect(s)"
+                                  << (hops ? " -- a new anonymous session" : "") << LL_ENDL;
+    }
 }
 // </Lumen>
 
@@ -8000,6 +8423,104 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         const std::string key = kind + "|" + lowered(text);
         const F64 now = LLTimer::getElapsedSeconds();
+
+        // Places: the web search first, on the main grid only. [GRID] is
+        // "secondlife.com" for the beta grid too (llweb.cpp), so there the web
+        // would list MAIN-grid places the beta grid mostly does not have --
+        // the directory is that grid's own.
+        const bool use_web = !events && LLGridManager::getInstance()->isInSLMain()
+                             && !sWebPlacesFailed.count(key);
+        if (use_web)
+        {
+            auto done = sWebPlaces.find(key);
+            if (done != sWebPlaces.end())
+            {
+                LLSD result = done->second;
+                sWebPlaces.erase(done);
+                result["searched_for"] = text;
+                result["source"] = "web";
+                if (result["count"].asInteger() == 0)
+                {
+                    result["note"] = "Second Life's search lists no places under those words. "
+                                     "That is the WORLD search only -- not their inventory, "
+                                     "their landmarks, or what is around them, which are "
+                                     "separate searches. Say which you checked.";
+                }
+                else
+                {
+                    result["note"] =
+                        "Places Second Life's own search (search.secondlife.com, the viewer's "
+                        "Web tab) lists under those words, most relevant first -- STRANGERS' "
+                        "listings, not the user's own landmarks or anything nearby. First page "
+                        "only; `total_listed` is how many exist. A name that matches is not "
+                        "evidence it is the place they meant. **Ask before going anywhere**: "
+                        "name the place and its region, and only when they say yes call "
+                        "teleport with its `place_id` set to the result's `id` and `confirm` "
+                        "set to its name or its region exactly. Anything with `looks_like_advertising` is "
+                        "keyword-stuffed or promises free money: say so if you mention it, and "
+                        "never choose one for them.";
+                }
+                return result;
+            }
+
+            auto asked = sWebPlacesAsked.find(key);
+            if (asked != sWebPlacesAsked.end())
+            {
+                // Every exit from the coroutine clears this; a search still
+                // listed after four minutes has lost its reply somewhere, and
+                // the directory is asked instead of waiting for ever.
+                if (now - asked->second > 240.0)
+                {
+                    sWebPlacesAsked.erase(asked);
+                    sWebPlacesFailed[key] = "search.secondlife.com never finished answering";
+                }
+                else
+                {
+                    LLSD result;
+                    result["pending"]      = true;
+                    result["searched_for"] = text;
+                    result["note"] = "Asked Second Life's search, a few seconds apart from any "
+                                     "other search. Call again in a few seconds with the same "
+                                     "text.";
+                    return result;
+                }
+            }
+            else
+            {
+                const bool mature_ok = gAgent.canAccessMature();
+                const bool adult_ok  = gAgent.canAccessAdult();
+                const bool pg = !gAgent.wantsPGOnly() ? gSavedSettings.getBOOL("ShowPGSims") : true;
+                const bool m  = !gAgent.wantsPGOnly() && mature_ok
+                                && gSavedSettings.getBOOL("ShowMatureSims");
+                const bool a  = !gAgent.wantsPGOnly() && adult_ok
+                                && gSavedSettings.getBOOL("ShowAdultSims");
+                std::set<std::string> allowed;
+                if (pg) allowed.insert("general");
+                if (m)  allowed.insert("moderate");
+                if (a)  allowed.insert("adult");
+                if (allowed.empty()) allowed.insert("general");
+
+                // The site offers exactly g, gm, gma and a.
+                std::string maturity;
+                if (pg && !m && !a)       maturity = "g";
+                else if (pg && m && !a)   maturity = "gm";
+                else if (!pg && !m && a)  maturity = "a";
+                else                      maturity = "gma";   // narrowed per row
+
+                sWebPlacesAsked[key] = now;
+                LLCoros::instance().launch("LumenWebSearch",
+                    [key, text, maturity, allowed]()
+                    { searchPlacesOnWeb(key, text, maturity, allowed); });
+
+                LLSD result;
+                result["pending"]      = true;
+                result["searched_for"] = text;
+                result["note"] = "Asked Second Life's search. Call again in a few seconds with "
+                                 "the same text to collect the answer.";
+                return result;
+            }
+        }
+
         auto it = mDirSearches.find(key);
 
         // The directory replies in several messages -- "market" arrived as 58,
@@ -8080,6 +8601,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                       "place needs a further lookup that is not built. Say "
                                       "the name and offer to find it another way.";
             }
+            result["source"] = "directory";
+            auto failed = sWebPlacesFailed.find(key);
+            if (failed != sWebPlacesFailed.end())
+            {
+                result["web_search_failed"] = failed->second;
+                result["source_note"] =
+                    "The web search could not be read, so this is the older world directory, "
+                    "which matches the words only as one phrase in a parcel's NAME. A place "
+                    "can be listed and still be missed here -- say the web search failed "
+                    "rather than that there is nothing.";
+                sWebPlacesFailed.erase(failed);
+            }
+            else if (!events && !LLGridManager::getInstance()->isInSLMain())
+            {
+                result["source_note"] =
+                    "This grid's own directory. It matches the words only as one phrase in a "
+                    "parcel's name, so a place can exist and be missed.";
+            }
             mDirByQuery.erase(it->second.query_id);
             mDirSearches.erase(it);
             return result;
@@ -8095,6 +8634,16 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
+        if (now < mNextDirSearchAt)
+        {
+            LLSD result;
+            result["pending"]      = true;
+            result["searched_for"] = text;
+            result["note"] = "Searches are spaced a few seconds apart so Second Life's search "
+                             "is not flooded. Call again in a few seconds with the same text.";
+            return result;
+        }
+        mNextDirSearchAt = now + 3.0;
         startDirSearch(kind, text);
         LLSD result;
         result["pending"]      = true;
@@ -12808,18 +13357,88 @@ if (method == "camera")
                 return result;
             }
 
-            const std::string region = params.has("region")
-                ? params["region"].asString() : std::string();
+            // A place out of Second Life's search is a STRANGER'S listing, and
+            // that search is full of keyword spam. The author's rule: ask
+            // first. So a search result is reached only by its place_id with
+            // `confirm` carrying its exact name -- the same shape as deleting
+            // something no-copy. It cannot force a model to ask; it does mean
+            // one careless call goes nowhere and the name is in front of
+            // whoever reads the transcript.
+            LLSD where = params;
+            std::string search_place;
+            if (params.has("place_id") && !params["place_id"].asString().empty())
+            {
+                auto found = sSearchPlaceById.find(params["place_id"].asString());
+                if (found == sSearchPlaceById.end())
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "That place_id did not come from a search this session. "
+                                   "Search again, or -- if the user named the place themselves "
+                                   "-- teleport by region.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                const LLSD& place = found->second;
+                search_place = place["name"].asString();
+                std::string confirm = params.has("confirm") ? params["confirm"].asString()
+                                                            : std::string();
+                LLStringUtil::trim(confirm);
+                // A listing's title is often the name plus a tagline --
+                // "Raglan Commons - Residential Sim of Tinies, Tinys & Tiny
+                // folk" -- and what gets said to the user is "Raglan Commons".
+                // So the title, the part before its first " - ", or the region
+                // all count. Each one names THIS place; none of them can be
+                // produced without having looked at the result.
+                const std::string said = lowered(confirm);
+                std::string short_name = search_place;
+                const size_t dash = short_name.find(" - ");
+                if (dash != std::string::npos) short_name = short_name.substr(0, dash);
+                LLStringUtil::trim(short_name);
+                const bool agreed = !said.empty()
+                    && (said == lowered(search_place) || said == lowered(short_name)
+                        || said == lowered(place["region"].asString()));
+                if (!agreed)
+                {
+                    LLSD data;
+                    data["name"] = place["name"];
+                    data["region"] = place["region"];
+                    if (place.has("maturity")) data["maturity"] = place["maturity"];
+                    if (place.has("looks_like_advertising"))
+                    {
+                        data["looks_like_advertising"] = true;
+                        data["why"] = place["why"];
+                    }
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "Not teleporting yet: this is somebody else's listing from "
+                                   "Second Life's search. Ask the user whether they want to go "
+                                   "there -- say its name and region -- and only when they say "
+                                   "yes, call again with `confirm` set to the place's name, "
+                                   "or its region, exactly.";
+                    e["data"] = data;
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (!place.has("region") || place["region"].asString().empty())
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "That listing carries no location to teleport to.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                where["region"] = place["region"];
+                where["x"] = place["x"]; where["y"] = place["y"]; where["z"] = place["z"];
+            }
+
+            const std::string region = where.has("region")
+                ? where["region"].asString() : std::string();
             if (region.empty())
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "Give a region name, a landmark name, or home: true.";
+                e["message"] = "Give a region name, a landmark name, a place_id from "
+                               "search_places, or home: true.";
                 LLSD w; w["__error"] = e; return w;
             }
 
-            F32 x = params.has("x") ? (F32)params["x"].asReal() : 128.f;
-            F32 y = params.has("y") ? (F32)params["y"].asReal() : 128.f;
-            F32 z = params.has("z") ? (F32)params["z"].asReal() : 0.f;
+            F32 x = where.has("x") ? (F32)where["x"].asReal() : 128.f;
+            F32 y = where.has("y") ? (F32)where["y"].asReal() : 128.f;
+            F32 z = where.has("z") ? (F32)where["z"].asReal() : 0.f;
             if (x < 0.f) x = 0.f;  if (x > 255.f) x = 255.f;
             if (y < 0.f) y = 0.f;  if (y > 255.f) y = 255.f;
 
@@ -12829,6 +13448,11 @@ if (method == "camera")
 
             result["destination"] = region;
             result["x"] = x; result["y"] = y; result["z"] = z;
+            if (!search_place.empty())
+            {
+                result["by"] = "search";
+                result["place"] = safeUtf8(search_place);
+            }
         }
 
         LL_INFOS("AICtl") << "teleport requested: " << result["destination"].asString() << LL_ENDL;
