@@ -2760,8 +2760,8 @@ namespace
             "say it is from search rather than their own places, and **ask before going "
             "anywhere**: a place is reached with teleport, `place_id` = its `id` and `confirm` = "
             "its name or region exactly, and only after they say yes.\n"
-            "  What is returned honours this account's own maturity settings, exactly as the "
-            "viewer's own search would -- it is not a way to see more than they would see.\n"
+            "  What is returned follows the rating they chose in Preferences > General (\"I want "
+            "to access content rated\") -- it is not a way to see more than they would see.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
             "blocked by a wall, and an object can refuse a sit. Check the viewer action with "
             "status before telling the user where they are.";
@@ -4436,11 +4436,20 @@ void LumenAIControl::landmarkNamed(const LLUUID& asset_id, const std::string& re
 // The directory answers over UDP against a query id we mint, so this is
 // Findings 19's shape: send, answer `pending`, collect on the next call.
 //
-// MATURITY IS NOT OURS TO CHOOSE. The query carries exactly what the viewer's
-// own search would carry: the account's entitlement (gAgent.canAccessMature /
-// canAccessAdult, which Linden Lab sets) narrowed by the person's own
-// Show*Sims / Show*Events preferences. So the assistant sees what that person
-// would see searching by hand -- no more, and no less either.
+// MATURITY IS NOT OURS TO CHOOSE. Every search -- web or directory, places or
+// events -- follows ONE setting: Preferences > General, "I want to access
+// content rated:" (PreferredMaturity), capped by what the account may see at
+// all (canAccessMature / canAccessAdult, which Linden Lab sets). The author's
+// call, 2026-09-27. It is the setting a person knows and can find, and the
+// one the viewer's own Web tab reads. The Search window's Places and Events
+// tick boxes (Show*Sims, Show*Events) are NOT consulted: they are that
+// window's own filters, and following them meant adult places appeared or
+// vanished depending on a tick box somebody set while comparing two tabs.
+static void searchMaturity(bool& mature, bool& adult)
+{
+    mature = !gAgent.wantsPGOnly() && gAgent.prefersMature() && gAgent.canAccessMature();
+    adult  = mature && gAgent.prefersAdult() && gAgent.canAccessAdult();
+}
 
 std::string LumenAIControl::startDirSearch(const std::string& kind, const std::string& text)
 {
@@ -4454,10 +4463,12 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
     search.rows       = LLSD::emptyArray();
     mDirByQuery[search.query_id] = key;
 
-    const bool mature_ok = gAgent.canAccessMature();
-    const bool adult_ok  = gAgent.canAccessAdult();
+    bool inc_mature = false, inc_adult = false;
+    searchMaturity(inc_mature, inc_adult);
 
-    U32 scope = 0;
+    U32 scope = DFQ_INC_PG;
+    if (inc_mature) scope |= DFQ_INC_MATURE;
+    if (inc_adult)  scope |= DFQ_INC_ADULT;
     if (gAgent.wantsPGOnly())
     {
         scope |= DFQ_PG_SIMS_ONLY;
@@ -4465,13 +4476,7 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
 
     if (kind == "events")
     {
-        const bool inc_pg     = gSavedSettings.getBOOL("ShowPGEvents");
-        const bool inc_mature = gSavedSettings.getBOOL("ShowMatureEvents");
-        const bool inc_adult  = gSavedSettings.getBOOL("ShowAdultEvents");
         scope |= DFQ_DATE_EVENTS;
-        if (inc_pg)                      scope |= DFQ_INC_PG;
-        if (inc_mature && mature_ok)     scope |= DFQ_INC_MATURE;
-        if (inc_adult  && adult_ok)      scope |= DFQ_INC_ADULT;
 
         // The events query packs its filters into the text: day offset ("u"
         // for every upcoming day), category, then the words. Copied from the
@@ -4492,12 +4497,6 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
     }
     else
     {
-        const bool inc_pg     = gSavedSettings.getBOOL("ShowPGSims");
-        const bool inc_mature = gSavedSettings.getBOOL("ShowMatureSims");
-        const bool inc_adult  = gSavedSettings.getBOOL("ShowAdultSims");
-        if (inc_pg)                      scope |= DFQ_INC_PG;
-        if (inc_mature && mature_ok)     scope |= DFQ_INC_MATURE;
-        if (inc_adult  && adult_ok)      scope |= DFQ_INC_ADULT;
         // The viewer's own places search sorts by traffic; without this the
         // same words come back in a different order from the one a person
         // would see searching by hand.
@@ -4528,8 +4527,9 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
                               << " mature " << ((scope & DFQ_INC_MATURE) != 0)
                               << " adult " << ((scope & DFQ_INC_ADULT) != 0)
                               << " pg-only " << ((scope & DFQ_PG_SIMS_ONLY) != 0)
-                              << "; account may see mature " << mature_ok
-                              << " adult " << adult_ok << ")" << LL_ENDL;
+                              << "; rated " << gSavedSettings.getU32("PreferredMaturity")
+                              << ", account may see mature " << gAgent.canAccessMature()
+                              << " adult " << gAgent.canAccessAdult() << ")" << LL_ENDL;
     return key;
 }
 
@@ -6766,6 +6766,11 @@ namespace
     // own Web tab follows them at once too.
     const F64 SEARCH_GAP_SECONDS = 3.0;
     F64 sNextWebSearchAt = 0.0;
+    /** A failed handshake costs up to ten requests. After one, the web is not
+     *  tried again for a while and the directory answers instead, so a site
+     *  that has changed cannot turn every search into a burst. */
+    F64 sWebSearchRestUntil = 0.0;
+    const F64 WEB_SEARCH_REST_SECONDS = 600.0;
 
     std::string                        sSearchSession;       // "sessionid=..."
     std::map<std::string, LLSD>        sWebPlaces;           // key -> finished answer
@@ -7058,8 +7063,22 @@ namespace
         for (; hops < 10; ++hops)
         {
             const bool to_search = (hostOf(next) == SEARCH_HOST);
+            const bool sent = to_search && !sSearchSession.empty();
             const WebReply r = webFetchOnce(next, to_search ? sSearchSession : std::string());
             if (to_search && !r.session.empty()) sSearchSession = r.session;
+
+            // Every hop, because the handshake is the part that can loop and
+            // a loop is invisible from the outcome alone.
+            const size_t path_at = next.find('/', next.find("://") + 3);
+            LL_INFOS("LumenAISearch") << "  hop " << (hops + 1) << ": " << r.http << " "
+                                      << hostOf(next)
+                                      << (path_at == std::string::npos ? std::string()
+                                                                       : next.substr(path_at, 40))
+                                      << " | cookie sent " << sent
+                                      << ", session set " << !r.session.empty()
+                                      << (r.location.empty() ? std::string()
+                                                             : " | to " + r.location.substr(0, 60))
+                                      << LL_ENDL;
 
             if (r.http == 200) { body = r.body; break; }
             if (r.http >= 300 && r.http < 400 && !r.location.empty())
@@ -7109,6 +7128,7 @@ namespace
                                       << " -- falling back to the directory" << LL_ENDL;
             sWebPlacesFailed[key] = why;
             sWebPlacesAsked.erase(key);
+            sWebSearchRestUntil = LLTimer::getElapsedSeconds() + WEB_SEARCH_REST_SECONDS;
             return;
         }
 
@@ -8428,6 +8448,13 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // "secondlife.com" for the beta grid too (llweb.cpp), so there the web
         // would list MAIN-grid places the beta grid mostly does not have --
         // the directory is that grid's own.
+        const bool resting = now < sWebSearchRestUntil;
+        if (resting && !events && !sWebPlacesFailed.count(key)
+            && !sWebPlacesAsked.count(key) && !sWebPlaces.count(key))
+        {
+            sWebPlacesFailed[key] = "the web search failed a few minutes ago, so it is resting "
+                                    "and the directory answered instead";
+        }
         const bool use_web = !events && LLGridManager::getInstance()->isInSLMain()
                              && !sWebPlacesFailed.count(key);
         if (use_web)
@@ -8487,25 +8514,16 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             else
             {
-                const bool mature_ok = gAgent.canAccessMature();
-                const bool adult_ok  = gAgent.canAccessAdult();
-                const bool pg = !gAgent.wantsPGOnly() ? gSavedSettings.getBOOL("ShowPGSims") : true;
-                const bool m  = !gAgent.wantsPGOnly() && mature_ok
-                                && gSavedSettings.getBOOL("ShowMatureSims");
-                const bool a  = !gAgent.wantsPGOnly() && adult_ok
-                                && gSavedSettings.getBOOL("ShowAdultSims");
+                // Preferences > General, "I want to access content rated:" --
+                // the one maturity choice a person knows, and the rule the
+                // viewer's own Web tab builds its URL from (llfloatersearch.cpp).
+                bool m = false, a = false;
+                searchMaturity(m, a);
                 std::set<std::string> allowed;
-                if (pg) allowed.insert("general");
-                if (m)  allowed.insert("moderate");
-                if (a)  allowed.insert("adult");
-                if (allowed.empty()) allowed.insert("general");
-
-                // The site offers exactly g, gm, gma and a.
-                std::string maturity;
-                if (pg && !m && !a)       maturity = "g";
-                else if (pg && m && !a)   maturity = "gm";
-                else if (!pg && !m && a)  maturity = "a";
-                else                      maturity = "gma";   // narrowed per row
+                allowed.insert("general");
+                if (m) allowed.insert("moderate");
+                if (a) allowed.insert("adult");
+                const std::string maturity = a ? "gma" : (m ? "gm" : "g");
 
                 sWebPlacesAsked[key] = now;
                 LLCoros::instance().launch("LumenWebSearch",
