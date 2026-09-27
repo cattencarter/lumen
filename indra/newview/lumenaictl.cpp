@@ -4486,6 +4486,10 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
         if (inc_pg)                      scope |= DFQ_INC_PG;
         if (inc_mature && mature_ok)     scope |= DFQ_INC_MATURE;
         if (inc_adult  && adult_ok)      scope |= DFQ_INC_ADULT;
+        // The viewer's own places search sorts by traffic; without this the
+        // same words come back in a different order from the one a person
+        // would see searching by hand.
+        scope |= DFQ_DWELL_SORT;
 
         gMessageSystem->newMessage("DirPlacesQuery");
         gMessageSystem->nextBlock("AgentData");
@@ -4501,8 +4505,19 @@ std::string LumenAIControl::startDirSearch(const std::string& kind, const std::s
         gAgent.sendReliableMessage();
     }
 
+    // The flags that actually went out, and what they were built from. Without
+    // this, adult listings appearing with adult switched off could not be told
+    // apart from the directory ignoring the flag -- which is exactly what was
+    // seen on the beta grid.
     LL_INFOS("LumenAISearch") << "asked the directory for " << kind << " matching '"
-                              << text << "', query " << search.query_id << LL_ENDL;
+                              << text << "', query " << search.query_id
+                              << ", flags 0x" << std::hex << scope << std::dec
+                              << " (pg " << ((scope & DFQ_INC_PG) != 0)
+                              << " mature " << ((scope & DFQ_INC_MATURE) != 0)
+                              << " adult " << ((scope & DFQ_INC_ADULT) != 0)
+                              << " pg-only " << ((scope & DFQ_PG_SIMS_ONLY) != 0)
+                              << "; account may see mature " << mature_ok
+                              << " adult " << adult_ok << ")" << LL_ENDL;
     return key;
 }
 
