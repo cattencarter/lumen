@@ -34,6 +34,7 @@
 
 #include "llmimetypes.h"
 #include "lldir.h"
+#include "llnotificationsutil.h"   // <Lumen> say why the music is silent
 
 LLStreamingAudio_MediaPlugins::LLStreamingAudio_MediaPlugins() :
     mMediaPlugin(NULL),
@@ -243,6 +244,19 @@ namespace
         LLStringUtil::toLower(head);
         return head == "https://";
     }
+
+    // The play button only flicks back, so without this the reason reaches
+    // nobody but the log.  Once per failure: the caller sets the reason once.
+    void lumen_tell_user(const std::string& note)
+    {
+        if (note.empty())
+        {
+            return;
+        }
+        LLSD args;
+        args["MESSAGE"] = "The music stream is silent because " + note + ".";
+        LLNotificationsUtil::add("SystemMessageTip", args);
+    }
 }
 
 void LLStreamingAudio_MediaPlugins::resetStreamState()
@@ -275,6 +289,7 @@ void LLStreamingAudio_MediaPlugins::playURL(const std::string& url, bool fresh_p
         {
             mFailureReason = "the viewer could not start its media plugin";
             LL_WARNS() << mFailureReason << LL_ENDL;
+            lumen_tell_user(getStreamNote());
             return;
         }
         mMediaPlugin->setVolume(llclamp(mGain, 0.f, 1.f));
@@ -342,6 +357,24 @@ void LLStreamingAudio_MediaPlugins::checkStreamHealth()
 
     // It stopped without being asked to.
 
+    // Unless it simply reached its end.  A parcel's music can be an ordinary
+    // song file rather than a live station, and upstream plays that once
+    // (setLoop(false) above).  Treating its end as a dropped connection
+    // replayed it for ever.  VLC knows a file's length and reports none for a
+    // live stream, so a known length with the clock at the end means finished.
+    if (status == LLPluginClassMediaOwner::MEDIA_DONE)
+    {
+        const F64 length = mMediaPlugin->getDuration();
+        if (length > 0.0 && mMediaPlugin->getCurrentTime() >= length - 2.0)
+        {
+            LL_INFOS() << "Stream reached the end of a " << length
+                       << " s file, not reconnecting: " << mActiveURL << LL_ENDL;
+            mActiveURL.clear();   // nothing left to watch until the next start()
+            mDowngraded = false;
+            return;
+        }
+    }
+
     // The commonest cause in Second Life is a parcel whose music URL says
     // https for a SHOUTcast server that has never spoken TLS.  FMOD connects
     // regardless of the scheme, so those parcels play in Firestorm and are
@@ -385,6 +418,7 @@ void LLStreamingAudio_MediaPlugins::checkStreamHealth()
         }
         mDowngraded = false;
         LL_WARNS() << "Giving up on " << mActiveURL << ": " << mFailureReason << LL_ENDL;
+        lumen_tell_user(getStreamNote());
     }
 }
 

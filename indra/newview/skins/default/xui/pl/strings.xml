@@ -56,7 +56,6 @@ Przydzielona pamięć karty graficznej (Budget): [VRAM_BUDGET]
 		Wersja OpenGL: [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-Tryb ustawień (Settings Mode): [MODE]
 Skórka i schemat (Skin): [SKIN] ([THEME])
 Rozmiar okna (Window size): [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Czcionka (Font): [FONT] ([FONT_SCREEN_DPI] dpi)

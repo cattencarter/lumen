@@ -30,7 +30,7 @@
 // time and asking what somebody is wearing would be twenty-five requests
 // through an in-world script.
 
-string  VERSION = "1.4";
+string  VERSION = "1.5";
 string  gURL;
 key     gOwner;
 integer gViewerIsLumen;
@@ -427,6 +427,17 @@ default
         {
             key target = (key)llList2String(args, 1);
             list ids = llGetAttachedList(target);
+            // A script sees only the avatars in its own region. For anyone
+            // else -- elsewhere on the grid, across a border, offline -- this
+            // would answer "0" and no lines, which reads as wearing nothing.
+            // Say NOTFOUND instead, alone on the first line where the free
+            // slot count goes (an older viewer reads it as 0, as before).
+            if (llGetAgentSize(target) == ZERO_VECTOR
+                || llList2String(ids, 0) == "NOT FOUND")
+            {
+                llHTTPResponse(req, 200, "<llsd><string>NOTFOUND\n</string></llsd>");
+                return;
+            }
             string out = (string)llList2Integer(llGetObjectDetails(target,
                             [OBJECT_ATTACHED_SLOTS_AVAILABLE]), 0) + "\n";
             integer n = llGetListLength(ids);

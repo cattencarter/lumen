@@ -63,7 +63,6 @@ Grafikkartenspeicher (Budget): [VRAM_BUDGET]
 		OpenGL-Version: [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-Modus: [MODE]
 Oberflächendesign: [SKIN] ([THEME])
 Fenstergröße: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Schriftart: [FONT] ([FONT_SCREEN_DPI] dpi)

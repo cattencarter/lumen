@@ -2068,6 +2068,9 @@ void LumenAIChatFloater::noteCatchUp(const std::string& tool, const LLSD& args,
     {
         mLastCatchUp    = structured;
         mCatchUpPending = true;
+        // <Lumen> Asked for and answered in the conversation, so the login
+        // offer, which may still be looking, would only repeat it.
+        if (gAgentID.notNull()) sCaughtUpFor = gAgentID;
         return;
     }
 
@@ -2170,6 +2173,16 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries
 // </Lumen>
 
 // <Lumen>
+namespace
+{
+    // offerAtLogin's look-again after a login that found nothing at first.
+    const F64 OFFER_WINDOW_SECONDS = 60.0;
+    const F32 OFFER_RETRY_SECONDS  = 10.f;
+    LLUUID       sOfferWatchFor;      // the login the retry is running for
+    F64          sOfferUntil = 0.0;
+    LLFrameTimer sOfferPoll;
+}
+
 /**
  * "Something arrived. Want a summary?" -- rather than writing one unasked.
  *
@@ -2181,15 +2194,54 @@ void LumenAIChatFloater::renderCatchUp(const LLSD& result, const LLSD& summaries
  * It also means silence when nothing arrived. Telling somebody at every login
  * that there was nothing to tell them is a sentence they have to read to learn
  * they did not need to.
+ *
+ * <Lumen> "Nothing" on the first frame in the world is not yet an answer. The
+ * offline messages come over an HTTP request that waits for the mute list
+ * (up to 30 s) and can fall back to UDP, and a group notice waits for the
+ * group's name, so the backlog can land seconds after STATE_STARTED. So a
+ * zero count looks again every few seconds for a minute, and the login is
+ * marked done only when an offer is made or that minute runs out.
  */
 void LumenAIChatFloater::offerAtLogin()
 {
     if (!gSavedSettings.getBOOL("LumenAICatchUpAtLogin")) return;
     if (gAgentID.isNull() || sCaughtUpFor == gAgentID) return;
 
+    // <Lumen> The first call for this login starts the look-again; every
+    // early return below then simply waits for the next one.
+    if (sOfferWatchFor != gAgentID)
+    {
+        sOfferWatchFor = gAgentID;
+        sOfferUntil = LLTimer::getTotalSeconds() + OFFER_WINDOW_SECONDS;
+        sOfferPoll.setTimerExpirySec(OFFER_RETRY_SECONDS);
+
+        LLEventPump& mainloop = LLEventPumps::instance().obtain("mainloop");
+        mainloop.stopListening("LumenAICatchUpOffer");
+        mainloop.listen("LumenAICatchUpOffer", [](const LLSD&)
+        {
+            if (sOfferPoll.hasExpired())
+            {
+                sOfferPoll.setTimerExpirySec(OFFER_RETRY_SECONDS);
+                offerAtLogin();
+            }
+            const bool finished = gAgentID.isNull() || gAgentID != sOfferWatchFor
+                || sCaughtUpFor == gAgentID
+                || !gSavedSettings.getBOOL("LumenAICatchUpAtLogin");
+            if (!finished && LLTimer::getTotalSeconds() < sOfferUntil) return false;
+
+            if (!finished) sCaughtUpFor = gAgentID;   // the minute ran out: nothing came
+            LLEventPumps::instance().obtain("mainloop").stopListening("LumenAICatchUpOffer");
+            return false;
+        });
+    }
+    // </Lumen>
+
     LumenAIChatFloater* self =
         LLFloaterReg::getTypedInstance<LumenAIChatFloater>("ai_chat");
     if (!self) return;
+    // <Lumen> A later look must not put the offer into the history in the
+    // middle of a turn, between a tool call and its result. Try again later.
+    if (self->mBusy) return;
 
     // Straight to the endpoint, with no provider in it at all.
     LLSD args; args["action"] = "catch_up";
@@ -2206,24 +2258,43 @@ void LumenAIChatFloater::offerAtLogin()
         if (!ok) return;
     }
 
-    S32 ims = 0, notices = 0;
+    // <Lumen> `waiting` has one entry per PERSON and per GROUP, so counting
+    // entries counted senders: five messages from one friend read as "1
+    // instant message". Count what is inside each entry, and call a notice a
+    // group notice only when every one of them came from a group -- an
+    // object return or a payment is a notice, not a group notice.
+    S32 ims = 0, people = 0, notices = 0;
+    bool all_group = true;
     const LLSD& waiting = data["waiting"];
     for (LLSD::array_const_iterator it = waiting.beginArray();
          it != waiting.endArray(); ++it)
     {
-        if ((*it)["what"].asString() == "im") ++ims;
-        else                                  ++notices;
+        const std::string kind = (*it)["what"].asString();
+        if (kind == "im")
+        {
+            ++people;
+            ims += llmax(1, (S32)(*it)["said"].size());
+        }
+        else
+        {
+            notices += llmax(1, (S32)(*it)["notices"].size());
+            if (kind != "group_notice") all_group = false;
+        }
     }
     if (ims == 0 && notices == 0)
     {
-        sCaughtUpFor = gAgentID;   // asked and answered: nothing, so say nothing
+        // Not yet an answer: the look-again started above asks again, and
+        // marks this login done when its minute runs out.
         return;
     }
 
     std::string what;
     if (ims)     what += llformat("%d instant message%s", ims, ims == 1 ? "" : "s");
+    if (people > 1) what += llformat(" from %d people", people);
     if (ims && notices) what += " and ";
-    if (notices) what += llformat("%d group notice%s", notices, notices == 1 ? "" : "s");
+    if (notices) what += llformat("%d %snotice%s", notices, all_group ? "group " : "",
+                                  notices == 1 ? "" : "s");
+    // </Lumen>
 
     // The label form renders as the words rather than the URL, and the handler
     // is registered UNTRUSTED_BLOCK so nothing in world can fire it.
@@ -2545,6 +2616,18 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
                 + " reasoning). This starts a new conversation.");
     }
 
+    // <Lumen> The thread was registered with the endpoint's address, and a
+    // restarted endpoint (after an error) comes back on a new random port.
+    // Kept, the thread would call a port nobody is listening on and Codex
+    // would say it has no Second Life tools for the rest of the conversation.
+    if (!mCodexThread.empty() && mCodexPort != LumenAIControl::instance().port())
+    {
+        mCodexThread.clear();
+        sayNote("The viewer's connection for Codex was restarted, so this starts a new "
+                "conversation.");
+    }
+    // </Lumen>
+
     if (mCodexThread.empty())
     {
         setBusy(true, "Starting Codex...");   // <Lumen> seconds, while its tools connect
@@ -2699,6 +2782,7 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         }
         mCodexThread = started["thread"]["id"].asString();
         mCodexModel  = codex_model;
+        mCodexPort   = LumenAIControl::instance().port();   // <Lumen>
         mCodexNote   = LumenAIMemory::get();
         mCodexEntries.clear();
         for (const std::string& e : LumenAIMemory::remembered()) mCodexEntries.insert(e);
@@ -4064,6 +4148,9 @@ void LumenAIAutoResponder::checkArrivals()
         if (LLAvatarNameCache::get(who, &av)) name = av.getUserName();
         const LLUUID session = gIMMgr->addSession(name, IM_NOTHING_SPECIAL, who);
         LLIMModel::sendMessage(text, session, who, IM_NOTHING_SPECIAL);
+        // <Lumen> In the action log, like everything else done in their name.
+        if (LumenAIControl::instanceExists())
+            LumenAIControl::instance().noteAutomaticReply("arrival IM", who, text.size());
 
         // <Lumen> They have been told now, in both of the ways replyTo() asks.
         // Without this their first "ok!" was answered with the exact same
@@ -4433,6 +4520,9 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
         {
             LLIMModel::sendMessage(mSay, session_id, from_id, IM_NOTHING_SPECIAL);
         }
+        if (LumenAIControl::instanceExists())   // <Lumen> the action log
+            LumenAIControl::instance().noteAutomaticReply(speak_aloud ? "local chat" : "IM",
+                                                          from_id, mSay.size());
         LL_INFOS("LumenAIChat") << "Answered with the user's own words." << LL_ENDL;
         // <Lumen> Nothing is in flight -- no coroutine was started -- so say
         // so. This returned with the marker still set, and shouldAnswer() then
@@ -4598,6 +4688,9 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
                 LLIMModel::sendMessage(text, session_id, from_id, IM_NOTHING_SPECIAL);
                 LL_INFOS("AICtl") << "auto-answered " << from << LL_ENDL;
             }
+            if (LumenAIControl::instanceExists())   // <Lumen> the action log
+                LumenAIControl::instance().noteAutomaticReply(speak_aloud ? "local chat" : "IM",
+                                                              from_id, text.size());
         }
         else
         {

@@ -46,7 +46,6 @@ SLURL：&lt;nolink&gt;[SLURL]&lt;/nolink&gt;
 		OpenGLバージョン：[OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-		設定モード：[MODE]
 ビューアのスキン：[SKIN]（[THEME]）
 ウィンドウサイズ:[WINDOW_WIDTH]x[WINDOW_HEIGHT]px
 使用フォント：[FONT]（[FONT_SCREEN_DPI]dpi）

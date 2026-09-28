@@ -355,6 +355,7 @@ private:
     std::string mCodexThread;
     std::string mCodexTurn;    // the turn in flight, so it can be interrupted
     std::string mCodexModel;   // what that thread was started with
+    U16 mCodexPort = 0;        // <Lumen> the endpoint port that thread was given
     // The memory that thread was started with. Codex reads it once, at
     // thread/start, so a forget or an edit afterwards is invisible to it --
     // and the person is told, rather than the conversation being thrown away.

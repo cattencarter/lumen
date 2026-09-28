@@ -162,7 +162,7 @@ BEGIN
             VALUE "FileDescription", "Lumen"
             VALUE "FileVersion", "${VIEWER_VERSION_MAJOR}.${VIEWER_VERSION_MINOR}.${VIEWER_VERSION_PATCH}.${VIEWER_VERSION_REVISION}"
             VALUE "InternalName", "Lumen"
-            VALUE "LegalCopyright", "Copyright \251 2026, Catten Carter. Based on Phoenix Firestorm and the Second Life Viewer."
+            VALUE "LegalCopyright", "Copyright \251 2026, Catten Carter. Based on Phoenix Firestorm, Copyright \251 2010-2026, The Phoenix Firestorm Project, Inc., and on the Second Life Viewer, Copyright \251 2010, Linden Research, Inc."
             VALUE "OriginalFilename", "Lumen.exe"
             VALUE "ProductName", "Lumen"
             VALUE "ProductVersion", "${VIEWER_VERSION_MAJOR}.${VIEWER_VERSION_MINOR}.${VIEWER_VERSION_PATCH}.${VIEWER_VERSION_REVISION}"

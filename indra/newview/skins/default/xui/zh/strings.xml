@@ -80,7 +80,6 @@ Graphics Card Memory (Budget): [VRAM_BUDGET]
 		OpenGL Version: [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-Settings mode: [MODE]
 Viewer Skin: [SKIN] ([THEME])
 Window size: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Font Used: [FONT] ([FONT_SCREEN_DPI] dpi)

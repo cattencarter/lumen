@@ -58,7 +58,7 @@ static const std::string FS_BRIDGE_CONTAINER_FOLDER = "Landscaping";
 // -- the viewer compares the version the script announces against this name to
 // decide whether the bridge it is talking to is the one it built.
 static const U32 FS_BRIDGE_MAJOR_VERSION = 1;
-static const U32 FS_BRIDGE_MINOR_VERSION = 4;
+static const U32 FS_BRIDGE_MINOR_VERSION = 5;
 // </Lumen>
 static const U32 FS_MAX_MINOR_VERSION = 99;
 // <Lumen> Our script, written fresh against the same command vocabulary

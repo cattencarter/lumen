@@ -27,25 +27,58 @@ if not script.exists():
 
 lsl = script.read_text(encoding="utf-8", errors="replace")
 
-# Every command the viewer sends. They are all built as "name|" or bare, so the
-# first token before a pipe or a quote is the command.
-asked = set()
-for cpp in viewer.glob("*.cpp"):
-    if cpp.name.startswith("fslslbridge"):
-        continue
-    for m in re.finditer(r'viewerToLSL\(\s*"([^"|]+)', cpp.read_text(encoding="utf-8", errors="replace")):
-        asked.add(m.group(1).strip())
-# fslslbridge sends these two itself, and they are part of the handshake.
-asked |= {"URL Confirmed"}
-for m in re.finditer(r'viewerToLSL\(\s*"([^"|]+)', (viewer / "fslslbridge.cpp").read_text(encoding="utf-8", errors="replace")):
-    asked.add(m.group(1).strip())
-# updateBoolSettingValue() builds the command name from its argument.
-for m in re.finditer(r'updateBoolSettingValue\(\s*"([^"]+)"', (viewer / "llviewercontrol.cpp").read_text(encoding="utf-8", errors="replace")):
-    asked.add(m.group(1).strip())
+def code_only(text):
+    """The source without its comments, so a commented-out send is not counted.
+    Strings are kept whole (raw ones too), and newlines are kept, so line
+    numbers still point at the right place."""
+    token = re.compile(r'(?P<raw>(?<!\w)R"(?P<d>[^(\s"\\]*)\(.*?\)(?P=d)")'
+                       r'|(?P<str>"(?:\\.|[^"\\\n])*")'
+                       r"|(?P<chr>'(?:\\.|[^'\\\n])*')"
+                       r'|(?P<com>//[^\n]*|/\*.*?\*/)', re.S)
+    return token.sub(lambda m: re.sub(r'[^\n]', '', m.group(0)) if m.group("com")
+                     else m.group(0), text)
+
+# Every command the viewer sends, from EVERY call site. The command is the text
+# before the first pipe, and it reaches viewerToLSL in three shapes: a literal
+# ("worn|..."), llformat("ExternalIntegration|%d|%d", ...), or a constant
+# declared in the same file (fsradar's prefix = "getZOffsets|"). A send this
+# cannot read is a failure, not a skip: a check that quietly misses a command
+# is how the radar altitudes could stop after a merge with this still passing.
+asked  = set()
+unread = []
+for cpp in sorted(viewer.glob("*.cpp")):
+    src = code_only(cpp.read_text(encoding="utf-8", errors="replace"))
+    for pat in (r'\bviewerToLSL\(\s*', r'\bupdateBoolSettingValue\(\s*'):
+        for m in re.finditer(pat, src):
+            if src[max(0, m.start() - 2):m.start()] == "::":
+                continue   # the definition, not a call
+            rest = src[m.end():]
+            name = None
+            lit = re.match(r'(?:llformat\(\s*)?"([^"|]*)', rest)
+            if lit:
+                name = lit.group(1)
+            else:
+                ident = re.match(r'([A-Za-z_]\w*)\s*[+,)]', rest)
+                if ident:
+                    var = ident.group(1)
+                    decl = re.search(r'\b' + var + r'\s*(?:=|\{|\()\s*"([^"|]*)', src)
+                    if decl:
+                        name = decl.group(1)
+                    elif cpp.name == "fslslbridge.cpp" and var == "msgVal":
+                        # updateBoolSettingValue() forwards its argument as the
+                        # command name; its callers are read by the second pattern.
+                        continue
+            if name and name.strip():
+                asked.add(name.strip())
+            else:
+                unread.append("%s:%d" % (cpp.name, src.count("\n", 0, m.start()) + 1))
 
 answers = set(re.findall(r'cmd == "([^"]+)"', lsl))
 
 fails = []
+for site in unread:
+    fails.append("cannot tell which command %s sends -- NOT CHECKED. Build it from a literal, "
+                 "or teach this check where its name comes from" % site)
 for cmd in sorted(asked - answers):
     fails.append('the viewer sends "%s" and the bridge does not answer it '
                  "(the feature goes quiet, with nothing saying why)" % cmd)

@@ -59,7 +59,6 @@ Memoria assegnata alla scheda grafica (Budget): [VRAM_BUDGET]
 		Versione OpenGL (OpenGL Version): [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-Modalità (Settings mode): [MODE]
 Tema (Viewer Skin): [SKIN] ([THEME])
 Dimensione finestra (Window size): [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Carattere (Font Used): [FONT] ([FONT_SCREEN_DPI] dpi)

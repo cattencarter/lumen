@@ -72,7 +72,6 @@ SLURL: &lt;nolink&gt;[SLURL]&lt;/nolink&gt;
 		Версия OpenGL: [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-		Режим настроек: [MODE]
 Графическое оформление: [SKIN] ([THEME])
 Размер окна: [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Используемый шрифт: [FONT] ([FONT_SCREEN_DPI])

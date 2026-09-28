@@ -1642,7 +1642,7 @@ namespace LLError
     {
         // Files Are missing, likely can't localize.
         const std::string error_string =
-            "Firestorm couldn't access some of the files it needs and will be closed."
+            "Lumen couldn't access some of the files it needs and will be closed."
             "\n\nPlease reinstall the viewer from https://github.com/cattencarter/lumen/releases and "
             "report it at https://github.com/cattencarter/lumen/issues if the problem persists.";
         sHandler("Missing Files", error_string, ERROR_MISSING_FILES);

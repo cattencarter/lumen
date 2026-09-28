@@ -60,7 +60,6 @@ Mémoire de carte graphique (Capacité): [VRAM_BUDGET]
 		Version OpenGL : [OPENGL_VERSION]
 	</string>
 	<string name="AboutSettings">
-Mode de réglage : [MODE]
 Skin du client : [SKIN] ([THEME])
 Taille de la fenêtre : [WINDOW_WIDTH]x[WINDOW_HEIGHT] px
 Police utilisée : [FONT] ([FONT_SCREEN_DPI] dpi)

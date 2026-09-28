@@ -45,7 +45,7 @@ bool LLTransUtil::parseStrings(const std::string& xml_filename, const std::set<s
     if (!success)
     {
         const std::string error_string =
-            "Firestorm couldn't access some of the files it needs and will be closed."
+            "Lumen couldn't access some of the files it needs and will be closed."
             "\n\nPlease reinstall the viewer from https://github.com/cattencarter/lumen/releases and "
             "report it at https://github.com/cattencarter/lumen/issues if the problem persists.";
         LLError::LLUserWarningMsg::show(error_string, LLError::LLUserWarningMsg::ERROR_MISSING_FILES);

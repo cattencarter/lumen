@@ -158,6 +158,13 @@ public:
                        const std::string& waiting_reply, const LLUUID& ask_id);
     // </Lumen>
 
+    // <Lumen> A reply the away-responder sent in the user's name, for
+    // read_actions: which channel ("im", "local_chat", "arrival"), to whom and
+    // how long -- never the words. The responder sends directly rather than
+    // through handleRequest, so nothing else would record it.
+    void noteAutomaticReply(const std::string& channel, const LLUUID& to, size_t characters);
+    // </Lumen>
+
 
 private:
 
@@ -255,8 +262,18 @@ private:
      * them and then stands still while they walk off.
      */
     void keepFollowing();
+    /** <Lumen> End a follow, if there is one; true when there was. */
+    bool stopFollowing();
     LLUUID mFollowing;
     bool   mFollowListenerUp = false;
+    // <Lumen> Whether they were flying when the follow began: it never takes
+    // off by itself. Whether the autopilot ran last frame, so the frame it
+    // stops can be told apart -- reaching them, or being stopped short by the
+    // user's own keys or a wall. And where it left them, so the user walking
+    // off by themselves ends it rather than being dragged back.
+    bool       mFollowFlying = false;
+    bool       mFollowWasPiloting = false;
+    LLVector3d mFollowRestAt;
     bool mStreamListenerUp = false;
     bool mDisclaimerListenerUp = false;
 
@@ -444,6 +461,10 @@ private:
     std::unordered_set<LLUUID> mLandmarkQueued;
     std::unordered_map<LLUUID, F64> mLandmarkInFlight;
     std::unordered_set<LLUUID> mLandmarkNaming;     // loaded, waiting for the region's name
+    // <Lumen> Map blocks asked for, by region handle. Asked WITHOUT a callback:
+    // the world map keeps one pending lookup callback for the whole viewer, and
+    // taking it lost the user's own SLURL clicks and typed locations.
+    std::unordered_set<U64> mLandmarkMapAsked;
     std::unordered_set<LLUUID> mRegionsNoAnswer;    // asked this session and never answered
     std::unordered_set<LLUUID> mRegionsNowhere;     // answered: no such region
     S32  mLandmarksNowhere = 0;
@@ -511,6 +532,13 @@ private:
     /** Names registered by suppressAutoOpen, with when, so they expire. */
     LLSD mSuppressOpen;
 
+    // <Lumen> Names create_notecard made, with when. Unlike mSuppressOpen these
+    // are not consumed on arrival: a card with no asset yet that is on this
+    // list is still uploading its text, not empty.
+    LLSD mCreatedNotecards;
+    bool justCreatedNotecard(const std::string& name) const;
+    // </Lumen>
+
     /**
      * Start fetching one notecard's text into mNotecards. Idempotent.
      * Returns false when there is nothing to fetch (no asset, or no region).
@@ -543,6 +571,10 @@ private:
     // was servicing still holds the old socket, so the next start() must drop
     // it rather than add a second server to it.
     bool        mPumpStale = false;
+    // The provider was switched away from the two that need the socket; the
+    // next tick closes it, from outside the pump's own callback.
+    bool        mProviderLeft = false;
+    boost::signals2::connection mProviderConnection;
     // </Lumen>
 
     bool        mSubscribed;
