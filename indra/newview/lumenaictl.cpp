@@ -277,10 +277,24 @@ namespace
 
                 const std::string body = input.asString();
                 std::string reply;
+                LLUUID asking;   // <Lumen>
                 {
                     FromSocketScope from_socket;   // <Lumen>
                     reply = LumenAIControl::instance().handleRequest(body);
+                    asking = LumenAIControl::instance().takeWaitingAsk();   // <Lumen>
                 }
+
+                // <Lumen> The viewer is asking the user whether to go ahead.
+                // Answering "waiting" at once would make Codex or Claude Code
+                // ask again in a tight loop, or give up and tell the user to
+                // answer a question they are already looking at. So the reply
+                // is held, and the call is made again the moment they answer.
+                if (asking.notNull())
+                {
+                    LumenAIControl::instance().holdForAnswer(response, body, reply, asking);
+                    return;
+                }
+                // </Lumen>
 
                 if (reply.empty())
                 {
@@ -551,6 +565,305 @@ void LumenAIControl::recordAction(const std::string& request_id, const std::stri
     }
 }
 
+// <Lumen> The viewer asks the user itself --------------------------------------
+//
+// The author's call, 2026-09-28, reversing Decisions 40: *"for 'dangerous'
+// actions a yes no prompt would be a good idea, with a checkbox to remember my
+// choice."* Until now every "ask first" was a sentence in a tool description
+// and a `confirm` parameter carrying a name -- and a model can be talked into
+// either by a notecard that says the user already agreed. A question the
+// viewer puts on the screen cannot be.
+//
+// The question is an ordinary viewer notification, so "Always choose this
+// option" is the viewer's own checkbox, the remembered answer lives where
+// every other remembered answer does, and Preferences > Notifications >
+// Alerts undoes it. Nothing about remembering was written here.
+namespace
+{
+    std::string safeUtf8(const std::string& in);   // defined further down
+
+    // A Yes that the call which asked has not collected within this long is not
+    // permission for anything any more. Long enough for a caller whose held
+    // reply ran out to come back for it; short enough that a Yes the call
+    // never collected -- because it then failed a check -- cannot quietly
+    // authorise the same call made again much later.
+    const F64 ASK_ANSWER_KEEPS = 120.0;
+    // A question nobody has asked about for this long is taken off the screen:
+    // whoever wanted it has gone.
+    const F64 ASK_ABANDONED = 600.0;
+    // How long a socket reply is held for the user. Under the 60 seconds Codex
+    // gives a tool call, so the caller hears "still waiting" rather than a
+    // timeout it would read as a failure.
+    const F64 ASK_HOLD = 50.0;
+}
+
+bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
+                             const std::string& fingerprint, LLSD& out)
+{
+    const F64 now = LLTimer::getTotalSeconds();
+    sweepAsks();
+
+    auto it = mAsks.find(fingerprint);
+    if (it == mAsks.end())
+    {
+        // Fail closed. A missing template does not fail: the viewer shows its
+        // "MissingAlert" instead, whose only button is OK -- which is option 0,
+        // which is Yes.
+        if (!LLNotifications::instance().templateExists(notification))
+        {
+            LL_WARNS("AICtl") << "askUser: no notification called " << notification
+                              << "; refusing rather than acting unasked." << LL_ENDL;
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The viewer could not put its question to the user, so nothing was "
+                           "done. This is a fault in the viewer, not something they refused.";
+            out = LLSD(); out["__error"] = e;
+            return false;
+        }
+
+        PendingAsk& fresh = mAsks[fingerprint];
+        fresh.touched = now;
+
+        LLSD payload;
+        payload["fingerprint"] = fingerprint;
+        // A remembered answer is given INSIDE add(), before it returns -- the
+        // viewer's Ignore channel responds with the saved choice at once. The
+        // flag is how the answer knows it came from there and not from a click.
+        mAnsweringAsk = true;
+        LLNotificationPtr n = LLNotificationsUtil::add(notification, subs, payload,
+                                                       &LumenAIControl::onAskAnswered);
+        mAnsweringAsk = false;
+
+        it = mAsks.find(fingerprint);
+        if (it == mAsks.end()) return false;   // cannot happen: nothing else erases
+        if (!n)
+        {
+            mAsks.erase(it);
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The viewer could not put its question to the user, so nothing was "
+                           "done.";
+            out = LLSD(); out["__error"] = e;
+            return false;
+        }
+        it->second.id = n->getID();
+        it->second.question = n->getMessage();
+        LL_INFOS("AICtl") << "askUser: " << notification
+                          << (it->second.state ? " answered by a remembered choice"
+                                               : " put to the user") << LL_ENDL;
+    }
+
+    PendingAsk& ask = it->second;
+    ask.touched = now;
+
+    if (ask.state == 1)
+    {
+        mAsks.erase(it);
+        return true;
+    }
+
+    if (ask.state == 2)
+    {
+        const bool remembered = ask.remembered;
+        const bool saved = ask.saved;
+        mAsks.erase(it);
+
+        LLSD e; e["code"] = -32000;
+        if (remembered)
+        {
+            e["message"] = "The user has told the viewer always to answer No to this, so "
+                           "nothing was done and they were not asked again. Tell them plainly. "
+                           "If they want it after all, that remembered answer is undone in "
+                           "Preferences > Notifications > Alerts: find \"When the assistant "
+                           "wants...\" and tick Show.";
+        }
+        else
+        {
+            e["message"] = std::string("The user answered No when the viewer asked, so nothing "
+                           "was done. Accept it -- do not try again, or another way round, "
+                           "unless they ask you to.")
+                         + (saved ? " They also ticked \"Always choose this option\", so the "
+                                    "viewer will answer No to this kind of request from now on "
+                                    "without asking; it is undone in Preferences > "
+                                    "Notifications > Alerts." : "");
+        }
+        e["data"] = LLSD().with("user_said", "no");
+        out = LLSD(); out["__error"] = e;
+        return false;
+    }
+
+    // Still on the screen.
+    mWaitingAsk = ask.id;
+    out = LLSD();
+    out["waiting_for_user"] = true;
+    out["ask_id"] = ask.id;
+    out["question"] = safeUtf8(ask.question);
+    out["note"] = "The viewer has put this to the user in a window of its own, with Yes and No, "
+                  "and they have not answered yet. NOTHING has been done. Do not ask them for "
+                  "permission in the conversation as well -- they are looking at the question. "
+                  "Call this again with exactly the same arguments: it waits for their answer, "
+                  "then goes ahead or tells you they said no.";
+    return false;
+}
+
+void LumenAIControl::onAskAnswered(const LLSD& notification, const LLSD& response)
+{
+    if (!LumenAIControl::instanceExists()) return;
+    LumenAIControl& self = LumenAIControl::instance();
+
+    const std::string fp = notification["payload"]["fingerprint"].asString();
+    auto it = self.mAsks.find(fp);
+    if (it == self.mAsks.end()) return;   // withdrawn: nobody is waiting for this answer
+
+    // Only the first button is Yes. Anything else -- No, the close box, an
+    // answer the form did not expect -- is No, so a surprise can never act.
+    const S32 option = LLNotificationsUtil::getSelectedOption(notification, response);
+    it->second.state = (option == 0) ? 1 : 2;
+    it->second.answered = LLTimer::getTotalSeconds();
+    it->second.remembered = self.mAnsweringAsk;
+    LLNotificationPtr n = LLNotifications::instance().find(notification["id"].asUUID());
+    it->second.saved = n && n->isIgnored();
+
+    LL_INFOS("AICtl") << "askUser: " << notification["name"].asString() << " answered "
+                      << (option == 0 ? "Yes" : "No")
+                      << (it->second.remembered ? " (remembered)" : "")
+                      << (it->second.saved && !it->second.remembered ? ", and to be remembered" : "")
+                      << LL_ENDL;
+}
+
+void LumenAIControl::sweepAsks()
+{
+    const F64 now = LLTimer::getTotalSeconds();
+    for (auto it = mAsks.begin(); it != mAsks.end(); )
+    {
+        const PendingAsk& a = it->second;
+        const bool stale = (a.state == 0) ? (now - a.touched > ASK_ABANDONED)
+                                          : (now - a.answered > ASK_ANSWER_KEEPS);
+        if (!stale) { ++it; continue; }
+
+        if (a.state == 0 && a.id.notNull())
+        {
+            if (LLNotificationPtr n = LLNotifications::instance().find(a.id))
+            {
+                LLNotifications::instance().cancel(n);
+            }
+        }
+        it = mAsks.erase(it);
+    }
+}
+
+bool LumenAIControl::askPending(const LLUUID& ask_id)
+{
+    for (auto& kv : mAsks)
+    {
+        if (kv.second.id != ask_id) continue;
+        kv.second.touched = LLTimer::getTotalSeconds();
+        return kv.second.state == 0;
+    }
+    return false;
+}
+
+void LumenAIControl::withdrawAsk(const LLUUID& ask_id)
+{
+    for (auto it = mAsks.begin(); it != mAsks.end(); ++it)
+    {
+        if (it->second.id != ask_id) continue;
+        if (it->second.state == 0)
+        {
+            if (LLNotificationPtr n = LLNotifications::instance().find(ask_id))
+            {
+                LLNotifications::instance().cancel(n);
+            }
+        }
+        mAsks.erase(it);
+        return;
+    }
+}
+
+std::string LumenAIControl::askObjectName(LLViewerObject* object) const
+{
+    if (!object) return "an object";
+    LLViewerObject* root = object->getRootEdit();
+    if (!root) root = object;
+    std::string name;
+    LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+    if (sel.notNull())
+    {
+        if (LLSelectNode* node = sel->findNode(root)) name = node->mName;
+    }
+    if (name.empty())
+    {
+        if (const ObjectLabel* label = objectLabel(root->getID())) name = label->name;
+    }
+    return name.empty() ? std::string("an object whose name the viewer does not know yet")
+                        : "\"" + safeUtf8(name) + "\"";
+}
+
+LLUUID LumenAIControl::takeWaitingAsk()
+{
+    const LLUUID id = mWaitingAsk;
+    mWaitingAsk.setNull();
+    return id;
+}
+
+void LumenAIControl::holdForAnswer(LLHTTPNode::ResponsePtr response, const std::string& body,
+                                   const std::string& waiting_reply, const LLUUID& ask_id)
+{
+    // A held reply keeps its socket's chain locked, and the pump retires a
+    // chain after 30 seconds whether it is locked or not (llpumpio.cpp). We are
+    // inside that chain's own processing here, so the pump's "current chain" is
+    // this one, and its clock can be moved.
+    if (mPump)
+    {
+        mPump->setTimeoutSeconds((F32)(ASK_HOLD + 30.0));
+    }
+    HeldReply held;
+    held.response      = response;
+    held.body          = body;
+    held.waiting_reply = waiting_reply;
+    held.ask_id        = ask_id;
+    held.since         = LLTimer::getTotalSeconds();
+    mHeld.push_back(held);
+}
+
+void LumenAIControl::serviceHeldReplies()
+{
+    if (mHeld.empty()) return;
+
+    const F64 now = LLTimer::getTotalSeconds();
+    std::vector<HeldReply> keep, ready;
+    for (HeldReply& h : mHeld)
+    {
+        if (askPending(h.ask_id) && now - h.since < ASK_HOLD) keep.push_back(h);
+        else ready.push_back(h);
+    }
+    mHeld.swap(keep);
+
+    for (HeldReply& h : ready)
+    {
+        std::string reply = h.waiting_reply;
+        bool answered = false;
+        for (const auto& kv : mAsks)
+        {
+            if (kv.second.id == h.ask_id) { answered = kv.second.state != 0; break; }
+        }
+        if (answered)
+        {
+            // Made again exactly as it arrived. The handler checks everything
+            // once more -- the world may have moved while they read the
+            // question -- and then finds the answer waiting for it.
+            FromSocketScope from_socket;
+            reply = handleRequest(h.body);
+            // Asking again inside the same call would be a new question with
+            // nobody holding for it; it is answered "waiting" like any other.
+            takeWaitingAsk();
+        }
+        // Otherwise the hold ran out, or the question went away unanswered:
+        // the caller hears "still waiting, call again", which is true either
+        // way and does nothing.
+        h.response->extendedResult(HTTP_OK, reply, jsonHeaders());
+    }
+}
+// </Lumen>
+
 LLSD LumenAIControl::actionLog(size_t limit) const
 {
     LLSD entries = LLSD::emptyArray();
@@ -708,6 +1021,21 @@ namespace
         LLStringUtil::toLower(out);
         return out;
     }
+
+    // <Lumen> Text a model wrote, as the viewer's question shows it: valid
+    // UTF-8, cut on a character boundary so a long message cannot push the
+    // Yes and No buttons off the screen, and quoted so it reads as the words
+    // that would be sent rather than as the viewer speaking.
+    std::string askQuote(const std::string& text, size_t limit = 600)
+    {
+        std::string t = safeUtf8(text);
+        if (t.size() > limit)
+        {
+            t = t.substr(0, utf8Boundary(t, limit)) + "...";
+        }
+        return "\"" + t + "\"";
+    }
+    // </Lumen>
 
     // Personal Lighting shows the sun and ambient swatches at a third of their
     // stored value and multiplies back on commit
@@ -2426,6 +2754,9 @@ namespace
             {
                 if (!n || n->isCancelled() || n->isRespondedTo()) return;
                 if ((size_t)out.size() >= limit) return;
+                // <Lumen> The viewer asking the user about something the
+                // assistant wants to do is not the assistant's to answer.
+                if (n->getName().compare(0, 8, "LumenAsk") == 0) return;
 
                 LLSD one;
                 one["id"] = n->getID();
@@ -2549,9 +2880,10 @@ namespace
             "head or the hair, not the old garment.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete puts it back, "
             "and only the user emptying their own Trash actually removes anything. Say so that "
-            "way: \"moved to Trash\", not \"deleted\". A NO-COPY item is the only one they have, "
-            "so that one is refused until you have ASKED THEM and can pass `confirm` with the "
-            "item's exact name. Anything worn must be detached first.\n"
+            "way: \"moved to Trash\", not \"deleted\". The viewer asks the user itself first, in "
+            "a window of its own with Yes and No -- do not ask them for permission as well, just "
+            "make the call once you know which item they mean. Anything worn must be detached "
+            "first.\n"
             "- undelete: take an item back out of the Trash.\n"
             "- wear_outfit: put on a whole saved outfit by name, which is how people actually "
             "think about getting dressed. `add: true` keeps what is already worn.\n"
@@ -2611,11 +2943,6 @@ namespace
                                 "replacing.";
         inv_props["add"]=iadd;
         inv_props["folder_id"]=ifd; inv_props["item_id"]=sid; inv_props["name"]=snm;
-        LLSD scf; scf["type"]="string";
-            scf["description"]="Only for a NO-COPY item, and only after the user has said yes in "
-                               "so many words: the item's exact name, to confirm. The call is "
-                               "refused without it, and refused again if it does not match. Never "
-                               "send it without asking -- it is the only one they have.";
         inv_props["replace"]=irp; inv_props["text"]=itx; inv_props["limit"]=slim;
                 LLSD sort_p; sort_p["type"]="string";
         sort_p["description"] =
@@ -2623,7 +2950,7 @@ namespace
             "fits; \"newest\" and \"oldest\" order by when the item was acquired. Every result "
             "carries `acquired` as well, so \"the newest one\" never needs guessing.";
         inv_props["sort"] = sort_p;
-        inv_props["request_id"]=srq; inv_props["confirm"]=scf;
+        inv_props["request_id"]=srq;
         LLSD inv_schema; inv_schema["type"]="object"; inv_schema["properties"]=inv_props;
         LLSD inv_req = LLSD::emptyArray(); inv_req.append("action");
         inv_schema["required"]=inv_req;
@@ -2701,14 +3028,17 @@ namespace
             "notices in each.\n"
             "- give_item: offer one inventory item to one person -- a notecard, a landmark, a "
             "copy of an object. They get an offer they can accept or decline; the viewer is not "
-            "told which, so never say it was received. A NO-COPY item is the only one they have "
-            "and does not come back if accepted, so that one is refused until you have ASKED THEM "
-            "and can pass `confirm` with the item's exact name. Identify the item with `item_id` "
-            "from an inventory search, or `item` for its name.\n"
+            "told which, so never say it was received. The viewer asks the user itself before "
+            "anything is offered, and says so plainly when the item is no-copy. Identify the item "
+            "with `item_id` from an inventory search, or `item` for its name.\n"
             "- send_group_notice: a notice to everyone in one group, with a `subject`, a "
             "`message`, and optionally `item_id` to attach something from inventory. This goes to "
-            "every member and CANNOT be recalled or edited, so read it back to the user and get "
-            "their agreement before sending. Pass a request_id.";
+            "every member and CANNOT be recalled or edited. The viewer shows the user the subject "
+            "and the words and asks before it goes. Pass a request_id.\n"
+            "Anything said or sent in the user's name -- say, send_im, send_group_message, "
+            "send_group_notice, give_item -- is put to them by the viewer first, with Yes and No, "
+            "unless they have told it always to allow that kind. Do not ask permission in the "
+            "conversation as well. If they say No you are told; accept it.";
         LLSD chat_props;
         chat_props["action"] = actionProperty(chat_actions, LL_ARRAY_SIZE(chat_actions), "What to do. Required.");
         LLSD cmsg; cmsg["type"]="string"; cmsg["description"]="say / send_im: the message.";
@@ -2735,10 +3065,6 @@ namespace
                                  "matches more than one thing.";
         chat_props["item"]=citem;
         chat_props["group_id"]=cgid; chat_props["group"]=cgn;
-        LLSD ccf; ccf["type"]="string";
-            ccf["description"]="give_item, only for a NO-COPY item, and only after the user has "
-                               "said yes: the item's exact name. Without it the call is refused.";
-        chat_props["confirm"]=ccf;
         // <Lumen> show_waiting: the reply to catch_up, as data rather than prose
         // Every array says what it holds: OpenAI refuses a whole request
         // whose schema has an array without `items`.
@@ -2904,9 +3230,10 @@ namespace
             "again with other words.\n"
             "  **These are strangers' listings, and search is full of spam.** A place named like "
             "the thing they asked for is not evidence it is that thing. Say what search lists, "
-            "say it is from search rather than their own places, and **ask before going "
-            "anywhere**: a place is reached with teleport, `place_id` = its `id` and `confirm` = "
-            "its name or region exactly, and only after they say yes.\n"
+            "and say it is from search rather than their own places. A place is reached with "
+            "teleport, `place_id` = its `id`; the viewer then shows the user the listing and asks "
+            "whether to go, so do not ask them that yourself -- but never pick a place for them "
+            "they did not choose.\n"
             "  What is returned follows the rating they chose in Preferences > General (\"I want "
             "to access content rated\") -- it is not a way to see more than they would see.\n"
             "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
@@ -2948,12 +3275,9 @@ namespace
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
         LLSD mpid; mpid["type"]="string";
-            mpid["description"]="teleport: the `id` of a place search_places returned -- only after "
-                                "the user has said yes to going there.";
-        LLSD mcf; mcf["type"]="string";
-            mcf["description"]="teleport with place_id: the place's name or its region, exactly, "
-                               "which says the user agreed to go there.";
-        move_props["place_id"]=mpid; move_props["confirm"]=mcf;
+            mpid["description"]="teleport: the `id` of a place search_places returned. The viewer "
+                                "asks the user before going there.";
+        move_props["place_id"]=mpid;
         // Read by worn_by and pose, and declared on no tool they belong to:
         // worn_by says "call again with the same agent_id" and pose's refusal
         // for an ambiguous name says "pass its item_id" -- instructions the
@@ -3199,9 +3523,11 @@ namespace
             "changed, and ask.\n"
             "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
             "the user what they want first.** These grant permission to take things, move the "
-            "avatar, or run scripts on it. Never choose for them. Granting a script permission "
-            "to take their money is refused until you pass `confirm` with the object's exact "
-            "name, which you do only after they have said yes.";
+            "avatar, or run scripts on it. Never choose for them. The viewer then asks them "
+            "itself, showing the dialogue and the choice, before anything is answered -- so once "
+            "they have told you which choice, make the call and do not ask again. The viewer's "
+            "own questions about what YOU want to do never appear here and cannot be answered "
+            "by you.";
         LLSD view_props;
         LLSD vsc; vsc["type"]="string";
             vsc["description"]="edit_script: which open script window to write into, by title. "
@@ -3277,11 +3603,6 @@ namespace
         LLSD vch;  vch["type"]="string";
             vch["description"]="answer_dialogue: the `name` of one of that dialogue's choices.";
         view_props["id"]=vdid; view_props["choice"]=vch;
-        LLSD vcf; vcf["type"]="string";
-            vcf["description"]="answer_dialogue: when granting a script permission to take the "
-                               "user's money, the object's exact name -- only after the user "
-                               "has said yes.";
-        view_props["confirm"]=vcf;
         view_props["limit"] = slim;
 
         // lighting. None of these were declared, which meant a host validating
@@ -3471,12 +3792,7 @@ namespace
             LLSD bit; bit["type"]="string";
                 bit["description"]="rez: the name of an OBJECT in inventory to rez, instead of "
                                    "making a new prim. Find it with inventory / search first.";
-            LLSD bcf; bcf["type"]="string";
-                bcf["description"]="rez: a no-copy object leaves inventory when rezzed, so it is "
-                                   "refused until this carries the item's exact name. remove: a "
-                                   "no-copy or locked object is refused until this carries the "
-                                   "object's exact name, which the refusal gives.";
-            build_props["item"]=bit; build_props["confirm"]=bcf;
+            build_props["item"]=bit;
             // A name matching several objects is refused with "pass its
             // item_id", which this tool did not declare.
             LLSD bii; bii["type"]="string";
@@ -3964,6 +4280,11 @@ bool LumenAIControl::tick(const LLSD&)
         subscribe();
         mPump->pump();
         mPump->callback();
+        serviceHeldReplies();   // <Lumen> answer a reply held while the user was asked
+        // <Lumen> And take down a question whose caller has gone. Sweeping only
+        // when a new question was asked left the last one of a session on the
+        // screen for good, answerable by nobody.
+        if (!mAsks.empty()) sweepAsks();
     }
     catch (const std::exception& e)
     {
@@ -4002,6 +4323,7 @@ bool LumenAIControl::tick(const LLSD&)
 
 std::string LumenAIControl::handleRequest(const std::string& body)
 {
+    mWaitingAsk.setNull();   // <Lumen> only THIS request's question may hold its reply
 
     boost::json::value parsed;
     try
@@ -7627,6 +7949,20 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (kind == "whisper")   type = CHAT_TYPE_WHISPER;
         else if (kind == "shout") type = CHAT_TYPE_SHOUT;
 
+        // <Lumen> Words said in the user's name, in front of whoever is there.
+        {
+            std::string where = channel == 0 ? std::string("in local chat")
+                                             : llformat("on channel %d, where objects listen", channel);
+            if (type == CHAT_TYPE_SHOUT)        where = "as a shout, " + where;
+            else if (type == CHAT_TYPE_WHISPER) where = "as a whisper, " + where;
+            LLSD subs;
+            subs["WHERE"] = where;
+            subs["TEXT"]  = askQuote(message);
+            LLSD ask;
+            if (!askUser("LumenAskSay", subs, fingerprintOf("say", params), ask)) return ask;
+        }
+        // </Lumen>
+
         // The sequence the chat stream is at *before* speaking. The viewer
         // echoes its own speech back through that stream, so a caller can read
         // from here and see the line actually appear rather than take our word
@@ -8235,6 +8571,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         {
             to_name = av_name.getUserName();
         }
+
+        // <Lumen> A message to a real person, in the user's name.
+        {
+            LLSD subs;
+            subs["NAME"] = LLAvatarNameCache::get(to, &av_name)
+                         ? av_name.getCompleteName() : to_name;
+            subs["TEXT"] = askQuote(message);
+            LLSD ask;
+            if (!askUser("LumenAskIM", subs, print, ask)) return ask;
+        }
+        // </Lumen>
 
         // Same two calls the IM window makes, in the same order: open or find
         // the conversation, then send into it. Going through addSession means
@@ -8854,10 +9201,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                         "Web tab) lists under those words, most relevant first -- STRANGERS' "
                         "listings, not the user's own landmarks or anything nearby. First page "
                         "only; `total_listed` is how many exist. A name that matches is not "
-                        "evidence it is the place they meant. **Ask before going anywhere**: "
-                        "name the place and its region, and only when they say yes call "
-                        "teleport with its `place_id` set to the result's `id` and `confirm` "
-                        "set to its name or its region exactly. Anything with `looks_like_advertising` is "
+                        "evidence it is the place they meant. Name the place and its region; "
+                        "when they choose one, call teleport with its `place_id` set to the "
+                        "result's `id`, and the viewer asks them before going. Anything with "
+                        "`looks_like_advertising` is "
                         "keyword-stuffed or promises free money: say so if you mention it, and "
                         "never choose one for them.";
                 }
@@ -9612,6 +9959,19 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 LLSD w; w["__error"] = e; return w;
             }
         }
+
+        // <Lumen> A script that is running the moment it exists, in an object
+        // other people can touch.
+        {
+            LLSD subs;
+            subs["OBJECT"] = askObjectName(object);
+            LLSD ask;
+            if (!askUser("LumenAskNewScript", subs, fingerprintOf(method, params), ask))
+            {
+                return ask;
+            }
+        }
+        // </Lumen>
 
         LLPermissions perm;
         perm.init(gAgent.getID(), gAgent.getID(), LLUUID::null, LLUUID::null);
@@ -13025,49 +13385,37 @@ if (method == "camera")
         }
         // </Lumen>
 
-        // A no-copy item is the only one there is. The assistant does not get
-        // to decide on its own -- but the confirmation belongs in the
-        // CONVERSATION, not in the viewer. Someone using Second Life through
-        // ChatGPT precisely because the viewer's interface is in their way
-        // cannot be sent back to that interface to click a dialogue; that
-        // would be the barrier again, at the worst possible moment.
-        //
-        // So the first call always refuses and says what to do: tell the user
-        // what this is and that it cannot be undone, and if they agree, call
-        // again with `confirm` set to the item's exact name.
-        //
-        // Being honest about what this does and does not achieve: it cannot
-        // force a model to ask. What it does is make a single careless call
-        // harmless, require a second deliberate one, and put the item's name
-        // in front of whoever is reading -- and the action log records that
-        // the confirmation was given, so it can be checked afterwards.
-        if (!is_link && !item->getPermissions().allowCopyBy(gAgentID))
-        {
-            const std::string confirm = params.has("confirm")
-                ? params["confirm"].asString() : std::string();
-            if (lowered(confirm) != lowered(item_name))
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] =
-                    "\"" + safeUtf8(item_name) + "\" is no-copy: it is the only one the user has. "
-                    "Moving it to the Trash can be undone with undelete, but emptying the Trash "
-                    "afterwards cannot. Do not do this on your own. Tell them what it is, say "
-                    "plainly that it is their only copy, and ask. If they say yes, call again "
-                    "with confirm set to the item's exact name.";
-                e["data"] = LLSD().with("needs_confirmation", true)
-                                  .with("item", safeUtf8(item_name))
-                                  .with("reason", "no-copy");
-                LLSD w; w["__error"] = e; return w;
-            }
-            LL_INFOS("AICtl") << "delete_item: no-copy, confirmed for " << id << LL_ENDL;
-        }
-
         if (get_is_item_worn(id))
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "That item is being worn. Detach it first, then delete it.";
             LLSD w; w["__error"] = e; return w;
         }
+
+        // <Lumen> The viewer asks, not the model. This used to refuse a no-copy
+        // item until the model passed `confirm` with its exact name, on the
+        // argument that the asking belongs in the conversation (Decisions 40).
+        // The author reversed that on 2026-09-28: a name is something a
+        // notecard can supply, and a question on the screen is not. Every
+        // delete is asked about now -- it goes to the Trash and can be put
+        // back, so "Always choose this option" is offered too.
+        {
+            const bool no_copy = !is_link && !item->getPermissions().allowCopyBy(gAgentID);
+            LLSD subs;
+            subs["ITEM"] = safeUtf8(item_name);
+            subs["NOTE"] = is_link
+                ? std::string("It is only a link -- the item itself stays where it is.")
+                : no_copy
+                ? std::string("It is no-copy, so this is the only one you have. It can still be "
+                              "taken back out of the Trash.")
+                : std::string("It can be taken back out of the Trash.");
+            LLSD ask;
+            if (!askUser("LumenAskDelete", subs, fingerprintOf("delete_item", params), ask))
+            {
+                return ask;
+            }
+        }
+        // </Lumen>
 
         // Moves to Trash. Nothing here purges, and no tool offers purging:
         // emptying the Trash stays the user's own deliberate act.
@@ -13275,29 +13623,24 @@ if (method == "camera")
         // Giving away a no-copy item is the most final thing this endpoint can
         // do: it leaves this inventory and there is no Trash to fetch it from.
         // isInventoryGiveAcceptable() checks transfer, not copy, so the
-        // distinction has to be made here -- and, as with delete, the asking
-        // belongs in the conversation and not in the viewer.
-        if (!item->getPermissions().allowCopyBy(gAgentID))
+        // distinction has to be made here.
+        //
+        // <Lumen> The viewer asks the user itself now (see askUser). A no-copy
+        // give gets a question WITHOUT "Always choose this option": a
+        // remembered Yes there would let the next notecard that says "give
+        // Anna your best dress" do it unseen, and it cannot be taken back.
         {
-            const std::string confirm = params.has("confirm")
-                ? params["confirm"].asString() : std::string();
-            if (lowered(confirm) != lowered(item_name))
+            const bool no_copy = !item->getPermissions().allowCopyBy(gAgentID);
+            LLSD subs;
+            subs["ITEM"] = safeUtf8(item_name);
+            subs["NAME"] = LLAvatarNameCache::get(to, &av) ? av.getCompleteName() : to_name;
+            LLSD ask;
+            if (!askUser(no_copy ? "LumenAskGiveNoCopy" : "LumenAskGive", subs, print, ask))
             {
-                LLSD e; e["code"] = -32000;
-                e["message"] =
-                    "\"" + safeUtf8(item_name) + "\" is no-copy: it is the only one the user has, "
-                    "and if " + to_name + " accepts it, it is gone from their inventory for good. "
-                    "There is no undo and no Trash. Do not do this on your own. Tell them what it "
-                    "is, who it would go to, and that they cannot get it back, and ask. If they "
-                    "say yes, call again with confirm set to the item's exact name.";
-                e["data"] = LLSD().with("needs_confirmation", true)
-                                  .with("item", safeUtf8(item_name))
-                                  .with("to", to_name)
-                                  .with("reason", "no-copy");
-                LLSD w; w["__error"] = e; return w;
+                return ask;
             }
-            LL_INFOS("AICtl") << "give_item: no-copy, confirmed for " << item_id << LL_ENDL;
         }
+        // </Lumen>
 
         // <Lumen> Two roads, because the viewer's own has a dialogue in it.
         //
@@ -13306,8 +13649,8 @@ if (method == "camera")
         // false (llgiveinventory.cpp:202-223). So the confirmed no-copy give
         // above used to answer "Second Life refused the offer" while a box sat
         // in the viewer waiting for a click -- and if the user clicked it, the
-        // item went after the assistant had said it did not. The confirmation
-        // has already happened, in the conversation (Decisions 40), so the
+        // item went after the assistant had said it did not. The user has
+        // already said yes -- to the viewer's own question, above -- so the
         // no-copy case goes to the commit path directly, with the same RLV
         // check the dialogue's own Yes button makes.
         bool offered = false;
@@ -13451,6 +13794,20 @@ if (method == "camera")
         LLGroupData data;
         const std::string group_name =
             gAgent.getGroupData(group_id, data) ? data.mName : group_id.asString();
+
+        // <Lumen> Every member of the group, and it cannot be recalled.
+        {
+            LLSD subs;
+            subs["GROUP"]   = safeUtf8(group_name);
+            subs["SUBJECT"] = askQuote(subject, 120);
+            subs["TEXT"]    = askQuote(message);
+            subs["NOTE"]    = attachment
+                ? "With " + safeUtf8(attachment->getName()) + " attached."
+                : std::string();
+            LLSD ask;
+            if (!askUser("LumenAskGroupNotice", subs, print, ask)) return ask;
+        }
+        // </Lumen>
 
         // Findings 5: the attachment is a field here. Through the interface it
         // can only arrive by dropping an item on a target, which is why this
@@ -13643,6 +14000,19 @@ if (method == "camera")
                                   "session is up.";
                 return pending;
             }
+        }
+        // </Lumen>
+
+        // <Lumen> Asked after the session is up rather than before, so a Yes
+        // is not spent on a call that then answers "joining, call again" and
+        // asks a second time. Opening the group's chat is what clicking it in
+        // the Groups list does; only the words need the user's say-so.
+        {
+            LLSD subs;
+            subs["GROUP"] = safeUtf8(group_name);
+            subs["TEXT"]  = askQuote(message);
+            LLSD ask;
+            if (!askUser("LumenAskGroupChat", subs, print, ask)) return ask;
         }
         // </Lumen>
         LLIMModel::sendMessage(message, session_id, group_id, IM_SESSION_GROUP_START);
@@ -14256,11 +14626,10 @@ if (method == "camera")
 
             // A place out of Second Life's search is a STRANGER'S listing, and
             // that search is full of keyword spam. The author's rule: ask
-            // first. So a search result is reached only by its place_id with
-            // `confirm` carrying its exact name -- the same shape as deleting
-            // something no-copy. It cannot force a model to ask; it does mean
-            // one careless call goes nowhere and the name is in front of
-            // whoever reads the transcript.
+            // first. <Lumen> The viewer asks now, showing the listing's name,
+            // region, rating and whether it looks like advertising -- this used
+            // to wait for `confirm` carrying the name, which proved only that
+            // the model had read the result, not that the user had agreed.
             LLSD where = params;
             std::string search_place;
             if (params.has("place_id") && !params["place_id"].asString().empty())
@@ -14276,49 +14645,49 @@ if (method == "camera")
                 }
                 const LLSD& place = found->second;
                 search_place = place["name"].asString();
-                std::string confirm = params.has("confirm") ? params["confirm"].asString()
-                                                            : std::string();
-                LLStringUtil::trim(confirm);
-                // A listing's title is often the name plus a tagline --
-                // "Raglan Commons - Residential Sim of Tinies, Tinys & Tiny
-                // folk" -- and what gets said to the user is "Raglan Commons".
-                // So the title, the part before its first " - ", or the region
-                // all count. Each one names THIS place; none of them can be
-                // produced without having looked at the result.
-                const std::string said = lowered(confirm);
-                std::string short_name = search_place;
-                const size_t dash = short_name.find(" - ");
-                if (dash != std::string::npos) short_name = short_name.substr(0, dash);
-                LLStringUtil::trim(short_name);
-                const bool agreed = !said.empty()
-                    && (said == lowered(search_place) || said == lowered(short_name)
-                        || said == lowered(place["region"].asString()));
-                if (!agreed)
-                {
-                    LLSD data;
-                    data["name"] = place["name"];
-                    data["region"] = place["region"];
-                    if (place.has("maturity")) data["maturity"] = place["maturity"];
-                    if (place.has("looks_like_advertising"))
-                    {
-                        data["looks_like_advertising"] = true;
-                        data["why"] = place["why"];
-                    }
-                    LLSD e; e["code"] = -32602;
-                    e["message"] = "Not teleporting yet: this is somebody else's listing from "
-                                   "Second Life's search. Ask the user whether they want to go "
-                                   "there -- say its name and region -- and only when they say "
-                                   "yes, call again with `confirm` set to the place's name, "
-                                   "or its region, exactly.";
-                    e["data"] = data;
-                    LLSD w; w["__error"] = e; return w;
-                }
                 if (!place.has("region") || place["region"].asString().empty())
                 {
                     LLSD e; e["code"] = -32602;
                     e["message"] = "That listing carries no location to teleport to.";
                     LLSD w; w["__error"] = e; return w;
                 }
+                {
+                    std::string note;
+                    if (place.has("maturity") && !place["maturity"].asString().empty())
+                    {
+                        note = "Rated " + place["maturity"].asString() + ". ";
+                    }
+                    if (place.has("looks_like_advertising"))
+                    {
+                        std::string why;
+                        const LLSD& w = place["why"];
+                        if (w.isArray())
+                        {
+                            for (LLSD::array_const_iterator i = w.beginArray(); i != w.endArray(); ++i)
+                            {
+                                if (!why.empty()) why += "; ";
+                                why += i->asString();
+                            }
+                        }
+                        else
+                        {
+                            why = w.asString();
+                        }
+                        note += "It looks like advertising" + (why.empty() ? std::string()
+                                                                            : ": " + why) + ".";
+                    }
+                    LLSD subs;
+                    subs["PLACE"]  = safeUtf8(search_place);
+                    subs["REGION"] = safeUtf8(place["region"].asString());
+                    subs["NOTE"]   = safeUtf8(note);
+                    LLSD ask;
+                    if (!askUser("LumenAskTeleportSearch", subs,
+                                 fingerprintOf("teleport", params), ask))
+                    {
+                        return ask;
+                    }
+                }
+                // </Lumen>
                 where["region"] = place["region"];
                 where["x"] = place["x"]; where["y"] = place["y"]; where["z"] = place["z"];
             }
@@ -14624,6 +14993,40 @@ if (method == "camera")
             }
         }
         // </Lumen>
+        // <Lumen> Switching it ON is asked about -- from then on replies go out
+        // in the user's name with nobody reading them first. Switching it off
+        // never is.
+        if (on)
+        {
+            std::string what;
+            if (ims && local_chat_eff) what = "instant messages and local chat";
+            else if (local_chat_eff)   what = "local chat";
+            else if (ims)              what = "instant messages";
+            else                       what = "nothing but an arrival message";
+            std::string who;
+            for (size_t i = 0; i < only_as_written.size(); ++i)
+            {
+                if (i) who += (i + 1 == only_as_written.size()) ? " and " : ", ";
+                who += safeUtf8(only_as_written[i]);
+            }
+            LLSD subs;
+            subs["WHAT"]    = what;
+            subs["WHO"]     = who.empty() ? std::string("anyone who writes to you")
+                                          : "only " + who;
+            subs["MINUTES"] = llformat("%d",
+                gSavedPerAccountSettings.getS32("LumenAIAutoRespondMinutes"));
+            subs["NOTE"]    = !say.empty()
+                ? "It will send exactly this: " + askQuote(say)
+                : std::string("The assistant writes the replies.");
+            LLSD ask;
+            if (!askUser("LumenAskAwayReplies", subs,
+                         fingerprintOf("answer_while_away", params), ask))
+            {
+                return ask;
+            }
+        }
+        // </Lumen>
+
         LumenAIAutoResponder::instance().arm(on, note, ims, local_chat_eff, also_called,
                                              only, on_arrival, say);
 
@@ -15067,6 +15470,19 @@ if (method == "camera")
                            "Call read_dialogues again to see what is there now.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> The viewer's own question to the user about something the
+        // assistant wants to do. Answering it from here would be the assistant
+        // giving itself permission -- the one thing the question exists to
+        // prevent. read_dialogues does not list these; this refuses them if an
+        // id arrives anyway.
+        if (n->getName().compare(0, 8, "LumenAsk") == 0)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That is the viewer asking the USER whether you may do something. "
+                           "Only they can answer it. Nothing was answered.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
 
         // The response is the notification's own template with one button set,
         // which is exactly what clicking it does. Building the map by hand
@@ -15114,40 +15530,61 @@ if (method == "camera")
         const std::string kind = n->getName();
         const std::string text = safeUtf8(n->getMessage());
 
-        // <Lumen> A script asking to TAKE MONEY is granted in one click, and
-        // the dialogue's words were written by the script's author. Every
-        // other act that cannot be taken back -- a no-copy delete or give, a
-        // locked object -- needs `confirm` carrying the thing's exact name, and
-        // this is at least as final. Denying needs nothing.
+        // <Lumen> The viewer asks the user before answering anything on their
+        // behalf: a dialogue can grant a script control of the avatar, accept
+        // an offer, or join a group that charges a fee, and its words were
+        // written by whoever sent it. A script asking to TAKE MONEY gets a
+        // question with no "Always choose this option" -- granting it is
+        // final, and a remembered Yes would grant the next one unseen. This
+        // replaces the `confirm` parameter that carried the object's name.
+        //
+        // The viewer's own "are you sure you want to quit?" is left alone. It
+        // is not somebody else's question, answering it harms nothing, and it
+        // is how a logged-in test viewer is restarted without leaving the
+        // avatar standing on the region.
         const bool script_question = (kind == "ScriptQuestion" || kind == "ScriptQuestionCaution"
                                       || kind == "ScriptQuestionExperience");
-        if (script_question
-            && ((U32)n->getPayload()["questions"].asInteger()
-                & SCRIPT_PERMISSIONS[SCRIPT_PERMISSION_DEBIT].permbit) != 0
-            && LLNotification::getSelectedOption(n->asLLSD(), response) == 0)
+        if (kind != "ConfirmQuit")
         {
-            const std::string object_name = n->getPayload()["object_name"].asString();
-            const std::string confirm = params.has("confirm")
-                ? params["confirm"].asString() : std::string();
-            if (object_name.empty() || lowered(confirm) != lowered(object_name))
+            const bool grants_money = script_question
+                && ((U32)n->getPayload()["questions"].asInteger()
+                    & SCRIPT_PERMISSIONS[SCRIPT_PERMISSION_DEBIT].permbit) != 0
+                && LLNotification::getSelectedOption(n->asLLSD(), response) == 0;
+
+            std::string label = choice;
+            if (LLNotificationFormPtr form = n->getForm())
             {
-                LLSD e; e["code"] = -32000;
-                e["message"] = object_name.empty()
-                    ? std::string("That script is asking permission to TAKE MONEY from the user, "
-                                  "and it does not say what object it is, so it cannot be "
-                                  "confirmed from here. Nothing was answered. Tell them, and let "
-                                  "them answer the dialogue themselves.")
-                    : "\"" + safeUtf8(object_name) + "\" is asking permission to TAKE MONEY "
-                      "from the user's account whenever its script likes. Nothing was answered. "
-                      "Do not grant this on your own -- tell them exactly that, and ask. If they "
-                      "say yes, call again with confirm set to the object's exact name.";
-                e["data"] = LLSD().with("needs_confirmation", true)
-                                  .with("object", safeUtf8(object_name))
-                                  .with("reason", "debit");
-                LLSD w; w["__error"] = e; return w;
+                LLSD elements;
+                form->getElements(elements);
+                for (LLSD::array_const_iterator it = elements.beginArray(); it != elements.endArray(); ++it)
+                {
+                    if ((*it)["name"].asString() == chosen && (*it).has("text"))
+                    {
+                        label = (*it)["text"].asString();
+                    }
+                }
             }
-            LL_INFOS("AICtl") << "answer_dialogue: money permission, confirmed for "
-                              << object_name << LL_ENDL;
+            std::string from = n->getPayload()["object_name"].asString();
+            if (from.empty()) from = n->getSubstitutions()["OBJECTNAME"].asString();
+            if (from.empty()) from = n->getSubstitutions()["NAME"].asString();
+
+            LLSD subs;
+            subs["FROM"]   = from.empty() ? std::string("a dialogue") : "\"" + safeUtf8(from) + "\"";
+            subs["CHOICE"] = safeUtf8(label);
+            subs["TEXT"]   = askQuote(text, 400);
+            LLSD ask;
+            // The fingerprint carries the dialogue's id, so the same button on
+            // two different boxes is two different questions.
+            if (!askUser(grants_money ? "LumenAskDebit" : "LumenAskDialog", subs,
+                         fingerprintOf("answer_dialogue", params), ask))
+            {
+                return ask;
+            }
+            if (grants_money)
+            {
+                LL_INFOS("AICtl") << "answer_dialogue: money permission, granted by the user for "
+                                  << from << LL_ENDL;
+            }
         }
         // </Lumen>
         n->respond(response);
@@ -15354,25 +15791,23 @@ if (method == "camera")
                 LLSD w; w["__error"] = e; return w;
             }
 
-            // A no-copy object LEAVES inventory when it is rezzed. That is the
-            // same irreversible shape delete and give already guard, so it
-            // takes the same named confirmation rather than a cheerful yes.
+            // A no-copy object LEAVES inventory when it is rezzed. <Lumen> The
+            // question says so; it used to take a `confirm` carrying the name.
             const bool copyable = item->getPermissions().allowCopyBy(gAgent.getID());
-            if (!copyable)
             {
-                const std::string confirm = params.has("confirm")
-                                          ? params["confirm"].asString() : std::string();
-                if (confirm != item->getName())
+                LLSD subs;
+                subs["ACTION"] = "Rez \"" + safeUtf8(item->getName()) + "\" from your "
+                                 "inventory on the ground in front of you?"
+                               + (copyable ? std::string()
+                                           : std::string(" It is no-copy, so it leaves your "
+                                                         "inventory until it is taken back."));
+                LLSD ask;
+                if (!askUser("LumenAskBuild", subs, fingerprintOf("rez_object", params), ask))
                 {
-                    LLSD e; e["code"] = -32000;
-                    e["message"] = "\"" + item->getName() + "\" is no-copy, so rezzing it takes "
-                                   "it OUT of inventory -- if it is then returned or deleted it "
-                                   "is gone. Ask the user whether to go ahead, and call again "
-                                   "with confirm set to the item's exact name.";
-                    LLSD d; d["item"] = item->getName(); d["no_copy"] = true; e["data"] = d;
-                    LLSD w; w["__error"] = e; return w;
+                    return ask;
                 }
             }
+            // </Lumen>
 
             LLViewerRegion* regionp = gAgent.getRegion();
             if (!regionp)
@@ -15468,6 +15903,19 @@ if (method == "camera")
         else if (default_material == "Flesh")   material = LL_MCODE_FLESH;
         else if (default_material == "Rubber")  material = LL_MCODE_RUBBER;
         else if (default_material == "Plastic") material = LL_MCODE_PLASTIC;
+
+        // <Lumen> Something other people can see, on somebody's land.
+        {
+            LLSD subs;
+            subs["ACTION"] = "Put a new " + (want.empty() ? std::string("box") : want)
+                           + " on the ground in front of you?";
+            LLSD ask;
+            if (!askUser("LumenAskBuild", subs, fingerprintOf("rez_object", params), ask))
+            {
+                return ask;
+            }
+        }
+        // </Lumen>
 
         // Deliberately not LLUIUsage::logCommand("Build.ObjectAdd"): that counter
         // is for things the user clicked, and nobody clicked this.
@@ -15808,6 +16256,27 @@ if (method == "camera")
         LLSD result;
         result["selected"] = count;
 
+        // <Lumen> These act on the SELECTION, which the arguments do not name.
+        // So the objects themselves go into what a Yes is keyed on: a Yes to
+        // "delete the chair" must not delete whatever is selected by the time
+        // the call comes back.
+        auto selectionKey = [&]() -> std::string
+        {
+            std::string key = fingerprintOf(method, params);
+            LLObjectSelectionHandle now_sel = LLSelectMgr::getInstance()->getSelection();
+            if (now_sel.isNull()) return key;
+            std::vector<std::string> ids;
+            for (LLObjectSelection::root_iterator it = now_sel->root_begin();
+                 it != now_sel->root_end(); ++it)
+            {
+                if ((*it)->getObject()) ids.push_back((*it)->getObject()->getID().asString());
+            }
+            std::sort(ids.begin(), ids.end());
+            for (const std::string& id : ids) key += "\n" + id;
+            return key;
+        };
+        // </Lumen>
+
         if (method == "link_objects" || method == "unlink_objects")
         {
             const bool linking = (method == "link_objects");
@@ -15901,6 +16370,22 @@ if (method == "camera")
                 LLSD w; w["__error"] = e; return w;
             }
             // </Lumen>
+            // <Lumen> Joining or splitting objects changes what other people
+            // see, and on a no-modify linkset it cannot be put back.
+            {
+                LLSD subs;
+                subs["ACTION"] = linking
+                    ? llformat("Link these %d objects into one?", have)
+                    : "Unlink " + askObjectName(sel.notNull() ? sel->getFirstRootObject(true)
+                                                              : NULL)
+                      + " into its separate parts?";
+                LLSD ask;
+                if (!askUser("LumenAskBuild", subs, selectionKey(), ask))
+                {
+                    return ask;
+                }
+            }
+            // </Lumen>
             if (linking) LLSelectMgr::getInstance()->sendLink();
             else         LLSelectMgr::getInstance()->sendDelink();
             if (linking) sRecentRez.clear();
@@ -15928,10 +16413,10 @@ if (method == "camera")
             // own it puts ConfirmObjectDelete* on the SCREEN and returns, and
             // under RLV it does nothing at all (llselectmgr.cpp:4307-4412).
             // This used to report "sent to the Trash" in every one of those
-            // cases. So the same tests are made here first, the confirmation
-            // is asked for in the conversation (Decisions 40) with the
-            // object's name as `confirm`, and the derez goes through the same
-            // confirmDelete() the dialogue's own Yes button calls.
+            // cases. So the same tests are made here first, the user is asked
+            // by the viewer's own question (askUser), and the derez goes
+            // through the same confirmDelete() the dialogue's own Yes button
+            // calls.
             if (rlv_handler_t::isEnabled() && !rlvCanDeleteOrReturn())
             {
                 LLSD e; e["code"] = -32000;
@@ -15941,35 +16426,14 @@ if (method == "camera")
                 LLSD w; w["__error"] = e; return w;
             }
             bool any = false, locked = false, no_copy = false, not_mine = false;
-            std::string first_name;
             for (LLObjectSelection::iterator it = sel->begin(); it != sel->end(); ++it)
             {
                 LLViewerObject* o = (*it)->getObject();
                 if (!o || o->isAttachment()) continue;
                 any = true;
-                const bool flagged = !o->permMove() || !o->permCopy();
                 if (!o->permMove())     locked   = true;
                 if (!o->permCopy())     no_copy  = true;
                 if (!o->permYouOwner()) not_mine = true;
-                // <Lumen> The name asked for is that of the object actually
-                // found locked or no-copy -- its linkset's, from the root. A
-                // node selected in this very call has no name yet (it arrives
-                // with the simulator's reply on a later frame), so the
-                // viewer's own cache of object names is asked too. Comparing
-                // against an always-empty name refused every confirmation for
-                // ever, however right `confirm` was.
-                if (flagged && first_name.empty())
-                {
-                    LLViewerObject* root = o->getRootEdit();
-                    LLSelectNode* rnode = root ? sel->findNode(root) : NULL;
-                    if (rnode && !rnode->mName.empty()) first_name = rnode->mName;
-                    if (first_name.empty() && root)
-                    {
-                        if (const ObjectLabel* l = objectLabel(root->getID())) first_name = l->name;
-                    }
-                    if (first_name.empty()) first_name = (*it)->mName;
-                }
-                // </Lumen>
             }
             if (!any)
             {
@@ -15986,30 +16450,29 @@ if (method == "camera")
                                "do. Say so rather than trying another way.";
                 LLSD w; w["__error"] = e; return w;
             }
-            if (locked || no_copy)
+            // <Lumen> The viewer asks now. This used to refuse a locked or
+            // no-copy object until `confirm` carried its name; every delete is
+            // asked about instead, and those two say why they matter.
             {
-                const std::string confirm = params.has("confirm")
-                                          ? params["confirm"].asString() : std::string();
-                if (first_name.empty() || lowered(confirm) != lowered(first_name))
+                const S32 roots = sel->getRootObjectCount();
+                std::string what = roots > 1
+                    ? llformat("these %d objects", roots)
+                    : askObjectName(sel->getFirstRootObject(true));
+                std::string note = "It goes to your Trash, where it can be recovered.";
+                if (no_copy) note = "It is no-copy, so this is the only one. " + note;
+                else if (locked) note = "You locked it to protect it. " + note;
+                LLSD subs;
+                subs["OBJECT"] = what;
+                subs["NOTE"]   = note;
+                LLSD ask;
+                if (!askUser("LumenAskRemove", subs, selectionKey(), ask))
                 {
-                    LLSD e; e["code"] = -32000;
-                    e["message"] = std::string(no_copy
-                        ? "That object is no-copy: sending it to the Trash is the only copy "
-                          "going there, and if the Trash is emptied it is gone for good. "
-                        : "That object is locked, which the user did to protect it. ")
-                        + "Do not do this on your own. Tell them, and if they say yes call "
-                          "again with `confirm` set to the object's exact name"
-                        + (first_name.empty() ? " (call movement / look_nearby first to learn it)."
-                                              : ": \"" + safeUtf8(first_name) + "\".");
-                    LLSD d; d["needs_confirmation"] = true;
-                    if (!first_name.empty()) d["object"] = safeUtf8(first_name);
-                    d["reason"] = no_copy ? "no-copy" : "locked";
-                    e["data"] = d;
-                    LLSD w; w["__error"] = e; return w;
+                    return ask;
                 }
-                result["confirmed"] = true;
+                if (locked || no_copy) result["confirmed"] = true;
             }
-            // The same call the dialogue's Yes makes, minus the dialogue.
+            // </Lumen>
+
             LLNotification::Params del("ConfirmObjectDeleteLock");
             del.functor.function(boost::bind(&LLSelectMgr::confirmDelete, _1, _2, sel));
             LLNotifications::instance().forceResponse(del, 0);
@@ -16118,6 +16581,45 @@ if (method == "camera")
                                   (F32)params["colour"][2].asReal(), 1.f);
                 have_colour = true;
             }
+            // <Lumen> Asked once everything has been checked and before the
+            // first change goes out, so a Yes is never spent on a call that
+            // then refuses, and a No leaves the object exactly as it was.
+            {
+                std::vector<std::string> will;
+                if (params.has("name") && !params["name"].asString().empty())
+                    will.push_back("rename it " + askQuote(params["name"].asString(), 80));
+                if (params.has("description")) will.push_back("change its description");
+                if (have_colour)               will.push_back("recolour it");
+                if (!size_vals.empty())        will.push_back("resize it");
+                if (params.has("position") && params["position"].isArray()
+                    && params["position"].size() >= 3) will.push_back("move it");
+                if (params.has("rotation") && params["rotation"].isArray()
+                    && params["rotation"].size() >= 3) will.push_back("turn it");
+                if (will.empty())
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "Nothing to change. Give at least one of name, description, "
+                                   "size, colour, colour_name, position or rotation.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                std::string list;
+                for (size_t i = 0; i < will.size(); ++i)
+                {
+                    if (i) list += (i + 1 == will.size()) ? " and " : ", ";
+                    list += will[i];
+                }
+                const S32 roots = sel->getRootObjectCount();
+                LLSD subs;
+                subs["ACTION"] = "Change " + (roots > 1 ? llformat("these %d objects", roots)
+                                                        : askObjectName(sel->getFirstRootObject(true)))
+                               + ": " + list + "?";
+                LLSD ask;
+                if (!askUser("LumenAskBuild", subs, selectionKey(), ask))
+                {
+                    return ask;
+                }
+            }
+            // </Lumen>
             LLSD changed = LLSD::emptyArray();
 
             if (params.has("name") && !params["name"].asString().empty())

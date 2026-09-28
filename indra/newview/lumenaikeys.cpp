@@ -354,6 +354,18 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                     say(false, "Claude Code is not installed on this computer.");
                     return;
                 }
+                // <Lumen> Installed but predating --restricted: the turn would
+                // stop on its own flags, and the setup button is the way out.
+                {
+                    std::string version;
+                    if (LumenAIClaude::tooOld(&version))
+                    {
+                        refresh();
+                        say(false, LumenAIClaude::tooOldText(version));
+                        return;
+                    }
+                }
+                // </Lumen>
 
                 // **Open the viewer's own connection first.** It listens only
                 // while Codex or Claude Code is the chosen provider, and only
@@ -731,6 +743,15 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::claudeStatus(
         // and the Test popup writes its own.
         return st;
     }
+    // <Lumen> An installed copy too old to start is not set up, and the setup
+    // window's first step updates it. Being installed was the whole test here,
+    // so the panel called 2.1.220 ready while every turn failed on its flags.
+    // Cheap to ask every second: the answer is kept until the file changes.
+    if (LumenAIClaude::tooOld())
+    {
+        return st;
+    }
+    // </Lumen>
 
     st.ready = true;
 
@@ -831,7 +852,20 @@ void LumenPanelPreferenceAIKeys::refresh()
               : (provider == LumenAIKeys::CLAUDECODE) ? claude.ready
               : false;
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
-        cs->setText(LumenAIClaude::unavailableHere());
+    {
+        // <Lumen> The button is the whole message for somebody who has not set
+        // it up. It is NOT for somebody who has, and whose copy has gone out of
+        // date: they did this once, and the button coming back needs a reason
+        // and a way out they can take themselves.
+        std::string text = LumenAIClaude::unavailableHere();
+        std::string version;
+        if (text.empty() && LumenAIClaude::installed() && LumenAIClaude::tooOld(&version))
+        {
+            text = LumenAIClaude::tooOldText(version, true);
+        }
+        cs->setText(text);
+        // </Lumen>
+    }
 
     for (Row& row : mRows)
     {

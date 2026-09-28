@@ -15145,4 +15145,378 @@ How this information is processed, stored, or retained depends on your chosen AI
      yestext="I understand"/>
   </notification>
 
+  <!-- <Lumen> The viewer asks the user itself before the assistant does
+       something dangerous. The author's call, 2026-09-28: "for dangerous
+       actions a yes no prompt would be a good idea, with a checkbox to
+       remember my choice." A question on the screen cannot be talked past the
+       way a model can be talked into believing the user already agreed.
+
+       "Always choose this option" is the viewer's own checkbox (save_option):
+       the answer is remembered with every other remembered answer and undone
+       in Preferences > Notifications. Two have no checkbox at all, because a
+       remembered Yes there cannot be taken back: giving away a no-copy item,
+       and letting a script take money.
+
+       No is the default button, so Enter or a stray click never acts.
+       lumenaictl.cpp refuses to let the assistant answer any notification
+       whose name begins with LumenAsk. Keep that prefix. -->
+  <notification
+   icon="alert.tga"
+   label="Say this as you?"
+   name="LumenAskSay"
+   type="alert">
+The assistant wants to say this [WHERE], as you:
+
+[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to say something in local chat as you"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
+   name="LumenAskIM"
+   type="alert">
+The assistant wants to send [NAME] an instant message, as you:
+
+[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to send an instant message as you"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Send to group chat?"
+   name="LumenAskGroupChat"
+   type="alert">
+The assistant wants to send this to the [GROUP] group chat, as you:
+
+[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to write in a group chat as you"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Post a group notice?"
+   name="LumenAskGroupNotice"
+   type="alert">
+The assistant wants to post a notice to everyone in [GROUP]. A notice cannot be taken back.
+
+Subject: [SUBJECT]
+
+[TEXT]
+
+[NOTE]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to post a group notice"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Give an item?"
+   name="LumenAskGive"
+   type="alert">
+The assistant wants to give [ITEM] to [NAME]. You keep your own copy.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to give a copy of something away"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Give away a no-copy item?"
+   name="LumenAskGiveNoCopy"
+   type="alert">
+The assistant wants to give [ITEM] to [NAME].
+
+It is no-copy, so if they accept it, it is gone from your inventory for good. This cannot be undone.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Give it away"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Keep it"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Delete an item?"
+   name="LumenAskDelete"
+   type="alert">
+The assistant wants to move [ITEM] to the Trash.
+
+[NOTE]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to move an item to the Trash"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Delete an object?"
+   name="LumenAskRemove"
+   type="alert">
+The assistant wants to delete [OBJECT] from the world.
+
+[NOTE]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to delete an object from the world"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Build?"
+   name="LumenAskBuild"
+   type="alert">
+The assistant wants to do this:
+
+[ACTION]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to make, change, link or unlink objects"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Add a script?"
+   name="LumenAskNewScript"
+   type="alert">
+The assistant wants to add a new script to [OBJECT]. It starts running at once, with Linden Lab&apos;s default script, until something else is saved over it.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to add a script to an object"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Teleport to a place from search?"
+   name="LumenAskTeleportSearch"
+   type="alert">
+The assistant wants to teleport you to [PLACE] in [REGION].
+
+It was found in Second Life&apos;s search, which lists other people&apos;s places and carries a lot of advertising. [NOTE]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to teleport you to a place from search"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Answer a dialogue?"
+   name="LumenAskDialog"
+   type="alert">
+The assistant wants to answer [FROM] by pressing &quot;[CHOICE]&quot;.
+
+It asked:
+[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to answer a dialogue for you"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Let a script take your money?"
+   name="LumenAskDebit"
+   type="alert">
+The assistant wants to let [FROM] take Linden dollars from your account.
+
+Once granted, its script can take money whenever it likes, without asking again.
+
+It asked:
+[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Allow it"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Refuse"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Answer for you while you are away?"
+   name="LumenAskAwayReplies"
+   type="alert">
+The assistant wants to answer [WHAT] for you while you are away -- [WHO], for up to [MINUTES] minutes. Replies go out in your name and nobody reads them first.
+
+[NOTE]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to answer for you while you are away"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+
 </notifications>

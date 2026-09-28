@@ -30,17 +30,19 @@
 
 #include "llsingleton.h"
 #include "llsd.h"
+#include "llhttpnode.h"   // <Lumen> a socket reply held while the user is asked
 
 #include <boost/signals2.hpp>
 #include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 class LLMessageSystem;
 
-class LLHTTPNode;
 class LLViewerInventoryItem;
+class LLViewerObject;
 class LLPumpIO;
 
 /**
@@ -127,6 +129,33 @@ public:
     static void beginWornRequest(const LLUUID& who);
     static bool takeWornReply(const LLUUID& who, LLSD& out);
     static void finishWornReply(const LLUUID& who, const LLSD& data);
+    // </Lumen>
+
+    // <Lumen> The viewer asks the user itself before a dangerous action.
+    //
+    // A question put by the viewer, in its own window, cannot be talked past
+    // the way a model can be talked into "the user already said yes". Each
+    // dangerous handler calls askUser() after its own checks and just before
+    // it acts. The first call puts the question on screen and answers
+    // "waiting"; the same call made again once the user has answered goes
+    // ahead or is refused. A remembered answer ("Always choose this option")
+    // settles it at once, with nothing shown.
+    //
+    // Keyed by the call's fingerprint -- tool and exact arguments -- so a Yes
+    // covers the very call that was shown to the user, once, and nothing else.
+
+    /** Whether this question is still waiting for the user. */
+    bool askPending(const LLUUID& ask_id);
+    /** Take a question off the screen because nobody is waiting for it any more. */
+    void withdrawAsk(const LLUUID& ask_id);
+    /**
+     * The question the request just handled is waiting on, if any, and forget
+     * it. Read by the socket, which then holds its reply until the user answers.
+     */
+    LLUUID takeWaitingAsk();
+    /** Hold a socket reply until the user answers, or HOLD seconds pass. */
+    void holdForAnswer(LLHTTPNode::ResponsePtr response, const std::string& body,
+                       const std::string& waiting_reply, const LLUUID& ask_id);
     // </Lumen>
 
 
@@ -277,6 +306,43 @@ private:
     void recordAction(const std::string& request_id, const std::string& fingerprint,
                       const std::string& tool, const std::string& outcome,
                       const LLSD& result, const LLSD& summary);
+
+    // <Lumen> See askPending(). `notification` names a template in
+    // notifications.xml; `subs` fills it. Returns true to go ahead; false
+    // means `out` holds the reply instead -- the user said No, or the
+    // question is on screen and not answered yet.
+    bool askUser(const std::string& notification, const LLSD& subs,
+                 const std::string& fingerprint, LLSD& out);
+    static void onAskAnswered(const LLSD& notification, const LLSD& response);
+    /** An object as the question names it: its own name, quoted, if known. */
+    std::string askObjectName(LLViewerObject* object) const;
+    void sweepAsks();
+    void serviceHeldReplies();
+
+    struct PendingAsk
+    {
+        LLUUID      id;                 //< the notification's id; also what callers wait on
+        S32         state = 0;          //< 0 waiting, 1 yes, 2 no
+        bool        remembered = false; //< answered by a saved choice, nothing shown
+        bool        saved = false;      //< the user ticked "Always choose this option"
+        F64         touched = 0.0;      //< last time a caller asked about it
+        F64         answered = 0.0;
+        std::string question;           //< the dialog's own words, for the waiting reply
+    };
+    std::unordered_map<std::string, PendingAsk> mAsks;   //< by fingerprint
+    LLUUID mWaitingAsk;       //< set by askUser for the request being handled
+    bool   mAnsweringAsk = false;   //< true inside LLNotificationsUtil::add
+
+    struct HeldReply
+    {
+        LLHTTPNode::ResponsePtr response;
+        std::string body;
+        std::string waiting_reply;
+        LLUUID      ask_id;
+        F64         since = 0.0;
+    };
+    std::vector<HeldReply> mHeld;
+    // </Lumen>
 
     /**
      * Notecard text, fetched asynchronously and held until someone reads it.

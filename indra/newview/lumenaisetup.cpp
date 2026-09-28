@@ -48,6 +48,13 @@ namespace
             return cli.empty() ? std::string("claude auth login")
                                : "\"" + cli + "\" auth login";
         }
+        // A copy too old for Lumen is updated by its own updater, not
+        // reinstalled over: it keeps the sign-in, and it is the command
+        // Anthropic documents for exactly this.
+        if (!codex && step == 0 && LumenAIClaude::tooOld())
+        {
+            return LumenAIClaude::updateCommand(false);
+        }
         // </Lumen>
         switch (step)
         {
@@ -123,7 +130,8 @@ bool LumenAISetupFloater::done(EStep step) const
     if (mProvider != LumenAIKeys::CODEX)
     {
         // Claude Code.
-        if (step == STEP_INSTALL) return LumenAIClaude::installed();
+        // <Lumen> Installed is not done if the copy is too old to start.
+        if (step == STEP_INSTALL) return LumenAIClaude::installed() && !LumenAIClaude::tooOld();
         if (step == STEP_SIGNIN)  return mProved;   // see the header
         return true;                                // no third step
     }
@@ -292,10 +300,26 @@ void LumenAISetupFloater::draw()
             // and call that success: what matters is whether the file is
             // there, and it is not.
             mFailed  = true;
-            mRunning = STEP_COUNT;
             mNote    = "That finished, but it did not leave what Lumen was looking for. "
                        "Try it once more; if it keeps happening, the panel behind this "
                        "window has the command you can run by hand.";
+            // <Lumen> An update that ran and left a copy still too old -- a
+            // pinned version, a Homebrew cask brew would not upgrade -- says
+            // exactly what to type, because the panel no longer carries
+            // commands and "the panel behind this window" would send them to
+            // look for one that is not there.
+            std::string version;
+            if (mProvider != LumenAIKeys::CODEX && mRunning == STEP_INSTALL
+                && LumenAIClaude::installed() && LumenAIClaude::tooOld(&version))
+            {
+                mNote = "That finished, but Claude Code is still "
+                      + (version.empty() ? std::string("too old") : version + ", which is too old")
+                      + " for Lumen. Update it yourself: open Terminal, type  "
+                      + LumenAIClaude::updateCommand(true)
+                      + "  and press Return. Then come back and press Test.";
+            }
+            // </Lumen>
+            mRunning = STEP_COUNT;
             refresh();
         }
         else if (mSince.getElapsedTimeF32() > patience(mRunning))
@@ -363,16 +387,26 @@ void LumenAISetupFloater::refresh()
               "asking you for a paid API key. Two things have to happen first, and "
               "Lumen can do both for you."));
     }
+    // <Lumen> An installed copy that is too old gets an update, said as one.
+    std::string old_version;
+    const bool claude_too_old = !codex && LumenAIClaude::tooOld(&old_version);
     if (LLTextBox* t = findChild<LLTextBox>("title_1"))
-        t->setText(std::string("1. Get the program that does the talking"));
+        t->setText(std::string(claude_too_old ? "1. Update the program that does the talking"
+                                              : "1. Get the program that does the talking"));
     if (LLTextBox* t = findChild<LLTextBox>("desc_1"))
     {
         t->setText(std::string(codex
             ? "Lumen downloads this from OpenAI, at chatgpt.com. It is about 230 MB and "
               "you only ever do it once."
-            : "Lumen downloads this from Anthropic, at claude.ai. You only ever do it "
-              "once."));
+            : claude_too_old
+            ? "Your copy of Claude Code" + (old_version.empty() ? std::string()
+                                                               : " (" + old_version + ")")
+              + " is too old for Lumen. This updates it from Anthropic, and keeps your "
+                "sign-in."
+            : std::string("Lumen downloads this from Anthropic, at claude.ai. You only ever "
+                          "do it once.")));
     }
+    // </Lumen>
     if (LLTextBox* t = findChild<LLTextBox>("title_2"))
     {
         t->setText(std::string(codex ? "2. Sign in with your ChatGPT account"

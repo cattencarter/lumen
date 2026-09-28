@@ -17,6 +17,13 @@
 #include "lleventcoro.h"   // llcoro::suspend, for runToResult
 #include "lltimer.h"
 
+#if !LL_WINDOWS
+#include <cstdio>          // <Lumen> popen, for tooOld()
+#include <climits>         //   PATH_MAX, for updateCommand()
+#include <cstdlib>         //   realpath
+#include <sys/stat.h>
+#endif
+
 namespace
 {
     /** The user's home, which is NOT gDirUtilp->getOSUserDir(). */
@@ -86,6 +93,117 @@ bool LumenAIClaude::installed()
     return !cliPath().empty();
 }
 
+// <Lumen> See the header. Found 2026-09-28 on a machine with 2.1.220: start()
+// had been checked against `claude --help` of 2.1.278 on another, and the
+// older copy stopped every turn before it began.
+bool LumenAIClaude::tooOld(std::string* version)
+{
+#if LL_WINDOWS
+    (void)version;
+    return false;   // not ported at all; unavailableHere() says so
+#else
+    const std::string cli = cliPath();
+    if (cli.empty()) return false;   // not installed is a different answer
+
+    // stat follows the installer's symlink to the versioned file, so an update
+    // -- which points the link at a new file -- changes what is compared here.
+    struct stat st;
+    if (stat(cli.c_str(), &st) != 0) return false;
+
+    static std::string s_path;
+    static time_t      s_mtime = 0;
+    static off_t       s_size  = -1;
+    static ino_t       s_ino   = 0;
+    static bool        s_old   = false;
+    static std::string s_version;
+
+    if (s_path != cli || s_mtime != st.st_mtime || s_size != st.st_size || s_ino != st.st_ino)
+    {
+        s_path  = cli;
+        s_mtime = st.st_mtime;
+        s_size  = st.st_size;
+        s_ino   = st.st_ino;
+        s_old   = false;
+        s_version.clear();
+
+        // About 0.1 s, measured, and asked once per file rather than per turn.
+        // The path is one of cliPath()'s fixed places, quoted for the spaces a
+        // home folder can have.
+        const std::string cmd = "\"" + cli + "\" --version 2>&1; echo LUMEN-HELP; \""
+                              + cli + "\" --help 2>&1";
+        std::string out;
+        if (FILE* p = popen(cmd.c_str(), "r"))
+        {
+            char buf[4096];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), p)) > 0) out.append(buf, n);
+            pclose(p);
+        }
+        const size_t split = out.find("LUMEN-HELP");
+        if (split != std::string::npos)
+        {
+            std::string first = out.substr(0, split);
+            const size_t cut = first.find_first_of(" \r\n");
+            if (cut != std::string::npos) first = first.substr(0, cut);
+            s_version = first;
+
+            const std::string help = out.substr(split);
+            // Only a real help text counts as an answer: one that names its
+            // other options but not this one.
+            const bool is_help = help.find("--print") != std::string::npos
+                              || help.find("Options:") != std::string::npos;
+            s_old = is_help && help.find("--restricted") == std::string::npos;
+        }
+        LL_INFOS("LumenAI") << "Claude Code at " << cli << " is " << s_version
+                            << (s_old ? ", too old: it has no --restricted" : "") << LL_ENDL;
+    }
+
+    if (version) *version = s_version;
+    return s_old;
+#endif
+}
+
+std::string LumenAIClaude::updateCommand(bool forPerson)
+{
+    const std::string cli = cliPath();
+    std::string real = cli;
+#if !LL_WINDOWS
+    if (!cli.empty())
+    {
+        char buf[PATH_MAX];
+        if (realpath(cli.c_str(), buf)) real = buf;
+    }
+#endif
+    // A Homebrew cask lives in its Caskroom and refuses to update itself.
+    const size_t cask = real.find("/Caskroom/claude-code/");
+    if (cask != std::string::npos)
+    {
+        const std::string brew = real.substr(0, cask) + "/bin/brew";
+        return forPerson ? std::string("brew upgrade claude-code")
+                         : "\"" + brew + "\" upgrade claude-code";
+    }
+    // An npm install is a package in a global node_modules.
+    if (real.find("/node_modules/") != std::string::npos)
+    {
+        return forPerson ? std::string("npm install -g @anthropic-ai/claude-code@latest")
+                         : "\"" + cli + "\" update";
+    }
+    return forPerson ? std::string("claude update")
+                     : "\"" + (cli.empty() ? std::string("claude") : cli) + "\" update";
+}
+
+std::string LumenAIClaude::tooOldText(const std::string& version, bool inPanel)
+{
+    return "Your copy of Claude Code" + (version.empty() ? std::string() : " (" + version + ")")
+         + " is too old for Lumen. Lumen starts it in a restricted mode that keeps it away from "
+           "your files and your shell, and this version does not have that mode, so Lumen will "
+           "not use it.\n\nTo update it, press \"Set it up for me...\""
+         + std::string(inPanel ? " below" : " in Preferences > AI")
+         + " and Lumen does it for you. Or do it yourself: open Terminal, type  "
+         + updateCommand(true) + "  and press Return. Then press Test.";
+}
+// </Lumen>
+
 std::string LumenAIClaude::unavailableHere()
 {
 #if LL_WINDOWS
@@ -116,6 +234,18 @@ bool LumenAIClaude::start(const std::string& prompt,
         why = here.empty() ? std::string("Claude Code is not installed.") : here;
         return false;
     }
+    // <Lumen> Refused here, with the reason, rather than started to fail on
+    // its own flags with "error: unknown option '--restricted'". Dropping the
+    // flag for an old copy is not on offer: it is the safety argument below.
+    {
+        std::string version;
+        if (tooOld(&version))
+        {
+            why = tooOldText(version);
+            return false;
+        }
+    }
+    // </Lumen>
 
     LLProcess::Params params;
     params.executable = cli;

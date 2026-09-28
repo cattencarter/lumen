@@ -46,6 +46,34 @@ public:
     static bool        installed();
 
     /**
+     * <Lumen> Installed, but too old for Lumen to start safely.
+     *
+     * start() runs Claude Code with `--restricted`, which is what keeps it
+     * from handing the model the user's shell and files. A copy that predates
+     * the flag refuses to start at all -- "error: unknown option
+     * '--restricted'" -- while the panel said it was ready, because being
+     * installed was the whole test. So the copy is asked whether it has the
+     * flag, from its own `--help`, rather than compared against a version
+     * number somebody would have to keep right. Once per file: an update
+     * replaces the file, and the answer is asked again.
+     *
+     * False when the answer could not be read, so a broken probe never
+     * reports a working copy as too old. `version`, when given, is what
+     * `--version` said.
+     */
+    static bool        tooOld(std::string* version = nullptr);
+    /** What to tell somebody whose copy is too old, in words they can act on. */
+    static std::string tooOldText(const std::string& version, bool inPanel = false);
+    /**
+     * How to update THIS copy, which depends on how it was installed: the
+     * native installer updates itself with `claude update`, a Homebrew cask
+     * only through brew, and an npm install through npm. `forPerson` is what
+     * to type in Terminal; otherwise the command the setup window runs, with
+     * full paths, since a viewer started from the Dock has no useful PATH.
+     */
+    static std::string updateCommand(bool forPerson);
+
+    /**
      * Why this provider cannot work on this platform at all, or empty when it
      * can. On Windows the CLI is looked for under Unix names and the setup
      * runs /bin/sh, so "not installed" would be the wrong reason to give.
