@@ -210,6 +210,7 @@ void LumenAIIndex::build()
     // because it is the one walk that already has every name in hand.
     {
         std::set<std::string> distinct;
+        mWords.clear();
         for (const Entry& e : mEntries)
         {
             for (const std::string* src : { &e.lname, &e.lfolder })
@@ -224,10 +225,12 @@ void LumenAIIndex::build()
                     else
                     {
                         if (word.size() >= 4) distinct.insert(word);
+                        if (word.size() >= 3) mWords.insert(word);
                         word.clear();
                     }
                 }
                 if (word.size() >= 4) distinct.insert(word);
+                if (word.size() >= 3) mWords.insert(word);
             }
         }
         mTokens.assign(distinct.begin(), distinct.end());
@@ -372,19 +375,54 @@ bool LumenAIIndex::splitWord(const std::string& w, std::string& a, std::string& 
         return false;                   // nothing useful to split
     }
 
-    // Both halves at least three characters, so "friendlist" can become
-    // "friend list" but "skirts" cannot become "ski rts".
+    // Both halves at least three characters, and both WHOLE words -- "friend"
+    // and "list" -- not merely letters found inside one. <Lumen> This used
+    // known(), and in 72,000 names nearly any three letters occur somewhere:
+    // "scarves" became "sca rves", "knives" became "kni ves", and each then
+    // found nothing.
     for (size_t at = 3; at + 3 <= w.size(); ++at)
     {
         const std::string left  = w.substr(0, at);
         const std::string right = w.substr(at);
-        if (known(left) && known(right))
+        if (isWord(left) && isWord(right))
         {
             a = left; b = right;
             return true;
         }
     }
     return false;
+}
+
+bool LumenAIIndex::isWord(const std::string& w) const
+{
+    if (mWords.count(w) || mWords.count(w + "s"))
+    {
+        return true;
+    }
+    return w.size() > 3 && w.back() == 's' && mWords.count(w.substr(0, w.size() - 1));
+}
+
+std::string LumenAIIndex::singularOf(const std::string& w) const
+{
+    std::vector<std::string> tries;
+    if (w.size() >= 5 && w.compare(w.size() - 3, 3, "ves") == 0)
+    {
+        const std::string stem = w.substr(0, w.size() - 3);
+        tries.push_back(stem + "fe");   // knives, wives
+        tries.push_back(stem + "f");    // scarves, wolves, shelves
+    }
+    if (w.size() >= 5 && w.compare(w.size() - 3, 3, "ies") == 0)
+    {
+        tries.push_back(w.substr(0, w.size() - 3) + "y");  // berries, puppies
+    }
+    for (const std::string& t : tries)
+    {
+        if (mWords.count(t))
+        {
+            return t;
+        }
+    }
+    return std::string();
 }
 
 std::string LumenAIIndex::correctWord(const std::string& word)
@@ -705,8 +743,23 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
                 continue;
             }
 
-            // A missing space first, because it is the more likely mistake and
-            // the more certain one: both halves have to be real.
+            // <Lumen> A plural the edit allowance cannot reach, before anything
+            // else: "scarves" is three edits from "scarf". Reported like any
+            // other correction, because the search did change the word.
+            const std::string single = singularOf(w);
+            if (!single.empty())
+            {
+                if (corrections)
+                {
+                    corrections->push_back(std::make_pair(w, single));
+                }
+                rebuilt.push_back(single);
+                continue;
+            }
+
+            // Then a missing space, before the edit pass, because it is the
+            // more likely mistake and the more certain one: both halves have to
+            // be real words.
             std::string a, b;
             if (splitWord(w, a, b))
             {

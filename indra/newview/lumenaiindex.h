@@ -167,6 +167,25 @@ public:
      */
     bool splitWord(const std::string& w, std::string& a, std::string& b) const;
 
+    /**
+     * <Lumen> Whether @a w is a whole word in some name or folder, allowing a
+     * trailing "s" either way ("friend" for "friends").
+     *
+     * known() answers "occurs anywhere", which is right for matching and wrong
+     * for splitting: any three letters occur inside something in a big
+     * inventory, so "scarves" was split into "sca rves" and found nothing,
+     * while 99 scarves sat in it.
+     */
+    bool isWord(const std::string& w) const;
+
+    /**
+     * <Lumen> The singular of an English plural that plain editing cannot
+     * reach -- "scarves" is three edits from "scarf" -- or empty. Tries -ves
+     * as -fe and -f, and -ies as -y, and keeps only a whole word that is in
+     * the inventory.
+     */
+    std::string singularOf(const std::string& w) const;
+
 private:
     /** Lowercased path of a category, memoised while building. */
     std::string folderPathLower(const LLUUID& cat_id,
@@ -208,6 +227,8 @@ private:
      * the user probably meant. See correctWord().
      */
     std::vector<std::string> mTokens;
+    /** <Lumen> The same words from three letters up, for isWord(). */
+    std::set<std::string>    mWords;
     bool               mBuilt = false;
 
     void build();
