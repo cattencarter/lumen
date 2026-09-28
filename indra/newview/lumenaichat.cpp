@@ -739,7 +739,7 @@ namespace
         else if (group == "viewer")
         {
             if (action == "status")          return "Checking viewer";
-            if (action == "read_actions")    return "Reviewing history";
+            if (action == "read_actions")    return "Checking what it has done";
             if (action == "read_dialogues")  return "Checking dialogues";
             if (action == "answer_dialogue") return "Answering dialogue";
             if (action == "answer_while_away") return "Covering for you";
@@ -1764,6 +1764,36 @@ void LumenAIChatFloater::setActivity(const std::string& what)
     {
         mStatus->setText(what);
     }
+    mActivityAt = LLTimer::getElapsedSeconds();
+    mThinkingPending = false;
+}
+
+// <Lumen> The author: "you barely manage to see what it's doing before the
+// status message changes to thinking". A step stays up at least this long;
+// a NEW step still replaces it at once, so the bar never lags the truth.
+static const F64 MIN_STEP_SECONDS = 2.0;
+
+void LumenAIChatFloater::thinkingAfterStep()
+{
+    if (LLTimer::getElapsedSeconds() - mActivityAt >= MIN_STEP_SECONDS)
+    {
+        setActivity("Thinking...");
+    }
+    else
+    {
+        mThinkingPending = true;
+    }
+}
+
+void LumenAIChatFloater::draw()
+{
+    if (mThinkingPending && mBusy
+        && LLTimer::getElapsedSeconds() - mActivityAt >= MIN_STEP_SECONDS)
+    {
+        setActivity("Thinking...");
+    }
+    if (!mBusy) mThinkingPending = false;   // the turn ended; nothing to promise
+    LLFloater::draw();
 }
 
 void LumenAIChatFloater::sayHeader()
@@ -2792,6 +2822,29 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         {
             answer = params["item"]["text"].asString();
         }
+        // <Lumen> Codex's own tool calls, so the bar names the one running
+        // and says Thinking once it has answered -- field names from the
+        // app-server's own schema (ThreadItem "mcpToolCall": tool, arguments).
+        else if ((method == "item/started" || method == "item/completed")
+                 && params["item"]["type"].asString() == "mcpToolCall")
+        {
+            if (method == "item/completed")
+            {
+                thinkingAfterStep();
+            }
+            else
+            {
+                LLSD args = params["item"]["arguments"];
+                if (args.isString())
+                {
+                    bool ok = false;
+                    args = jsonParse(args.asString(), ok);
+                }
+                const std::string said = humanAction(params["item"]["tool"].asString(),
+                                                     args["action"].asString());
+                if (!said.empty()) setActivity(said);
+            }
+        }
         else if (method == "turn/completed" || method == "turn/failed")
         {
             completed = true;
@@ -3039,6 +3092,22 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
                 const std::string act = (*it)["input"]["action"].asString();
                 const std::string said = humanAction(group, act);
                 if (!said.empty()) setActivity(said);
+            }
+        }
+        else if (type == "user")
+        {
+            // <Lumen> Claude Code reports each tool's answer as a "user"
+            // message carrying a tool_result: from here it is the model
+            // thinking again, and the bar should say so.
+            const LLSD& content = msg["message"]["content"];
+            for (LLSD::array_const_iterator it = content.beginArray();
+                 it != content.endArray(); ++it)
+            {
+                if ((*it)["type"].asString() == "tool_result")
+                {
+                    thinkingAfterStep();
+                    break;
+                }
             }
         }
         else if (type == "result")
@@ -3339,6 +3408,10 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     tr["tool_call_id"] = call_id;
                     tr["content"]      = result;
                     mMessages.append(tr);
+                    // <Lumen> The tool has answered; what follows is the model
+                    // thinking. Leaving the tool's label up made a 25-second
+                    // pause read as a slow "Reviewing history".
+                    thinkingAfterStep();
                 }
             }
         }
@@ -3395,6 +3468,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                         tr["is_error"] = true;
                     }
                     tool_results.append(tr);
+                    thinkingAfterStep();   // <Lumen> the tool has answered
                 }
             }
 

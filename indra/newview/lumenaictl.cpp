@@ -2742,6 +2742,29 @@ namespace
      * the interface is in their way cannot do that -- so the assistant has to
      * be able to read the box and answer it.
      */
+    // <Lumen> Windows the assistant opens to DO its work -- a script it is
+    // about to write into, the build tools -- go behind the Assistant, so the
+    // person watches it working instead of an unmodified script for however
+    // long the writing takes. The author, 2026-09-28: "those windows where you
+    // need to see it working, should be behind". Windows opened because they
+    // asked to SEE something -- inventory, an item or outfit found there, a
+    // notecard, Preferences on a setting -- are left in front.
+    //
+    // Focus goes back to the Assistant too, and has to: restacking alone was
+    // tried first and the script window came straight back on top, because
+    // LLLiveLSLEditor::postBuild() gives its text editor keyboard focus and the
+    // window holding focus is the one kept in front. The person was typing in
+    // the Assistant a moment ago, so that is where focus belongs anyway.
+    void keepAssistantInFront()
+    {
+        LLFloater* assistant = LLFloaterReg::findInstance("ai_chat");
+        if (!assistant || !assistant->getVisible() || assistant->isMinimized() || !gFloaterView)
+        {
+            return;   // driven from outside, or put away -- nothing to keep in front
+        }
+        gFloaterView->bringToFront(assistant, true);
+    }
+
     // A script asking for PERMISSIONS -- to take money, animate the avatar,
     // take its controls, attach, teleport it. The author's rule, 2026-09-28:
     // the assistant never answers these; the user does, in the viewer's own
@@ -7026,6 +7049,20 @@ namespace
         return true;
     }
 
+    // Whether the assistant made this object itself, recently. look_nearby
+    // marks such objects: straight after a rez the new box is named "Object"
+    // like any other, and the model picked an older box of the same name and
+    // put a script in it -- the author's test, 2026-09-28.
+    bool rezzedByAssistant(const LLUUID& id)
+    {
+        const F64 now = LLTimer::getElapsedSeconds();
+        for (const auto& r : sRecentRez)
+        {
+            if (r.first == id && now - r.second <= REZ_MEMORY_SECONDS) return true;
+        }
+        return false;
+    }
+
     // The ones still in view, newest last. Anything returned, taken away or
     // never arrived is dropped rather than reported.
     std::vector<LLUUID> recentRezStillHere()
@@ -9713,6 +9750,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 LLSD thing;
                 thing["object_id"] = around[i].o->getID();
                 thing["distance"] = around[i].d;
+                if (rezzedByAssistant(around[i].o->getID())) thing["rezzed_by_assistant"] = true;
                 if (const ObjectLabel* label = objectLabel(around[i].o->getID()))
                 {
                     thing["name"] = safeUtf8(label->name);
@@ -9778,20 +9816,32 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             const Nearby& n = around[which[c.index]];
             const ObjectLabel* label = objectLabel(n.o->getID());
             const std::string key = lowered(label->name);
-            auto dup = slot.find(key);
+            // <Lumen> Something the assistant just made is never folded into a
+            // group of the same name: it is the one it will want to act on.
+            const bool ours = rezzedByAssistant(n.o->getID());
+            auto dup = ours ? slot.end() : slot.find(key);
             if (dup != slot.end())
             {
                 LLSD& first = found[dup->second];
                 first["count"] = first.has("count") ? first["count"].asInteger() + 1 : 2;
+                // Every id, nearest first -- with only the first one, the
+                // second of two boxes named "Object" could not be reached.
+                if (!first.has("object_ids"))
+                {
+                    first["object_ids"] = LLSD::emptyArray();
+                    first["object_ids"].append(first["object_id"]);
+                }
+                first["object_ids"].append(n.o->getID());
                 continue;
             }
             if (found.size() >= 20)
             {
                 continue;   // still counted above, just not listed
             }
-            slot[key] = (S32)found.size();
+            if (!ours) slot[key] = (S32)found.size();
             LLSD hit;
             hit["object_id"] = n.o->getID();
+            if (ours) hit["rezzed_by_assistant"] = true;
             hit["name"] = safeUtf8(label->name);
             const std::string d = shortDesc(label->desc);
             if (!d.empty()) hit["description"] = safeUtf8(d);
@@ -9827,6 +9877,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // Nothing matched. Hand over what IS here, so a meaning the words
             // missed -- "food" for a "Pizza Stand" -- can still be seen.
             std::map<std::string, std::pair<size_t, S32> > seen;   // lowered -> (around index, count)
+            std::map<std::string, std::vector<size_t> > ids_of;    // lowered -> every around index
             std::vector<std::string> order;
             for (size_t i = 0; i < around.size(); ++i)
             {
@@ -9835,8 +9886,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 const std::string key = lowered(label->name);
                 if (key.empty() || key == "object" || key == "primitive") continue;
                 auto it = seen.find(key);
-                if (it == seen.end()) { seen[key] = { i, 1 }; order.push_back(key); }
-                else ++it->second.second;
+                if (it == seen.end()) { seen[key] = { i, 1 }; order.push_back(key); ids_of[key].push_back(i); }
+                else { ++it->second.second; ids_of[key].push_back(i); }
             }
             LLSD names = LLSD::emptyArray();
             for (size_t k = 0; k < order.size() && k < 100; ++k)
@@ -9846,7 +9897,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 one["name"] = safeUtf8(objectLabel(around[entry.first].o->getID())->name);
                 one["object_id"] = around[entry.first].o->getID();
                 one["distance"] = around[entry.first].d;
-                if (entry.second > 1) one["count"] = entry.second;
+                if (entry.second > 1)
+                {
+                    one["count"] = entry.second;
+                    one["object_ids"] = LLSD::emptyArray();
+                    for (size_t idx : ids_of[order[k]]) one["object_ids"].append(around[idx].o->getID());
+                }
                 names.append(one);
             }
             result["names_nearby"] = names;
@@ -10241,6 +10297,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             if (!obj_name.empty()) preview->setObjectName(safeUtf8(obj_name));
             preview->setObjectID(openable[want[0]].first);
+            keepAssistantInFront();
         }
         LLFloater* f = preview;
 
@@ -10379,6 +10436,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         LLSD r;
         r["id"] = root->getID();
+        if (rezzedByAssistant(root->getID())) r["rezzed_by_assistant"] = true;   // <Lumen>
         r["links"] = (S32)chain.size();
         r["from_selection"] = from_selection;
 
@@ -10430,6 +10488,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 if (p.getGroup().notNull()) r["group_owned"] = p.isGroupOwned();
                 r["creator_id"] = p.getCreator();
                 r["creator_link"] = LumenAIControl::profileLink(p.getCreator());
+                // <Lumen> Said in words: given only an id, the model decided the
+                // user's own box was "created by someone else".
+                r["made_by_you"] = (p.getCreator() == gAgent.getID());
                 S32 asked = 0;
                 const std::string cn = creatorName(p.getCreator(), asked);
                 if (!cn.empty()) r["creator_name"] = cn;
@@ -13108,6 +13169,10 @@ if (method == "camera")
         }
 
         LLFloaterReg::showInstance(floater, LLSD(id), TAKE_FOCUS_YES);
+        if (item->getType() == LLAssetType::AT_LSL_TEXT)
+        {
+            keepAssistantInFront();   // opened to be written into, as with open_script
+        }
 
         LLSD result;
         result["opened"] = true;
@@ -15685,11 +15750,21 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> The window stayed behind the Assistant while this was being
+        // written (keepAssistantInFront); now it is ready, and reading it and
+        // pressing Save is the person's step, so it comes to the front with
+        // the caret in it. The author's idea: "write the script in the
+        // background and first open the script window when it's ready".
+        if (target && gFloaterView)
+        {
+            gFloaterView->bringToFront(target, true);
+        }
         result["saved"] = false;
-        result["note"] = "Written into the script window and NOT saved. Tell them to read it "
-                         "and press Save -- nothing runs until they do, and Ctrl-Z undoes it if "
-                         "they would rather not. Once they have saved, call read_scripts to see "
-                         "whether it compiled.";
+        result["window_in_front"] = true;
+        result["note"] = "Written into the script window and NOT saved. The window is now in "
+                         "front for them. Tell them to read it and press Save -- nothing runs "
+                         "until they do, and Ctrl-Z undoes it if they would rather not. Once "
+                         "they have saved, call read_scripts to see whether it compiled.";
         return result;
     }
 
@@ -16308,8 +16383,11 @@ if (method == "camera")
                             + ". To build something out of several prims: rez them one after "
                               "another and then call `link` with NO arguments -- it joins the "
                               "ones just made. To change this one, pass its object_id to `set`; "
-                              "movement / look_nearby will give you the id, and it lags a change by tens "
-                              "of seconds so do not use it as proof of anything. Do not claim "
+                              "movement / look_nearby gives the id once it arrives, a second or "
+                              "two from now, and marks it `rezzed_by_assistant: true` -- take THAT "
+                              "one, never another object with the same name. look_nearby lags a "
+                              "change by tens of seconds otherwise, so do not use it as proof of "
+                              "anything. Do not claim "
                               "the prim is there -- say it was asked for. **Tell the user which "
                               "parcel it is on**: an object left on somebody else's land can be "
                               "returned without warning.";
@@ -16396,7 +16474,11 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        if (edit) handle_object_edit();
+        if (edit)
+        {
+            handle_object_edit();
+            keepAssistantInFront();   // the build tools are where it works, not what they asked to see
+        }
 
         LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
         LLSD result;

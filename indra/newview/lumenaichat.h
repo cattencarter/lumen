@@ -273,6 +273,7 @@ private:
     std::string mHistoryProvider;
 
     bool mBusy = false;
+    void draw() override;   // <Lumen> lets a finished step stay readable
     /**
      * <Lumen> Which turn is current. A turn records it when it starts and asks
      * again after every wait; Clear moves it on, so a turn still running when
@@ -333,6 +334,12 @@ private:
     void sayAssistant(const std::string& text);
     /** The action bar: what is happening right now, or nothing when idle. */
     void setActivity(const std::string& what);
+    // <Lumen> "Thinking..." once a tool has answered -- but not before the
+    // step it replaces has been readable. Tools answer in a tenth of a second,
+    // and switching at once meant nobody saw what was being done.
+    void thinkingAfterStep();
+    F64  mActivityAt = 0.0;
+    bool mThinkingPending = false;
 
     /** Names the provider and model once, at the top of a new conversation. */
     void sayHeader();
