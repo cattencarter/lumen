@@ -770,6 +770,14 @@ void LumenAIControl::sweepAsks()
             if (LLNotificationPtr n = LLNotifications::instance().find(a.id))
             {
                 LLNotifications::instance().cancel(n);
+                // <Lumen> Say so. The question simply vanished, while the
+                // Assistant's last line still said to click Yes -- found
+                // testing, 2026-09-28.
+                LLSD args;
+                args["MESSAGE"] = "The assistant's question was taken down after ten minutes "
+                                  "with no answer, so nothing was done. Ask the assistant again "
+                                  "if you still want it.";
+                LLNotificationsUtil::add("SystemMessageTip", args);
             }
         }
         it = mAsks.erase(it);
@@ -2946,11 +2954,16 @@ namespace
             return out;
         }
 
+        // <Lumen> The ones with buttons first, then the rest, and only then
+        // cut. Twenty "You paid L$10 to upload" and "your object was returned"
+        // notices -- kept from earlier sessions, with nothing to answer --
+        // filled the list and pushed the quit question off the end of it.
+        LLSD answerable = LLSD::emptyArray();
+        LLSD informational = LLSD::emptyArray();
         visible->forEachNotification(
-            [&out, limit](LLNotificationPtr n)
+            [&answerable, &informational](LLNotificationPtr n)
             {
                 if (!n || n->isCancelled() || n->isRespondedTo()) return;
-                if ((size_t)out.size() >= limit) return;
                 // <Lumen> The viewer asking the user about something the
                 // assistant wants to do is not the assistant's to answer.
                 if (n->getName().compare(0, 8, "LumenAsk") == 0) return;
@@ -2989,8 +3002,16 @@ namespace
                     }
                 }
                 one["choices"] = choices;
-                out.append(one);
+                (choices.size() ? answerable : informational).append(one);
             });
+        for (const LLSD* part : { &answerable, &informational })
+        {
+            for (LLSD::array_const_iterator it = part->beginArray(); it != part->endArray(); ++it)
+            {
+                if ((size_t)out.size() >= limit) return out;
+                out.append(*it);
+            }
+        }
         return out;
     }
 

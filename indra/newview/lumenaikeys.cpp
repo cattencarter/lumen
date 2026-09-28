@@ -42,6 +42,7 @@
 #include "llclipboard.h"
 #include "llcombobox.h"
 #include "llfloaterreg.h"
+#include "llfloaterpreference.h"   // <Lumen> saveIgnoredNotifications
 #include "lllineeditor.h"
 #include "llsdutil.h"
 #include "llsecapi.h"
@@ -385,15 +386,18 @@ void LumenPanelPreferenceAIKeys::loadPermissionStates()
     }
 }
 
-void LumenPanelPreferenceAIKeys::savePermissionStates()
+bool LumenPanelPreferenceAIKeys::savePermissionStates()
 {
+    bool changed = false;
     for (PermRow& r : mPermRows)
     {
         if (!r.choice) continue;
         const std::string want = r.choice->getSelectedValue().asString();
         if (want.empty() || want == permissionState(r.name)) continue;
         setPermissionState(r.name, want);
+        changed = true;
     }
+    return changed;
 }
 // </Lumen>
 
@@ -1089,7 +1093,20 @@ void LumenPanelPreferenceAIKeys::onClear(const std::string& provider)
 void LumenPanelPreferenceAIKeys::apply()
 {
     LLPanelPreference::apply();
-    savePermissionStates();   // <Lumen> only what the user changed
+    // <Lumen> Only what the user changed -- and then the snapshot Preferences
+    // is about to put back. OK takes a copy of every remembered answer BEFORE
+    // apply(), and closing the window runs cancel(), which restores that copy:
+    // so "Always allow" was saved and undone in the same click, and the next
+    // build asked anyway (found testing, 2026-09-28). Taking the copy again
+    // here makes what it restores the choice just made.
+    if (savePermissionStates())
+    {
+        if (LLFloaterPreference* prefs =
+                LLFloaterReg::findTypedInstance<LLFloaterPreference>("preferences"))
+        {
+            prefs->saveIgnoredNotifications();
+        }
+    }
 
     for (Row& row : mRows)
     {

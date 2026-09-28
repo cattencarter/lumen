@@ -189,7 +189,7 @@ private:
     std::vector<PermRow> mPermRows;
     void buildPermissionRows();
     void loadPermissionStates();
-    void savePermissionStates();
+    bool savePermissionStates();   // true when anything changed
 
     struct Row
     {
