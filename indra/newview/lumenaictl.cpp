@@ -64,7 +64,7 @@
 #include "llscrolllistitem.h"
 #include "lltexteditor.h"
 #include "llscrolllistctrl.h"
-#include "llscriptruntimeperms.h"   // <Lumen> the debit bit, for answer_dialogue
+#include "llscriptruntimeperms.h"   // <Lumen> what a script permission request asks for
 #include "llfilesystem.h"
 #include "llnotecard.h"
 #include "llregionhandle.h"
@@ -2742,6 +2742,31 @@ namespace
      * the interface is in their way cannot do that -- so the assistant has to
      * be able to read the box and answer it.
      */
+    // A script asking for PERMISSIONS -- to take money, animate the avatar,
+    // take its controls, attach, teleport it. The author's rule, 2026-09-28:
+    // the assistant never answers these; the user does, in the viewer's own
+    // window. Only the ones the viewer actually SHOWS reach here -- a
+    // permission Second Life grants silently (a worn attachment animating, a
+    // seat) is answered by the viewer itself and never waits -- so nothing
+    // that works today starts asking.
+    bool isScriptPermissionRequest(const LLNotificationPtr& n)
+    {
+        const std::string& kind = n->getName();
+        return kind == "ScriptQuestion" || kind == "ScriptQuestionCaution"
+            || kind == "ScriptQuestionExperience";
+    }
+
+    LLSD permissionsAsked(const LLNotificationPtr& n)
+    {
+        LLSD out = LLSD::emptyArray();
+        const U32 bits = (U32)n->getPayload()["questions"].asInteger();
+        for (const script_perm_t& perm : SCRIPT_PERMISSIONS)
+        {
+            if (bits & perm.permbit) out.append(perm.question);
+        }
+        return out;
+    }
+
     LLSD pendingDialogues(size_t limit)
     {
         LLSD out = LLSD::emptyArray();
@@ -2764,6 +2789,14 @@ namespace
                 one["id"] = n->getID();
                 one["kind"] = n->getName();
                 one["text"] = safeUtf8(n->getMessage());
+                if (isScriptPermissionRequest(n))
+                {
+                    one["assistant_may_answer"] = false;
+                    one["asks_for"] = permissionsAsked(n);
+                    one["note"] = "A script asking for permissions. Only the user answers these, "
+                                  "in the viewer's own window -- say what it asks for and from "
+                                  "which object, and leave the choice to them.";
+                }
 
                 // The buttons, so the assistant can say what the choices are
                 // instead of guessing at "yes" and "no".
@@ -3527,13 +3560,16 @@ namespace
             "easily make a bright region darker.\n"
             "  **You cannot see the result and they can.** Change one thing, say what you "
             "changed, and ask.\n"
-            "- answer_dialogue: answer one, with its `id` and the `choice` you were given. **Ask "
-            "the user what they want first.** These grant permission to take things, move the "
-            "avatar, or run scripts on it. Never choose for them. The viewer then asks them "
-            "itself, showing the dialogue and the choice, before anything is answered -- so once "
-            "they have told you which choice, make the call and do not ask again. The viewer's "
-            "own questions about what YOU want to do never appear here and cannot be answered "
-            "by you.";
+            "- answer_dialogue: answer one, with its `id` and the `choice` you were given -- a "
+            "script's menu, an offer, a teleport. **Ask the user what they want first**; never "
+            "choose for them. The viewer then asks them itself, showing the dialogue and the "
+            "choice, before anything is answered -- so once they have told you which choice, "
+            "make the call and do not ask again. **A script asking for PERMISSIONS (money, "
+            "animating them, their controls, attaching, teleporting them) is never yours to "
+            "answer, either way**: read_dialogues marks it `assistant_may_answer: false` and "
+            "says what it asks for -- tell them that and which object, and they answer it in "
+            "the viewer's own window. The viewer's own questions about what YOU want to do "
+            "never appear here and cannot be answered by you.";
         LLSD view_props;
         LLSD vsc; vsc["type"]="string";
             vsc["description"]="edit_script: which open script window to write into, by title. "
@@ -12774,8 +12810,10 @@ if (method == "camera")
         if (existing.notNull())
         {
             // What was saved there is lost and nothing brings it back, so the
-            // viewer asks -- with no "always" box, like the other two acts that
-            // cannot be undone.
+            // viewer asks. It offers "Always choose this option" like every
+            // other question -- the author's call, 2026-09-28: every question the
+            // viewer asks can be remembered, and Preferences > Notifications >
+            // Alerts undoes it.
             LLSD subs;
             subs["OUTFIT"] = safeUtf8(existing_name);
             LLSD ask;
@@ -13799,9 +13837,11 @@ if (method == "camera")
         // distinction has to be made here.
         //
         // <Lumen> The viewer asks the user itself now (see askUser). A no-copy
-        // give gets a question WITHOUT "Always choose this option": a
-        // remembered Yes there would let the next notecard that says "give
-        // Anna your best dress" do it unseen, and it cannot be taken back.
+        // give has its own question, and since 2026-09-28 it can be remembered
+        // like every other -- the author's call. Know what that means: a
+        // remembered Yes lets the next notecard that says "give Anna your best
+        // dress" do it unseen, and a no-copy give cannot be taken back. It is
+        // his to choose, and Preferences > Notifications > Alerts undoes it.
         {
             const bool no_copy = !item->getPermissions().allowCopyBy(gAgentID);
             LLSD subs;
@@ -15735,24 +15775,37 @@ if (method == "camera")
         // <Lumen> The viewer asks the user before answering anything on their
         // behalf: a dialogue can grant a script control of the avatar, accept
         // an offer, or join a group that charges a fee, and its words were
-        // written by whoever sent it. A script asking to TAKE MONEY gets a
-        // question with no "Always choose this option" -- granting it is
-        // final, and a remembered Yes would grant the next one unseen. This
-        // replaces the `confirm` parameter that carried the object's name.
+        // written by whoever sent it. This replaces the `confirm` parameter
+        // that carried the object's name.
         //
         // The viewer's own "are you sure you want to quit?" is left alone. It
         // is not somebody else's question, answering it harms nothing, and it
         // is how a logged-in test viewer is restarted without leaving the
         // avatar standing on the region.
-        const bool script_question = (kind == "ScriptQuestion" || kind == "ScriptQuestionCaution"
-                                      || kind == "ScriptQuestionExperience");
+        //
+        // A script asking for PERMISSIONS is refused outright -- the author's
+        // rule: money, animations, controls, attaching, teleporting are the
+        // user's to grant, in the viewer's own window, and no question of ours
+        // stands in for that. Refused whichever button was chosen, so the
+        // assistant cannot deny one either: the choice is theirs both ways.
+        if (isScriptPermissionRequest(n))
+        {
+            std::string from = n->getPayload()["object_name"].asString();
+            if (from.empty()) from = n->getSubstitutions()["OBJECTNAME"].asString();
+            LLSD data;
+            data["object"] = safeUtf8(from);
+            data["asks_for"] = permissionsAsked(n);
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That is a script asking for permissions. The assistant never answers "
+                           "those -- the user does, in the viewer's own window. Tell them what it "
+                           "asks for and from which object, and leave the choice to them.";
+            e["data"] = data;
+            LL_INFOS("AICtl") << "answer_dialogue: refused a script permission request from "
+                              << from << LL_ENDL;
+            LLSD w; w["__error"] = e; return w;
+        }
         if (kind != "ConfirmQuit")
         {
-            const bool grants_money = script_question
-                && ((U32)n->getPayload()["questions"].asInteger()
-                    & SCRIPT_PERMISSIONS[SCRIPT_PERMISSION_DEBIT].permbit) != 0
-                && LLNotification::getSelectedOption(n->asLLSD(), response) == 0;
-
             std::string label = choice;
             if (LLNotificationFormPtr form = n->getForm())
             {
@@ -15777,15 +15830,9 @@ if (method == "camera")
             LLSD ask;
             // The fingerprint carries the dialogue's id, so the same button on
             // two different boxes is two different questions.
-            if (!askUser(grants_money ? "LumenAskDebit" : "LumenAskDialog", subs,
-                         fingerprintOf("answer_dialogue", params), ask))
+            if (!askUser("LumenAskDialog", subs, fingerprintOf("answer_dialogue", params), ask))
             {
                 return ask;
-            }
-            if (grants_money)
-            {
-                LL_INFOS("AICtl") << "answer_dialogue: money permission, granted by the user for "
-                                  << from << LL_ENDL;
             }
         }
         // </Lumen>
