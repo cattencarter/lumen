@@ -110,8 +110,8 @@
         <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
          left="76" top="92" width="274" height="22"
          name="model_anthropic" allow_text_entry="true" max_chars="80">
-            <combo_box.item label="claude-haiku-4-5 (fastest, recommended)" name="h45" value="claude-haiku-4-5-20251001" />
-            <combo_box.item label="claude-sonnet-5 (balanced)"     name="s5" value="claude-sonnet-5" />
+            <combo_box.item label="claude-sonnet-5 (recommended)" name="s5" value="claude-sonnet-5" />
+            <combo_box.item label="claude-haiku-4-5 (fastest, cheapest)" name="h45" value="claude-haiku-4-5-20251001" />
             <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
         </combo_box>
 
@@ -211,8 +211,8 @@
         <combo_box control_name="LumenAIClaudeCodeModel" follows="left|top" layout="topleft"
          left="76" top="210" width="274" height="22"
          name="model_claude" allow_text_entry="true" max_chars="80">
-            <combo_box.item label="sonnet (balanced, the default here)" name="ks" value="sonnet" />
-            <combo_box.item label="haiku (fastest)"                     name="kh" value="haiku" />
+            <combo_box.item label="sonnet (recommended)"                name="ks" value="sonnet" />
+            <combo_box.item label="haiku (fastest, cheapest)"           name="kh" value="haiku" />
             <combo_box.item label="opus (most capable)"                 name="ko" value="opus" />
         </combo_box>
 
