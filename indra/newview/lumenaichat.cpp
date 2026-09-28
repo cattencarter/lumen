@@ -978,7 +978,10 @@ namespace
      */
     void addReasoningEffort(LLSD& body, const std::string& model)
     {
-        if (model.rfind("gpt-5", 0) == 0 || model.rfind("o1", 0) == 0
+        // <Lumen> gpt-6 added 2026-09-28: gpt-6-sol, -luna and -astra all
+        // answered with the same refusal until it was.
+        if (model.rfind("gpt-5", 0) == 0 || model.rfind("gpt-6", 0) == 0
+            || model.rfind("o1", 0) == 0
             || model.rfind("o3", 0) == 0 || model.rfind("o4", 0) == 0)
         {
             body["reasoning_effort"] = "none";
