@@ -13826,8 +13826,17 @@ if (method == "camera")
         // already said yes -- to the viewer's own question, above -- so the
         // no-copy case goes to the commit path directly, with the same RLV
         // check the dialogue's own Yes button makes.
+        // Read before the give: a no-copy item is removed from the inventory
+        // model below, and `item` must not be touched after that.
+        const bool given_no_copy = !item->getPermissions().allowCopyBy(gAgentID);
+        const std::string given_kind = kindOf(item->getType());
+        // The ORIGINAL's id: `item` follows a link above, `item_id` does not,
+        // and removing by item_id would take away the link and leave the
+        // given item still listed.
+        const LLUUID given_id = item->getUUID();
+
         bool offered = false;
-        if (item->getPermissions().allowCopyBy(gAgentID))
+        if (!given_no_copy)
         {
             offered = LLGiveInventory::doGiveInventoryItem(to, item);
         }
@@ -13844,16 +13853,36 @@ if (method == "camera")
                            "offered.";
             LLSD w; w["__error"] = e; return w;
         }
+        // A no-copy item leaves this inventory the moment it is offered -- the
+        // server moves the only copy -- and the viewer's own Yes button removes
+        // it from the local model straight after the commit
+        // (llgiveinventory.cpp, handleCopyProtectedItem). Without this it went
+        // on being listed until the next login, and a second give of the same
+        // item reported success with nothing left to give.
+        if (given_no_copy)
+        {
+            gInventory.deleteObject(given_id);
+            gInventory.notifyObservers();
+            item = NULL;
+        }
         // </Lumen>
 
-        LL_INFOS("AICtl") << "give_item: offered " << item_id << " to " << to << LL_ENDL;
+        LL_INFOS("AICtl") << "give_item: offered " << item_id << " to " << to
+                          << (given_no_copy ? " (no-copy: removed from inventory)" : "") << LL_ENDL;
 
         LLSD result;
         result["offered_to"] = to;
         result["name"] = to_name;
         result["item_id"] = item_id;
         result["item"] = safeUtf8(item_name);
-        result["kind"] = kindOf(item->getType());
+        result["kind"] = given_kind;
+        if (given_no_copy)
+        {
+            result["left_inventory"] = true;
+            result["no_copy_note"] = "It was no-copy, so it has left their inventory whether or not "
+                                     "the other person accepts. If they decline, it comes back to "
+                                     "the user's inventory.";
+        }
         // An offer is not a delivery. They see a dialogue and choose, and the
         // viewer is never told what they chose.
         result["delivery_confirmed"] = false;
@@ -13866,8 +13895,8 @@ if (method == "camera")
         summary["to"] = to;
         summary["name"] = to_name;
         summary["item"] = safeUtf8(item_name);
-        summary["kind"] = kindOf(item->getType());
-        if (!item->getPermissions().allowCopyBy(gAgentID))
+        summary["kind"] = given_kind;
+        if (given_no_copy)
         {
             summary["no_copy"] = true;
             summary["confirmed"] = true;
@@ -16013,6 +16042,19 @@ if (method == "camera")
             item->packMessage(msg);
             msg->sendReliable(regionp->getHost());
 
+            // A no-copy object leaves inventory with the rez, and the viewer's
+            // own drag and drop removes it from the local model at once "so that
+            // users cannot easily bypass copy protection in laggy situations"
+            // (lltooldraganddrop.cpp, dropObject). Without this it stayed listed
+            // until the next login. The name is read first: `item` is gone after.
+            const std::string rez_name = item->getName();
+            if (!copyable)
+            {
+                gInventory.deleteObject(item->getUUID());
+                gInventory.notifyObservers();
+                item = NULL;
+            }
+
             LLSelectMgr::getInstance()->deselectAll();
 
             std::string parcel;
@@ -16021,11 +16063,11 @@ if (method == "camera")
                 parcel = pcl->getName();
             }
             LLSD result;
-            result["rezzed"]  = safeUtf8(item->getName());
+            result["rezzed"]  = safeUtf8(rez_name);
             result["from"]    = "inventory";
             result["no_copy"] = !copyable;
             result["parcel"]  = parcel;
-            result["note"]    = "Asked the simulator to rez \"" + item->getName() + "\" about "
+            result["note"]    = "Asked the simulator to rez \"" + rez_name + "\" about "
                               + llformat("%.1f", distance) + "m in front"
                               + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
                               + ". It should appear in a moment, selected. Do not claim it is "
