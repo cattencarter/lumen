@@ -2976,6 +2976,18 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
         if (type == "stream_event")
         {
             const LLSD& ev = msg["event"];
+            // <Lumen> Each text block is a separate thing said -- one before a
+            // tool runs, one after it -- and they arrive as bare deltas with no
+            // gap, so "I'll say hello in local chat." and "Confirmed" ran
+            // together as "chat.Confirmed". The other providers print each
+            // block on its own; a new block starts a new line here too.
+            if (ev["type"].asString() == "content_block_start"
+                && ev["content_block"]["type"].asString() == "text"
+                && !answer.empty() && answer.back() != '\n')
+            {
+                answer += "\n";
+            }
+            // </Lumen>
             if (ev["type"].asString() == "content_block_delta"
                 && ev["delta"]["type"].asString() == "text_delta")
             {
