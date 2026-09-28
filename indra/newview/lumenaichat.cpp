@@ -688,6 +688,7 @@ namespace
             if (action == "wear")             return "Wearing item";
             if (action == "detach")           return "Removing attachment";
             if (action == "wear_outfit")      return "Wearing outfit";
+            if (action == "save_outfit")      return "Saving outfit";
             if (action == "search_notecards") return "Searching notecards";
             if (action == "delete")           return "Moving to trash";
             if (action == "undelete")         return "Restoring from trash";
@@ -880,6 +881,7 @@ namespace
             "Some things the viewer asks the person about itself, in a window of its own with Yes "
             "and No, before doing them: deleting anything, giving something away, saying or "
             "sending anything in their name, building or changing objects, adding a script, "
+            "overwriting a saved outfit, "
             "teleporting to a place found in search, answering a dialogue for them, and "
             "answering for them while they are away. Do not ask permission for those in the "
             "conversation as well -- once you know what they want, make the call and the viewer "

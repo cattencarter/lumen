@@ -48,6 +48,7 @@
 #include "llvoavatar.h"
 #include "llagentcamera.h"
 #include "llappearancemgr.h"
+#include "llagentwearables.h"   // <Lumen> isCOFChangeInProgress, for the outfit actions
 #include "llavatarnamecache.h"
 #include "llcachename.h"      // <Lumen> a group owner's name, for where_am_i
 #include "llcallingcard.h"
@@ -2637,6 +2638,7 @@ namespace
             if (action == "delete")          return "delete_item";
             if (action == "undelete")        return "undelete_item";
             if (action == "wear_outfit")     return "wear_outfit";
+            if (action == "save_outfit")     return "save_outfit";
             if (action == "show")            return "show_item";
             if (action == "open")            return "open_item";
             if (action == "save_image")      return "save_image";
@@ -2799,7 +2801,7 @@ namespace
         LLSD snm;  snm["type"]="string";
             snm["description"]="A name. What it names depends on the action: the item for wear, "
                                "detach, read_notecard, show, open, delete, undelete (looked for "
-                               "in the Trash) and save_image; the outfit for wear_outfit; the "
+                               "in the Trash) and save_image; the outfit for wear_outfit and save_outfit; the "
                                "folder for list_folder; the new "
                                "card's title for create_notecard; the new landmark's name for "
                                "landmark; the person for send_im. A name "
@@ -2826,7 +2828,7 @@ namespace
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
-              "show", "open", "save_image" };
+              "save_outfit", "show", "open", "save_image" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -2887,6 +2889,10 @@ namespace
             "- undelete: take an item back out of the Trash.\n"
             "- wear_outfit: put on a whole saved outfit by name, which is how people actually "
             "think about getting dressed. `add: true` keeps what is already worn.\n"
+            "- save_outfit: save what they are wearing now as an outfit in My Outfits, under "
+            "`name`. If they did not say what to call it, ASK them -- never make a name up. A "
+            "name that is already an outfit OVERWRITES it, and the viewer asks them first, so do "
+            "not ask in the conversation as well.\n"
             "- show: open the user's inventory window with an item or folder selected, so they "
             "can SEE where it is rather than being read a path. Prefer this to reciting a folder "
             "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`). This one "
@@ -12623,6 +12629,41 @@ if (method == "camera")
             return replay;
         }
 
+        // <Lumen> The checks the viewer's own Replace Outfit and Add To Outfit
+        // make, which this skipped: an empty outfit, or one whose links point at
+        // deleted items, took off the body, head and every garment in public
+        // while reporting that she was getting dressed. And a second outfit
+        // change started while the first was still running.
+        if (!cat)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That outfit could not be read yet. Try again in a moment.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (gAgentWearables.isCOFChangeInProgress())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An outfit change is still going on. Wait a moment, then check with "
+                           "search and worn: true before trying again.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (RlvActions::isRlvEnabled() && RlvFolderLocks::instance().isLockedFolder(found, RLV_LOCK_ADD))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction locks that outfit's folder, so it cannot be put on.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (add ? !LLAppearanceMgr::getCanAddToCOF(found)
+                : !LLAppearanceMgr::instance().getCanReplaceCOF(found))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That outfit has nothing wearable in it -- it may be empty, or its links "
+                           "may point at items that were deleted. Nothing was changed. list_folder "
+                           "on it shows what is there.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
         LLAppearanceMgr::instance().wearInventoryCategory(cat, false, add);
 
         LL_INFOS("AICtl") << "wear_outfit: " << outfit_name << (add ? " (added)" : " (replacing)")
@@ -12643,6 +12684,138 @@ if (method == "camera")
                      "wear_outfit", "ok", result, summary);
         return result;
     }
+
+    // <Lumen> save_outfit: what is worn now, as an outfit in My Outfits. Both
+    // halves are the viewer's own code, so the folder is the one the Appearance
+    // window would have made: a new name is Save As (makeNewOutfitLinks), an
+    // existing one is made the current outfit and then Save (updateBaseOutfit),
+    // which also keeps the outfit's picture.
+    if (method == "save_outfit")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!gInventory.isInventoryUsable() || !isAgentAvatarValid())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        std::string want = params.has("name") ? params["name"].asString() : std::string();
+        LLStringUtil::trim(want);
+        if (want.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "They have not said what to call the outfit. Ask them for a name -- "
+                           "never make one up -- then call again with it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // Second Life's own rule for an inventory name, applied here so the
+        // answer can say what it was really saved as.
+        std::string saved_as = want;
+        LLInventoryObject::correctInventoryName(saved_as);
+        if (saved_as.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Nothing in that name survives as an inventory name. Ask for another.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLAppearanceMgr& appearance = LLAppearanceMgr::instance();
+        if (gAgentWearables.isCOFChangeInProgress() || appearance.isOutfitLocked())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An outfit change or a save is still going on. Try again in a moment.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id already saved that outfit.";
+            return replay;
+        }
+
+        // An outfit of exactly that name already? Then this replaces it.
+        const LLUUID outfits = gInventory.findCategoryUUIDForType(LLFolderType::FT_MY_OUTFITS);
+        LLInventoryModel::cat_array_t* cats = NULL;
+        LLInventoryModel::item_array_t* items = NULL;
+        gInventory.getDirectDescendentsOf(outfits, cats, items);
+        LLUUID existing;
+        std::string existing_name;
+        S32 same_name = 0;
+        if (cats)
+        {
+            const std::string needle = lowered(saved_as);
+            for (size_t i = 0; i < cats->size(); ++i)
+            {
+                if (lowered((*cats)[i]->getName()) == needle)
+                {
+                    if (!same_name++)
+                    {
+                        existing = (*cats)[i]->getUUID();
+                        existing_name = (*cats)[i]->getName();
+                    }
+                }
+            }
+        }
+        // Two outfits with one name happen (this beta account has two "New
+        // Outfit (new)"), and replacing the wrong one loses the other's look.
+        if (same_name > 1)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = llformat("%d outfits are already called that, so it cannot tell which "
+                                    "one to replace. Ask them for a different name.", same_name);
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        if (existing.notNull())
+        {
+            // What was saved there is lost and nothing brings it back, so the
+            // viewer asks -- with no "always" box, like the other two acts that
+            // cannot be undone.
+            LLSD subs;
+            subs["OUTFIT"] = safeUtf8(existing_name);
+            LLSD ask;
+            if (!askUser("LumenAskReplaceOutfit", subs, fingerprintOf("save_outfit", params), ask))
+            {
+                return ask;
+            }
+            LLPointer<LLInventoryCallback> then_save = new LLBoostFuncInventoryCallback(
+                no_op_inventory_func, []() { LLAppearanceMgr::instance().updateBaseOutfit(); });
+            appearance.createBaseOutfitLink(existing, then_save);
+        }
+        else
+        {
+            appearance.makeNewOutfitLinks(saved_as, false);
+        }
+
+        LL_INFOS("AICtl") << "save_outfit: " << saved_as
+                          << (existing.notNull() ? " (replacing)" : " (new)") << LL_ENDL;
+
+        LLSD result;
+        result["outfit"] = safeUtf8(existing.notNull() ? existing_name : saved_as);
+        result["replaced"] = existing.notNull();
+        if (saved_as != want)
+        {
+            result["name_changed"] = true;
+            result["note"] = "Second Life does not keep every character in an inventory name, so it "
+                             "was saved as \"" + safeUtf8(saved_as) + "\". Tell them.";
+        }
+        result["confirm_with"] =
+            "Saving takes a moment. To check it, list_folder on the outfit by name. Do not call "
+            "save_outfit again to check: with the name now taken, that would offer to replace it.";
+        LLSD summary;
+        summary["action"] = "save_outfit";
+        summary["outfit"] = result["outfit"];
+        summary["replaced"] = existing.notNull();
+        recordAction(request_id, fingerprintOf("save_outfit", params),
+                     "save_outfit", "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
 
     if (method == "list_folder")
     {

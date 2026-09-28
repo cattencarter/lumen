@@ -15315,6 +15315,27 @@ It is no-copy, so if they accept it, it is gone from your inventory for good. Th
   </notification>
   <notification
    icon="alert.tga"
+   label="Overwrite a saved outfit?"
+   name="LumenAskReplaceOutfit"
+   type="alert">
+The assistant wants to save what you are wearing now in your [OUTFIT] outfit.
+
+The outfit's old contents are overwritten and cannot be brought back. Nothing you are wearing changes, and no items are deleted.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Overwrite it"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Keep it"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
    label="Delete an item?"
    name="LumenAskDelete"
    type="alert">
