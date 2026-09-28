@@ -158,7 +158,7 @@
          left="76" top="92" width="274" height="22"
          name="model_openai" allow_text_entry="true" max_chars="80">
             <combo_box.item label="gpt-6-luna"    name="g6l"  value="gpt-6-luna" />
-            <combo_box.item label="gpt-6-sol"     name="g6s"  value="gpt-6-sol" />
+            <combo_box.item label="gpt-6-sol (recommended)" name="g6s" value="gpt-6-sol" />
             <combo_box.item label="gpt-5.6-luna"  name="g56l" value="gpt-5.6-luna" />
             <combo_box.item label="gpt-5.6-sol"   name="g56s" value="gpt-5.6-sol" />
             <combo_box.item label="gpt-5.6-terra" name="g56t" value="gpt-5.6-terra" />
