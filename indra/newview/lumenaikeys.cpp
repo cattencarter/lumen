@@ -48,6 +48,11 @@
 #include "llviewercontrol.h"
 #include "lltextbox.h"
 #include "lltrans.h"
+#include "llnotifications.h"
+#include "llnotificationtemplate.h"
+#include "llradiogroup.h"
+#include "llui.h"
+#include "lluictrlfactory.h"
 
 namespace
 {
@@ -247,6 +252,151 @@ LumenPanelPreferenceAIKeys::LumenPanelPreferenceAIKeys()
 {
 }
 
+// <Lumen> ---- Preferences > AI > Permissions -------------------------------
+//
+// Every question the viewer asks before the assistant acts is a LumenAsk
+// notification with the viewer's own "Always choose this option". Its state
+// is two things the viewer already keeps: whether the question is shown (the
+// ignore flag), and, when it is not, which button it answers with (the saved
+// "Default<name>" response in the "ignores" settings). Reading and writing
+// exactly those is what makes this tab and Preferences > Notifications >
+// Alerts agree, and what askUser() sees: a remembered Yes (option 0) means
+// allow, any other remembered answer means No.
+namespace
+{
+    const char* const PERM_PREFIX = "LumenAsk";
+    const char* const PERM_LEAD   = "When the assistant wants to ";
+
+    LLControlGroup* ignoreSettings()
+    {
+        auto& groups = LLUI::getInstance()->mSettingGroups;
+        auto it = groups.find("ignores");
+        return it == groups.end() ? nullptr : it->second;
+    }
+
+    std::string permissionState(const std::string& name)
+    {
+        LLNotificationTemplatePtr t = LLNotifications::instance().getTemplate(name);
+        if (!t || !t->mForm || !t->mForm->getIgnored()) return "ask";
+        LLControlGroup* ignores = ignoreSettings();
+        const std::string key = "Default" + name;
+        if (ignores && ignores->controlExists(key))
+        {
+            const LLSD saved = ignores->getLLSD(key);
+            if (saved.has("Yes") && saved["Yes"].asBoolean()) return "allow";
+        }
+        return "refuse";
+    }
+
+    void setPermissionState(const std::string& name, const std::string& state)
+    {
+        LLNotificationTemplatePtr t = LLNotifications::instance().getTemplate(name);
+        if (!t || !t->mForm) return;
+        if (state == "ask")
+        {
+            t->mForm->setIgnored(false);
+        }
+        else
+        {
+            LLControlGroup* ignores = ignoreSettings();
+            const std::string key = "Default" + name;
+            if (ignores && ignores->controlExists(key))
+            {
+                LLSD response = LLSD::emptyMap();
+                response[state == "allow" ? "Yes" : "No"] = true;
+                ignores->setLLSD(key, response);
+            }
+            t->mForm->setIgnored(true);
+        }
+        LL_INFOS("LumenAI") << "permission " << name << " set to " << state << LL_ENDL;
+    }
+
+    // Out here because LLPanelPreference's LOG_CLASS is private, so a log
+    // line inside the panel's own members does not compile.
+    void warnPermissionsOverflow(size_t rows, S32 over)
+    {
+        LL_WARNS("LumenAI") << rows << " permission rows do not fit the panel (" << over
+                            << "px over) -- it needs a scroll container" << LL_ENDL;
+    }
+}
+
+void LumenPanelPreferenceAIKeys::buildPermissionRows()
+{
+    LLPanel* list = findChild<LLPanel>("perm_list");
+    if (!list) return;
+
+    // Label, then name, so sorting orders the rows as they read.
+    std::vector<std::pair<std::string, std::string>> found;
+    for (auto it = LLNotifications::instance().templatesBegin();
+         it != LLNotifications::instance().templatesEnd(); ++it)
+    {
+        const std::string& name = it->first;
+        if (name.compare(0, strlen(PERM_PREFIX), PERM_PREFIX) != 0) continue;
+        LLNotificationTemplatePtr t = it->second;
+        if (!t || !t->mForm || t->mForm->getIgnoreType() == LLNotificationForm::IGNORE_NO)
+        {
+            continue;   // a question that cannot be remembered has no row to set
+        }
+        std::string label = t->mForm->getIgnoreMessage();
+        if (label.compare(0, strlen(PERM_LEAD), PERM_LEAD) == 0) label = label.substr(strlen(PERM_LEAD));
+        if (!label.empty()) label[0] = (char)toupper((unsigned char)label[0]);
+        found.emplace_back(label.empty() ? name : label, name);
+    }
+    std::sort(found.begin(), found.end());
+
+    S32 top = list->getRect().getHeight() - 2;
+    for (const auto& f : found)
+    {
+        LLPanel* row = LLUICtrlFactory::getInstance()->createFromFile<LLPanel>(
+            "panel_lumen_permission_row.xml", NULL, LLPanel::child_registry_t::instance());
+        if (!row) continue;
+        row->getChild<LLTextBox>("question")->setText(f.first);
+        row->getChild<LLTextBox>("question")->setToolTip(f.first);
+        const S32 h = row->getRect().getHeight();
+        row->setRect(LLRect(0, top, list->getRect().getWidth(), top - h));
+        list->addChild(row);
+        top -= h;
+        mPermRows.push_back({ f.second, row->getChild<LLRadioGroup>("choice") });
+    }
+    // Said, not clipped in silence: a row below the panel's edge is a
+    // question the user cannot see to change.
+    if (top < 0)
+    {
+        warnPermissionsOverflow(mPermRows.size(), -top);
+    }
+
+    if (LLButton* all = findChild<LLButton>("perm_ask_all"))
+    {
+        all->setCommitCallback([this](LLUICtrl*, const LLSD&)
+        {
+            for (PermRow& r : mPermRows)
+            {
+                if (r.choice) r.choice->setSelectedByValue(LLSD("ask"), true);
+            }
+        });
+    }
+}
+
+void LumenPanelPreferenceAIKeys::loadPermissionStates()
+{
+    for (PermRow& r : mPermRows)
+    {
+        if (r.choice) r.choice->setSelectedByValue(LLSD(permissionState(r.name)), true);
+    }
+}
+
+void LumenPanelPreferenceAIKeys::savePermissionStates()
+{
+    for (PermRow& r : mPermRows)
+    {
+        if (!r.choice) continue;
+        const std::string want = r.choice->getSelectedValue().asString();
+        if (want.empty() || want == permissionState(r.name)) continue;
+        setPermissionState(r.name, want);
+    }
+}
+// </Lumen>
+
 bool LumenPanelPreferenceAIKeys::postBuild()
 {
     // Follow the setting itself. Hanging this on the combo's own commit would
@@ -259,6 +409,7 @@ bool LumenPanelPreferenceAIKeys::postBuild()
     }
 
     LLPanelPreference::postBuild();
+    buildPermissionRows();   // <Lumen> Preferences > AI > Permissions
 
     mRows.clear();
     for (const std::string& provider : LumenAIKeys::providers())
@@ -535,6 +686,7 @@ void LumenPanelPreferenceAIKeys::syncModelCombo(LLComboBox* combo, const std::st
 void LumenPanelPreferenceAIKeys::onOpen(const LLSD& key)
 {
     LLPanelPreference::onOpen(key);
+    loadPermissionStates();   // <Lumen> what is remembered NOW, not at last open
 
     // Reopening the panel must not carry a half-typed key or an unapplied
     // Clear across from last time.
@@ -937,6 +1089,7 @@ void LumenPanelPreferenceAIKeys::onClear(const std::string& provider)
 void LumenPanelPreferenceAIKeys::apply()
 {
     LLPanelPreference::apply();
+    savePermissionStates();   // <Lumen> only what the user changed
 
     for (Row& row : mRows)
     {
@@ -1023,6 +1176,7 @@ void LumenPanelPreferenceAIKeys::followTheKey()
 void LumenPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_to_skip)
 {
     LLPanelPreference::cancel(settings_to_skip);
+    loadPermissionStates();   // <Lumen> nothing was written; show what is stored
 
     // Cancel is the undo for both a typed key and a pending Clear, because
     // neither has touched the store yet.

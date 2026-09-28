@@ -425,6 +425,46 @@
 
     </panel>
 
+    <!-- =========================== Permissions =========================== -->
+    <!-- <Lumen> What the viewer does when the assistant wants to do something
+         it asks about: ask, or answer for the user without asking. The rows
+         are built in C++ from the LumenAsk notification templates, so the list
+         cannot fall behind the questions; perm_list is only the place they go.
+         The state is the viewer's own "Always choose this option", the same
+         switch Preferences > Notifications > Alerts flips, so both places
+         always agree. -->
+    <panel
+     top_pad="5"
+     bottom="-1"
+     left="1"
+     right="-1"
+     follows="all"
+     label="Permissions"
+     name="tab-permissions" >
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="14" width="330" height="14" font="SansSerifBold">
+          What the assistant may do
+      </text>
+
+      <button follows="left|top" layout="topleft" name="perm_ask_all"
+       left="370" top="10" width="140" height="22" label="Ask for everything" />
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="36" width="490" height="28" word_wrap="true">
+          Before the assistant does any of these, the viewer asks you. Always allow and Always refuse answer for you without asking. Changes take effect when you press OK.
+      </text>
+
+      <panel follows="all" layout="topleft" name="perm_list"
+       left="10" top="68" right="-10" bottom="-26" background_visible="false" />
+
+      <text type="string" follows="left|bottom" layout="topleft"
+       left="20" bottom="-6" width="490" height="16">
+          A script asking for permissions is never here: only you can answer those.
+      </text>
+
+    </panel>
+
   </tab_container>
 
 </panel>

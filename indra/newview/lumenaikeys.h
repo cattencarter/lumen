@@ -105,6 +105,8 @@ namespace LumenAIKeys
  * the undo, which is how every other preference here already behaves. That is
  * also why there is no confirmation dialogue for Clear.
  */
+class LLRadioGroup;
+
 class LumenPanelPreferenceAIKeys : public LLPanelPreference
 {
 public:
@@ -175,6 +177,20 @@ public:
     boost::signals2::connection mProviderConn;
 
 private:
+    // <Lumen> Preferences > AI > Permissions: one row per question the viewer
+    // asks before the assistant acts. Built from the LumenAsk notification
+    // templates, so a question added later cannot be missing here. The state
+    // is the viewer's own remembered answer; nothing is written until OK.
+    struct PermRow
+    {
+        std::string   name;       // the notification, e.g. LumenAskBuild
+        LLRadioGroup* choice = nullptr;
+    };
+    std::vector<PermRow> mPermRows;
+    void buildPermissionRows();
+    void loadPermissionStates();
+    void savePermissionStates();
+
     struct Row
     {
         std::string   provider;

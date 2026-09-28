@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<!-- One row of Preferences > AI > Permissions: a question the viewer asks
+     before the assistant acts, and what to do with it. Built once per
+     question by LumenPanelPreferenceAIKeys, from the notification templates
+     themselves, so a question added later appears here without a list to
+     keep in step. -->
+<panel
+ name="lumen_permission_row"
+ layout="topleft"
+ follows="left|top|right"
+ background_visible="false"
+ width="520"
+ height="24">
+  <text
+   type="string"
+   name="question"
+   layout="topleft"
+   follows="left|top"
+   left="4"
+   top="4"
+   width="270"
+   height="16"
+   use_ellipses="true">
+    Question
+  </text>
+  <radio_group
+   name="choice"
+   layout="topleft"
+   follows="left|top"
+   left="280"
+   top="2"
+   width="236"
+   height="20">
+    <radio_item
+     name="allow"
+     label="Always allow"
+     value="allow"
+     layout="topleft"
+     left="0"
+     top="0"
+     width="92"
+     height="18" />
+    <radio_item
+     name="ask"
+     label="Ask"
+     value="ask"
+     layout="topleft"
+     left_pad="2"
+     width="48"
+     height="18" />
+    <radio_item
+     name="refuse"
+     label="Always refuse"
+     value="refuse"
+     layout="topleft"
+     left_pad="2"
+     width="92"
+     height="18" />
+  </radio_group>
+</panel>
