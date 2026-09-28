@@ -299,10 +299,37 @@ bool LumenAIClaude::start(const std::string& prompt,
     params.args.add("--strict-mcp-config");
     params.args.add("--disable-slash-commands");
 
+    // <Lumen> The instructions go in a FILE, not on the command line. LLProcess
+    // writes every launch's full command line into Lumen.log at INFO, so an
+    // argument put the whole prompt -- the user's own memory note with it --
+    // into the log on every turn: the file people are asked to paste into bug
+    // reports. The file sits in workDir(), the per-user folder Claude Code
+    // already runs in, and is rewritten each turn.
     if (!system.empty())
     {
-        params.args.add("--append-system-prompt");
-        params.args.add(system);
+        const std::string file = gDirUtilp->add(workDir(), "lumen_instructions.txt");
+        bool written = false;
+        {
+            llofstream out(file.c_str(), std::ios::out | std::ios::trunc | std::ios::binary);
+            if (out.is_open())
+            {
+                out << system;
+                out.close();
+                written = !out.fail();
+            }
+        }
+        if (written)
+        {
+            params.args.add("--append-system-prompt-file");
+            params.args.add(file);
+        }
+        else
+        {
+            LL_WARNS("LumenAI") << "Could not write the instructions file; passing them "
+                                   "on the command line instead." << LL_ENDL;
+            params.args.add("--append-system-prompt");
+            params.args.add(system);
+        }
     }
     if (!model.empty())
     {

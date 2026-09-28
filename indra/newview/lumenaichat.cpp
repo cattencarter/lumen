@@ -911,14 +911,37 @@ namespace
             "person what was actually confirmed rather than what you hope happened.";
     }
 
-    /** The standing prompt, plus whatever the person told us to remember. */
+    // <Lumen> Who "I" is. Nothing said so, and asked what Catten was wearing,
+    // Sonnet answered "Catten Carter is you" while Maryam was logged in: the
+    // worn list is full of items Catten made, and the model had nothing else
+    // to go on. The viewer knows exactly who is logged in, so it says.
+    std::string whoTheyAre()
+    {
+        const LLUUID me = gAgent.getID();
+        if (me.isNull()) return std::string();
+        std::string legacy;
+        LLAgentUI::buildFullname(legacy);
+        std::string who = "\n\nThe person you are working for is " + legacy;
+        LLAvatarName av;
+        if (LLAvatarNameCache::get(me, &av))
+        {
+            const std::string display = av.getDisplayName();
+            if (!display.empty() && display != legacy) who += " (display name \"" + display + "\")";
+        }
+        who += ", the avatar logged in to this viewer, agent id " + me.asString() + ". \"I\", "
+               "\"me\" and \"my\" mean them. Anyone else -- including the people named as the "
+               "creators of their things -- is somebody else.";
+        return who;
+    }
+
+    /** The standing prompt, who they are, and whatever they told us to remember. */
     std::string fullSystemPrompt()
     {
         const std::string memory = LumenAIMemory::get();
         const std::vector<std::string> kept = LumenAIMemory::remembered();
         if (memory.empty() && kept.empty())
         {
-            return systemPrompt();
+            return systemPrompt() + whoTheyAre();
         }
         std::string list;
         for (const std::string& e : kept) list += "- " + e + "\n";
@@ -930,7 +953,7 @@ namespace
               "first. Use them the same way:\n\n" + list;
         if (memory.empty())
         {
-            return systemPrompt() + remembered;
+            return systemPrompt() + whoTheyAre() + remembered;
         }
 
         // Fenced and labelled as the person's own words, so it reads as
@@ -946,7 +969,7 @@ namespace
         // many words that it IS the answer to questions about who they are,
         // needing no tool. "Do not repeat it unprompted" stays, and now says
         // plainly that being asked is the prompt.
-        return systemPrompt()
+        return systemPrompt() + whoTheyAre()
              + "\n\nWhat this person has told you about themselves, in their own words. This is "
                "the answer to questions about who they are -- their life in Second Life, their "
                "roleplay character, the people close to them. When a question is about something "
@@ -1684,6 +1707,7 @@ namespace
 void LumenAIChatFloater::sayUser(const std::string& text)
 {
     if (!mTranscript) return;
+    LL_DEBUGS("LumenAITest") << "USER " << text << LL_ENDL;   // <Lumen> see LumenAITest in lumenaictl.cpp
 
     mTranscript->appendText("\n", false);
     mTranscript->appendText("You: ", false, nameStyle());
@@ -1693,6 +1717,7 @@ void LumenAIChatFloater::sayUser(const std::string& text)
 void LumenAIChatFloater::sayAssistant(const std::string& text)
 {
     if (!mTranscript || text.empty()) return;
+    LL_DEBUGS("LumenAITest") << "REPLY " << text << LL_ENDL;  // <Lumen>
 
     const std::string body = plainText(text);
 
@@ -1820,6 +1845,8 @@ void LumenAIChatFloater::sayHeader()
 void LumenAIChatFloater::sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
                                bool caching_expected)
 {
+    LL_DEBUGS("LumenAITest") << "USAGE in " << in << " out " << out << " cached " << cached
+                             << " created " << created << " calls " << calls << LL_ENDL;  // <Lumen>
     if (calls == 0)
     {
         setActivity(std::string());
@@ -1918,6 +1945,7 @@ void LumenAIChatFloater::refreshTitle()
 void LumenAIChatFloater::sayNote(const std::string& text)
 {
     if (!mTranscript) return;
+    LL_DEBUGS("LumenAITest") << "NOTE " << text << LL_ENDL;   // <Lumen>
     mTranscript->appendText("\n" + text, true, dimStyle());
 }
 
@@ -2213,7 +2241,7 @@ void LumenAIChatFloater::offerAtLogin()
     {
         sOfferWatchFor = gAgentID;
         sOfferUntil = LLTimer::getTotalSeconds() + OFFER_WINDOW_SECONDS;
-        sOfferPoll.setTimerExpirySec(OFFER_RETRY_SECONDS);
+        sOfferPoll.resetWithExpiry(OFFER_RETRY_SECONDS);
 
         LLEventPump& mainloop = LLEventPumps::instance().obtain("mainloop");
         mainloop.stopListening("LumenAICatchUpOffer");
@@ -2221,7 +2249,11 @@ void LumenAIChatFloater::offerAtLogin()
         {
             if (sOfferPoll.hasExpired())
             {
-                sOfferPoll.setTimerExpirySec(OFFER_RETRY_SECONDS);
+                // resetWithExpiry, not setTimerExpirySec: that one counts from
+                // the timer's START, so once expired it stayed expired and this
+                // asked catch_up on every frame for the whole minute -- 624
+                // calls, seen in the test log.
+                sOfferPoll.resetWithExpiry(OFFER_RETRY_SECONDS);
                 offerAtLogin();
             }
             const bool finished = gAgentID.isNull() || gAgentID != sOfferWatchFor
@@ -4039,7 +4071,7 @@ void LumenAIAutoResponder::watchForArrivals()
 {
     if (mArrivalWatch) return;
     mArrivalWatch = true;
-    mArrivalPoll.setTimerExpirySec(3.f);
+    mArrivalPoll.resetWithExpiry(3.f);   // <Lumen> reset: setTimerExpirySec counts from the start, so it stayed expired
 
     LLEventPumps::instance().obtain("mainloop").listen("LumenAIArrivals",
         [this](const LLSD&)
@@ -4052,7 +4084,7 @@ void LumenAIAutoResponder::watchForArrivals()
             }
             if (mArrivalPoll.hasExpired())
             {
-                mArrivalPoll.setTimerExpirySec(3.f);
+                mArrivalPoll.resetWithExpiry(3.f);   // <Lumen> reset: setTimerExpirySec counts from the start, so it stayed expired
                 checkArrivals();
             }
             return false;

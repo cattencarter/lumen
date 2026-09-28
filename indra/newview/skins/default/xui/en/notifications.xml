@@ -15153,9 +15153,13 @@ How this information is processed, stored, or retained depends on your chosen AI
 
        "Always choose this option" is the viewer's own checkbox (save_option):
        the answer is remembered with every other remembered answer and undone
-       in Preferences > Notifications. Two have no checkbox at all, because a
-       remembered Yes there cannot be taken back: giving away a no-copy item,
-       and letting a script take money.
+       in Preferences > Notifications, or Preferences > AI > Permissions.
+       Every question has it (the author's call, 2026-09-28). A script's own
+       request for permissions is never put to the assistant at all.
+
+       Modal, as the viewer's own confirmations are: a plain alert is sent to
+       the back of the window stack, and one sat hidden behind the Snapshot
+       window while the assistant waited for an answer nobody could see.
 
        No is the default button, so Enter or a stray click never acts.
        lumenaictl.cpp refuses to let the assistant answer any notification
@@ -15164,7 +15168,7 @@ How this information is processed, stored, or retained depends on your chosen AI
    icon="alert.tga"
    label="Say this as you?"
    name="LumenAskSay"
-   type="alert">
+   type="alertmodal">
 The assistant wants to say this [WHERE], as you:
 
 [TEXT]
@@ -15190,7 +15194,7 @@ The assistant wants to say this [WHERE], as you:
    icon="alert.tga"
    label="Send an instant message?"
    name="LumenAskIM"
-   type="alert">
+   type="alertmodal">
 The assistant wants to send [NAME] an instant message, as you:
 
 [TEXT]
@@ -15216,7 +15220,7 @@ The assistant wants to send [NAME] an instant message, as you:
    icon="alert.tga"
    label="Send to group chat?"
    name="LumenAskGroupChat"
-   type="alert">
+   type="alertmodal">
 The assistant wants to send this to the [GROUP] group chat, as you:
 
 [TEXT]
@@ -15242,7 +15246,7 @@ The assistant wants to send this to the [GROUP] group chat, as you:
    icon="alert.tga"
    label="Post a group notice?"
    name="LumenAskGroupNotice"
-   type="alert">
+   type="alertmodal">
 The assistant wants to post a notice to everyone in [GROUP]. A notice cannot be taken back.
 
 Subject: [SUBJECT]
@@ -15272,7 +15276,7 @@ Subject: [SUBJECT]
    icon="alert.tga"
    label="Give an item?"
    name="LumenAskGive"
-   type="alert">
+   type="alertmodal">
 The assistant wants to give [ITEM] to [NAME]. You keep your own copy.
     <tag>confirm</tag>
     <form name="form">
@@ -15296,7 +15300,7 @@ The assistant wants to give [ITEM] to [NAME]. You keep your own copy.
    icon="alert.tga"
    label="Give away a no-copy item?"
    name="LumenAskGiveNoCopy"
-   type="alert">
+   type="alertmodal">
 The assistant wants to give [ITEM] to [NAME].
 
 It is no-copy, so if they accept it, it is gone from your inventory for good. This cannot be undone.
@@ -15322,7 +15326,7 @@ It is no-copy, so if they accept it, it is gone from your inventory for good. Th
    icon="alert.tga"
    label="Overwrite a saved outfit?"
    name="LumenAskReplaceOutfit"
-   type="alert">
+   type="alertmodal">
 The assistant wants to save what you are wearing now in your [OUTFIT] outfit.
 
 The outfit's old contents are overwritten and cannot be brought back. Nothing you are wearing changes, and no items are deleted.
@@ -15348,7 +15352,7 @@ The outfit's old contents are overwritten and cannot be brought back. Nothing yo
    icon="alert.tga"
    label="Delete an item?"
    name="LumenAskDelete"
-   type="alert">
+   type="alertmodal">
 The assistant wants to move [ITEM] to the Trash.
 
 [NOTE]
@@ -15374,7 +15378,7 @@ The assistant wants to move [ITEM] to the Trash.
    icon="alert.tga"
    label="Delete an object?"
    name="LumenAskRemove"
-   type="alert">
+   type="alertmodal">
 The assistant wants to delete [OBJECT] from the world.
 
 [NOTE]
@@ -15400,7 +15404,7 @@ The assistant wants to delete [OBJECT] from the world.
    icon="alert.tga"
    label="Build?"
    name="LumenAskBuild"
-   type="alert">
+   type="alertmodal">
 The assistant wants to do this:
 
 [ACTION]
@@ -15426,7 +15430,7 @@ The assistant wants to do this:
    icon="alert.tga"
    label="Add a script?"
    name="LumenAskNewScript"
-   type="alert">
+   type="alertmodal">
 The assistant wants to add a new script to [OBJECT]. It starts running at once, with Linden Lab&apos;s default script, until something else is saved over it.
     <tag>confirm</tag>
     <form name="form">
@@ -15450,7 +15454,7 @@ The assistant wants to add a new script to [OBJECT]. It starts running at once, 
    icon="alert.tga"
    label="Teleport to a place from search?"
    name="LumenAskTeleportSearch"
-   type="alert">
+   type="alertmodal">
 The assistant wants to teleport you to [PLACE] in [REGION].
 
 It was found in Second Life&apos;s search, which lists other people&apos;s places and carries a lot of advertising. [NOTE]
@@ -15476,7 +15480,7 @@ It was found in Second Life&apos;s search, which lists other people&apos;s place
    icon="alert.tga"
    label="Answer a dialogue?"
    name="LumenAskDialog"
-   type="alert">
+   type="alertmodal">
 The assistant wants to answer [FROM] by pressing &quot;[CHOICE]&quot;.
 
 It asked:
@@ -15503,7 +15507,7 @@ It asked:
    icon="alert.tga"
    label="Answer for you while you are away?"
    name="LumenAskAwayReplies"
-   type="alert">
+   type="alertmodal">
 The assistant wants to answer [WHAT] for you while you are away -- [WHO], for up to [MINUTES] minutes. Replies go out in your name and nobody reads them first.
 
 [NOTE]

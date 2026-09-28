@@ -1372,6 +1372,37 @@ namespace
         return std::string();
     }
 
+    // <Lumen> Wear and detach requests still on their way. An attachment took
+    // twelve seconds to arrive just after login, and the model checked twice,
+    // saw `worn: false`, and told the user it had failed while the skirt was
+    // being put on. The viewer knows it asked, so a search says so.
+    struct WearAsked { F64 at; bool wear; };
+    std::map<LLUUID, WearAsked> sWearAsked;
+    const F64 WEAR_SETTLE_SECONDS = 45.0;
+
+    void noteWearAsked(const LLUUID& id, bool wear)
+    {
+        const F64 now = LLTimer::getTotalSeconds();
+        for (std::map<LLUUID, WearAsked>::iterator i = sWearAsked.begin(); i != sWearAsked.end(); )
+        {
+            if (now - i->second.at > WEAR_SETTLE_SECONDS) i = sWearAsked.erase(i); else ++i;
+        }
+        sWearAsked[id] = { now, wear };
+        const LLUUID base = gInventory.getLinkedItemID(id);
+        if (base.notNull() && base != id) sWearAsked[base] = { now, wear };
+    }
+
+    /** "being put on" / "being taken off" while a request has not landed yet. */
+    std::string wearOnItsWay(const LLUUID& id, bool worn_now)
+    {
+        std::map<LLUUID, WearAsked>::const_iterator i = sWearAsked.find(id);
+        if (i == sWearAsked.end()) return std::string();
+        if (LLTimer::getTotalSeconds() - i->second.at > WEAR_SETTLE_SECONDS) return std::string();
+        if (worn_now == i->second.wear) return std::string();   // it has landed
+        return i->second.wear ? "being put on" : "being taken off";
+    }
+    // </Lumen>
+
     LLSD itemToLLSD(const LLViewerInventoryItem* item)
     {
         LLSD out;
@@ -1379,6 +1410,10 @@ namespace
         out["name"] = safeUtf8(item->getName());
         out["kind"] = kindOf(item->getType());
         out["worn"] = get_is_item_worn(item->getUUID());
+        {
+            const std::string way = wearOnItsWay(item->getUUID(), out["worn"].asBoolean());
+            if (!way.empty()) out["on_its_way"] = way;   // <Lumen> see sWearAsked
+        }
 
         // Who made it. Already on the item -- the permissions carry it -- and
         // without it an assistant asked "which of these did so-and-so make"
@@ -3071,7 +3106,9 @@ namespace
             "can SEE where it is rather than being read a path. Prefer this to reciting a folder "
             "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`). This one "
             "moves something on their screen, so do it when they are looking for a thing, not "
-            "after every search.\n"
+            "after every search. \"Show me X in my inventory\" or \"where is X\" IS that: show "
+            "the best match (or the folder that holds them, when there are many) and name the "
+            "others in a line, rather than only listing them.\n"
             "- open: open a NOTECARD, SCRIPT, TEXTURE or ANIMATION in its own window, so the "
             "user can read, edit or play it themselves. read_notecard gives YOU the text; this "
             "gives it to THEM, and is the better answer whenever they want to see it rather "
@@ -8740,6 +8777,15 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         LLSD inner = dispatch(target, call_args);
 
+        // <Lumen> For testing a model by USING it: every tool call, whoever made
+        // it, and what it answered. Off unless LumenAITest is switched on in
+        // user_settings/logcontrol-dev.xml, because a result can carry other
+        // people's chat and IM text.
+        LL_DEBUGS("LumenAITest") << "CALL " << name << " " << llsdToJsonString(args)
+                                 << "\nRESULT " << llsdToJsonString(inner).substr(0, 8000)
+                                 << LL_ENDL;
+        // </Lumen>
+
         LLSD content = LLSD::emptyArray();
         LLSD text;
         text["type"] = "text";
@@ -9357,6 +9403,29 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         result["returned"] = (LLSD::Integer)found.size();
         result["truncated"] = worn_only ? ((S32)items.size() > limit)
                                         : ((S32)ranked_total > (S32)found.size());
+        // <Lumen> Whatever the query, anything still being put on or taken off,
+        // so a `worn: true` search right after a wear does not read as "it is
+        // not on" while it is arriving.
+        {
+            LLSD arriving = LLSD::emptyArray();
+            for (std::map<LLUUID, WearAsked>::const_iterator i = sWearAsked.begin();
+                 i != sWearAsked.end(); ++i)
+            {
+                const LLViewerInventoryItem* it = gInventory.getItem(i->first);
+                if (!it || it->getIsLinkType()) continue;
+                const std::string way = wearOnItsWay(i->first, get_is_item_worn(i->first));
+                if (way.empty()) continue;
+                LLSD a; a["id"] = i->first; a["name"] = safeUtf8(it->getName()); a["on_its_way"] = way;
+                arriving.append(a);
+            }
+            if (arriving.size())
+            {
+                result["still_on_its_way"] = arriving;
+                result["still_on_its_way_note"] = "The viewer asked for these a few seconds ago and "
+                    "the server has not finished: they are on their way, not failed. Say so, and "
+                    "do not ask again.";
+            }
+        }
         if (!creator_name.empty() && unknown_creators > 0)
         {
             result["creators_not_yet_known"] = (LLSD::Integer)unknown_creators;
@@ -9440,6 +9509,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         if (method == "wear")
         {
+            // <Lumen> Asked again while the first request is still arriving:
+            // say so, rather than asking the viewer a second time.
+            if (!was_worn && wearOnItsWay(id, false) == "being put on")
+            {
+                LLSD result;
+                result["item_id"] = id;
+                result["name"] = item_name;
+                result["on_its_way"] = "being put on";
+                result["note"] = "It is already being put on from the last request -- nothing more "
+                                 "was asked. Tell them it is on its way; do not call it a failure.";
+                return result;
+            }
             if (was_worn)
             {
                 LLSD result;
@@ -9552,6 +9633,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         LL_INFOS("AICtl") << method << ": " << id << LL_ENDL;
+        noteWearAsked(id, method == "wear");   // <Lumen>
 
         LLSD result;
         result["item_id"] = id;
@@ -9559,9 +9641,13 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         result["requested"] = method;
         // Appearance changes go to the server and come back. Saying "worn" here
         // would be a guess, and the caller has a cheap way to actually look.
+        // <Lumen> And how long, because "a moment" read as two seconds.
         result["confirm_with"] =
-            "Appearance takes a moment to settle. Call inventory / search for this item and check "
-            "its worn flag to confirm.";
+            "Appearance goes to the server and back: an object can take 10-20 seconds to arrive, "
+            "longer just after login. Call inventory / search for this item to confirm. `worn` "
+            "true means it is done. `on_its_way` means the viewer is still doing it -- tell them "
+            "it is on its way, do not call it a failure, and do not ask again. Only if it is "
+            "neither after 45 seconds has it not worked.";
         if (replace_ignored)
         {
             result["replace_ignored"] = true;
@@ -12191,6 +12277,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     : "This is NOT in Preferences and nothing was opened. `where` is where it "
                       "lives in this viewer, read out of the XUI rather than remembered -- give "
                       "it to them exactly as written. set_setting can also change it.";
+                // <Lumen> "Open my block list" came here, read "nothing was
+                // opened", and the model told the user it could not open it --
+                // while open_window can. Say so when it is a window.
+                if (!e.openfn.empty())
+                {
+                    r["can_open"] = true;
+                    r["note"] = "It is a WINDOW this viewer can open for them: call viewer / "
+                                "open_window with name \"" + e.label + "\". If they asked to open "
+                                "or see it, do that rather than telling them where it is. " +
+                                r["note"].asString();
+                }
                 recordAction(request_id, fingerprintOf(method, params), "show_setting", "ok", r, briefOf(r));
                 return r;
             }
@@ -13605,11 +13702,15 @@ if (method == "camera")
             result["angle"]   = deg;
             if (own_gaze) result["gaze"] = gaze == "ahead" ? "away" : gaze;   // <Lumen> what was applied
             result["took_a_photo"] = false;
+            // <Lumen> "Take a photo and save it" stopped here: this said THEY
+            // press Save, so the model never reached save_photo.
             result["note"] = "The camera is set and the Snapshot window is open, previewing "
-                             "live. THEY press Save -- nothing has been written or uploaded. "
-                             "Describe what you framed and ask if they want it adjusted; you "
-                             "cannot see the result, they can. `shot: \"reset\"` gives the "
-                             "camera back.";
+                             "live. Nothing has been written or uploaded yet. If they asked you to "
+                             "SAVE or take the picture, call movement / save_photo now -- it "
+                             "writes this view to their Desktop. Otherwise describe what you "
+                             "framed and ask if they want it adjusted; you cannot see the result, "
+                             "they can, and they can also press Save themselves. `shot: "
+                             "\"reset\"` gives the camera back.";
             return result;
         }
 

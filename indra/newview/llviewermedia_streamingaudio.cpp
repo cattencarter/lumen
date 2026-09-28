@@ -306,7 +306,7 @@ void LLStreamingAudio_MediaPlugins::scheduleRetry(const std::string& url, F32 de
 {
     mRetryURL     = url;
     mRetryPending = true;
-    mRetryTimer.setTimerExpirySec(delay_seconds);
+    mRetryTimer.resetWithExpiry(delay_seconds);   // <Lumen> counted from now, not from when the timer was made
 }
 
 void LLStreamingAudio_MediaPlugins::checkStreamHealth()
