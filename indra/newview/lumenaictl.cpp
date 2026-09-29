@@ -3815,9 +3815,9 @@ namespace
             "and the window really is up.\n"
             "\n- close_window: close a window that is open, by what they call it -- \"close the "
             "photo window\", \"close my block list\". It closes what is on screen and nothing "
-            "else. It will not close this Assistant window, nor Preferences, where closing would "
-            "undo what they have not saved -- tell them to press OK or Cancel there. If the window "
-            "asks something itself as it closes (\"Save Changes?\"), that is theirs to answer.\n"
+            "else. It will not close this Assistant window. Preferences is closed as its OK button "
+            "does, so what is on its pages is KEPT (`kept_changes`) -- say so. If the window asks "
+            "something itself as it closes (\"Save Changes?\"), that is theirs to answer.\n"
             "**Never invent a menu path: this viewer is not stock Firestorm and a wrong path "
             "cannot be checked by the person you told it to.**\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
@@ -12412,16 +12412,19 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             e["message"] = "That is this Assistant window, and closing it is theirs to do.";
             LLSD w; w["__error"] = e; return w;
         }
+        // Preferences closed by its X is Cancel, which puts back every setting
+        // on its pages -- including one this assistant has just set for them.
+        // Asked to close it, they mean keep it: so it is closed as OK is.
+        bool kept = false;
         if (inst == "preferences")
         {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "Preferences is not closed from here: closing it undoes every change on "
-                           "its pages that has not been saved. Tell them to press OK to keep the "
-                           "changes, or Cancel to throw them away.";
-            LLSD w; w["__error"] = e; return w;
+            if (LLFloaterPreference* prefs = dynamic_cast<LLFloaterPreference*>(target))
+            {
+                prefs->onBtnOK(LLSD());
+                kept = true;
+            }
         }
-
-        target->closeFloater();
+        if (!kept) target->closeFloater();
         // Asked again rather than trusted: a script window with changes asks
         // "Save Changes?" and stays, and a closed floater may be gone.
         LLFloater* after = LLFloaterReg::findInstance(inst, key);
@@ -12430,6 +12433,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD r;
         r["window"] = title;
         r["closed"] = closed;
+        if (kept) r["kept_changes"] = true;   // Preferences, closed as OK
         r["note"] = closed
             ? "Closed, and the viewer confirms it is gone from the screen."
             : "It is still open -- the window has most likely asked them something itself (such "
