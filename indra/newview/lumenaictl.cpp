@@ -144,6 +144,7 @@
 #include "llpaneldirbrowser.h"
 // </Lumen>
 #include "fslslbridge.h"   // <Lumen> worn_by
+#include "fsfloaterim.h"   // <Lumen> send_im show_window
 #include "llavatarpropertiesprocessor.h"  // <Lumen> profile
 #include "lldiriterator.h"                 // <Lumen> settings lookup
 #include "llfloaterpreference.h"           // <Lumen> settings lookup
@@ -3299,7 +3300,9 @@ namespace
             "talks to scripted objects instead and is not shown to people.\n"
             "- send_im: a private message to one person. This reaches a real person and cannot be "
             "taken back. The viewer is NOT told whether it arrived, so never tell the user it was "
-            "received; a reply is the only evidence.\n"
+            "received; a reply is the only evidence. When they ask to OPEN an IM or a conversation "
+            "with someone, pass show_window: true and their conversation window comes up with the "
+            "message in it; with show_window and no message it only opens the window.\n"
             "- list_friends: the user's friends and which of them are online. The answer to "
             "\"is anyone about?\", which nothing else could give.\n"
             "- send_group_message: say something in a group's chat, where every member online in "
@@ -3366,6 +3369,12 @@ namespace
                                "-- it is looked up for you. Pass the same one again to collect "
                                "the answer.";
         chat_props["person"]=cps;
+        LLSD csw; csw["type"]="boolean";
+            csw["description"]="send_im: true when the user asks to OPEN an IM or a conversation -- "
+                               "the conversation window comes up for them. Leave it out for "
+                               "\"send them a message\", which stays in the background. With "
+                               "show_window and no message, only the window is opened.";
+        chat_props["show_window"]=csw;
         LLSD cgid; cgid["type"]="string";
             cgid["description"]="send_group_notice / send_group_message: the group's id, from list_groups.";
         LLSD cgn;  cgn["type"]="string";
@@ -9809,7 +9818,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     if (method == "send_im")
     {
         const std::string message = params["message"].asString();
-        if (message.empty())
+        // <Lumen> "open an IM to catten" means the window, not only the message:
+        // the author expected it on screen and it never came, because nothing
+        // here opened it. With no message this only opens the window.
+        const bool show_window = params["show_window"].asBoolean();
+        if (message.empty() && !show_window)
         {
             LLSD e; e["code"] = -32602; e["message"] = "message is required and cannot be empty";
             LLSD w; w["__error"] = e; return w;
@@ -9856,6 +9869,28 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                            "instant-message conversation with that person right now. Nothing "
                            "was sent -- say it is their own attachment doing it.";
             LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+
+        // <Lumen> Opening the window sends nothing, so it needs no question --
+        // the same as the user clicking IM on a profile. The @startim check
+        // above has already been made, as that click makes it.
+        if (message.empty())
+        {
+            LLAvatarName open_name;
+            const std::string label = LLAvatarNameCache::get(to, &open_name)
+                                    ? open_name.getUserName() : to.asString();
+            const LLUUID open_id = gIMMgr->addSession(label, IM_NOTHING_SPECIAL, to);
+            FSFloaterIM* win = FSFloaterIM::show(open_id);
+            LLSD result;
+            result["name"] = label;
+            result["session_id"] = open_id;
+            result["sent"] = false;
+            result["window_opened"] = (win != nullptr && win->isInVisibleChain());
+            result["note"] = result["window_opened"].asBoolean()
+                ? "The conversation window is open for them. Nothing was sent."
+                : "The viewer did not put the conversation window on screen. Nothing was sent.";
+            return result;
         }
         // </Lumen>
 
@@ -9914,6 +9949,13 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LL_INFOS("AICtl") << "send_im: " << message.size() << " characters to " << to << LL_ENDL;
 
         LLSD result;
+        // <Lumen> After the send, so the window opens on the message just sent.
+        if (show_window)
+        {
+            FSFloaterIM* win = FSFloaterIM::show(session_id);
+            result["window_opened"] = (win != nullptr && win->isInVisibleChain());
+        }
+        // </Lumen>
         result["sent_to"] = to;
         result["name"] = to_name;
         result["session_id"] = session_id;
