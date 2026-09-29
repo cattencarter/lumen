@@ -227,7 +227,7 @@
       </panel>
 
       <panel follows="left|top" layout="topleft" name="p_local"
-       left="0" top="64" width="520" height="380" background_visible="false">
+       left="0" top="64" width="520" height="330" background_visible="false">
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="4" width="480" height="54" word_wrap="true">
@@ -259,17 +259,17 @@
         </text>
 
         <text type="string" follows="left|top" layout="topleft" name="local_requirements"
-         left="20" top="172" width="480" height="116" word_wrap="true">
-            What it needs, from our testing: a model that can use tools, and a context of at least 32,000 tokens, because every request is about 18,000 before the conversation grows. Set the context length when you load the model; LM Studio's usual default is too small. An 8B model manages simple requests and loses its way on longer ones; a 27B one handled everything we asked. The model and its context must fit in graphics memory -- on a Mac about three quarters of the computer's memory -- so count on 32 GB or more for a 27B model. For writing scripts, Anthropic or OpenAI is still the better choice.
+         left="20" top="172" width="480" height="54" word_wrap="true">
+            Needs a model that can use tools, loaded with a context of at least 32,000 tokens (LM Studio's default is too small). A 27B model worked well in our tests; an 8B one gets lost on longer requests. On a Mac, count on 32 GB of memory or more.
         </text>
 
         <check_box control_name="LumenAILocalThinking" follows="left|top" layout="topleft"
-         left="20" top="294" width="480" height="20" name="local_thinking"
+         left="20" top="232" width="480" height="20" name="local_thinking"
          label="Let the model think before it answers (slower -- some spend minutes on it)"
          tool_tip="A thinking model writes out its reasoning before every step. Switched off, it answers straight away -- often much faster, and usually good enough for the viewer's tools." />
 
         <text type="string" follows="left|top" layout="topleft" name="local_status"
-         left="20" top="320" width="480" height="54" word_wrap="true">
+         left="20" top="258" width="480" height="54" word_wrap="true">
         </text>
       </panel>
 
