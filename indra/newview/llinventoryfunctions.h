@@ -38,13 +38,14 @@ const S32 COMPUTE_STOCK_INFINITE = -1;
 const S32 COMPUTE_STOCK_NOT_EVALUATED = -2;
 
 // <FS:TT> - Firestorm folder name for use by AO, bridge and possibly others
-// <Lumen> Lumen does not put somebody else's name at the top of the user's
-// inventory (Decisions 5, 117). The macro keeps its upstream spelling so the
-// five files that use it need no edit and carry no merge burden; only the
-// string changed. A leftover "#Firestorm" folder is renamed in place at login
-// by LumenFolders::migrateRootFolder() -- see lumenfolders.h for why a rename
-// and not a create.
-#define ROOT_FIRESTORM_FOLDER   "#Lumen"
+// <Lumen> "#Firestorm" when the user has one, shared with Firestorm, and
+// "#Lumen" for somebody who never used it -- decided once a session by
+// LumenFolders (see lumenfolders.h for why the old rename was undone). The
+// macro keeps its upstream spelling so the files that use it need no edit.
+// Lumen's own bridge does not use this: it always lives in #Lumen.
+#include "lumenfolders.h"
+#define ROOT_FIRESTORM_FOLDER   LumenFolders::sharedRoot()
+// </Lumen>
 // </FS:TT>
 
 /********************************************************************************

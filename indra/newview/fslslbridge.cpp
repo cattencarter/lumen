@@ -47,6 +47,9 @@
 #include "llviewerassetupload.h"
 #include "llviewercontrol.h"
 #include "llviewerregion.h"
+#include "llviewerobjectlist.h"      // <Lumen> who sent a bridge announcement
+#include "llviewerjointattachment.h" // <Lumen>
+#include "llvoavatarself.h"         // <Lumen>
 
 #if OPENSIM
 #include "llviewernetwork.h"
@@ -58,7 +61,7 @@ static const std::string FS_BRIDGE_CONTAINER_FOLDER = "Landscaping";
 // -- the viewer compares the version the script announces against this name to
 // decide whether the bridge it is talking to is the one it built.
 static const U32 FS_BRIDGE_MAJOR_VERSION = 1;
-static const U32 FS_BRIDGE_MINOR_VERSION = 5;
+static const U32 FS_BRIDGE_MINOR_VERSION = 6;
 // </Lumen>
 static const U32 FS_MAX_MINOR_VERSION = 99;
 // <Lumen> Our script, written fresh against the same command vocabulary
@@ -221,6 +224,25 @@ bool FSLSLBridge::lslToViewer(std::string_view message, const LLUUID& fromID, co
             // case where a user logs in from multiple computers which cannot have the bridgeAuth ID locally
             // synchronized.
 
+
+            // <Lumen> Firestorm's OWN bridge, still worn from a Firestorm
+            // session: take that one off and leave ours alone. It never passes
+            // our check -- its folder is in #Firestorm, not ours -- and treating
+            // its announcement as a broken copy of ours meant our bridge was
+            // taken off and rebuilt every time Firestorm's spoke.
+            if (LLViewerObject* sender = gObjectList.findObject(fromID))
+            {
+                const LLUUID sender_item = sender->getAttachmentItemID();
+                LLViewerInventoryItem* item = gInventory.getItem(sender_item);
+                if (item && LLStringUtil::startsWith(item->getName(), FS_BRIDGE_LEGACY_NAME))
+                {
+                    LL_INFOS("FSLSLBridge") << "Firestorm's bridge (" << item->getName()
+                                            << ") is worn; taking it off rather than rebuilding ours." << LL_ENDL;
+                    LLVOAvatarSelf::detachAttachmentIntoInventory(sender_item);
+                    return true;
+                }
+            }
+            // </Lumen>
 
             // If something that looks like our current bridge is attached but failed auth, detach and recreate.
             const LLUUID catID = findFSCategory();
@@ -1545,7 +1567,7 @@ bool FSLSLBridge::isItemAttached(const LLUUID& iID)
 
 void FSLSLBridge::setupFSCategory(inventory_func_type callback)
 {
-    if (LLUUID fsCatID = gInventory.findCategoryByName(ROOT_FIRESTORM_FOLDER); !fsCatID.isNull())
+    if (LLUUID fsCatID = gInventory.findCategoryByName(LumenFolders::LUMEN_FOLDER); !fsCatID.isNull())
     {
         LLInventoryModel::item_array_t* items;
         LLInventoryModel::cat_array_t* cats;
@@ -1571,7 +1593,7 @@ void FSLSLBridge::setupFSCategory(inventory_func_type callback)
     }
     else
     {
-        gInventory.createNewCategory(gInventory.getRootFolderID(), LLFolderType::FT_NONE, ROOT_FIRESTORM_FOLDER, [this, callback](const LLUUID& new_cat_id)
+        gInventory.createNewCategory(gInventory.getRootFolderID(), LLFolderType::FT_NONE, LumenFolders::LUMEN_FOLDER, [this, callback](const LLUUID& new_cat_id)
             {
                 gInventory.createNewCategory(new_cat_id, LLFolderType::FT_NONE, FS_BRIDGE_FOLDER, [this, callback](const LLUUID& new_cat_id)
                     {
@@ -1595,7 +1617,7 @@ LLUUID FSLSLBridge::findFSCategory()
         return mBridgeFolderID;
     }
 
-    if (LLUUID fsCatID = gInventory.findCategoryByName(ROOT_FIRESTORM_FOLDER); !fsCatID.isNull())
+    if (LLUUID fsCatID = gInventory.findCategoryByName(LumenFolders::LUMEN_FOLDER); !fsCatID.isNull())
     {
         LLInventoryModel::item_array_t* items;
         LLInventoryModel::cat_array_t* cats;
@@ -1788,6 +1810,30 @@ void FSLSLBridge::detachOtherBridges()
             LLVOAvatarSelf::detachAttachmentIntoInventory(item->getUUID());
         }
     }
+
+    // <Lumen> And Firestorm's own bridge. It lives in #Firestorm now, not in
+    // our folder, so the walk above never meets it -- and two bridges worn at
+    // once means each viewer keeps hearing a bridge it cannot verify.
+    if (isAgentAvatarValid())
+    {
+        for (const auto& ap : gAgentAvatarp->mAttachmentPoints)
+        {
+            LLViewerJointAttachment* att = ap.second;
+            if (!att) continue;
+            for (const LLPointer<LLViewerObject>& obj : att->mAttachedObjects)
+            {
+                if (!obj) continue;
+                const LLUUID item_id = obj->getAttachmentItemID();
+                LLViewerInventoryItem* item = gInventory.getItem(item_id);
+                if (item && LLStringUtil::startsWith(item->getName(), FS_BRIDGE_LEGACY_NAME))
+                {
+                    LL_INFOS("FSLSLBridge") << "Taking off Firestorm's bridge (" << item->getName() << ")." << LL_ENDL;
+                    LLVOAvatarSelf::detachAttachmentIntoInventory(item_id);
+                }
+            }
+        }
+    }
+    // </Lumen>
 }
 
 bool FSLSLBridgeCleanupTimer::tick()

@@ -31,45 +31,44 @@
 #include <string>
 
 /**
- * Lumen keeps its things in one top-level inventory folder, and until
- * 2026-09-17 that folder was called **`#Firestorm`**.
+ * Which top-level inventory folder the features Lumen shares with Firestorm use.
  *
- * Five features share it -- the AO engine, the particle editor, wearable
- * favourites, the inventory protections and the LSL bridge -- so the name was
- * inherited rather than chosen, and it sat at the top of the user's inventory
- * saying Firestorm in a viewer that is not Firestorm. Decisions 5 is about
- * exactly this, and the author's instruction was plain: *"we should not use
- * their name if we can avoid it, to not make them mad."*
+ * **Until 2026-09-30 Lumen renamed the user's `#Firestorm` folder to `#Lumen`**
+ * (Decisions 117), so its own name was not at the top of somebody's inventory.
+ * It kept the AO working in Lumen and broke it in Firestorm: the next time the
+ * person used Firestorm it found no `#Firestorm`, made a new empty one, and
+ * their AO looked gone -- and renaming it back only lasted until the next Lumen
+ * login. The author, seeing both folders on Whisper's account: *"why would we
+ * touch a folder firestorm made in the first place?"*
  *
- * **Renaming the constant alone would have been silent data loss.** Every one
- * of those five features looks the folder up by name and *creates it if it is
- * missing*. Point them at `#Lumen` on a machine that has a `#Firestorm` and
- * they each make a fresh empty one -- and the AO engine then finds no `#AO`
- * inside it and reports the user's whole animation-override setup as absent.
- * Nothing errors. The configuration is still on Linden Lab's servers, in a
- * folder nobody is looking at any more. That is this project's oldest failure
- * shape (Findings 49): nothing breaks, something is merely not there.
+ * So now:
+ *   - the AO, wearable favourites, the particle editor and the inventory
+ *     protections use **`#Firestorm` when it exists**, shared with Firestorm,
+ *     so switching viewers costs nothing;
+ *   - somebody who has never used Firestorm gets **`#Lumen`** for them instead;
+ *   - Lumen's own LSL bridge always lives in **`#Lumen`** -- the one thing in
+ *     there that is really Lumen's (fslslbridge.cpp uses LUMEN_FOLDER).
+ *
+ * ROOT_FIRESTORM_FOLDER (llinventoryfunctions.h) expands to sharedRoot(), so
+ * those files keep their upstream text.
  */
 namespace LumenFolders
 {
-    /** What the folder was called before 2026-09-17. */
-    extern const std::string LEGACY_ROOT_FOLDER;
+    extern const std::string FIRESTORM_FOLDER;   // "#Firestorm"
+    extern const std::string LUMEN_FOLDER;       // "#Lumen" -- Lumen's bridge
 
     /**
-     * Rename a leftover `#Firestorm` folder to `#Lumen`, once, in place.
-     *
-     * A **rename**, deliberately, not a create-and-move: one operation, the
-     * folder keeps its id, and everything inside it -- the AO, saved particle
-     * scripts, wearable favourites, the bridge folder -- comes along without
-     * being touched. Moving items one at a time would be dozens of round trips
-     * and a half-migrated inventory if any of them failed.
-     *
-     * Safe to call more than once and on a fresh account: it does nothing when
-     * `#Lumen` already exists, and nothing when there is no `#Firestorm`.
-     *
-     * Must run after `gInventory.isInventoryUsable()`, or it will find neither
-     * folder and conclude there is nothing to do -- which would be the silent
-     * failure this exists to prevent.
+     * `#Firestorm` or `#Lumen`, decided once per session the first time it is
+     * asked after inventory is usable (see decide() in lumenfolders.cpp for the
+     * rules). Before that it answers `#Firestorm`, upstream's own value.
+     */
+    const std::string& sharedRoot();
+
+    /**
+     * Called at STATE_INVENTORY_CALLBACKS. Makes the decision above, and for an
+     * account an earlier Lumen renamed -- a `#Lumen` holding a real AO, and no
+     * `#Firestorm` -- gives the folder its old name back once and moves Lumen's
+     * bridge out into a `#Lumen` of its own.
      */
     void migrateRootFolder();
 }

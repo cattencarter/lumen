@@ -30,11 +30,16 @@
 // time and asking what somebody is wearing would be twenty-five requests
 // through an in-world script.
 
-string  VERSION = "1.5";
+string  VERSION = "1.6";
 string  gURL;
 key     gOwner;
 integer gViewerIsLumen;
 integer gTryHandshakeOnce = TRUE;
+// When an announcement must have been confirmed by. A viewer that is not Lumen
+// -- Firestorm, after somebody switches back -- never confirms, and this bridge
+// staying on means that viewer keeps hearing a bridge it cannot verify and
+// rebuilds its own each time. So it leaves after a minute of silence. 0 = none.
+integer gHandshakeDeadline;
 
 // Teleport assist (OpenSim only; Second Life refuses it and the viewer says so)
 float   TP_TARGET_DISTANCE = 1.0;
@@ -270,6 +275,7 @@ default
 
         gTryHandshakeOnce = TRUE;
         gViewerIsLumen    = FALSE;
+        gHandshakeDeadline = 0;
         getURL();
     }
 
@@ -349,6 +355,23 @@ default
 
     timer()
     {
+        // The handshake check borrows this timer only while flight assist is
+        // off, which it always is until the viewer has confirmed and said so.
+        if (gHandshakeDeadline)
+        {
+            if (gViewerIsLumen)
+            {
+                gHandshakeDeadline = 0;
+                if (gFlightPushForce <= 0) { llSetTimerEvent(0); return; }
+            }
+            else if (llGetUnixTime() > gHandshakeDeadline)
+            {
+                gHandshakeDeadline = 0;
+                detachSelf();
+                return;
+            }
+            else if (gFlightPushForce <= 0) return;
+        }
         if (llGetAgentInfo(gOwner) & AGENT_FLYING)
         {
             if (gIsFlyingNow != TRUE)
@@ -401,6 +424,11 @@ default
                 // comment did.
                 llOwnerSay("<bridgeURL>" + gURL + "</bridgeURL><bridgeAuth>BRIDGEKEY</bridgeAuth><bridgeVer>" + VERSION + "</bridgeVer>");
                 gTryHandshakeOnce = FALSE;
+                if (!gViewerIsLumen)
+                {
+                    gHandshakeDeadline = llGetUnixTime() + 60;
+                    if (gFlightPushForce <= 0) llSetTimerEvent(15.0);
+                }
             }
             else
             {
@@ -532,6 +560,8 @@ default
         else if (cmd == "URL Confirmed")
         {
             gViewerIsLumen = TRUE;
+            gHandshakeDeadline = 0;
+            if (gFlightPushForce <= 0) llSetTimerEvent(0);
         }
         else if (cmd == "DetachBridge")
         {
