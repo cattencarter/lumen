@@ -227,6 +227,19 @@ void LumenAISetupFloater::run(EStep step)
     // NOT autokill: see the destructor. A download or a browser sign-in that
     // is killed halfway leaves the user worse off than never having started.
     p.autokill = false;
+    // <Lumen> From the home folder, never from wherever the viewer happens to
+    // run. Codex's background service keeps the folder it was started in, and
+    // the viewer runs inside its own app bundle -- so the next Lumen update
+    // replaced that folder under the running service, and every conversation
+    // after it failed with "failed to load configuration: No such file or
+    // directory" until the service was restarted by hand. Found 2026-09-29,
+    // after a rebuild did exactly what an update does.
+    {
+        const char* home = getenv("HOME");
+        p.cwd = (home && *home) ? std::string(home)
+                                : gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "");
+    }
+    // </Lumen>
 
     mProc = LLProcess::create(p);
     if (!mProc)

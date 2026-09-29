@@ -82,6 +82,7 @@
 #include "llviewercontrol.h"
 #include "lldir.h"       // <Lumen> Codex's own empty working directory
 #include "llfile.h"      // <Lumen>
+#include "llprocess.h"   // <Lumen> restarting Codex's background service
 
 #include <boost/json.hpp>
 
@@ -2872,6 +2873,45 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         if (cancelled) return;   // <Lumen>
         if (!ok)
         {
+            // <Lumen> **The background service lost the folder it was started
+            // in.** Lumen 0.1.2 and earlier started it from wherever the viewer
+            // ran -- inside the app bundle -- so updating Lumen deleted that
+            // folder under the running service, and every conversation after it
+            // failed like this until somebody restarted it by hand. Restart it
+            // from the home folder and ask once more; the setup window now
+            // starts it from there in the first place.
+            if (!mCodexRepairing
+                && failed_because.find("failed to load configuration") != std::string::npos
+                && failed_because.find("No such file or directory") != std::string::npos)
+            {
+                sayNote("Codex's background service had lost its folder, which happens when "
+                        "Lumen is updated. Restarting it...");
+                mCodex->close();
+                mCodexReady = false;
+                mCodexRpcId = 0;
+                mCodexThread.clear();
+                LLProcess::Params p;
+                p.executable = "/bin/sh";
+                p.args.add("-c");
+                p.args.add("\"$HOME/.codex/packages/standalone/current/bin/codex\" app-server daemon restart");
+                p.autokill = false;
+                const char* home = getenv("HOME");
+                if (home && *home) p.cwd = std::string(home);
+                LLProcessPtr proc = LLProcess::create(p);
+                // Give it time to come back, then ask again -- once.
+                for (int i = 0; i < 20 && proc && proc->isRunning(); ++i)
+                {
+                    llcoro::suspendUntilTimeout(0.5f);
+                    if (!stillMine()) return;
+                }
+                llcoro::suspendUntilTimeout(1.0f);
+                if (!stillMine()) return;
+                mCodexRepairing = true;
+                runCodexTurn(user_text);
+                mCodexRepairing = false;
+                return;
+            }
+            // </Lumen>
             sayNote(failed_because.empty()
                     ? std::string("Codex would not start a conversation.")
                     : "Codex would not start a conversation -- " + failed_because);

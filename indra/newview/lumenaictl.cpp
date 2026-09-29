@@ -5269,6 +5269,12 @@ namespace
     // for ever -- an account whose fetch never reports done still has
     // landmarks worth reading.
     constexpr F64    LANDMARK_SCAN_WAIT  = 300.0;
+    // <Lumen> The notecards do not wait for the last landmark. On the beta grid
+    // most landmarks lead to regions that never answer, each waits out its ten
+    // seconds, and the whole list took seven minutes -- the author was logged
+    // in for four and the notecards never started. Landmarks keep a head
+    // start, for somebody teleporting the moment they arrive; then both run.
+    constexpr F64    NOTECARD_HEAD_START = 60.0;
 
     /** Tells the reader when a landmark arrives in inventory mid-session. */
     class LandmarkArrivals : public LLInventoryObserver
@@ -5395,6 +5401,12 @@ void LumenAIControl::pumpLandmarks()
                           << " to read." << LL_ENDL;
     }
 
+    // <Lumen> the head start is over: start the notecards alongside
+    if (mLandmarkScanned && now - mLandmarkFillStarted > NOTECARD_HEAD_START)
+    {
+        startNotecardFill();
+    }
+
     for (auto it = mLandmarkInFlight.begin(); it != mLandmarkInFlight.end(); )
     {
         const LLUUID& asset = it->first;
@@ -5509,8 +5521,9 @@ void LumenAIControl::pumpLandmarks()
         LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlLandmarks");
         mLandmarkFillUp = false;
 
-        // <Lumen> Then the notecards -- the author's order: people teleport the
-        // moment they arrive, and search inside notecards later.
+        // <Lumen> Then the notecards, if the head start has not already set
+        // them going -- the author's order: people teleport the moment they
+        // arrive, and search inside notecards later.
         startNotecardFill();
     }
 }

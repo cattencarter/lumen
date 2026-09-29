@@ -373,6 +373,9 @@ private:
     // else.
     bool mCodexReady = false;
     S32  mCodexRpcId = 0;
+    // <Lumen> Set while a turn restarts Codex's background service after it
+    // lost its folder, so the retry cannot loop.
+    bool mCodexRepairing = false;
     std::vector<boost::signals2::connection> mModelConns;
 
     /** What the turn just cost, and what the window has cost so far. */
