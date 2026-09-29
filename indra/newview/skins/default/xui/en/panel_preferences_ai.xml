@@ -227,7 +227,7 @@
       </panel>
 
       <panel follows="left|top" layout="topleft" name="p_local"
-       left="0" top="64" width="520" height="330" background_visible="false">
+       left="0" top="64" width="520" height="380" background_visible="false">
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="4" width="480" height="54" word_wrap="true">
@@ -250,19 +250,26 @@
         <line_editor follows="left|top" layout="topleft" control_name="LumenAILocalModel"
          left="76" top="122" width="274" height="22" name="model_local" max_length_bytes="120" />
 
+        <!-- <Lumen> What a local model needs, from testing through the Assistant on
+             2026-09-29 (qwen3-vl-8b, qwen3-vl-32b, qwen3.8-27b on a 36 GB Mac
+             Studio). Stated as what was measured, not as a promise. -->
         <text type="string" follows="left|top" layout="topleft"
-         left="20" top="150" width="480" height="58" word_wrap="true">
-            Whatever name that server knows the model by. A small local model handles the viewer&apos;s own tools well. Writing scripts is different: a small one will often produce LSL that looks right, compiles, and quietly does the wrong thing. Use Anthropic or OpenAI for scripts.
+         left="20" top="150" width="480" height="16" word_wrap="true">
+            Whatever name that server knows the model by.
+        </text>
+
+        <text type="string" follows="left|top" layout="topleft" name="local_requirements"
+         left="20" top="172" width="480" height="116" word_wrap="true">
+            What it needs, from our testing: a model that can use tools, and a context of at least 32,000 tokens, because every request is about 18,000 before the conversation grows. Set the context length when you load the model; LM Studio's usual default is too small. An 8B model manages simple requests and loses its way on longer ones; a 27B one handled everything we asked. The model and its context must fit in graphics memory -- on a Mac about three quarters of the computer's memory -- so count on 32 GB or more for a 27B model. For writing scripts, Anthropic or OpenAI is still the better choice.
         </text>
 
         <check_box control_name="LumenAILocalThinking" follows="left|top" layout="topleft"
-         left="20" top="212" width="480" height="20" name="local_thinking"
+         left="20" top="294" width="480" height="20" name="local_thinking"
          label="Let the model think before it answers (slower -- some spend minutes on it)"
          tool_tip="A thinking model writes out its reasoning before every step. Switched off, it answers straight away -- often much faster, and usually good enough for the viewer's tools." />
 
-
         <text type="string" follows="left|top" layout="topleft" name="local_status"
-         left="20" top="244" width="480" height="54" word_wrap="true">
+         left="20" top="320" width="480" height="54" word_wrap="true">
         </text>
       </panel>
 
