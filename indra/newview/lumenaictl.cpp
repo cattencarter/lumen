@@ -101,6 +101,7 @@
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
 #include "llfloatersnapshot.h" // <Lumen> close_window: the Snapshot layer
+#include "llremoteparcelrequest.h" // <Lumen> where a directory result is
 #include "llvovolume.h"       // <Lumen> a rigged mesh's drawn box, for framing small avatars
 #include "llviewerjointattachment.h"
 #include "llwindow.h"         //   incBusyCount, balanced when it arrives
@@ -8365,6 +8366,44 @@ namespace
      *  teleport to one can be held until the user has said yes to it. */
     std::map<std::string, LLSD>        sSearchPlaceById;
 
+    // <Lumen> A world-map link for a place: opens the map there, where the
+    // person can look before deciding -- not a teleport on a click.
+    std::string mapLink(const std::string& region, F64 x, F64 y, F64 z)
+    {
+        return llformat("secondlife:///app/worldmap/%s/%d/%d/%d",
+                        LLURI::escape(region).c_str(), (S32)x, (S32)y, (S32)z);
+    }
+
+    /**
+     * <Lumen> Where a DIRECTORY result is. The directory answers with a parcel
+     * and a name and no location, so its results could not be teleported to
+     * or shown on the map ("these results carry no location" -- the author
+     * called that strange, rightly: every place has one). The viewer's own
+     * Search window asks for a clicked result's parcel info; this asks the
+     * same, for the first few results, and they carry region, position and
+     * a map link on the next call.
+     */
+    std::map<LLUUID, LLSD> sParcelWhere;
+    std::set<LLUUID>       sParcelAsked;
+    class ParcelLocator : public LLRemoteParcelInfoObserver
+    {
+    public:
+        void processParcelInfo(const LLParcelData& d) override
+        {
+            LLSD w;
+            w["region"] = safeUtf8(d.sim_name);
+            w["x"] = (F64)fmodf(d.global_x, REGION_WIDTH_METERS);
+            w["y"] = (F64)fmodf(d.global_y, REGION_WIDTH_METERS);
+            w["z"] = (F64)d.global_z;
+            sParcelWhere[d.parcel_id] = w;
+            LLRemoteParcelInfoProcessor::getInstance()->removeObserver(d.parcel_id, this);
+        }
+        void setParcelID(const LLUUID&) override {}
+        void setErrorStatus(S32, const std::string&) override {}
+    };
+    ParcelLocator& parcelLocator() { static ParcelLocator l; return l; }
+    const S32 PARCELS_LOCATED = 12;   // the first few; nobody reads a hundred
+
     struct WebReply
     {
         S32         http = 0;       // 0 when nothing answered at all
@@ -8734,8 +8773,14 @@ namespace
                 ++filtered;
                 continue;
             }
-            rows.append(row);
-            sSearchPlaceById[row["id"].asString()] = row;
+            LLSD with = row;   // <Lumen> and a map link, like the directory's
+            if (with.has("region") && !with["region"].asString().empty())
+            {
+                with["map_link"] = mapLink(with["region"].asString(), with["x"].asReal(),
+                                           with["y"].asReal(), with["z"].asReal());
+            }
+            rows.append(with);
+            sSearchPlaceById[row["id"].asString()] = with;
         }
 
         out["results"]      = rows;
@@ -10670,6 +10715,38 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             result["searched_for"] = text;
             result["results"]      = it->second.rows;
             result["count"]        = (LLSD::Integer)it->second.rows.size();
+            // <Lumen> Where the first few are: see sParcelWhere.
+            S32 located = 0, locating = 0;
+            if (!events)
+            {
+                LLSD& rows = result["results"];
+                for (S32 k = 0; k < (S32)rows.size() && k < PARCELS_LOCATED; ++k)
+                {
+                    LLSD& row = rows[k];
+                    const LLUUID pid = row["parcel_id"].asUUID();
+                    auto w = sParcelWhere.find(pid);
+                    if (w != sParcelWhere.end())
+                    {
+                        row["region"]   = w->second["region"];
+                        row["x"] = w->second["x"]; row["y"] = w->second["y"]; row["z"] = w->second["z"];
+                        row["map_link"] = mapLink(row["region"].asString(), row["x"].asReal(),
+                                                  row["y"].asReal(), row["z"].asReal());
+                        row["id"]       = pid.asString();
+                        sSearchPlaceById[pid.asString()] = row;
+                        ++located;
+                    }
+                    else
+                    {
+                        if (sParcelAsked.insert(pid).second)
+                        {
+                            LLRemoteParcelInfoProcessor::getInstance()->addObserver(pid, &parcelLocator());
+                            LLRemoteParcelInfoProcessor::getInstance()->sendParcelInfoRequest(pid);
+                        }
+                        ++locating;
+                    }
+                }
+            }
+            // </Lumen>
 
             // The directory says WHY it returned nothing, and the reasons are
             // different answers. "Nobody has listed this" and "search is off
@@ -10720,11 +10797,20 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                       "parcels, not the user's own landmarks or anything nearby. The first "
                       "page only, ranked by the directory and not by us. A name matching "
                       "is not evidence it is the place they meant, so ask before acting.";
-                result["cannot_teleport_yet"] = true;
-                result["how_to_go"] = "These directory results carry no location, so they "
-                                      "cannot be teleported to by place_id. Say the name; if "
-                                      "they want to go, teleport by the region if they know "
-                                      "it, or search again later when the web search answers.";
+                if (located > 0)
+                {
+                    result["how_to_go"] = "The first results carry `region`, a position and a "
+                                          "`map_link` (the world map at that spot -- give it to "
+                                          "them to look at). To go, call teleport with `place_id` "
+                                          "= its `id`; the viewer asks them first.";
+                }
+                if (locating > 0)
+                {
+                    result["locations_pending"] = locating;
+                    result["locations_note"] = "Asked Second Life where the first ones are. Call "
+                                               "search_places again in a second with the same "
+                                               "text and they will carry a region and a map link.";
+                }
             }
             result["source"] = "directory";
             auto failed = sWebPlacesFailed.find(key);
