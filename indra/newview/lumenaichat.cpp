@@ -810,6 +810,14 @@ namespace
         {
             in  += u["prompt_tokens"].asInteger();
             out += u["completion_tokens"].asInteger();
+            // <Lumen> OpenAI caches too, and says so here -- 52,950 of 53,052
+            // on gpt-6-sol, 2026-09-29 -- but this was never read, so every
+            // OpenAI turn reported "cached 0" and looked five times dearer
+            // than it was. Its prompt_tokens already INCLUDE the cached ones,
+            // unlike Anthropic's input_tokens, so nothing is added to `in`.
+            const LLSD& d = u["prompt_tokens_details"];
+            cached  += d["cached_tokens"].asInteger();
+            created += d["cache_write_tokens"].asInteger();
             return;
         }
 
