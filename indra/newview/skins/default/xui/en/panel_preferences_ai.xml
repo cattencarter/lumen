@@ -255,6 +255,11 @@
             Whatever name that server knows the model by. A small local model handles the viewer&apos;s own tools well. Writing scripts is different: a small one will often produce LSL that looks right, compiles, and quietly does the wrong thing. Use Anthropic or OpenAI for scripts.
         </text>
 
+        <check_box control_name="LumenAILocalThinking" follows="left|top" layout="topleft"
+         left="20" top="212" width="480" height="20" name="local_thinking"
+         label="Let the model think before it answers (slower -- some spend minutes on it)"
+         tool_tip="A thinking model writes out its reasoning before every step. Switched off, it answers straight away -- often much faster, and usually good enough for the viewer's tools." />
+
 
         <text type="string" follows="left|top" layout="topleft" name="local_status"
          left="20" top="244" width="480" height="54" word_wrap="true">

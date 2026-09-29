@@ -1052,6 +1052,14 @@ namespace
         }
     }
 
+    // <Lumen> Whether a local model may think is the user's choice (Preferences
+    // > AI > Local), not a guess from the model's name. Off asks for none;
+    // on sends nothing at all, which is what every local request did before.
+    void addLocalReasoning(LLSD& body)
+    {
+        if (!gSavedSettings.getBOOL("LumenAILocalThinking")) body["reasoning_effort"] = "none";
+    }
+
     LLSD openAITools()
     {
         LLSD out = LLSD::emptyArray();
@@ -1071,9 +1079,17 @@ namespace
         return out;
     }
 
+    // <Lumen> How long a LOCAL model gets. A cold 27B on this Mac took more than
+    // three minutes to read its first request -- about 18,000 tokens, most of
+    // them tool descriptions -- and the turn failed with "request failed -- 0"
+    // while the model was still reading. Later requests are fast because the
+    // server keeps what it has read. Hosted providers keep the 180 below.
+    const F32 LOCAL_TIMEOUT_SECONDS = 600.f;
+
     /** POST some JSON and wait, without stopping the viewer drawing. */
     LLSD postJson(const std::string& url, const LLSD& body,
-                  const LLSD& header_pairs, std::string& error_out)
+                  const LLSD& header_pairs, std::string& error_out,
+                  F32 timeout_seconds = 180.f)
     {
         error_out.clear();
 
@@ -1084,7 +1100,7 @@ namespace
         // A model thinking, plus however long the network takes. The default
         // is far too short for this and produces a timeout that reads like a
         // refusal.
-        options->setTimeout(180);
+        options->setTimeout((S32)timeout_seconds);
         options->setRetries(0);
 
         for (LLSD::map_const_iterator it = header_pairs.beginMap();
@@ -1549,6 +1565,7 @@ void LumenAIChatFloater::testProvider(const std::string& provider,
             if (is_local)
             {
                 body["max_tokens"] = 4;
+                addLocalReasoning(body);   // <Lumen> a thinking model spends the 4 on thinking
             }
             else
             {
@@ -1568,7 +1585,8 @@ void LumenAIChatFloater::testProvider(const std::string& provider,
         }
 
         std::string err;
-        const LLSD reply = postJson(url, body, headers, err);
+        const LLSD reply = postJson(url, body, headers, err,
+                                    is_local ? LOCAL_TIMEOUT_SECONDS : 180.f);
 
         std::string detail;
         bool ok = false;
@@ -1746,7 +1764,6 @@ void LumenAIChatFloater::sayUser(const std::string& text)
 void LumenAIChatFloater::sayAssistant(const std::string& text)
 {
     if (!mTranscript || text.empty()) return;
-    LL_DEBUGS("LumenAITest") << "REPLY " << text << LL_ENDL;  // <Lumen>
 
     const std::string body = plainText(text);
 
@@ -1784,6 +1801,10 @@ void LumenAIChatFloater::sayAssistant(const std::string& text)
         mCatchUpDrawn = false;
         return;
     }
+    // <Lumen> The test log records what reaches the screen, so after the
+    // check above: logged before it, a reply the catch-up swallowed looked
+    // like a duplicate.
+    LL_DEBUGS("LumenAITest") << "REPLY " << text << LL_ENDL;
     // (A catch_up still pending is NOT drawn here any more. Text is said
     // before the tools in the same reply run, so drawing the cards on the
     // first text block and again when show_waiting arrived a moment later put
@@ -3430,6 +3451,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             body["messages"] = mMessages;
             body["tools"]    = openAITools();
             addReasoningEffort(body, model);
+            if (is_local) addLocalReasoning(body);   // <Lumen>
 
             // OpenAI takes the system prompt as the first message rather than
             // as its own field.
@@ -3472,7 +3494,8 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
         }
 
         std::string error;
-        const LLSD reply = postJson(url, body, headers, error);
+        const LLSD reply = postJson(url, body, headers, error,
+                                    is_local ? LOCAL_TIMEOUT_SECONDS : 180.f);
 
         // <Lumen>
         if (!stillMine()) return;
@@ -3494,7 +3517,22 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
 
         if (!error.empty())
         {
-            sayNote("The " + LumenAIKeys::displayName(provider) + " request failed -- " + error);
+            // <Lumen> "the local model" already carries its article, which made
+            // "The the local model request failed". And a local model that gave
+            // no answer at all (status 0) has almost always run out of time.
+            std::string who = LumenAIKeys::displayName(provider);
+            who = (who.rfind("the ", 0) == 0) ? "T" + who.substr(1) : "The " + who;
+            if (is_local && (error == "0" || error.empty()))
+            {
+                sayNote(who + " did not answer within " +
+                        llformat("%d", (S32)(LOCAL_TIMEOUT_SECONDS / 60)) + " minutes. A large "
+                        "model reading its first request can take that long; ask again, and "
+                        "the next answer is usually much faster.");
+            }
+            else
+            {
+                sayNote(who + " request failed -- " + error);
+            }
             // Report what the turn spent before it failed: earlier calls in
             // this turn were billed even though the turn produced nothing.
             flushCatchUp();
@@ -4624,7 +4662,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     // </Lumen>
 
     LLCoros::instance().launch("LumenAIAutoRespond",
-        [from_id, session_id, from, messages, system, model, key, is_openai, speak_aloud,
+        [from_id, session_id, from, messages, system, model, key, is_openai, is_local, speak_aloud,
          url, gen]()
     {
         // <Lumen> Whatever happens below, this person is answerable again
@@ -4675,6 +4713,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
             body["messages"] = with_system;
 
             addReasoningEffort(body, model);
+            if (is_local) addLocalReasoning(body);   // <Lumen>
 
             if (!key.empty()) headers["Authorization"] = "Bearer " + key;
         }
@@ -4688,7 +4727,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
         }
 
         std::string error;
-        const LLSD reply = postJson(url, body, headers, error);
+        const LLSD reply = postJson(url, body, headers, error, is_local ? LOCAL_TIMEOUT_SECONDS : 180.f);
         if (withdrawn()) return;   // <Lumen>
 
         std::string text;
