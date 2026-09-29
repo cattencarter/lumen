@@ -1708,7 +1708,7 @@ namespace
      *
      * The transcript follows the viewer's own instant-message window rather
      * than inventing a layout: one line per message, the speaker coloured,
-     * the words white, no blank lines anywhere. Two rounds of hunting for a
+     * the words white, and a blank line only before each question (sayUser). Two rounds of hunting for a
      * gap "a little smaller than a blank line" failed because a text editor
      * has no such thing -- colour separates the turns while spending no
      * vertical space at all, which is what IM worked out long ago.
@@ -1731,6 +1731,13 @@ void LumenAIChatFloater::sayUser(const std::string& text)
     if (!mTranscript) return;
     LL_DEBUGS("LumenAITest") << "USER " << text << LL_ENDL;   // <Lumen> see LumenAITest in lumenaictl.cpp
 
+    // <Lumen> A blank line before each question, so one exchange stands apart
+    // from the next. The author, watching a recording of it: *"the text gets
+    // a bit compressed. can we add a new line after each lumen reply, so the
+    // next You: is a bit separate"* -- which reverses the IM layout's "no
+    // blank lines anywhere" for the one place a reader looks for a break.
+    // Not before the very first line, which would only push it down.
+    if (mTranscript->getLength() > 0) mTranscript->appendText("\n", false);
     mTranscript->appendText("\n", false);
     mTranscript->appendText("You: ", false, nameStyle());
     mTranscript->appendText(text, false, bodyStyle());
