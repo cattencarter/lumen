@@ -273,8 +273,22 @@ size_t LumenAIIndex::size()
 static const char* const BODY_FITS[] = {
     "hourglass", "physique", "maitreya", "gianni", "legacy", "reborn", "kupra",
     "belleza", "slink", "ebody", "erika", "waifu", "peach", "juicy", "freya",
-    "isis", "venus", "larax", "lara", "jake"
+    "isis", "venus", "larax", "lara", "jake",
+    // <Lumen> Small avatars, which wear clothes made for them just as a mesh
+    // body does -- Whisper's dinkie wears "Medieval Maiden Dinkie Long Skirt",
+    // her ferret wears things filed under "av tinies clothes". Without these,
+    // a dinkie searching "dress" got human dresses and material swatches.
+    // Spelled several ways; canonicalFit() folds them into one body.
+    "dinkie", "dinkies", "dinky", "tiny", "tinies"
 };
+
+/** <Lumen> One name per body: "dinkies" and "dinky" are the dinkie. */
+static std::string canonicalFit(const std::string& fit)
+{
+    if (fit == "dinkies" || fit == "dinky") return "dinkie";
+    if (fit == "tinies")                    return "tiny";
+    return fit;
+}
 
 /**
  * The lowercased path of a category, memoised.
@@ -474,7 +488,19 @@ std::string LumenAIIndex::correctWord(const std::string& word)
  * on a word boundary would give up on "Bellezafied Belleza Freya" -- the same
  * shape as the NOT_THE_THING scan, and wrong for the same reason.
  */
+static bool namesFitWord(const std::string& text, const std::string& fit);
+
+// <Lumen> Any spelling of that body: a dinkie's "dinky summer dress" is hers.
 static bool namesFit(const std::string& text, const std::string& fit)
+{
+    for (const char* f : BODY_FITS)
+    {
+        if (canonicalFit(f) == fit && namesFitWord(text, f)) return true;
+    }
+    return false;
+}
+
+static bool namesFitWord(const std::string& text, const std::string& fit)
 {
     size_t at = text.find(fit);
     while (at != std::string::npos)
@@ -568,7 +594,7 @@ std::string LumenAIIndex::fitInName(const std::string& lname)
             best    = fit;
         }
     }
-    return best;
+    return canonicalFit(best);   // <Lumen>
 }
 
 

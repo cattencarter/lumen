@@ -100,6 +100,8 @@
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
+#include "llvovolume.h"       // <Lumen> a rigged mesh's drawn box, for framing small avatars
+#include "llviewerjointattachment.h"
 #include "llwindow.h"         //   incBusyCount, balanced when it arrives
 #include "lltooldraganddrop.h"
 #include "fscommon.h"
@@ -13816,6 +13818,157 @@ if (method == "camera")
             F32 subject_extent = with_hair;
             if (shot == "face")       subject_extent = height * 0.34f;   // chin to hair
             else if (shot == "upper") subject_extent = height * 0.58f;   // waist to hair
+
+            // <Lumen> **Where the head really is, when it is not where the shape
+            // says.** A dinkie or a tiny is a human skeleton folded by its
+            // animations: Whisper's dinkie has a 0.75 m shape and her skull
+            // 0.45 m off the ground, her ferret a 1.19 m shape and its forehead
+            // at 0.64 m. Framed from the shape, a "portrait" was sand and water
+            // above her head, and "head to feet" a close-up of her face
+            // (2026-09-29). The highest head joint -- skull or face -- is where
+            // it is drawn; for a standing human it sits where the numbers above
+            // already expect (1.73 m on a 1.60 m shape), so they are used only
+            // when the head is clearly lower: a small avatar, or somebody
+            // sitting. Hair and ears sit above that joint, allowed for as a
+            // share of the head's own size (neck to top), which is what makes
+            // it right for a head that is half the avatar.
+            if (focus_id.isNull() || focus_id == gAgent.getID())
+            {
+                // Everything relative to the avatar's root, as aim_z is.
+                const F32 root_z = gAgent.getPositionAgent().mV[VZ];
+                F32 vis_bottom = 100.f, vis_top = -100.f;
+
+                // First choice: where the worn rigged meshes are DRAWN. The
+                // ferret's head is drawn well above every bone it has -- its
+                // highest joint is the forehead at 0.64 m -- so joints alone
+                // framed its chest. The viewer skins a rigged mesh on the CPU
+                // for picking (updateRiggedVolume), which gives each face's
+                // real box in agent space; no octree is built.
+                S32 meshes = 0;
+                for (auto& ap : gAgentAvatarp->mAttachmentPoints)
+                {
+                    LLViewerJointAttachment* att = ap.second;
+                    if (!att || att->getIsHUDAttachment()) continue;
+                    for (const LLPointer<LLViewerObject>& root_obj : att->mAttachedObjects)
+                    {
+                        if (!root_obj) continue;
+                        std::vector<LLViewerObject*> parts(1, root_obj.get());
+                        for (LLViewerObject* c : root_obj->getChildren()) if (c) parts.push_back(c);
+                        for (LLViewerObject* part : parts)
+                        {
+                            LLVOVolume* vol = dynamic_cast<LLVOVolume*>(part);
+                            if (!vol) continue;
+                            if (!vol->isRiggedMesh())
+                            {
+                                // An ordinary prim carried on a bone -- a Tiny
+                                // Inc ferret is 274 of them and not one rigged.
+                                // Its drawn box: scale, turned by its drawn
+                                // rotation, at its drawn position.
+                                LLDrawable* d = part->mDrawable;
+                                if (!d) continue;
+                                const LLVector3 half = part->getScale() * 0.5f;
+                                if (half.magVec() > with_hair * 1.5f) continue;   // a big effect prim
+                                const LLVector3 c = d->getPositionAgent();
+                                const LLQuaternion r = d->getWorldRotation();
+                                for (S32 k = 0; k < 8; ++k)
+                                {
+                                    const LLVector3 corner((k & 1) ? half.mV[VX] : -half.mV[VX],
+                                                           (k & 2) ? half.mV[VY] : -half.mV[VY],
+                                                           (k & 4) ? half.mV[VZ] : -half.mV[VZ]);
+                                    const F32 z = (corner * r).mV[VZ] + c.mV[VZ] - root_z;
+                                    vis_bottom = llmin(vis_bottom, z);
+                                    vis_top    = llmax(vis_top, z);
+                                }
+                                ++meshes;
+                                continue;
+                            }
+                            vol->updateRiggedVolume(true, LLRiggedVolume::UPDATE_ALL_FACES, false);
+                            LLRiggedVolume* rv = vol->getRiggedVolume();
+                            if (!rv) continue;
+                            for (S32 f = 0; f < rv->getNumVolumeFaces(); ++f)
+                            {
+                                const LLVolumeFace& face = rv->getVolumeFace(f);
+                                if (!face.mExtents || face.mNumVertices == 0) continue;
+                                vis_bottom = llmin(vis_bottom, face.mExtents[0][2] - root_z);
+                                vis_top    = llmax(vis_top,    face.mExtents[1][2] - root_z);
+                                ++meshes;
+                            }
+                        }
+                    }
+                }
+                // A box taller than three shapes is something odd worn, not the
+                // avatar; fall back rather than frame it.
+                if (meshes == 0 || vis_top <= vis_bottom
+                    || vis_top - vis_bottom > with_hair * 3.f)
+                {
+                    vis_bottom = 100.f; vis_top = -100.f;
+                    // Second choice: the joints. Right for Whisper's dinkie,
+                    // whose head is on its skull and face bones; hair and ears
+                    // are allowed for as a share of the head's own size.
+                    F32 top = -100.f, neck = -100.f, feet = 100.f;
+                    for (LLAvatarJoint* j : gAgentAvatarp->getSkeleton())
+                    {
+                        if (!j) continue;
+                        const std::string& jn = j->getName();
+                        const F32 z = j->getWorldPosition().mV[VZ] - root_z;
+                        if (jn == "mSkull" || jn == "mHead" || jn.compare(0, 5, "mFace") == 0)
+                        {
+                            top = llmax(top, z);
+                        }
+                        else if (jn == "mNeck") neck = z;
+                        else if (jn == "mFootLeft" || jn == "mFootRight" || jn == "mToeLeft"
+                                 || jn == "mToeRight" || jn == "mAnkleLeft" || jn == "mAnkleRight")
+                        {
+                            feet = llmin(feet, z);
+                        }
+                    }
+                    if (top > feet && neck > feet && neck < top)
+                    {
+                        vis_bottom = llmin(feet, foot_z);
+                        vis_top    = top + (top - neck) * 0.6f;
+                    }
+                }
+
+                // Only when the drawn avatar is clearly not what the shape says
+                // -- smaller (a dinkie, a tiny, somebody sitting) or standing
+                // lower (feet below the shape's ground: the dinkie's by 0.31 m,
+                // the ferret's by 0.23, a human's mesh feet by 0.09, hence the
+                // 0.15 between them). A standing human's
+                // hair top is where `with_hair` already puts it, so those shots
+                // are left exactly as they were measured.
+                const F32 drawn = vis_top - vis_bottom;
+                if (drawn > 0.05f
+                    && (drawn < with_hair * 0.85f || vis_bottom < foot_z - 0.15f))
+                {
+                    // Small avatars are mostly head: a portrait is the upper
+                    // part, not the top sixth a human's is.
+                    F32 bottom = vis_bottom;
+                    if (shot == "face")       { fill = 0.78f; bottom = vis_bottom + drawn * 0.45f; }
+                    else if (shot == "upper") { bottom = vis_bottom + drawn * 0.30f; }
+                    if (shot == "wide")
+                    {
+                        subject_extent = drawn;
+                        aim_z = vis_bottom + drawn * 0.48f;
+                        up    = drawn * 0.30f;
+                    }
+                    else
+                    {
+                        subject_extent = llmax(0.1f, vis_top - bottom);
+                        aim_z = (vis_top + bottom) * 0.5f;
+                        up    = 0.f;
+                    }
+                    framed += meshes
+                        ? " (framed from where the avatar is drawn: it is smaller than its shape, "
+                          "or sitting)"
+                        : " (framed from where the head and feet are: this avatar is smaller "
+                          "than its shape, or sitting)";
+                    LL_INFOS("AICtl") << "camera: drawn " << vis_bottom << " to " << vis_top
+                                      << " from " << (meshes ? "meshes" : "joints")
+                                      << " (shape ground " << foot_z << ", hair "
+                                      << with_hair << ")" << LL_ENDL;
+                }
+            }
+            // </Lumen>
             F32 back = (subject_extent / fill) / (2.0f * half_tan);
             back = llclamp(back, 0.35f, 60.0f);
 
