@@ -127,12 +127,36 @@ EOS
 fi
 
 # ------------------------------------------------------------ notarise ------
+# Each step's output goes through sed for the indent, and a pipeline's status is
+# sed's -- so a refused notarisation used to print its error and then carry on
+# to "exit 0", leaving an unnotarised image that looked finished. Found
+# 2026-09-30, when the keychain holding the notary login was locked overnight.
+# Every step is now checked by what it printed.
+notarise() {   # notarise <file>
+    out=$(xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait 2>&1) || true
+    printf '%s\n' "$out" | sed 's/^/    /'
+    printf '%s\n' "$out" | grep -q "status: Accepted" || {
+        echo "Notarisation did NOT succeed for $1 -- see above. Nothing was stapled." >&2
+        echo "(If it says no keychain item for $PROFILE, the keychain may simply be locked.)" >&2
+        exit 1
+    }
+}
+staple() {     # staple <file>
+    if out=$(xcrun stapler staple "$1" 2>&1); then
+        printf '%s\n' "$out" | sed 's/^/    /'
+    else
+        printf '%s\n' "$out" | sed 's/^/    /'
+        echo "Stapling failed for $1." >&2
+        exit 1
+    fi
+}
+
 echo "==> notarising (a few minutes)"
 ZIP=$(mktemp -d)/Lumen.zip
 ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait 2>&1 | sed 's/^/    /'
+notarise "$ZIP"
 echo "==> stapling"
-xcrun stapler staple "$APP" 2>&1 | sed 's/^/    /'
+staple "$APP"
 echo "    spctl after stapling: $(spctl -a -vv "$APP" 2>&1 | tail -1 | sed 's/^ *//')"
 
 if [ "$MAKE_DMG" -eq 1 ]; then
@@ -168,8 +192,8 @@ if [ "$MAKE_DMG" -eq 1 ]; then
     # first. An unnotarised dmg reports `rejected / Unnotarized Developer ID`
     # and warns on open, however good the app inside it is.
     echo "    notarising the image too"
-    xcrun notarytool submit "$OUT" --keychain-profile "$PROFILE" --wait 2>&1 | sed 's/^/    /'
-    xcrun stapler staple "$OUT" 2>&1 | sed 's/^/    /'
+    notarise "$OUT"
+    staple "$OUT"
     echo "    verdict: $(spctl -a -t open --context context:primary-signature -vv "$OUT" 2>&1 | tr '\n' ' ')"
     echo "    $OUT"
 fi
