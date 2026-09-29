@@ -2617,6 +2617,21 @@ namespace
         LLUUID mTrash;
     };
 
+    /** Every notecard in inventory: not links, and nothing in the Trash. */
+    class NotecardsOnly : public LLInventoryCollectFunctor
+    {
+    public:
+        NotecardsOnly() : mTrash(gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH)) {}
+        bool operator()(LLInventoryCategory*, LLInventoryItem* item) override
+        {
+            return item && !item->getIsLinkType()
+                && item->getType() == LLAssetType::AT_NOTECARD
+                && !(mTrash.notNull() && gInventory.isObjectDescendentOf(item->getUUID(), mTrash));
+        }
+    private:
+        LLUUID mTrash;
+    };
+
     /**
      * Which landmark somebody means, from the words they used -- or a refusal
      * carrying the candidates, so the assistant asks instead of guessing.
@@ -5493,6 +5508,143 @@ void LumenAIControl::pumpLandmarks()
         }
         LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlLandmarks");
         mLandmarkFillUp = false;
+
+        // <Lumen> Then the notecards -- the author's order: people teleport the
+        // moment they arrive, and search inside notecards later.
+        startNotecardFill();
+    }
+}
+
+namespace
+{
+    // A notecard is one small asset. The search itself asks for up to two
+    // hundred at once; in the background there is no hurry, and sixteen keeps
+    // the asset pool free for whatever the person is doing.
+    constexpr size_t NOTECARDS_IN_FLIGHT = 16;
+    // The asset system calls back on failure too, so this only catches a
+    // reply that never came -- and hands the card back to the search.
+    constexpr F64    NOTECARD_READ_WAIT  = 60.0;
+}
+
+void LumenAIControl::startNotecardFill()
+{
+    // Once a session. A card that arrives later is read by the first search
+    // that meets it, exactly as before.
+    if (mNotecardFillUp || mNotecardScanned)
+    {
+        return;
+    }
+    mNotecardFillUp = true;
+    LLEventPumps::instance().obtain("mainloop").listen(
+        "LumenAIControlNotecards",
+        [this](const LLSD&)
+        {
+            pumpNotecards();
+            return false;
+        });
+}
+
+void LumenAIControl::pumpNotecards()
+{
+    // The fetch is asked of the region we are in; mid-teleport there is none.
+    if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+        || !gAgent.getRegion() || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE)
+    {
+        return;
+    }
+    // Not while RLV forbids reading notecards: the search refuses then too.
+    if (rlv_handler_t::isEnabled() && gRlvHandler.hasBehaviour(RLV_BHVR_VIEWNOTE))
+    {
+        return;
+    }
+    const F64 now = LLTimer::getTotalSeconds();
+
+    if (!mNotecardScanned)
+    {
+        LLInventoryModel::cat_array_t cats;
+        LLInventoryModel::item_array_t items;
+        NotecardsOnly functor;
+        gInventory.collectDescendentsIf(gInventory.getRootFolderID(), cats, items, false, functor);
+
+        // What is already on disk, in one query -- a card held for its current
+        // asset needs nothing, and loading its text just to learn that would
+        // put every notecard ever read into memory at every login.
+        std::unordered_map<LLUUID, LLUUID> held;
+        LumenAINoteCache::instance().heldVersions(held);
+
+        S32 no_copy = 0;
+        for (const auto& item : items)
+        {
+            if (item->getAssetUUID().isNull())
+            {
+                continue;   // empty, or still uploading: nothing to read
+            }
+            // Second Life does not let a no-copy notecard be read at all.
+            if (!gAgent.isGodlike()
+                && !gAgent.allowOperation(PERM_COPY, item->getPermissions(), GP_OBJECT_MANIPULATE))
+            {
+                ++no_copy;
+                continue;
+            }
+            const auto h = held.find(item->getUUID());
+            if (h != held.end() && h->second == item->getAssetUUID())
+            {
+                continue;
+            }
+            mNotecardQueue.push_back(item->getUUID());
+        }
+        mNotecardScanned = true;
+        LL_INFOS("AICtl") << "Notecards: " << items.size() << " in inventory, " << held.size()
+                          << " already read, " << no_copy << " no-copy, "
+                          << mNotecardQueue.size() << " to read." << LL_ENDL;
+    }
+
+    // Finished ones -- ready or failed, onNotecardLoaded has written the answer.
+    for (auto it = mNotecardInFlight.begin(); it != mNotecardInFlight.end(); )
+    {
+        const std::string key = it->first.asString();
+        const std::string state = mNotecards.has(key) ? mNotecards[key]["status"].asString()
+                                                     : std::string();
+        if (state != "loading")
+        {
+            if (state == "ready") ++mNotecardsReadThisSession;
+            else                  ++mNotecardsNotRead;
+            it = mNotecardInFlight.erase(it);
+        }
+        else if (now - it->second > NOTECARD_READ_WAIT)
+        {
+            // Never answered. Forget the "loading" so a search asks again,
+            // rather than waiting on it for the rest of the session.
+            mNotecards.erase(key);
+            ++mNotecardsNotRead;
+            it = mNotecardInFlight.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    while (mNotecardInFlight.size() < NOTECARDS_IN_FLIGHT && !mNotecardQueue.empty())
+    {
+        const LLUUID id = mNotecardQueue.front();
+        mNotecardQueue.pop_front();
+        LLViewerInventoryItem* item = gInventory.getItem(id);
+        // Gone, or a search got there first: startNotecardFetch says there is
+        // nothing to fetch, and that is fine.
+        if (item && startNotecardFetch(item))
+        {
+            mNotecardInFlight[id] = now;
+        }
+    }
+
+    if (mNotecardQueue.empty() && mNotecardInFlight.empty())
+    {
+        LL_INFOS("AICtl") << "Notecards: read " << mNotecardsReadThisSession << " this session, "
+                          << mNotecardsNotRead << " could not be read; "
+                          << LumenAINoteCache::instance().count() << " held." << LL_ENDL;
+        LLEventPumps::instance().obtain("mainloop").stopListening("LumenAIControlNotecards");
+        mNotecardFillUp = false;
     }
 }
 
@@ -10273,6 +10425,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         result["candidates"] = (LLSD::Integer)total;
         result["notecards_in_inventory"] = (LLSD::Integer)items.size();
         result["done"] = (pending == 0);
+        // <Lumen> Straight after a first login the viewer is still reading them
+        // all in the background; say so, so "still going" has a reason.
+        if (mNotecardFillUp && notecardsStillReading() > 0 && pending > 0)
+        {
+            result["reading_in_background"] = (LLSD::Integer)notecardsStillReading();
+            result["background_note"] =
+                "The viewer reads every notecard once, in the background after login, and has "
+                "not finished yet -- that is why this search is not done. Tell them it is still "
+                "reading their notecards; after this once they are kept, and a search answers "
+                "at once.";
+        }
+        // </Lumen>
         if (inventoryStillLoading())   // <Lumen> the list of cards itself may be short
         {
             result["inventory_still_loading"] = true;

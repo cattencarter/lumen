@@ -84,6 +84,14 @@ public:
     /** How many bodies are stored. 0 when unavailable. */
     S32 count();
 
+    /**
+     * Which version of each card is held: item id -> the asset its body is for.
+     *
+     * One query for the lot, so the background reader can tell which cards it
+     * still has to fetch without loading 14 MB of text it does not need.
+     */
+    void heldVersions(std::unordered_map<LLUUID, LLUUID>& out);
+
     /** Whether the cache opened at all. Everything degrades to the live fetch. */
     bool available() const { return mDb != nullptr; }
 

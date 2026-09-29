@@ -549,6 +549,21 @@ private:
     static void onNotecardLoaded(const LLUUID& asset_id, LLAssetType::EType type,
                                  void* user_data, S32 status, LLExtStat ext_status);
 
+    // <Lumen> Notecards read in the background after login, once the landmarks
+    // are done, so the first search inside them answers at once. Driven by the
+    // search alone, 2,858 cards took fifteen calls -- each a round trip to the
+    // model -- and about three minutes, the first time and only the first time.
+    std::deque<LLUUID> mNotecardQueue;                 // items still to read
+    std::unordered_map<LLUUID, F64> mNotecardInFlight;  // item -> when it was asked for
+    bool mNotecardFillUp = false;
+    bool mNotecardScanned = false;
+    S32  mNotecardsReadThisSession = 0;
+    S32  mNotecardsNotRead = 0;
+    void startNotecardFill();
+    void pumpNotecards();
+    size_t notecardsStillReading() const { return mNotecardQueue.size() + mNotecardInFlight.size(); }
+    // </Lumen>
+
     void onInstantMessage(const LLSD& data);
     void onNearbyChat(const LLSD& data);
 

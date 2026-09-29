@@ -350,6 +350,30 @@ S32 LumenAINoteCache::count()
     return n;
 }
 
+void LumenAINoteCache::heldVersions(std::unordered_map<LLUUID, LLUUID>& out)
+{
+    out.clear();
+    if (!mDb)
+    {
+        return;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(mDb, "SELECT item_id, asset_id FROM cards;", -1, &st, nullptr) != SQLITE_OK)
+    {
+        return;
+    }
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const unsigned char* item  = sqlite3_column_text(st, 0);
+        const unsigned char* asset = sqlite3_column_text(st, 1);
+        if (item && asset)
+        {
+            out[LLUUID((const char*)item)] = LLUUID((const char*)asset);
+        }
+    }
+    sqlite3_finalize(st);
+}
+
 void LumenAINoteCache::clear()
 {
     if (mDb)
