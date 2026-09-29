@@ -13920,6 +13920,9 @@ if (method == "camera")
             F32 height = gAgentAvatarp->mBodySize.mV[VZ];
             std::string who = "you";
             LLUUID focus_id;
+            // <Lumen> The avatar in the shot, when it is one: the user's own,
+            // or anybody else the viewer is drawing. NULL for an object.
+            LLVOAvatar* subject_av = gAgentAvatarp;
 
             if (params.has("object_id") && !params["object_id"].asString().empty())
             {
@@ -13932,6 +13935,7 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
                 subject  = obj->getPositionGlobal();
+                subject_av = NULL;   // <Lumen> an object, not an avatar
                 height   = llmax(0.5f, obj->getScale().mV[VZ]);
                 focus_id = id;
                 who      = "the object";
@@ -13964,7 +13968,21 @@ if (method == "camera")
                         e["message"] = "They are not close enough to point the camera at.";
                         LLSD w; w["__error"] = e; return w;
                     }
-                    height   = 1.8f;             // other avatars' exact height is not ours to read
+                    // <Lumen> "Other avatars' height is not ours to read" was
+                    // wrong: the viewer draws them, so it holds their shape,
+                    // their skeleton and their meshes. Framed from a guessed
+                    // 1.8 m and aimed from the north, a picture of Catten as
+                    // a small kitty was a far-off speck seen from behind
+                    // (the author, 2026-09-29). Theirs are read as ours are.
+                    height   = 1.8f;
+                    subject_av = NULL;
+                    if (LLVOAvatar* av = dynamic_cast<LLVOAvatar*>(gObjectList.findObject(person)))
+                    {
+                        subject_av = av;
+                        height  = llmax(0.2f, av->mBodySize.mV[VZ]);
+                        subject = av->getPositionGlobal();
+                    }
+                    // </Lumen>
                     focus_id = person;
                     LLAvatarName av;
                     who = (pick.has("name") && !pick["name"].asString().empty())
@@ -14000,9 +14018,9 @@ if (method == "camera")
             const F32 fov = LLViewerCamera::getInstance()->getView();
             const F32 half_tan = tanf(llclamp(fov, 0.2f, 3.0f) * 0.5f);
 
-            const F32 foot_z = (focus_id.isNull() || focus_id == gAgent.getID())
-                             ? -gAgentAvatarp->getPelvisToFoot()
-                             : -height * 0.5f;   // others: assume centre, we cannot read theirs
+            const F32 foot_z = subject_av
+                             ? -subject_av->getPelvisToFoot()
+                             : -height * 0.5f;   // an object: assume its centre
 
             // How much of the frame's height the subject should occupy.
             F32 fill = 0.82f;               // head to feet, with air top and bottom
@@ -14067,10 +14085,12 @@ if (method == "camera")
             // sitting. Hair and ears sit above that joint, allowed for as a
             // share of the head's own size (neck to top), which is what makes
             // it right for a head that is half the avatar.
-            if (focus_id.isNull() || focus_id == gAgent.getID())
+            if (subject_av)
             {
                 // Everything relative to the avatar's root, as aim_z is.
-                const F32 root_z = gAgent.getPositionAgent().mV[VZ];
+                const F32 root_z = (subject_av == gAgentAvatarp)
+                                 ? gAgent.getPositionAgent().mV[VZ]
+                                 : subject_av->getPositionAgent().mV[VZ];
                 F32 vis_bottom = 100.f, vis_top = -100.f;
 
                 // First choice: where the worn rigged meshes are DRAWN. The
@@ -14080,7 +14100,7 @@ if (method == "camera")
                 // for picking (updateRiggedVolume), which gives each face's
                 // real box in agent space; no octree is built.
                 S32 meshes = 0;
-                for (auto& ap : gAgentAvatarp->mAttachmentPoints)
+                for (auto& ap : subject_av->mAttachmentPoints)
                 {
                     LLViewerJointAttachment* att = ap.second;
                     if (!att || att->getIsHUDAttachment()) continue;
@@ -14141,7 +14161,7 @@ if (method == "camera")
                     // whose head is on its skull and face bones; hair and ears
                     // are allowed for as a share of the head's own size.
                     F32 top = -100.f, neck = -100.f, feet = 100.f;
-                    for (LLAvatarJoint* j : gAgentAvatarp->getSkeleton())
+                    for (LLAvatarJoint* j : subject_av->getSkeleton())
                     {
                         if (!j) continue;
                         const std::string& jn = j->getName();
@@ -14221,9 +14241,14 @@ if (method == "camera")
             if (deg < 0.f) deg += 360.f;
 
             LLVector3 facing = gAgent.getAtAxis();
-            if (focus_id.notNull() && focus_id != gAgent.getID())
+            if (subject_av && subject_av != gAgentAvatarp)
             {
-                facing = LLVector3(0.f, 1.f, 0.f);   // no facing for others; use north
+                // <Lumen> Their own facing, so "in front" is in front of them.
+                facing = LLVector3::x_axis * subject_av->getRotationRegion();
+            }
+            else if (focus_id.notNull() && focus_id != gAgent.getID())
+            {
+                facing = LLVector3(0.f, 1.f, 0.f);   // an object has no front; use north
             }
             facing.mV[VZ] = 0.f;
             if (facing.magVecSquared() < 0.0001f) facing = LLVector3(0.f, 1.f, 0.f);
