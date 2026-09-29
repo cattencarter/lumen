@@ -289,18 +289,31 @@ namespace
             if (nm.size() < 3) continue;          // too short to be safe
             const std::string& link = sProfileLinks[nm];
             std::string::size_type at = 0;
+            // <Lumen> In the LABELLED form, [url name]. A bare agent link is
+            // drawn by the viewer with a label of its own, which put two
+            // spaces after "Catten Carter" (the author, 2026-09-29), and its
+            // pattern runs on through letters, so "vikings" lost its "s".
+            // A label is drawn exactly as given and ends at the bracket.
+            const std::string labelled = "[" + link + " " + nm + "]";
             while ((at = text.find(nm, at)) != std::string::npos)
             {
-                // Do not rewrite a name that is already inside a link.
+                // Do not rewrite a name that is already inside a link -- a
+                // bare URL, or the label of one made by a longer name.
                 const std::string before = text.substr(0, at);
-                if (before.rfind("secondlife:///") != std::string::npos
-                    && before.rfind("secondlife:///") > before.rfind(' '))
+                const std::string::size_type url = before.rfind("secondlife:///");
+                const std::string::size_type lb  = before.rfind('[');
+                const std::string::size_type rb  = before.rfind(']');
+                const bool in_url   = url != std::string::npos && url > before.rfind(' ');
+                const bool in_label = lb != std::string::npos
+                                   && (rb == std::string::npos || rb < lb)
+                                   && before.find("secondlife:///", lb) != std::string::npos;
+                if (in_url || in_label)
                 {
                     at += nm.size();
                     continue;
                 }
-                text.replace(at, nm.size(), link);
-                at += link.size();
+                text.replace(at, nm.size(), labelled);
+                at += labelled.size();
             }
         }
         return text;
@@ -2114,11 +2127,27 @@ void LumenAIChatFloater::noteCatchUp(const std::string& tool, const LLSD& args,
             if (!id.empty() && !sm.empty()) summaries[id] = sm;
         }
 
-        renderCatchUp(mLastCatchUp, summaries);
+        const std::string head = args["headline"].asString();
+        const LLSD& waiting = mLastCatchUp["waiting"];
         mCatchUpPending = false;
+        // <Lumen> Nothing waiting draws no cards, so the headline IS the
+        // reply. Appended bare, it ran straight on from the user's own line:
+        // "You: did anything happen while I was away?Nothing came in..."
+        // (the author, 2026-09-29). Say it as a reply; the flag after it
+        // still keeps the turn's free text from repeating it.
+        if (!waiting.isArray() || waiting.size() == 0)
+        {
+            if (!head.empty())
+            {
+                sayAssistant(head);
+                mCatchUpDrawn = true;
+            }
+            return;
+        }
+        // </Lumen>
+        renderCatchUp(mLastCatchUp, summaries);
         mCatchUpDrawn   = true;
 
-        const std::string head = args["headline"].asString();
         if (!head.empty() && mTranscript)
         {
             mTranscript->appendText(linkifyKnownNames(head), false, bodyStyle());

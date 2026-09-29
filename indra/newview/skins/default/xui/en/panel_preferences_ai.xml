@@ -110,9 +110,11 @@
         <combo_box control_name="LumenAIAnthropicModel" follows="left|top" layout="topleft"
          left="76" top="92" width="274" height="22"
          name="model_anthropic" allow_text_entry="true" max_chars="80">
-            <combo_box.item label="claude-sonnet-5 (recommended)" name="s5" value="claude-sonnet-5" />
+            <combo_box.item label="claude-sonnet-5-5 (recommended)" name="s55" value="claude-sonnet-5-5" />
+            <combo_box.item label="claude-sonnet-5"                 name="s5"  value="claude-sonnet-5" />
+            <combo_box.item label="claude-opus-5-5 (most capable)"  name="o55" value="claude-opus-5-5" />
+            <combo_box.item label="claude-opus-5"                   name="o5"  value="claude-opus-5" />
             <combo_box.item label="claude-haiku-4-5 (fastest, cheapest)" name="h45" value="claude-haiku-4-5-20251001" />
-            <combo_box.item label="claude-opus-5 (most capable)"   name="o5" value="claude-opus-5" />
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
@@ -214,11 +216,16 @@
             <combo_box.item label="sonnet (recommended)"                name="ks" value="sonnet" />
             <combo_box.item label="haiku (fastest, cheapest)"           name="kh" value="haiku" />
             <combo_box.item label="opus (most capable)"                 name="ko" value="opus" />
+            <combo_box.item label="claude-sonnet-5-5"                   name="ks55" value="claude-sonnet-5-5" />
+            <combo_box.item label="claude-sonnet-5"                     name="ks5" value="claude-sonnet-5" />
+            <combo_box.item label="claude-opus-5-5"                     name="ko55" value="claude-opus-5-5" />
+            <combo_box.item label="claude-opus-5"                       name="ko5" value="claude-opus-5" />
+            <combo_box.item label="claude-haiku-4-5"                    name="kh45" value="claude-haiku-4-5" />
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="242" width="480" height="54" word_wrap="true" name="claude_models_note">
-            These are Claude Code&apos;s own aliases, so each keeps meaning the newest model of that line. You can type a full model name instead. Changing the model starts a new conversation.
+            The first three are Claude Code&apos;s own aliases, so each keeps meaning the newest model of that line; the rest are one exact model each. Changing the model starts a new conversation.
         </text>
       </panel>
 
