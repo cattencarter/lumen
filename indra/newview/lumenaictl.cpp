@@ -151,6 +151,51 @@
 #include <boost/json.hpp>
 #include <algorithm>
 #include <sstream>
+#include "llvoinventorylistener.h"
+
+// <Lumen>
+namespace
+{
+    /**
+     * A script new_script just added is not in the viewer's local copy of the
+     * object's contents: saveScript only bumps the expected serial for a NEW
+     * item, and the copy is refreshed when the object is next SELECTED. So
+     * open_script read the old empty copy and said "no scripts at all" three
+     * times about a script that was there (Codex, 2026-09-29; Sonnet had
+     * selected the object first and never met it).
+     *
+     * And asking again is not enough on its own. requestInventory() refetches
+     * only for an object somebody is LISTENING to -- "if it is dirty, leave it
+     * this way in case we gain a listener" -- which is how the build window's
+     * Contents panel gets fresh contents. So we listen too, until the script
+     * shows up or thirty seconds pass. The object clears its listeners when it
+     * dies, so a deleted cube leaves nothing dangling.
+     */
+    class ScriptArrivalWatch : public LLVOInventoryListener
+    {
+    public:
+        ScriptArrivalWatch(LLViewerObject* obj, const std::string& lname)
+            : mName(lname), mUntil(LLTimer::getTotalSeconds() + 30.0)
+        {
+            registerVOInventoryListener(obj, NULL);
+        }
+        void inventoryChanged(LLViewerObject*, LLInventoryObject::object_list_t*,
+                              S32, void*) override {}
+        std::string mName;          // lowercased; the region may add a number
+        F64         mUntil;
+        F64         mLastAsk = 0.0;
+    };
+    std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
+
+    void forgetScriptWatch(const LLUUID& id)
+    {
+        std::map<LLUUID, ScriptArrivalWatch*>::iterator it = sScriptWatches.find(id);
+        if (it == sScriptWatches.end()) return;
+        delete it->second;          // the base destructor unregisters it
+        sScriptWatches.erase(it);
+    }
+}
+// </Lumen>
 
 namespace
 {
@@ -11345,6 +11390,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                       name, desc, LLSaleInfo::DEFAULT,
                                       LLInventoryItemFlags::II_FLAGS_NONE, time_corrected());
         object->saveScript(item, true, true);
+        // <Lumen> See ScriptArrivalWatch: without it open_script cannot see
+        // the script until the object is selected.
+        forgetScriptWatch(object->getID());
+        sScriptWatches[object->getID()] = new ScriptArrivalWatch(object, lowered(name));
 
         LLSD r;
         r["created"] = name;
@@ -11440,6 +11489,39 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         S32 waiting = 0;
         for (size_t i = 0; i < chain.size(); ++i)
         {
+            // <Lumen> A script new_script just put here: fetch until it shows.
+            std::map<LLUUID, ScriptArrivalWatch*>::iterator sw =
+                sScriptWatches.find(chain[i]->getID());
+            if (sw != sScriptWatches.end())
+            {
+                if (chain[i]->isInventoryPending()) { ++waiting; continue; }
+                LLInventoryObject::object_list_t have;
+                chain[i]->getInventoryContents(have);
+                bool arrived = false;
+                for (LLInventoryObject::object_list_t::const_iterator h = have.begin();
+                     h != have.end() && !arrived; ++h)
+                {
+                    arrived = *h && (*h)->getType() == LLAssetType::AT_LSL_TEXT
+                           && lowered((*h)->getName()).rfind(sw->second->mName, 0) == 0;
+                }
+                const F64 now = LLTimer::getTotalSeconds();
+                if (arrived || now > sw->second->mUntil)
+                {
+                    forgetScriptWatch(chain[i]->getID());   // then read as usual
+                }
+                else
+                {
+                    if (now - sw->second->mLastAsk > 1.0)
+                    {
+                        sw->second->mLastAsk = now;
+                        chain[i]->dirtyInventory();       // a listener, so this clears
+                        chain[i]->requestInventory();     // and this really fetches
+                    }
+                    ++waiting;
+                    continue;
+                }
+            }
+            // </Lumen>
             LLInventoryObject::object_list_t contents;
             chain[i]->getInventoryContents(contents);
             // <Lumen> An EMPTY prim looks exactly like an UNFETCHED one from
@@ -11499,6 +11581,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             if (asked.empty() || names[i].find(asked) != std::string::npos) want.push_back(i);
         }
 
+        if (want.empty() && waiting > 0)
+        {
+            // <Lumen> The one asked for may be in the part still loading.
+            LLSD r;
+            r["pending"] = true;
+            r["links_still_loading"] = waiting;
+            r["scripts_so_far"] = found;
+            r["note"] = "Part of the object's contents is still being fetched from the region. "
+                        "Ask again in a second or two.";
+            return r;
+        }
         if (want.empty())
         {
             LLSD r;
@@ -12556,6 +12649,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 }
                 else ok = false;
                 if (ok && var->type() == TYPE_S32) value = LLSD::Integer(llround(value.asReal()));
+                // <Lumen> An F32 control is handed a Real: JSON's 128 arrives as
+                // an Integer, setValue does not coerce it, and the control then
+                // held an Integer that never compared equal to its old 128.0 --
+                // so setting draw distance to what it already was said "changed".
+                if (ok && var->type() == TYPE_F32) value = LLSD::Real(value.asReal());
                 if (ok && var->type() == TYPE_U32)
                 {
                     if (value.asReal() < 0.0) ok = false;
@@ -12619,7 +12717,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // <Lumen> Compared as LLSD, not as strings: a boolean renders as
         // "true"/"" and an integer as "1"/"0", so `value: 1` on a BOOL control
         // already true used to read as changed, and false as "refused".
-        const bool moved  = !llsd_equals(after, before);
+        const bool both_numbers = (after.isReal() || after.isInteger())
+                               && (before.isReal() || before.isInteger());
+        const bool moved  = both_numbers ? fabs(after.asReal() - before.asReal()) >= 1e-6
+                                         : !llsd_equals(after, before);
         const bool wanted = llsd_equals(after, value)
                          || (numeric && (after.isReal() || after.isInteger())
                              && fabs(after.asReal() - value.asReal()) < 1e-6);
@@ -13113,6 +13214,21 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // the thing they wanted a photograph for. `camera` still only
             // frames -- this is a separate verb, so the harmless one stays
             // harmless.
+            // <Lumen> The camera eases into a new shot over 0.5-1 s
+            // (setCameraPosAndFocusGlobal). A model calls save_photo straight
+            // after camera, so the picture was taken from where the camera
+            // STARTED -- behind her, for a shot asked for "from the front" --
+            // and reported as the front. Not saving until it has arrived;
+            // the final position is applied on the frame that ends the move.
+            if (gAgentCamera.getCameraAnimating())
+            {
+                LLSD result;
+                result["saved"]   = false;
+                result["pending"] = true;
+                result["note"]    = "The camera is still moving into the shot. Nothing was "
+                                    "saved. Call save_photo again in a second.";
+                return result;
+            }
             const S32 w = gViewerWindow->getWindowWidthRaw();
             const S32 h = gViewerWindow->getWindowHeightRaw();
             const std::string path =
