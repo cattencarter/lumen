@@ -187,6 +187,19 @@ namespace
     };
     std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
 
+    /**
+     * What edit_script last wrote into each object's script window, by the
+     * script's item id. A window for a script inside an object that has been
+     * deleted can never save, yet it still asks "Save Changes?" on close --
+     * and on quit, where its Save fails and the quit stops. The inventory
+     * preview marks itself removed when ITS item goes (LLPreviewLSL::draw);
+     * the object one has no equivalent. So when the assistant deletes an
+     * object, a window of its scripts still holding exactly what the
+     * assistant wrote is closed without the question: nothing of the
+     * person's is in it to lose. A window they typed into is left alone.
+     */
+    std::map<std::string, std::string> sAssistantScriptText;
+
     void forgetScriptWatch(const LLUUID& id)
     {
         std::map<LLUUID, ScriptArrivalWatch*>::iterator it = sScriptWatches.find(id);
@@ -17733,6 +17746,20 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> Remember what we wrote; see sAssistantScriptText.
+        if (target && dynamic_cast<LLLiveLSLEditor*>(target))
+        {
+            sAssistantScriptText[target->getKey()["itemid"].asString()] = ed->getText();
+            LL_INFOS("AICtl") << "edit_script: remembered what was written into "
+                              << target->getKey()["itemid"].asString() << " in "
+                              << target->getKey()["taskid"].asString() << LL_ENDL;
+        }
+        else
+        {
+            LL_INFOS("AICtl") << "edit_script: not a task script window, nothing remembered ("
+                              << (target ? target->getName() : std::string("none")) << ")" << LL_ENDL;
+        }
+        // </Lumen>
         // <Lumen> The window stayed behind the Assistant while this was being
         // written (keepAssistantInFront); now it is ready, and reading it and
         // pressing Save is the person's step, so it comes to the front with
@@ -19054,6 +19081,43 @@ if (method == "camera")
                     return ask;
                 }
                 if (locked || no_copy) result["confirmed"] = true;
+            }
+            // </Lumen>
+
+            // <Lumen> Close the assistant's own script windows for what is
+            // going; see sAssistantScriptText. Before the delete, while the
+            // selection still says which prims these are.
+            std::set<LLUUID> going;
+            for (LLObjectSelection::iterator it = sel->begin(); it != sel->end(); ++it)
+            {
+                if ((*it)->getObject()) going.insert((*it)->getObject()->getID());
+            }
+            std::vector<LLFloater*> to_close;
+            // The GROUP name: both script windows are registered under
+            // "preview_script", and a lookup by "preview_scriptedit" is empty.
+            for (LLFloater* f : LLFloaterReg::getFloaterList("preview_script"))
+            {
+                LLLiveLSLEditor* le = dynamic_cast<LLLiveLSLEditor*>(f);
+                const std::string item = f->getKey()["itemid"].asString();
+                std::map<std::string, std::string>::iterator w = sAssistantScriptText.find(item);
+                LLScriptEditor* sed = le ? le->getEditor() : NULL;
+                LL_INFOS("AICtl") << "remove: script window " << item << " in "
+                                  << f->getKey()["taskid"].asString()
+                                  << " live=" << (le != NULL)
+                                  << " going=" << going.count(f->getKey()["taskid"].asUUID())
+                                  << " ours=" << (w != sAssistantScriptText.end())
+                                  << " same=" << (w != sAssistantScriptText.end() && sed
+                                                  && sed->getText() == w->second) << LL_ENDL;
+                if (!le || !going.count(f->getKey()["taskid"].asUUID())) continue;
+                if (w == sAssistantScriptText.end() || !sed || sed->getText() != w->second) continue;
+                sed->makePristine();
+                sAssistantScriptText.erase(w);
+                to_close.push_back(f);
+            }
+            for (LLFloater* f : to_close) f->closeFloater();
+            if (!to_close.empty())
+            {
+                result["script_windows_closed"] = (S32)to_close.size();
             }
             // </Lumen>
 
