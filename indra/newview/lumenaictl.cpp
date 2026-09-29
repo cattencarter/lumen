@@ -100,6 +100,7 @@
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
+#include "llfloatersnapshot.h" // <Lumen> close_window: the Snapshot layer
 #include "llvovolume.h"       // <Lumen> a rigged mesh's drawn box, for framing small avatars
 #include "llviewerjointattachment.h"
 #include "llwindow.h"         //   incBusyCount, balanced when it arrives
@@ -2911,6 +2912,7 @@ namespace
             if (action == "set_setting")   return "set_setting";
             if (action == "show_setting")  return "show_setting";
             if (action == "open_window")   return "open_window";
+            if (action == "close_window")  return "close_window";
             if (action == "inspect_object") return "inspect_object";
             if (action == "lsl_lookup")    return "lsl_lookup";
             if (action == "open_script")   return "open_script";
@@ -3661,7 +3663,8 @@ namespace
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
               "answer_while_away", "read_scripts", "edit_script", "lighting",
-              "set_setting", "show_setting", "open_window", "inspect_object", "lsl_lookup",
+              "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
+              "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall" };
         LLSD view;
         view["name"] = "viewer";
@@ -3810,6 +3813,11 @@ namespace
             "windows all work. It opens only the USER'S OWN profile; for somebody else's, chat / "
             "profile reads what they published. `confirmed_on_screen` true means the viewer was asked afterwards "
             "and the window really is up.\n"
+            "\n- close_window: close a window that is open, by what they call it -- \"close the "
+            "photo window\", \"close my block list\". It closes what is on screen and nothing "
+            "else. It will not close this Assistant window, nor Preferences, where closing would "
+            "undo what they have not saved -- tell them to press OK or Cancel there. If the window "
+            "asks something itself as it closes (\"Save Changes?\"), that is theirs to answer.\n"
             "**Never invent a menu path: this viewer is not stock Firestorm and a wrong path "
             "cannot be checked by the person you told it to.**\n"
             "  For real control, adjust instead of replacing: `brightness` (1.0 is normal, "
@@ -12294,6 +12302,143 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                      opened ? "ok" : "failed", r, briefOf(r));
         return r;
     }
+
+    // <Lumen> close_window: the other half of open_window, asked for for the
+    // showcase ("close the photo window") and found missing -- the assistant
+    // could open a window and then only tell the person where its X was.
+    // Closes what is ON SCREEN and nothing else, found by the menu's own name
+    // for it or by the words of the open windows' titles.
+    if (method == "close_window")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string what = params.has("name") ? params["name"].asString() : std::string();
+        if (what.empty())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give `name` -- what they called the window, like \"the photo window\".";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // The Snapshot window lives in a layer of its own, not among the
+        // other floaters -- found by it being missing from this list.
+        std::vector<LLFloater*> open;
+        LLView* const layers[] = { gFloaterView, gSnapshotFloaterView };
+        for (LLView* layer : layers)
+        {
+            if (!layer) continue;
+            for (LLView* v : *layer->getChildList())
+            {
+                LLFloater* f = dynamic_cast<LLFloater*>(v);
+                if (f && f->getVisible()) open.push_back(f);
+            }
+        }
+        LLSD titles = LLSD::emptyArray();
+        for (LLFloater* f : open)
+        {
+            if (!f->getTitle().empty()) titles.append(safeUtf8(f->getTitle()));
+        }
+
+        // The menu's own name for it first: "block list" is the menu's words.
+        LLFloater* target = NULL;
+        LLSD nearby;
+        const S32 at = findEntry(what, nearby);
+        if (at >= 0 && sEntries[at].open_is_floater)
+        {
+            LLFloater* f = LLFloaterReg::findInstance(sEntries[at].openparam);
+            if (f && f->getVisible()) target = f;
+        }
+        // Then the words of what is open. A photo window is the Snapshot
+        // window to everybody but the viewer.
+        if (!target)
+        {
+            std::vector<std::string> want;
+            for (std::string w : wordsOf(what))
+            {
+                if (w.size() < 2 || isStopWord(w) || w == "window" || w == "close"
+                    || w == "floater" || w == "my")
+                {
+                    continue;
+                }
+                if (w == "photo" || w == "picture" || w == "pic" || w == "camera"
+                    || w == "photograph")
+                {
+                    w = "snapshot";
+                }
+                want.push_back(w);
+            }
+            S32 best = 0, ties = 0;
+            for (LLFloater* f : open)
+            {
+                const std::string hay = lowered(f->getTitle() + " " + f->getInstanceName());
+                S32 hit = 0;
+                for (const std::string& w : want)
+                {
+                    if (hay.find(w) != std::string::npos) ++hit;
+                }
+                if (hit > best)                 { best = hit; target = f; ties = 1; }
+                else if (hit == best && hit > 0) { ++ties; }
+            }
+            if (best == 0) target = NULL;
+            if (target && ties > 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one open window matches \"" + what + "\". Ask which; "
+                               "`open` lists what is on screen.";
+                LLSD d; d["open"] = titles; e["data"] = d;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        if (!target)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "No window matching \"" + what + "\" is open. `open` lists what is on "
+                           "screen -- say which of those, or that it is already closed.";
+            LLSD d; d["open"] = titles; e["data"] = d;
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string inst  = target->getInstanceName();
+        const LLSD        key   = target->getKey();
+        const std::string title = safeUtf8(target->getTitle());
+        if (inst == "ai_chat")
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That is this Assistant window, and closing it is theirs to do.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (inst == "preferences")
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Preferences is not closed from here: closing it undoes every change on "
+                           "its pages that has not been saved. Tell them to press OK to keep the "
+                           "changes, or Cancel to throw them away.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        target->closeFloater();
+        // Asked again rather than trusted: a script window with changes asks
+        // "Save Changes?" and stays, and a closed floater may be gone.
+        LLFloater* after = LLFloaterReg::findInstance(inst, key);
+        const bool closed = !after || !after->getVisible();
+
+        LLSD r;
+        r["window"] = title;
+        r["closed"] = closed;
+        r["note"] = closed
+            ? "Closed, and the viewer confirms it is gone from the screen."
+            : "It is still open -- the window has most likely asked them something itself (such "
+              "as whether to save changes). That question is theirs to answer.";
+        recordAction(request_id, fingerprintOf(method, params), "close_window",
+                     closed ? "ok" : "asked", r, briefOf(r));
+        return r;
+    }
+    // </Lumen>
 
     if (method == "set_setting" || method == "show_setting")
     {
