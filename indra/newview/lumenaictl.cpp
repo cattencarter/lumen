@@ -4635,7 +4635,12 @@ bool LumenAIControl::startInternal()
     // handleRequest and needs no socket at all. So it listens exactly when the
     // chosen provider is one of those two, and not otherwise.
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    if (provider != "codex" && provider != "claudecode")
+    // <Lumen> Except when a developer has fixed the port (LumenAIControlPort,
+    // in no panel, and refused to set_setting): testing Anthropic, OpenAI or
+    // a local model by typing into the Assistant needs the endpoint to read
+    // dialogues and confirm the quit box, or every restart is a person's click.
+    if (provider != "codex" && provider != "claudecode"
+        && gSavedSettings.getU32("LumenAIControlPort") == 0)
     {
         LL_INFOS("AICtl") << "Provider '" << provider << "' runs in process; not "
                              "listening. The read streams are subscribed anyway -- "
@@ -4731,7 +4736,9 @@ bool LumenAIControl::startInternal()
                 [this](LLControlVariable*, const LLSD& now, const LLSD&)
                 {
                     const std::string p = now.asString();
-                    mProviderLeft = (p != "codex" && p != "claudecode");
+                    // <Lumen> A fixed developer port keeps it open, as in start().
+                    mProviderLeft = (p != "codex" && p != "claudecode")
+                                 && gSavedSettings.getU32("LumenAIControlPort") == 0;
                 });
         }
     }
@@ -12545,6 +12552,32 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> The assistant must not reconfigure ITSELF, nor the route the
+        // viewer's traffic takes. Found 2026-09-29 by using it: set_setting
+        // takes any control by its literal name, so a model -- or a notecard
+        // talking to one -- could switch LumenAIProvider to "local" and point
+        // LumenAILocalURL at any server, and every later turn would send the
+        // conversation, the memory and whatever the tools read to it. A proxy
+        // setting does the same for everything else. Only the person changes
+        // these, in Preferences; show_setting still takes them there.
+        {
+            static const char* const OFF_LIMITS[] = {
+                "LumenAI", "Socks5", "HttpProxy", "BrowserProxy" };
+            for (size_t i = 0; i < LL_ARRAY_SIZE(OFF_LIMITS); ++i)
+            {
+                if (ctrl.compare(0, strlen(OFF_LIMITS[i]), OFF_LIMITS[i]) != 0) continue;
+                LLSD e; e["code"] = -32000;
+                e["message"] = ctrl.compare(0, 7, "LumenAI") == 0
+                    ? "That is the assistant's own configuration -- which AI it talks to, where, "
+                      "and what it may do. Only they can change it, in Preferences > AI. Use "
+                      "show_setting to open it for them; do not set it."
+                    : "That is how the viewer reaches the network. Only they can change it, in "
+                      "Preferences. Use show_setting to open it for them; do not set it.";
+                LLSD d; d["setting"] = ctrl; e["data"] = d;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
         if (!params.has("value"))
         {
             LLSD e; e["code"] = -32602; e["message"] = "Give `value` to set, or use show_setting.";
