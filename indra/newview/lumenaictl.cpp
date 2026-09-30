@@ -2754,9 +2754,14 @@ namespace
         // white". Only when what comes before the last "/" IS a folder -- an
         // item's own name can hold a "/", and then it is looked for by name as
         // before. Codex passed a path to show and was told nothing matched.
+        // A path that is itself a folder is that folder, not "the item in the
+        // parent called like its last part": "Clothing/Skirts" read the second
+        // way picked a "Skirts Box" somewhere under Clothing.
+        const bool whole_is_folder = !in_trash
+            && name.find('/') != std::string::npos && folderByPath(name).notNull();
         std::string want_name = name;
         std::string path_note;
-        const size_t slash = in_trash ? std::string::npos : name.rfind('/');
+        const size_t slash = (in_trash || whole_is_folder) ? std::string::npos : name.rfind('/');
         if (slash != std::string::npos && slash > 0 && slash + 1 < name.size())
         {
             const std::string folder_part = name.substr(0, slash);
@@ -2800,8 +2805,6 @@ namespace
         // through the same index, so the two cannot disagree about what exists.
         // Not for a whole folder's path, which would match everything in it:
         // that is a folder, and is said to be one below.
-        const bool whole_is_folder = items.empty() && !in_trash
-            && name.find('/') != std::string::npos && folderByPath(name).notNull();
         bool loose = false;
         std::vector<std::pair<std::string, std::string> > spelling;
         if (items.empty() && !in_trash && loosely && !whole_is_folder)
@@ -10161,8 +10164,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         {
             filters_note = llformat("%d items match \"", (S32)name_total) + query
                 + "\" by name or folder, but none of them is being worn right now: it is not "
-                  "on, and they do own it -- unless it is in `still_on_its_way`, which means "
-                  "it is arriving.";
+                  "on, though they own things by that name (search without worn lists them) -- "
+                  "unless it is in `still_on_its_way`, which means it is arriving.";
         }
         else if (items.empty() && name_total > 0)   // </Lumen>
         {
@@ -10367,8 +10370,62 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 kinds[k.first] = (LLSD::Integer)k.second;
             }
-            std::vector<std::pair<S32, LLUUID> > busiest;
+            // Credited to the folder that HOLDS them, not the one they sit in
+            // directly: "skirt" matches sit in ".../Skirts/Alba skirt/LaraX",
+            // one product and one body fit per folder, so by direct parent the
+            // top folder was one arbitrary product. The holder is the highest
+            // folder above an item whose own name has the most query words --
+            // "Skirts" for "skirt", "Alba skirt" for "alba skirt" -- and the
+            // item's own folder when no folder name has any.
+            std::vector<std::string> qwords;
+            {
+                std::istringstream ss(lowered(query));
+                std::string w;
+                while (ss >> w)
+                {
+                    bool swapped = false;
+                    for (const auto& c : spelling)
+                    {
+                        if (c.first != w) continue;
+                        std::istringstream cs(c.second);
+                        std::string part;
+                        while (cs >> part) qwords.push_back(part);
+                        swapped = true;
+                        break;
+                    }
+                    if (!swapped) qwords.push_back(w);
+                }
+            }
+            const LLUUID inv_root = gInventory.getRootFolderID();
+            std::map<LLUUID, S32> by_holder;
             for (const auto& f : by_folder)
+            {
+                LLUUID holder = f.first;
+                S32 holder_words = 0;
+                LLUUID at = f.first;
+                for (S32 guard = 0; !qwords.empty() && guard < 32 && at.notNull() && at != inv_root;
+                     ++guard)
+                {
+                    const LLViewerInventoryCategory* cat = gInventory.getCategory(at);
+                    if (!cat) break;
+                    const std::string cname = lowered(cat->getName());
+                    S32 hits = 0;
+                    for (const std::string& w : qwords)
+                    {
+                        if (cname.find(w) != std::string::npos) ++hits;
+                    }
+                    // >=: a higher folder naming as many words holds more of them.
+                    if (hits > 0 && hits >= holder_words)
+                    {
+                        holder = at;
+                        holder_words = hits;
+                    }
+                    at = cat->getParentUUID();
+                }
+                by_holder[holder] += f.second;
+            }
+            std::vector<std::pair<S32, LLUUID> > busiest;
+            for (const auto& f : by_holder)
             {
                 busiest.push_back(std::make_pair(f.second, f.first));
             }
@@ -10379,7 +10436,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             for (size_t i = 0; i < busiest.size() && i < 5; ++i)
             {
                 LLSD f;
-                f["folder"] = folderPath(busiest[i].second);
+                f["folder"] = busiest[i].second == inv_root ? std::string("(top of inventory)")
+                                                            : folderPath(busiest[i].second);
                 f["folder_id"] = busiest[i].second;
                 f["items"] = (LLSD::Integer)busiest[i].first;
                 folders.append(f);
@@ -10387,10 +10445,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             result["matching_items"] = (LLSD::Integer)matching_items;
             result["matching_items_by_kind"] = kinds;
             result["matching_folders"] = folders;
-            if (busiest.size() > folders.size())
+            if (busiest.size() > (size_t)folders.size())
             {
                 result["other_folders_with_matches"] =
-                    (LLSD::Integer)(busiest.size() - folders.size());
+                    (LLSD::Integer)(busiest.size() - (size_t)folders.size());
             }
             if (matching_items > 0)
             {
@@ -10398,8 +10456,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     "These counts take in everything whose name OR folder holds the words -- "
                     "boxes, HUDs, pictures and whole outfits too -- so none of them is how many of "
                     "the thing itself they have. `matching_items_by_kind` says what the matches "
-                    "are, and `matching_folders` where most of them sit: \"show me my skirts\" is "
-                    "show with the top folder_id there.";
+                    "are, and `matching_folders` which folders hold most of them, subfolders "
+                    "included: \"show me my skirts\" is show with the top folder_id there.";
             }
             if (no_creator > 0)
             {
@@ -11389,6 +11447,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 const F64 age = LLTimer::getTotalSeconds() - mk->second.at;
                 if (mk->second.answered && mk->second.id.notNull() && gInventory.getItem(mk->second.id))
                 {
+                    again.erase("confirm_with");   // "being made" is over
                     again["item_id"] = mk->second.id;
                     again["text_in"] = mk->second.filled;
                     again["note"] = mk->second.filled
@@ -11400,6 +11459,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 else if (mk->second.answered || age > MAKING_GIVES_UP)
                 {
                     sMaking.erase(mk);
+                    again.erase("confirm_with");
                     again["made"] = false;
                     again["note"] = "It is not there: Second Life did not make it, or it has been "
                                     "removed since. Say so. create_notecard again makes a new one.";
@@ -11421,14 +11481,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             replay["note"] = "This request_id already made a notecard; another was not created.";
             return replay;
         }
-        // Two identical notecards a few seconds apart is a retry, not a wish.
-        if (recallRecent(fingerprintOf("create_notecard", params), 60.0, replay))
-        {
-            replay["replayed"] = true;
-            replay["note"] = "An identical notecard was just created, so this was treated as a "
-                             "retry. Nothing was created a second time.";
-            return replay;
-        }
+        // <Lumen> Two identical notecards a few seconds apart is a retry, not a
+        // wish -- which sMaking above now answers for ten minutes. The 60 s
+        // fingerprint window that stood here could only still match after that
+        // entry had been dropped as NOT made, and then it said "an identical
+        // notecard was just created" about one that does not exist.
+        // </Lumen>
 
         // Register before creating: the viewer decides whether to open the new
         // card before our creation callback ever runs.
@@ -16786,6 +16844,7 @@ if (method == "camera")
                     LLInventoryModel::cat_array_t* oc = NULL;
                     LLInventoryModel::item_array_t* oi = NULL;
                     gInventory.getDirectDescendentsOf(outfit_id, oc, oi);
+                    again.erase("confirm_with");   // "being saved" is over
                     again["outfit_id"] = outfit_id;
                     again["items_in_it"] = oi ? (LLSD::Integer)oi->size() : 0;
                     again["note"] = "Saved by the earlier call, and nothing worn has changed since, "
@@ -16796,6 +16855,7 @@ if (method == "camera")
                 else if (LLTimer::getTotalSeconds() - mk->second.at > MAKING_GIVES_UP)
                 {
                     sMaking.erase(mk);
+                    again.erase("confirm_with");
                     again["saved"] = false;
                     again["note"] = "It has not appeared in My Outfits, so it was probably not "
                                     "saved. Say so; save_outfit again tries again.";

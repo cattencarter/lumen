@@ -128,10 +128,13 @@ def main():
     # Who made it. Without this an assistant asked "which of these did so-and-so
     # make" has only the name to go on, and may resort to reading the viewer's
     # own windows off the screen -- which is the thing this project removes.
-    # Not *every* item: a few carry a null creator, and reporting a null id as
-    # if it were an answer would be worse than leaving the field off.
+    # Not *every* item: a multi-part object often has no single maker, and then
+    # `creator` is JSON null -- present, so a model cannot borrow the maker of
+    # the item beside it, and never the null id dressed up as an answer.
     items = inv.get("items", [])
-    with_creator = [i for i in items if "creator" in i]
+    check("every item carries the creator key, null or not",
+          all("creator" in i for i in items), str(items[:1])[:160])
+    with_creator = [i for i in items if i.get("creator")]
     check("items say who created them",
           len(with_creator) > len(items) * 0.8,
           f"only {len(with_creator)} of {len(items)}")
@@ -574,7 +577,7 @@ def main():
     nc2 = result("create_notecard", {"name": nc_name, "text": nc_body, "request_id": rid("nc")})
     check("the same request_id does not create a second card", nc2.get("replayed") is True, str(nc2)[:200])
     nc3 = result("create_notecard", {"name": nc_name, "text": nc_body, "request_id": rid("nc-DIFF")})
-    check("an identical card with a new id is caught by the 60s window",
+    check("an identical card with a new id is caught as a repeat",
           nc3.get("replayed") is True, str(nc3)[:200])
 
     made = None
