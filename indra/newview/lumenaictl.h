@@ -156,6 +156,21 @@ public:
     /** Hold a socket reply until the user answers, or HOLD seconds pass. */
     void holdForAnswer(LLHTTPNode::ResponsePtr response, const std::string& body,
                        const std::string& waiting_reply, const LLUUID& ask_id);
+
+    // An answer that is a round trip to the region away, rather than a
+    // person's decision: an object's contents, an object's properties. The
+    // handler answers `settling` and says for how long with mSettle; the
+    // socket then holds its reply and makes the SAME call again every quarter
+    // second until the answer is not `settling` any more or the time is up,
+    // and the Assistant's own turn waits the same way in its coroutine. So a
+    // model makes one call instead of "ask again in a second" three times.
+    // Only for handlers where the same call again CONTINUES what the first
+    // began, rather than doing it twice.
+    /** How long the request just handled wants its reply held, or 0; and forget it. */
+    F64 takeSettle();
+    /** Hold a socket reply while the call settles, for at most `seconds`. */
+    void holdToSettle(LLHTTPNode::ResponsePtr response, const std::string& body,
+                      const std::string& reply, F64 seconds);
     // </Lumen>
 
     // <Lumen> A reply the away-responder sent in the user's name, for
@@ -355,6 +370,7 @@ private:
     std::unordered_map<std::string, PendingAsk> mAsks;   //< by fingerprint
     LLUUID mWaitingAsk;       //< set by askUser for the request being handled
     bool   mAnsweringAsk = false;   //< true inside LLNotificationsUtil::add
+    F64    mSettle = 0.0;     //< set by a handler whose answer is a round trip away
 
     struct HeldReply
     {
@@ -363,6 +379,8 @@ private:
         std::string waiting_reply;
         LLUUID      ask_id;
         F64         since = 0.0;
+        F64         settle_until = 0.0;   //< held for the region, not the user, until then
+        F64         next_try = 0.0;
     };
     std::vector<HeldReply> mHeld;
     // </Lumen>

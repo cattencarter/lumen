@@ -218,12 +218,17 @@ def main():
         # There is no harmless rez, so this one is made to refuse: an unknown
         # shape is rejected BY THE HANDLER, which is exactly what this sweep
         # needs to prove -- the action was reached. The null uuid does the same
-        # for the other five, because an object_id that cannot be resolved is
-        # an error for all of them before anything is touched.
+        # for the others, because an object_id that cannot be resolved is an
+        # error for all of them before anything is touched.
         ("build",    "rez"):            {"shape": "__check_only__"},
         ("build",    "select"):         {"object_id": NULL_UUID},
         ("build",    "set"):            {"object_id": NULL_UUID},
         ("build",    "remove"):         {"object_id": NULL_UUID},
+        # take puts the object in inventory and list_contents only reads, but
+        # both would otherwise act on the user's selection; both treat any
+        # object_id given, the null one too, as the object meant.
+        ("build",    "take"):           {"object_id": NULL_UUID},
+        ("build",    "list_contents"):  {"object_id": NULL_UUID},
         ("build",    "link"):           {"object_id": NULL_UUID},
         ("build",    "unlink"):         {"object_id": NULL_UUID},
 

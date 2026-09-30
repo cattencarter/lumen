@@ -429,6 +429,29 @@ namespace
                 reply = rpc("tools/call", params);
             }
         }
+        // An answer a round trip to the region away -- a new script arriving
+        // in an object, an object's details -- is waited for the same way:
+        // the same call again, a quarter second apart, as the endpoint's
+        // socket does for Codex and Claude Code. The handler stops settling
+        // by itself when its own wait runs out; the cap here is a backstop.
+        if (still_wanted)
+        {
+            const F64 give_up = LLTimer::getTotalSeconds() + 15.0;
+            for (;;)
+            {
+                const LLSD sc = reply["result"]["structuredContent"];
+                if (!sc.isMap() || !sc["settling"].asBoolean()) break;
+                if (LLTimer::getTotalSeconds() > give_up) break;
+                llcoro::suspendUntilTimeout(0.25f);
+                if (!still_wanted())
+                {
+                    is_error = true;
+                    return "The conversation was stopped while the viewer was waiting on the "
+                           "region, so the answer was not collected.";
+                }
+                reply = rpc("tools/call", params);
+            }
+        }
         // </Lumen>
 
         if (reply.has("error"))
@@ -703,6 +726,8 @@ namespace
             if (action == "select") return "Selecting the object";
             if (action == "set")    return "Changing the object";
             if (action == "remove") return "Removing the object";
+            if (action == "take")   return "Taking the object back";          // <Lumen>
+            if (action == "list_contents") return "Looking inside the object";   // <Lumen>
             if (action == "link")   return "Linking the objects";
             if (action == "unlink") return "Unlinking the object";
         }
