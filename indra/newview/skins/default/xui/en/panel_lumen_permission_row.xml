@@ -9,7 +9,7 @@
  layout="topleft"
  follows="left|top|right"
  background_visible="false"
- width="520"
+ width="498"
  height="24">
   <text
    type="string"
@@ -18,7 +18,7 @@
    follows="left|top"
    left="4"
    top="4"
-   width="270"
+   width="250"
    height="16"
    use_ellipses="true">
     Question
@@ -27,7 +27,7 @@
    name="choice"
    layout="topleft"
    follows="left|top"
-   left="280"
+   left="258"
    top="2"
    width="236"
    height="20">

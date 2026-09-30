@@ -320,14 +320,6 @@ namespace
         }
         LL_INFOS("LumenAI") << "permission " << name << " set to " << state << LL_ENDL;
     }
-
-    // Out here because LLPanelPreference's LOG_CLASS is private, so a log
-    // line inside the panel's own members does not compile.
-    void warnPermissionsOverflow(size_t rows, S32 over)
-    {
-        LL_WARNS("LumenAI") << rows << " permission rows do not fit the panel (" << over
-                            << "px over) -- it needs a scroll container" << LL_ENDL;
-    }
 }
 
 void LumenPanelPreferenceAIKeys::buildPermissionRows()
@@ -354,7 +346,12 @@ void LumenPanelPreferenceAIKeys::buildPermissionRows()
     }
     std::sort(found.begin(), found.end());
 
-    S32 top = list->getRect().getHeight() - 2;
+    // Made first, placed after: the list is sized to hold every row, and the
+    // scroll container around it (perm_scroll) scrolls when that is taller
+    // than the tab. It used to be a fixed panel, and with nineteen questions
+    // the last five ran over the note below it and off the bottom.
+    std::vector<std::pair<LLPanel*, std::string>> rows;
+    S32 total = 4;
     for (const auto& f : found)
     {
         LLPanel* row = LLUICtrlFactory::getInstance()->createFromFile<LLPanel>(
@@ -362,17 +359,19 @@ void LumenPanelPreferenceAIKeys::buildPermissionRows()
         if (!row) continue;
         row->getChild<LLTextBox>("question")->setText(f.first);
         row->getChild<LLTextBox>("question")->setToolTip(f.first);
-        const S32 h = row->getRect().getHeight();
-        row->setRect(LLRect(0, top, list->getRect().getWidth(), top - h));
-        list->addChild(row);
-        top -= h;
-        mPermRows.push_back({ f.second, row->getChild<LLRadioGroup>("choice") });
+        total += row->getRect().getHeight();
+        rows.emplace_back(row, f.second);
     }
-    // Said, not clipped in silence: a row below the panel's edge is a
-    // question the user cannot see to change.
-    if (top < 0)
+    const S32 width = list->getRect().getWidth();
+    list->reshape(width, total);
+    S32 top = total - 2;
+    for (auto& r : rows)
     {
-        warnPermissionsOverflow(mPermRows.size(), -top);
+        const S32 h = r.first->getRect().getHeight();
+        r.first->setRect(LLRect(0, top, width, top - h));
+        list->addChild(r.first);
+        top -= h;
+        mPermRows.push_back({ r.second, r.first->getChild<LLRadioGroup>("choice") });
     }
 
     if (LLButton* all = findChild<LLButton>("perm_ask_all"))

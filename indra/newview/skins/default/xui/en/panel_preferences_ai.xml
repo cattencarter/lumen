@@ -556,8 +556,15 @@
           Before the assistant does any of these, the viewer asks you. Always allow and Always refuse answer for you without asking. Changes take effect when you press OK.
       </text>
 
-      <panel follows="all" layout="topleft" name="perm_list"
-       left="10" top="68" right="-10" bottom="-26" background_visible="false" />
+      <!-- Scrolls: nineteen questions no longer fit the panel, and the list
+           grows with every new kind of act. perm_list is sized in C++ to the
+           rows it holds. -->
+      <scroll_container follows="all" layout="topleft" name="perm_scroll"
+       left="10" top="68" right="-10" bottom="-26"
+       border_visible="false" is_opaque="false" reserve_scroll_corner="false">
+        <panel follows="left|top|right" layout="topleft" name="perm_list"
+         left="0" top="0" width="498" height="24" background_visible="false" />
+      </scroll_container>
 
       <text type="string" follows="left|bottom" layout="topleft"
        left="20" bottom="-6" width="490" height="16">
