@@ -82,6 +82,21 @@ public:
     static bool        listening();
 
     /**
+     * <Lumen> Start Codex's background service when it is installed and
+     * signed in but not running -- which is the state every restart of the
+     * computer leaves it in. The author: *"hver gang man genstarter computeren
+     * skal man switche codex on i settings."* Nothing but Lumen uses it here,
+     * so Lumen starting it when it is wanted is the whole cure; nothing is
+     * installed to start it at login.
+     *
+     * True while a start made by this is on its way (for fifteen seconds);
+     * false when there is nothing to start, or when one was tried a moment
+     * ago and did not come up -- so a service that will not start is left to
+     * the setup window rather than retried every second.
+     */
+    static bool        startService();
+
+    /**
      * The plugins the user's own Codex has switched on, by name.
      *
      * Read from `~/.codex/config.toml` rather than listed here, so a plugin

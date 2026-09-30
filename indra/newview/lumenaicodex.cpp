@@ -32,6 +32,7 @@
 
 #include "llfile.h"
 #include "lltimer.h"      // <Lumen> deadlines on the handshake and on send
+#include "llprocess.h"    // <Lumen> startService
 
 #include "llbase64.h"
 #include "llsdjson.h"
@@ -143,6 +144,39 @@ bool LumenAICodex::listening()
     return up;
 #endif
 }
+
+// <Lumen>
+bool LumenAICodex::startService()
+{
+    static F64 sStarted = -1000.0;
+    if (!unavailableHere().empty() || !cliInstalled()) return false;
+    const std::string home = homeDir();
+    const std::string s = gDirUtilp->getDirDelimiter();
+    if (home.empty() || !gDirUtilp->fileExists(home + s + ".codex" + s + "auth.json")) return false;
+    if (listening()) return false;
+
+    const F64 now = LLTimer::getTotalSeconds();
+    if (now - sStarted < 15.0)  return true;    // ours, still coming up
+    if (now - sStarted < 120.0) return false;   // tried, and it did not come up
+    sStarted = now;
+
+    // From the home folder, never from the viewer's own: the service keeps
+    // the folder it was started in, and the viewer's is inside the app bundle
+    // an update replaces (Findings 41). Not autokill: it is meant to outlive
+    // this call, and the viewer too.
+    LLProcess::Params p;
+    p.executable = cliPath();
+    p.args.add("app-server");
+    p.args.add("daemon");
+    p.args.add("start");
+    p.cwd = home;
+    p.autokill = false;
+    LLProcessPtr proc = LLProcess::create(p);
+    LL_INFOS("LumenAICodex") << "Codex's background service was not running; "
+                             << (proc ? "starting it" : "could not start it") << LL_ENDL;
+    return (bool)proc;
+}
+// </Lumen>
 
 LumenAICodex::LumenAICodex() : mFd(-1), mUpgraded(false) {}
 LumenAICodex::~LumenAICodex() { close(); }

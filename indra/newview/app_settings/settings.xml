@@ -14660,6 +14660,28 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <string>claude-sonnet-5-5</string>
   </map>
+  <key>LumenAIMistralModel</key>
+    <map>
+      <key>Comment</key>
+      <string>Mistral model for the in-viewer assistant. Editable: model names change faster than viewer releases. Mistral Medium by default, which Mistral describes as built for agentic use -- to be settled by trying it, as the other providers' defaults were.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>mistral-medium-latest</string>
+  </map>
+  <key>LumenAIMistralURL</key>
+    <map>
+      <key>Comment</key>
+      <string>Where to send Mistral requests. Empty means Mistral themselves (https://api.mistral.ai/v1/chat/completions), which speak OpenAI's dialect.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+  </map>
   <key>LumenAIOpenAIModel</key>
     <map>
       <key>Comment</key>
@@ -14703,6 +14725,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <string>String</string>
       <key>Value</key>
       <string>claude-sonnet-5-5</string>
+  </map>
+  <key>LumenAIVibeModel</key>
+    <map>
+      <key>Comment</key>
+      <string>Model Mistral Vibe is asked for, by Vibe's own alias: mistral-medium-3.5 is Vibe's default, mistral-small-4 is added by Lumen's settings for Vibe.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>mistral-medium-3.5</string>
   </map>
   <key>LumenUpdateCheck</key>
     <map>

@@ -17,6 +17,7 @@
 #include "llviewercontrol.h"
 #include "lumenaikeys.h"
 #include "lumenaiclaude.h"
+#include "lumenaivibe.h"     // <Lumen>
 #include "lumenaicodex.h"
 #include "lumenaictl.h"
 #include "llcoros.h"
@@ -36,6 +37,15 @@ namespace
     std::string command(const std::string& provider, int step)
     {
         const bool codex = (provider == LumenAIKeys::CODEX);
+        // <Lumen> Mistral Vibe's own installer: uv from Astral if it is missing
+        // (checksum-checked by the script), then `uv tool install mistral-vibe`.
+        // Signing in is not a command at all -- see run().
+        if (provider == LumenAIKeys::VIBE)
+        {
+            return (step == 0) ? std::string("curl -LsSf https://mistral.ai/vibe/install.sh | bash")
+                               : std::string();
+        }
+        // </Lumen>
         // <Lumen> Step 1 for Claude Code ran a bare `claude`, which the shell
         // resolves on PATH -- and a viewer launched from the Dock has launchd's
         // PATH, where none of the five places the installer puts it are
@@ -92,11 +102,12 @@ LumenAISetupFloater::LumenAISetupFloater(const LLSD& key) : LLFloater(key) {}
 /** Claude Code needs no background service, so it stops after two. */
 int LumenAISetupFloater::steps() const
 {
-    return (mProvider == LumenAIKeys::CODEX) ? 3 : 2;
+    return (mProvider == LumenAIKeys::CODEX) ? 3 : 2;   // Vibe, like Claude Code, needs two
 }
 
 std::string LumenAISetupFloater::unavailableHere() const
 {
+    if (mProvider == LumenAIKeys::VIBE) return LumenAIVibe::unavailableHere();   // <Lumen>
     return (mProvider == LumenAIKeys::CODEX) ? LumenAICodex::unavailableHere()
                                              : LumenAIClaude::unavailableHere();
 }
@@ -127,6 +138,16 @@ std::string LumenAISetupFloater::codexDir()
  */
 bool LumenAISetupFloater::done(EStep step) const
 {
+    // <Lumen> Mistral Vibe: signed in is the same test Vibe makes itself -- a
+    // key in its settings folder or in the Keychain under its own name (its
+    // auth_state), asked without reading the key.
+    if (mProvider == LumenAIKeys::VIBE)
+    {
+        if (step == STEP_INSTALL) return LumenAIVibe::installed();
+        if (step == STEP_SIGNIN)  return LumenAIVibe::signedIn();
+        return true;
+    }
+    // </Lumen>
     if (mProvider != LumenAIKeys::CODEX)
     {
         // Claude Code.
@@ -198,6 +219,19 @@ void LumenAISetupFloater::signedIn(bool ok, const std::string& why)
     refresh();
 }
 
+// <Lumen>
+void LumenAISetupFloater::vibeSignedIn(bool ok, const std::string& why)
+{
+    mRunning = STEP_COUNT;
+    mFailed  = !ok && !done(STEP_SIGNIN);
+    mNote    = mFailed
+        ? "Signing in did not finish. Press the button again -- the browser page has to be "
+          "completed before it counts." + (why.empty() ? std::string() : "\n\n" + why.substr(0, 300))
+        : std::string();
+    refresh();
+}
+// </Lumen>
+
 void LumenAISetupFloater::onDo(EStep step)
 {
     if (mRunning != STEP_COUNT) return;     // one at a time
@@ -219,6 +253,30 @@ void LumenAISetupFloater::run(EStep step)
         mNote   = here;
         return;
     }
+
+    // <Lumen> Mistral Vibe signs in through its own helper, which gives Lumen
+    // the page to open and waits until the person is done there. Not a shell
+    // command: its own setup is a full-screen terminal program.
+    if (mProvider == LumenAIKeys::VIBE && step == STEP_SIGNIN)
+    {
+        mProc.reset();   // the finished install, which draw() would read as this step failing
+        mRunning = step;
+        mSince.reset();
+        mPoll.reset();
+        LLHandle<LLFloater> h = getHandle();
+        LLCoros::instance().launch("LumenAIVibeSignIn", [h]()
+        {
+            LumenAIVibeSignIn signin;
+            std::string why;
+            const bool ok = signin.run([h]() { return !h.isDead(); }, why);
+            if (LumenAISetupFloater* f = dynamic_cast<LumenAISetupFloater*>(h.get()))
+            {
+                f->vibeSignedIn(ok, why);
+            }
+        });
+        return;
+    }
+    // </Lumen>
 
     LLProcess::Params p;
     p.executable = "/bin/sh";
@@ -271,7 +329,7 @@ void LumenAISetupFloater::draw()
             refresh();
         }
         else if (mProc && !mProc->isRunning()
-                 && mProvider != LumenAIKeys::CODEX && mRunning == STEP_SIGNIN)
+                 && mProvider == LumenAIKeys::CLAUDECODE && mRunning == STEP_SIGNIN)
         {
             // `claude auth login` has exited, and there is no file to look at:
             // Claude Code keeps its credentials in the macOS keychain. So the
@@ -322,7 +380,7 @@ void LumenAISetupFloater::draw()
             // commands and "the panel behind this window" would send them to
             // look for one that is not there.
             std::string version;
-            if (mProvider != LumenAIKeys::CODEX && mRunning == STEP_INSTALL
+            if (mProvider == LumenAIKeys::CLAUDECODE && mRunning == STEP_INSTALL
                 && LumenAIClaude::installed() && LumenAIClaude::tooOld(&version))
             {
                 mNote = "That finished, but Claude Code is still "
@@ -402,7 +460,8 @@ void LumenAISetupFloater::refresh()
     }
     // <Lumen> An installed copy that is too old gets an update, said as one.
     std::string old_version;
-    const bool claude_too_old = !codex && LumenAIClaude::tooOld(&old_version);
+    const bool claude_too_old = (mProvider == LumenAIKeys::CLAUDECODE)
+                             && LumenAIClaude::tooOld(&old_version);
     if (LLTextBox* t = findChild<LLTextBox>("title_1"))
         t->setText(std::string(claude_too_old ? "1. Update the program that does the talking"
                                               : "1. Get the program that does the talking"));
@@ -434,6 +493,28 @@ void LumenAISetupFloater::refresh()
               "your password into Anthropic's own page. Lumen never sees it and never "
               "keeps it. When you come back, Lumen asks it a question to make sure."));
     }
+    // <Lumen> Mistral Vibe's own story: a small program, and a Mistral account
+    // -- a free one works, so "subscription" would promise a bill it may not have.
+    const bool vibe = (mProvider == LumenAIKeys::VIBE);
+    if (vibe)
+    {
+        setTitle("Use your Mistral account");
+        if (LLTextBox* t = findChild<LLTextBox>("intro"))
+            t->setText(std::string("Lumen can use Mistral Vibe with your Mistral account -- a free "
+                                   "one works too -- instead of a key you paste. Two things have "
+                                   "to happen first, and Lumen can do both for you."));
+        if (LLTextBox* t = findChild<LLTextBox>("desc_1"))
+            t->setText(std::string("Lumen downloads Mistral Vibe with Mistral's own installer, from "
+                                   "mistral.ai. It also fetches uv, the small tool it installs "
+                                   "with, if you do not have it. You only ever do this once."));
+        if (LLTextBox* t = findChild<LLTextBox>("title_2"))
+            t->setText(std::string("2. Sign in with your Mistral account"));
+        if (LLTextBox* t = findChild<LLTextBox>("desc_2"))
+            t->setText(std::string("Your web browser opens on Mistral's own page and you sign in "
+                                   "there. Lumen never sees your password, and the key Mistral "
+                                   "hands Vibe goes into your Mac's Keychain, where Vibe keeps it."));
+    }
+    // </Lumen>
 
     if (LLTextBox* s = findChild<LLTextBox>("summary"))
     {
@@ -449,6 +530,9 @@ void LumenAISetupFloater::refresh()
             t = codex
                 ? "All three are done. Close this window, then type to your assistant. "
                   "Your ChatGPT subscription pays for it, so there is no separate bill."
+                : vibe   // <Lumen>
+                ? "Both are done. Close this window, then type to your assistant. Your "
+                  "Mistral account covers it, within your plan's own limits."
                 : "Both are done. Close this window, then type to your assistant. "
                   "Your Claude subscription pays for it, so there is no separate bill.";
         }

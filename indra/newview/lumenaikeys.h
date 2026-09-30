@@ -61,9 +61,11 @@ namespace LumenAIKeys
     extern const std::string NONE;
     extern const std::string ANTHROPIC;
     extern const std::string OPENAI;
+    extern const std::string MISTRAL;   // <Lumen> OpenAI's dialect, Mistral's address
     extern const std::string LOCAL;
     extern const std::string CODEX;
     extern const std::string CLAUDECODE;
+    extern const std::string VIBE;       // <Lumen> Mistral Vibe, a separate program like Claude Code
 
     // Every provider we offer, in the order the panel shows them.
     const std::vector<std::string>& providers();
@@ -147,6 +149,7 @@ public:
         std::string text;
         std::string command;    // empty when there is nothing left to run
         bool        ready = false;
+        bool        starting = false;   // <Lumen> Lumen is starting its service
     };
     /**
      * The Test button's answer, as a popup.
@@ -168,6 +171,7 @@ public:
      */
     CodexState codexStatus(bool probe = true);
     CodexState claudeStatus();
+    CodexState vibeStatus();   // <Lumen>
 
     // **A button that changes nothing visible is a button that looks broken.**
     // The author pressed Check while Codex was already ready, the status was

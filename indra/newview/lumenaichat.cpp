@@ -38,6 +38,7 @@
 #include "lumenaikeys.h"
 #include "lumenaicodex.h"
 #include "lumenaiclaude.h"
+#include "lumenaivibe.h"     // <Lumen>
 #include "llversioninfo.h"
 #include "lumenaimemory.h"
 
@@ -90,6 +91,7 @@ namespace
 {
     const std::string ANTHROPIC_URL_DEFAULT = "https://api.anthropic.com/v1/messages";
     const std::string OPENAI_URL_DEFAULT    = "https://api.openai.com/v1/chat/completions";
+    const std::string MISTRAL_URL_DEFAULT   = "https://api.mistral.ai/v1/chat/completions";
 
     /**
      * Which setting holds the model for this provider.
@@ -106,9 +108,11 @@ namespace
     std::string modelSetting(const std::string& provider)
     {
         if (provider == LumenAIKeys::OPENAI) return "LumenAIOpenAIModel";
+        if (provider == LumenAIKeys::MISTRAL) return "LumenAIMistralModel";
         if (provider == LumenAIKeys::LOCAL)  return "LumenAILocalModel";
         if (provider == LumenAIKeys::CODEX)  return "LumenAICodexModel";
         if (provider == LumenAIKeys::CLAUDECODE) return "LumenAIClaudeCodeModel";
+        if (provider == LumenAIKeys::VIBE)   return "LumenAIVibeModel";   // <Lumen>
         return "LumenAIAnthropicModel";
     }
 
@@ -133,12 +137,21 @@ namespace
      * a local model nothing leaves the machine at all -- no datacentre, no
      * provider, no bill.
      */
-    std::string providerUrl(bool is_openai)
+    // <Lumen> Asked of the provider being USED, not the one in the setting:
+    // the caller has already decided which provider this request is for, and
+    // the Test button may be testing one that is not the current choice.
+    std::string providerUrl(const std::string& provider)
     {
-        if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::LOCAL)
+        if (provider == LumenAIKeys::LOCAL)
         {
             return gSavedSettings.getString("LumenAILocalURL");
         }
+        if (provider == LumenAIKeys::MISTRAL)
+        {
+            const std::string set = gSavedSettings.getString("LumenAIMistralURL");
+            return set.empty() ? MISTRAL_URL_DEFAULT : set;
+        }
+        const bool is_openai = (provider == LumenAIKeys::OPENAI);
         const std::string set = gSavedSettings.getString(
             is_openai ? "LumenAIOpenAIURL" : "LumenAIAnthropicURL");
         if (!set.empty()) return set;
@@ -1226,6 +1239,17 @@ namespace
                 {
                     detail = body["error"]["message"].asString();
                 }
+                // <Lumen> Mistral puts its reason at the top level:
+                // {"detail":"Invalid API Key"}, or "message" beside "type".
+                else if (ok && body.has("message") && body["message"].isString())
+                {
+                    detail = body["message"].asString();
+                }
+                else if (ok && body.has("detail") && body["detail"].isString())
+                {
+                    detail = body["detail"].asString();
+                }
+                // </Lumen>
                 else
                 {
                     detail = reply["http_result"]["error_body"].asString().substr(0, 500);
@@ -1303,6 +1327,7 @@ void LumenAIChatFloater::abandonTurn()
     ++mTurnGen;
 
     if (mClaude) mClaude->stop();
+    if (mVibe) mVibe->stop();   // <Lumen>
 
     if (mCodex && mCodex->connected())
     {
@@ -1351,7 +1376,8 @@ bool LumenAIChatFloater::postBuild()
     // changes, with nothing in between to depend on.
     static const char* const kWatch[] = {
         "LumenAIProvider", "LumenAIAnthropicModel", "LumenAIOpenAIModel",
-        "LumenAILocalModel", "LumenAICodexModel", "LumenAIClaudeCodeModel" };
+        "LumenAIMistralModel", "LumenAILocalModel", "LumenAICodexModel", "LumenAIClaudeCodeModel",
+        "LumenAIVibeModel" };   // <Lumen>
     for (size_t i = 0; i < LL_ARRAY_SIZE(kWatch); ++i)
     {
         if (LLControlVariablePtr c = gSavedSettings.getControl(kWatch[i]))
@@ -1419,7 +1445,8 @@ void LumenAIChatFloater::refreshKeyNotice()
     // yet. Put one in Preferences > AI", which sends somebody looking for a
     // thing that does not exist. The author, immediately: *"den naevner codex
     // key? men det er der vel ikke noget der hedder"*. There is not.
-    const bool needs_key = (provider == LumenAIKeys::ANTHROPIC || provider == LumenAIKeys::OPENAI);
+    const bool needs_key = (provider == LumenAIKeys::ANTHROPIC || provider == LumenAIKeys::OPENAI
+                            || provider == LumenAIKeys::MISTRAL);
     if (!needs_key)
     {
         mSaidNoKey = false;
@@ -1511,13 +1538,11 @@ void LumenAIChatFloater::testProvider(const std::string& provider,
                                    std::function<void(bool, const std::string&)> report)
 {
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
-    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local
+                        || (provider == LumenAIKeys::MISTRAL);   // <Lumen> same dialect
 
-    const std::string model = gSavedSettings.getString(
-        is_local  ? "LumenAILocalModel"
-                  : (is_openai ? "LumenAIOpenAIModel" : "LumenAIAnthropicModel"));
-    const std::string url = is_local ? gSavedSettings.getString("LumenAILocalURL")
-                                     : providerUrl(is_openai);
+    const std::string model = gSavedSettings.getString(modelSetting(provider));
+    const std::string url = providerUrl(provider);
     // A local model needs no key; everything else is useless without one.
     const std::string key = is_local ? std::string() : LumenAIKeys::get(provider);
 
@@ -1567,6 +1592,12 @@ void LumenAIChatFloater::testProvider(const std::string& provider,
             {
                 body["max_tokens"] = 4;
                 addLocalReasoning(body);   // <Lumen> a thinking model spends the 4 on thinking
+            }
+            else if (provider == LumenAIKeys::MISTRAL)
+            {
+                // <Lumen> Mistral knows the older name and not OpenAI's newer
+                // one, and takes no reasoning setting.
+                body["max_tokens"] = 16;
             }
             else
             {
@@ -2029,6 +2060,8 @@ void LumenAIChatFloater::onClear()
     // Codex, the old memory.
     mCodexThread.clear();
     mClaudeSession.clear();
+    mVibeSession.clear();   // <Lumen>
+    mVibeSeen.clear();
     if (mTranscript)
     {
         mTranscript->clear();
@@ -2088,6 +2121,10 @@ void LumenAIChatFloater::beginTurn(const std::string& text)
             else if (who == LumenAIKeys::CLAUDECODE)
             {
                 if (self->ensureEndpoint(who)) self->runClaudeCodeTurn(text);
+            }
+            else if (who == LumenAIKeys::VIBE)   // <Lumen>
+            {
+                if (self->ensureEndpoint(who)) self->runVibeTurn(text);
             }
             else
             {
@@ -2502,7 +2539,23 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
     if (!mCodex) mCodex.reset(new LumenAICodex());
     if (!mCodex->connected())
     {
-        if (!mCodex->connect(why))
+        bool up = mCodex->connect(why);
+        // <Lumen> After the computer restarts, the background service is simply
+        // not running, and that used to end the turn with a command to type.
+        // Start it and wait for it -- it answers in well under a second.
+        if (!up && LumenAICodex::startService())
+        {
+            setBusy(true, "Starting Codex...");
+            for (int i = 0; i < 30 && !LumenAICodex::listening(); ++i)
+            {
+                llcoro::suspendUntilTimeout(0.5f);
+                if (!stillMine()) return;
+            }
+            why.clear();
+            up = mCodex->connect(why);
+        }
+        // </Lumen>
+        if (!up)
         {
             sayNote(why);
             setBusy(false);
@@ -3363,6 +3416,157 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
     setBusy(false);
 }
 
+// <Lumen> Mistral Vibe, one process per turn like Claude Code. What it prints
+// is one line per finished history entry -- messages, tool calls with their
+// results already in them, reasoning -- and nothing marks the end but the
+// process exiting. See lumenaivibe.h.
+void LumenAIChatFloater::runVibeTurn(const std::string& user_text)
+{
+    const LLHandle<LLFloater> handle = getHandle();
+    const S32 gen = mTurnGen;
+    auto stillMine = [this, handle, gen]() -> bool
+    {
+        LLCoros::checkStop();
+        return !handle.isDead() && !isDead() && mTurnGen == gen;
+    };
+
+    if (!LumenAIVibe::installed())
+    {
+        sayNote("Mistral Vibe is not installed. Preferences > AI.");
+        setBusy(false);
+        return;
+    }
+    if (!LumenAIVibe::signedIn())
+    {
+        sayNote("Mistral Vibe is not signed in to a Mistral account yet. Preferences > AI.");
+        setBusy(false);
+        return;
+    }
+
+    // A session is pinned to the model it began with, as Vibe itself says.
+    const std::string model = gSavedSettings.getString("LumenAIVibeModel");
+    if (!mVibeSession.empty() && model != mVibeModel)
+    {
+        mVibeSession.clear();
+        mVibeSeen.clear();
+        sayNote("Switched to " + (model.empty() ? std::string("Vibe's own default") : model)
+                + ". This starts a new conversation.");
+    }
+    mVibeModel = model;
+
+    if (!mVibe) mVibe.reset(new LumenAIVibe());
+
+    std::string why;
+    if (!mVibe->start(user_text, fullSystemPrompt(), model, mVibeSession,
+                      LumenAIControl::instance().port(), why))
+    {
+        sayNote(why);
+        setBusy(false);
+        return;
+    }
+
+    setBusy(true, "Thinking...");
+
+    std::string answer, stopped_by;
+    S32 tool_calls = 0;
+    bool capped = false;
+    const F64 until = LLTimer::getTotalSeconds() + 300.0;
+    F64 exited_at = 0.0;
+    LLSD entry;
+    while (LLTimer::getTotalSeconds() < until)
+    {
+        const bool exited = !mVibe->running();
+        while (mVibe->lineWaiting())
+        {
+            if (!mVibe->poll(entry)) continue;
+
+            // A resumed session is replayed first; only what is new is this turn.
+            const std::string id = entry["id"].asString();
+            if (!id.empty() && !mVibeSeen.insert(id).second) continue;
+            if (entry.has("sessionId")) mVibeSession = entry["sessionId"].asString();
+
+            const std::string type = entry["type"].asString();
+            if (type == "message" && entry["role"].asString() == "assistant")
+            {
+                std::string said;
+                const LLSD& content = entry["content"];
+                for (LLSD::array_const_iterator it = content.beginArray();
+                     it != content.endArray(); ++it)
+                {
+                    if ((*it)["type"].asString() == "text") said += (*it)["text"].asString();
+                }
+                // Vibe's own limit notice, written as if the model had said it.
+                if (said.find("<vibe_stop_event>") != std::string::npos)
+                {
+                    stopped_by = said;
+                    continue;
+                }
+                if (said.empty()) continue;
+                if (!answer.empty() && answer.back() != '\n') answer += "\n";
+                answer += said;
+            }
+            else if (type == "effect")
+            {
+                // A tool call, reported once its result is in. Named in the bar
+                // as the other providers name theirs; "second_life_viewer" is
+                // the viewer tool.
+                std::string group = entry["title"].asString();
+                const std::string prefix = "second_life_";
+                if (group.compare(0, prefix.size(), prefix) == 0) group = group.substr(prefix.size());
+                const std::string said = humanAction(group, entry["detail"]["input"]["action"].asString());
+                if (!said.empty()) setActivity(said);
+                thinkingAfterStep();
+                if (++tool_calls >= MAX_TOOL_TURNS * 2)
+                {
+                    // Vibe's own turn limit counts the whole conversation, so it
+                    // cannot be the cap on one answer. This is.
+                    capped = true;
+                    mVibe->stop();
+                    break;
+                }
+            }
+        }
+        if (capped) break;
+        if (exited)
+        {
+            if (exited_at == 0.0) exited_at = LLTimer::getTotalSeconds();
+            else if (LLTimer::getTotalSeconds() - exited_at > 0.5) break;
+        }
+        llcoro::suspend();
+        if (!stillMine()) return;   // Clear or close: abandonTurn() stopped the process
+    }
+
+    const bool timed_out = mVibe->running();
+    mVibe->stop();
+    const std::string err = mVibe->errorText();
+
+    if (!answer.empty()) sayAssistant(answer);
+    if (capped)
+    {
+        sayNote(llformat("I stopped after %d tool calls without finishing. Ask me again, more "
+                         "specifically.", tool_calls));
+    }
+    else if (timed_out)
+    {
+        sayNote("Mistral Vibe stopped answering after five minutes, so that is all there is.");
+    }
+    else if (!stopped_by.empty())
+    {
+        sayNote("Mistral Vibe stopped at its own limit. Press Clear to start a new conversation.");
+    }
+    else if (answer.empty())
+    {
+        // Its errors are one "Error: ..." line on stderr -- a bad key, a rate
+        // limit, a conversation too long.
+        std::string first = err.substr(0, err.find('\n'));
+        if (first.compare(0, 7, "Error: ") == 0) first = first.substr(7);
+        sayNote(first.empty() ? std::string("Mistral Vibe finished without saying anything.")
+                              : "Mistral Vibe: " + first.substr(0, 400));
+    }
+    setBusy(false);
+}
+// </Lumen>
+
 void LumenAIChatFloater::runTurn(const std::string& user_text)
 {
     // <Lumen> Asked after every suspend: the provider call and the frame
@@ -3395,7 +3599,8 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
 
     // A local server speaks OpenAI's dialect; only the address differs.
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
-    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local
+                        || (provider == LumenAIKeys::MISTRAL);   // <Lumen> same dialect
 
     // **A local model needs no key**, so requiring one would lock out the one
     // provider that costs nothing.
@@ -3418,7 +3623,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
     // Preferences mid-turn sent this provider's key and the whole conversation
     // so far to the new one's address -- an Anthropic key to a local server,
     // a local-only conversation to OpenAI.
-    const std::string url = providerUrl(is_openai);
+    const std::string url = providerUrl(provider);
     // </Lumen>
 
     // Switching provider mid-conversation would mean rewriting every tool
@@ -3891,7 +4096,7 @@ namespace
         static const char* const GIVEAWAYS[] = {
             "api key", "api call", "rate limit", "timed out", "timeout",
             "connection error", "network error", "server error",
-            "http", "json", "endpoint", "anthropic", "openai",
+            "http", "json", "endpoint", "anthropic", "openai", "mistral",
             "language model", "my training", "my system prompt",
             "i'm an ai", "i am an ai", "as an ai",
         };
@@ -4692,11 +4897,12 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     const std::string system = autoRespondPrompt(memory, first_time, owner, call_them);
     // A local server speaks OpenAI's dialect; only the address differs.
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
-    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local;
+    const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local
+                        || (provider == LumenAIKeys::MISTRAL);   // <Lumen> same dialect
     const std::string model = gSavedSettings.getString(modelSetting(provider));
     // <Lumen> Where to send it, decided now, beside the key: providerUrl()
     // reads the setting live, and the provider can change during the wait.
-    const std::string url = providerUrl(is_openai);
+    const std::string url = providerUrl(provider);
     // Which arming this reply belongs to. See stillWanted().
     const U32 gen = mArmGen;
     // </Lumen>

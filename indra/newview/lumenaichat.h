@@ -348,10 +348,18 @@ private:
     void refreshTitle();
     void runCodexTurn(const std::string& user_text);
     void runClaudeCodeTurn(const std::string& user_text);
+    void runVibeTurn(const std::string& user_text);   // <Lumen>
     std::unique_ptr<class LumenAICodex> mCodex;
     std::unique_ptr<class LumenAIClaude> mClaude;
     std::string mClaudeSession;   // Claude Code holds the conversation
     std::string mClaudeModel;     // what that session was started with
+    // <Lumen> Mistral Vibe holds its conversation too, by session id, and
+    // replays it at the start of every resumed run: what was already read.
+    std::unique_ptr<class LumenAIVibe> mVibe;
+    std::string mVibeSession;
+    std::string mVibeModel;
+    std::set<std::string> mVibeSeen;
+    // </Lumen>
     std::string mCodexThread;
     std::string mCodexTurn;    // the turn in flight, so it can be interrupted
     std::string mCodexModel;   // what that thread was started with

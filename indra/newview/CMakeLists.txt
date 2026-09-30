@@ -110,6 +110,7 @@ set(viewer_SOURCE_FILES
     lumenaimemory.cpp
     lumenaicodex.cpp
     lumenaiclaude.cpp
+    lumenaivibe.cpp
     lumenaictl.cpp
     lumenaikeys.cpp
     lumenaisetup.cpp
@@ -980,6 +981,7 @@ set(viewer_HEADER_FILES
     lumenaimemory.h
     lumenaicodex.h
     lumenaiclaude.h
+    lumenaivibe.h
     lumenaictl.h
     lumenaikeys.h
     lumenaisetup.h

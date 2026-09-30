@@ -43,6 +43,8 @@ public:
     /** The asynchronous Claude Code check reports here, with Claude Code's own
         reason when it gave one. */
     void signedIn(bool ok, const std::string& why = std::string());
+    /** <Lumen> Mistral Vibe's sign-in, run in a coroutine, reports here. */
+    void vibeSignedIn(bool ok, const std::string& why);
     void onOpen(const LLSD& key) override;
     void draw() override;
 

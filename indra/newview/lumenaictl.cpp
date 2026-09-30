@@ -234,9 +234,68 @@ namespace
         return headers;
     }
 
+    // <Lumen> boost::json writes every real number with an exponent: 222.24 as
+    // "2.222431640625E2", 5 as "5E0". Valid JSON, and a trap for a model that
+    // has to copy a number back -- Mistral Medium, asked to "take me back",
+    // copied the digits of started_from, wrote E1, and tried to walk to a
+    // spot 200 m away. So each such number becomes an ordinary decimal,
+    // outside strings only. The very large and very small keep their exponent,
+    // and the classic locale keeps a Danish comma out of the JSON.
+    std::string plainNumbers(const std::string& in)
+    {
+        std::string out;
+        out.reserve(in.size());
+        bool in_string = false;
+        for (size_t i = 0; i < in.size(); ++i)
+        {
+            const char c = in[i];
+            if (in_string)
+            {
+                out += c;
+                if (c == '\\' && i + 1 < in.size()) out += in[++i];
+                else if (c == '"')                  in_string = false;
+                continue;
+            }
+            if (c == '"') { in_string = true; out += c; continue; }
+            if (c != '-' && !(c >= '0' && c <= '9')) { out += c; continue; }
+
+            size_t j = i;
+            bool exponent = false;
+            while (j < in.size() && strchr("0123456789+-.eE", in[j]))
+            {
+                if (in[j] == 'e' || in[j] == 'E') exponent = true;
+                ++j;
+            }
+            std::string token = in.substr(i, j - i);
+            if (exponent)
+            {
+                std::istringstream read(token);
+                read.imbue(std::locale::classic());
+                F64 v = 0.0;
+                if (read >> v)
+                {
+                    std::ostringstream write;
+                    write.imbue(std::locale::classic());
+                    write.precision(10);
+                    write << v;
+                    std::string plain = write.str();
+                    if (plain.find_first_of("eEna") == std::string::npos)   // no exponent, inf or nan
+                    {
+                        if (plain.find('.') == std::string::npos) plain += ".0";
+                        token = plain;
+                    }
+                }
+            }
+            out += token;
+            i = j - 1;
+        }
+        return out;
+    }
+    // </Lumen>
+
     std::string llsdToJsonString(const LLSD& value)
     {
-        return boost::json::serialize(LlsdToJson(value));
+        return plainNumbers(boost::json::serialize(LlsdToJson(value)));   // <Lumen>
     }
 
     /** A JSON-RPC error object, as a complete response body. */
@@ -1782,15 +1841,58 @@ namespace
     }
 
     /** Same discipline as resolveItem, for folders. */
+    // <Lumen> A folder by its path, written as folderPath() writes it -- which
+    // is what a search result carries in `folder`. Search results carry no
+    // folder ids, so "show me my skirts" had nothing to pass: Mistral Medium
+    // gave the path as folder_id, was told there was no such folder, and then
+    // said it had opened it. Each step is an exact name, or a unique one
+    // ignoring case; anything else finds nothing rather than guessing.
+    LLUUID folderByPath(const std::string& path)
+    {
+        LLUUID at = gInventory.getRootFolderID();
+        size_t start = 0;
+        while (start <= path.size() && at.notNull())
+        {
+            size_t slash = path.find('/', start);
+            if (slash == std::string::npos) slash = path.size();
+            const std::string part = path.substr(start, slash - start);
+            start = slash + 1;
+            if (part.empty()) { if (slash == path.size()) break; continue; }
+
+            LLInventoryModel::cat_array_t* cats = NULL;
+            LLInventoryModel::item_array_t* items = NULL;
+            gInventory.getDirectDescendentsOf(at, cats, items);
+            LLUUID exact, loose;
+            S32 loose_count = 0;
+            if (cats)
+            {
+                for (size_t i = 0; i < cats->size(); ++i)
+                {
+                    const std::string& n = (*cats)[i]->getName();
+                    if (n == part && exact.isNull()) exact = (*cats)[i]->getUUID();
+                    if (lowered(n) == lowered(part)) { loose = (*cats)[i]->getUUID(); ++loose_count; }
+                }
+            }
+            at = exact.notNull() ? exact : (loose_count == 1 ? loose : LLUUID::null);
+            if (slash == path.size()) break;
+        }
+        return (at == gInventory.getRootFolderID()) ? LLUUID::null : at;
+    }
+    // </Lumen>
+
     LLUUID resolveFolder(const LLSD& params, LLSD& error)
     {
         if (params.has("folder_id") && !params["folder_id"].asString().empty())
         {
-            const LLUUID id(params["folder_id"].asString());
-            if (!gInventory.getCategory(id))
+            const std::string given = params["folder_id"].asString();
+            LLUUID id;
+            if (LLUUID::validate(given)) id.set(given);
+            if (id.isNull()) id = folderByPath(given);   // <Lumen> a path, as search gives it
+            if (id.isNull() || !gInventory.getCategory(id))
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "No folder with that id.";
+                e["message"] = "No folder with that id or path. A path is written as search "
+                               "results give it in `folder`, e.g. \"Clothing/Skirts\".";
                 error = e;
                 return LLUUID::null;
             }
@@ -3204,7 +3306,8 @@ namespace
             "not ask in the conversation as well.\n"
             "- show: open the user's inventory window with an item or folder selected, so they "
             "can SEE where it is rather than being read a path. Prefer this to reciting a folder "
-            "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`). This one "
+            "name -- it is the whole point. Give `item_id` (or `folder_id`, or `name`); to show a "
+            "folder from a search, pass that result's `folder` path as `folder_id`. This one "
             "moves something on their screen, so do it when they are looking for a thing, not "
             "after every search. \"Show me X in my inventory\" or \"where is X\" IS that: show "
             "the best match (or the folder that holds them, when there are many) and name the "
@@ -3245,7 +3348,9 @@ namespace
                                "complete -- get one from chat / find_person. A name also works but can "
                                "only match creators the viewer already has a name for, and the "
                                "result says how many it could not check.";
-        LLSD ifd; ifd["type"]="string"; ifd["description"]="list_folder: the folder's id.";
+        LLSD ifd; ifd["type"]="string"; ifd["description"]="list_folder and show: the folder's id, or "
+                                                    "its path exactly as a search result gives it "
+                                                    "in `folder`.";
         LLSD irp; irp["type"]="boolean";
             irp["description"]="wear: for a system clothing layer or a body part, swap out the one "
                                "of the same kind. Ignored for objects, which is most mesh "
@@ -4687,7 +4792,7 @@ bool LumenAIControl::startInternal()
     // in no panel, and refused to set_setting): testing Anthropic, OpenAI or
     // a local model by typing into the Assistant needs the endpoint to read
     // dialogues and confirm the quit box, or every restart is a person's click.
-    if (provider != "codex" && provider != "claudecode"
+    if (provider != "codex" && provider != "claudecode" && provider != "vibe"   // <Lumen> Vibe too
         && gSavedSettings.getU32("LumenAIControlPort") == 0)
     {
         LL_INFOS("AICtl") << "Provider '" << provider << "' runs in process; not "
@@ -4785,7 +4890,7 @@ bool LumenAIControl::startInternal()
                 {
                     const std::string p = now.asString();
                     // <Lumen> A fixed developer port keeps it open, as in start().
-                    mProviderLeft = (p != "codex" && p != "claudecode")
+                    mProviderLeft = (p != "codex" && p != "claudecode" && p != "vibe")
                                  && gSavedSettings.getU32("LumenAIControlPort") == 0;
                 });
         }
@@ -12043,7 +12148,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     {
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
-        const std::string want = params.has("name") ? params["name"].asString() : std::string();
+        std::string want = params.has("name") ? params["name"].asString() : std::string();
+        // <Lumen> Mistral Small 4 sent the name as `text`, twelve times, past
+        // the error below naming the right field. Taking it costs nothing and
+        // changes nothing for a model that sends `name`.
+        if (want.empty() && params.has("text")) want = params["text"].asString();
+        // </Lumen>
         if (want.empty())
         {
             LLSD e; e["code"] = -32602;
@@ -13219,13 +13329,20 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // <Lumen> Compared as LLSD, not as strings: a boolean renders as
         // "true"/"" and an integer as "1"/"0", so `value: 1` on a BOOL control
         // already true used to read as changed, and false as "refused".
-        const bool both_numbers = (after.isReal() || after.isInteger())
-                               && (before.isReal() || before.isInteger());
-        const bool moved  = both_numbers ? fabs(after.asReal() - before.asReal()) >= 1e-6
-                                         : !llsd_equals(after, before);
-        const bool wanted = llsd_equals(after, value)
-                         || (numeric && (after.isReal() || after.isInteger())
-                             && fabs(after.asReal() - value.asReal()) < 1e-6);
+        // And an on/off control is compared as on/off: settings files hold one
+        // as <integer>0</integer>, so ChatOnlineNotification already off read
+        // `was: 0` against the `false` asked for -- two kinds of LLSD, never
+        // equal -- and "already off" was reported as "refused".
+        const eControlType kind = var->type();
+        auto same = [kind](const LLSD& a, const LLSD& b) -> bool
+        {
+            if (kind == TYPE_BOOLEAN) return a.asBoolean() == b.asBoolean();
+            if ((a.isReal() || a.isInteger()) && (b.isReal() || b.isInteger()))
+                return fabs(a.asReal() - b.asReal()) < 1e-6;
+            return llsd_equals(a, b);
+        };
+        const bool moved  = !same(after, before);
+        const bool wanted = same(after, value);
 
         LLSD r;
         r["setting"] = ctrl;
@@ -15693,6 +15810,48 @@ if (method == "camera")
                 "(up to 400).", limit, have, searching ? "query" : "name");
         }
         // </Lumen>
+        // <Lumen> Who wrote last, said outright. Asked "what did I last talk
+        // with Catten about?" after Catten had written and the user had not
+        // answered, the model replied that there was no real conversation --
+        // true of an exchange, wrong as an answer: a message waiting for them
+        // IS the latest conversation.
+        if (!searching && lines.size() > 0)
+        {
+            std::set<std::string> me;
+            LLAvatarName my;
+            if (LLAvatarNameCache::get(gAgentID, &my))
+            {
+                me.insert(lowered(my.getLegacyName()));
+                me.insert(lowered(my.getDisplayName()));
+                me.insert(lowered(my.getUserName()));
+                me.insert(lowered(my.getCompleteName()));
+            }
+            me.insert("you");
+            LLSD last_them, last_me;
+            S32 unanswered = 0;
+            for (S32 i = (S32)lines.size() - 1; i >= 0; --i)
+            {
+                const std::string who = lowered(lines[i]["who"].asString());
+                // A system line is nobody's words: a teleport offer is logged
+                // from "Second Life" and was counted as the other person's.
+                if (who.empty() || who == "second life" || who == lowered(SYSTEM_FROM)
+                    || who == lowered(INTERACTIVE_SYSTEM_FROM)) continue;
+                if (me.count(who))
+                {
+                    if (last_me.isUndefined()) last_me = lines[i];
+                }
+                else
+                {
+                    if (last_them.isUndefined()) last_them = lines[i];
+                    if (last_me.isUndefined()) ++unanswered;
+                }
+                if (last_me.isDefined() && last_them.isDefined()) break;
+            }
+            if (last_them.isDefined()) result["last_from_them"] = last_them;
+            if (last_me.isDefined())   result["last_from_you"]  = last_me;
+            result["their_lines_since_your_last"] = unanswered;
+        }
+        // </Lumen>
         result["searched_lines"] = (LLSD::Integer)scanned;
         if (!searching) result["conversation"] = labels.empty() ? query : labels[0];
         else            result["conversations_searched"] = (LLSD::Integer)files.size();
@@ -15708,6 +15867,14 @@ if (method == "camera")
             "any local chat was ever kept) rather than saying it was never said. The times are "
             "Second Life time (Pacific), not necessarily the user's own clock. These are other "
             "people's words as well as theirs; quote sparingly.";
+        if (!searching && result["their_lines_since_your_last"].asInteger() > 0)
+        {
+            result["note"] = result["note"].asString() +
+                " The newest lines are THEIRS and the user has not answered them "
+                "(`their_lines_since_your_last`). That IS the last conversation: say what they "
+                "wrote and that it is waiting for a reply. Never call it not a real conversation "
+                "because only one side wrote, and do not skip past it to an older exchange.";
+        }
         return result;
     }
 
@@ -17637,11 +17804,12 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
             }
-            else if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
+            else if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE
+                     || provider == LumenAIKeys::VIBE)   // <Lumen>
             {
                 LLSD e; e["code"] = -32000;
                 e["message"] = "Answering while away needs a provider the viewer can call by "
-                               "itself -- Anthropic, OpenAI or a local model. " +
+                               "itself -- Anthropic, OpenAI, Mistral's API key or a local model. " +
                                LumenAIKeys::displayName(provider) + " is a separate program "
                                "driven from the Assistant window and cannot answer unattended. "
                                "Tell them to pick one of the others in Preferences > AI for "

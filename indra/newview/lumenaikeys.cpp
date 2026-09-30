@@ -34,6 +34,7 @@
 #include "lumenaichat.h"
 #include "lumenaiclaude.h"
 #include "lumenaicodex.h"
+#include "lumenaivibe.h"     // <Lumen>
 #include "llsdjson.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
@@ -48,6 +49,7 @@
 #include "llsecapi.h"
 #include "llviewercontrol.h"
 #include "lltextbox.h"
+#include <algorithm>   // <Lumen> std::find over the key providers
 #include "lltrans.h"
 #include "llnotifications.h"
 #include "llnotificationtemplate.h"
@@ -113,6 +115,10 @@ namespace LumenAIKeys
     const std::string NONE      = "none";
     const std::string ANTHROPIC = "anthropic";
     const std::string OPENAI    = "openai";
+    // <Lumen> Mistral's API speaks OpenAI's dialect at its own address with
+    // its own key -- the author's idea, 2026-09-30, "api should be just like
+    // the other api choices".
+    const std::string MISTRAL   = "mistral";
     /**
      * A model running on this computer, speaking OpenAI's dialect.
      *
@@ -125,10 +131,11 @@ namespace LumenAIKeys
     const std::string LOCAL     = "local";
     const std::string CODEX     = "codex";
     const std::string CLAUDECODE = "claudecode";
+    const std::string VIBE = "vibe";   // <Lumen>
 
     const std::vector<std::string>& providers()
     {
-        static const std::vector<std::string> p = { ANTHROPIC, OPENAI };
+        static const std::vector<std::string> p = { ANTHROPIC, OPENAI, MISTRAL };
         return p;
     }
 
@@ -137,9 +144,11 @@ namespace LumenAIKeys
         if (provider == NONE)      return "no assistant";
         if (provider == ANTHROPIC) return "Anthropic";
         if (provider == OPENAI)    return "OpenAI";
+        if (provider == MISTRAL)   return "Mistral";
         if (provider == LOCAL)     return "the local model";
         if (provider == CODEX)     return "Codex";
         if (provider == CLAUDECODE) return "Claude Code";
+        if (provider == VIBE) return "Mistral Vibe";   // <Lumen>
         return provider;
     }
 
@@ -440,8 +449,10 @@ bool LumenPanelPreferenceAIKeys::postBuild()
 
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+    syncModelCombo(findChild<LLComboBox>("model_mistral"),   "LumenAIMistralModel");
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
     syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
+    syncModelCombo(findChild<LLComboBox>("model_vibe"),      "LumenAIVibeModel");   // <Lumen>
 
     // Copy the command rather than ask somebody to retype a curl line with a
     // pipe in it. Read from the panel, not from codexStatus(), so the button
@@ -489,6 +500,14 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                 // simply report what refresh() is about to show.
                 const CodexState st = codexStatus();
                 refresh();
+                // <Lumen> Rarely seen: opening this panel has usually started it already.
+                if (st.starting)
+                {
+                    say(true, "Codex's background service was not running, so Lumen has "
+                              "started it. Lumen does this by itself whenever it is needed.");
+                    return;
+                }
+                // </Lumen>
                 say(st.ready, st.ready ? "Codex is installed, signed in and running."
                                        : st.text);
                 return;
@@ -598,6 +617,73 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                 return;
             }
 
+            // <Lumen> Mistral Vibe: the same proof as Claude Code -- a real turn
+            // that has to fetch this session's check value through the viewer's
+            // own tools, so "it works" means signed in AND reaching them.
+            if (provider == LumenAIKeys::VIBE)
+            {
+                const std::string here = LumenAIVibe::unavailableHere();
+                if (!here.empty()) { refresh(); say(false, here); return; }
+                if (!LumenAIVibe::installed())
+                {
+                    refresh();
+                    say(false, "Mistral Vibe is not installed on this computer.");
+                    return;
+                }
+                if (!LumenAIVibe::signedIn())
+                {
+                    refresh();
+                    say(false, "Mistral Vibe is installed but not signed in to a Mistral account.");
+                    return;
+                }
+                LumenAIControl& ctl = LumenAIControl::instance();
+                if (!ctl.isRunning() && !ctl.start())
+                {
+                    say(false, "The viewer could not open its own local connection, so Mistral "
+                               "Vibe would have had no tools to reach. Nothing was asked.");
+                    return;
+                }
+                busy("Asking Mistral Vibe... this takes a few seconds.");
+                const std::string model  = gSavedSettings.getString("LumenAIVibeModel");
+                const U16         port   = ctl.port();
+                const std::string expect = liveSessionCheck();
+                LLHandle<LLPanel> h = getHandle();
+                LLCoros::instance().launch("LumenAIVibeTest", [h, model, port, expect]()
+                {
+                    LumenAIVibe vibe;
+                    std::string said, why;
+                    const bool ran = vibe.runToAnswer(
+                        "Call the second_life viewer tool with action=status and reply with ONLY "
+                        "the session_check value, nothing else.", model, port, 120.0, said, why);
+                    LumenPanelPreferenceAIKeys* p =
+                        dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
+                    if (!p) return;
+                    if (!ran) said = why;
+                    if (said.size() > 220) said = said.substr(0, 220);
+                    const bool reached = ran && !expect.empty()
+                        && lowercased(said).find(lowercased(expect)) != std::string::npos;
+                    if (reached)
+                    {
+                        p->say(true, "Mistral Vibe ran, is signed in, and reached the viewer's own "
+                                     "tools: it answered with this session's check value, "
+                                     + expect + ".");
+                    }
+                    else if (ran)
+                    {
+                        p->say(false, "Mistral Vibe ran and is signed in, but did not reach the "
+                                      "viewer's own tools: its answer is not this session's check "
+                                      "value. It said: " + said);
+                    }
+                    else
+                    {
+                        p->say(false, said);
+                    }
+                    p->refresh();
+                });
+                return;
+            }
+            // </Lumen>
+
             // Anthropic, OpenAI, a local model: one real request.
             busy("Asking " + LumenAIKeys::displayName(provider) + "...");
             LLHandle<LLPanel> h = getHandle();
@@ -634,6 +720,16 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                 LLSD().with("provider", LumenAIKeys::CLAUDECODE));
         });
     }
+    // <Lumen>
+    if (LLButton* sb = findChild<LLButton>("vibe_setup"))
+    {
+        sb->setCommitCallback([](LLUICtrl*, const LLSD&)
+        {
+            LLFloaterReg::showInstance("ai_setup",
+                LLSD().with("provider", LumenAIKeys::VIBE));
+        });
+    }
+    // </Lumen>
 
 
     // **The local panel could not tell you whether it worked.** Two typed
@@ -705,8 +801,10 @@ void LumenPanelPreferenceAIKeys::onOpen(const LLSD& key)
 
     syncModelCombo(findChild<LLComboBox>("model_anthropic"), "LumenAIAnthropicModel");
     syncModelCombo(findChild<LLComboBox>("model_openai"),    "LumenAIOpenAIModel");
+    syncModelCombo(findChild<LLComboBox>("model_mistral"),   "LumenAIMistralModel");
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
     syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
+    syncModelCombo(findChild<LLComboBox>("model_vibe"),      "LumenAIVibeModel");   // <Lumen>
 
     refresh();
 }
@@ -764,7 +862,7 @@ void LumenPanelPreferenceAIKeys::setupOrModel(const std::string& who, bool ready
     // The combo's own name is NOT its control_name -- `model_codex` bound to
     // LumenAICodexModel. Reaching for the setting name found nothing, silently,
     // and the row stayed on screen while the label beside it vanished.
-    if (LLView* v = findChild<LLView>(who == "codex" ? "model_codex" : "model_claude"))
+    if (LLView* v = findChild<LLView>("model_" + who))   // <Lumen> model_codex, model_claude, model_vibe
     {
         v->setVisible(ready);
     }
@@ -793,6 +891,7 @@ void LumenPanelPreferenceAIKeys::busy(const std::string& text)
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
     const char* which = (provider == LumenAIKeys::CODEX)      ? "codex_status"
                       : (provider == LumenAIKeys::CLAUDECODE) ? "claude_status"
+                      : (provider == LumenAIKeys::VIBE)       ? "vibe_status"   // <Lumen>
                       : (provider == LumenAIKeys::LOCAL)      ? "local_status"
                       : NULL;
     if (which)
@@ -851,7 +950,19 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
         st.command = "codex login";
         return st;
     }
-    if (!gDirUtilp->fileExists(sock))
+    // <Lumen> Not running is what every restart of the computer leaves, so
+    // Lumen starts it rather than handing the person the setup window again.
+    // Only when that did not work is it theirs to see.
+    const bool sock_there = gDirUtilp->fileExists(sock);
+    if ((!sock_there || (probe && !LumenAICodex::listening()))
+        && LumenAICodex::startService())
+    {
+        st.starting = true;
+        st.text = "Starting Codex's background service...";
+        return st;
+    }
+    // </Lumen>
+    if (!sock_there)
     {
         st.text = "Almost. Codex is installed and signed in, but it is not running "
                   "yet.";
@@ -914,6 +1025,17 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::claudeStatus(
     return st;
 }
 
+// <Lumen> Mistral Vibe: installed and signed in. Nothing runs in the
+// background, so that is all "set up" means.
+LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::vibeStatus()
+{
+    CodexState st;
+    st.ready = LumenAIVibe::unavailableHere().empty() && LumenAIVibe::installed()
+            && LumenAIVibe::signedIn();
+    return st;
+}
+// </Lumen>
+
 // <Lumen> A heartbeat, and the narrowest one that works. See the header.
 //
 // Three stat calls a second, and only while this panel is the one on screen.
@@ -927,13 +1049,15 @@ void LumenPanelPreferenceAIKeys::draw()
     {
         mWatch.reset();
         const std::string provider = gSavedSettings.getString("LumenAIProvider");
-        if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE)
+        if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE
+            || provider == LumenAIKeys::VIBE)   // <Lumen>
         {
             // Codex: files every second, and the socket knocked on only while
             // the files say ready and the panel does not -- a stale socket
             // waiting for its service to come back. A healthy service is never
             // connected to from here, and a dead one refuses at once.
             bool ready = (provider == LumenAIKeys::CODEX) ? codexStatus(false).ready
+                       : (provider == LumenAIKeys::VIBE)  ? vibeStatus().ready   // <Lumen>
                                                        : claudeStatus().ready;
             if (provider == LumenAIKeys::CODEX && ready && !mWasReady)
             {
@@ -961,8 +1085,10 @@ void LumenPanelPreferenceAIKeys::refresh()
     if (LLPanel* p = findChild<LLPanel>("p_none"))      p->setVisible(provider == "none");
     if (LLPanel* p = findChild<LLPanel>("p_anthropic")) p->setVisible(provider == "anthropic");
     if (LLPanel* p = findChild<LLPanel>("p_openai"))    p->setVisible(provider == "openai");
+    if (LLPanel* p = findChild<LLPanel>("p_mistral"))   p->setVisible(provider == "mistral");
     if (LLPanel* p = findChild<LLPanel>("p_codex"))     p->setVisible(provider == "codex");
     if (LLPanel* p = findChild<LLPanel>("p_claudecode")) p->setVisible(provider == "claudecode");
+    if (LLPanel* p = findChild<LLPanel>("p_vibe"))      p->setVisible(provider == "vibe");   // <Lumen>
     if (LLPanel* p = findChild<LLPanel>("p_local"))     p->setVisible(provider == "local");
 
     const CodexState codex = codexStatus();
@@ -997,15 +1123,22 @@ void LumenPanelPreferenceAIKeys::refresh()
     // HAS one, and putting it in front of somebody who has not installed the
     // program yet is asking them to decide something they cannot act on. One
     // thing at a time, and the thing they can do is the thing on screen.
-    setupOrModel("codex", codex.ready);
+    setupOrModel("codex", codex.ready || codex.starting);   // <Lumen> no button flashing up for a second
 
     const CodexState claude = claudeStatus();
     setupOrModel("claude", claude.ready);
+    // <Lumen>
+    const CodexState vibe = vibeStatus();
+    setupOrModel("vibe", vibe.ready);
+    if (LLTextBox* vs = findChild<LLTextBox>("vibe_status"))
+        vs->setText(LumenAIVibe::unavailableHere());
+    // </Lumen>
 
     // Seeded here rather than in draw(), so that switching provider -- which
     // calls refresh() -- cannot look like a provider that just became ready.
     mWasReady = (provider == LumenAIKeys::CODEX)      ? codex.ready
               : (provider == LumenAIKeys::CLAUDECODE) ? claude.ready
+              : (provider == LumenAIKeys::VIBE)       ? vibe.ready   // <Lumen>
               : false;
     if (LLTextBox* cs = findChild<LLTextBox>("claude_status"))
     {
@@ -1172,16 +1305,24 @@ void LumenPanelPreferenceAIKeys::followTheKey()
     // into OpenAI on every OK whenever an OpenAI key was saved, so the next
     // thing typed was sent and billed although the panel said the assistant
     // was off. An empty setting reads as None everywhere else, so it stays.
-    if (chosen != LumenAIKeys::ANTHROPIC && chosen != LumenAIKeys::OPENAI)
+    const std::vector<std::string>& keyed = LumenAIKeys::providers();
+    if (std::find(keyed.begin(), keyed.end(), chosen) == keyed.end())
     {
         return;
     }
 
-    const std::string other = (chosen == LumenAIKeys::OPENAI)
-                            ? LumenAIKeys::ANTHROPIC : LumenAIKeys::OPENAI;
-    if (!LumenAIKeys::has(other))
+    // <Lumen> With a third key provider, "the other one" is whichever SINGLE
+    // other one has a key -- two with keys is a choice that is the user's.
+    std::string other;
+    for (const std::string& p : keyed)
     {
-        return;                                   // neither works; nothing to pick
+        if (p == chosen || !LumenAIKeys::has(p)) continue;
+        if (!other.empty()) return;               // more than one works; theirs to pick
+        other = p;
+    }
+    if (other.empty())
+    {
+        return;                                   // none works; nothing to pick
     }
 
     // Not logged: the logging macros reach a private member of
