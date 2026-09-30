@@ -209,9 +209,9 @@ public:
         // <Lumen> Windows only: start it with no console window. A console
         // program started by a windowed one gets a console of its own, so
         // every Claude Code turn, and Codex's server for the whole session,
-        // would put a black window on the screen. APR's "detached" does it on
-        // Windows (DETACHED_PROCESS and a hidden window, pipes kept); on POSIX
-        // it would daemonize and close the pipes, so it is ignored there.
+        // would put a black window on the screen. The child shares a console
+        // of the viewer's that has no window (see lumenWindowlessConsole), so
+        // nothing it starts can open one either. Ignored elsewhere.
         Optional<bool> hidden;
         /**
          * Up to three FileParam items: for child stdin, stdout, stderr.

@@ -30,9 +30,8 @@ namespace
     /**
      * What each step runs.
      *
-     * On Windows each goes through PowerShell instead, in a visible window
-     * so the progress and the sign-in code can be seen and pasted -- the
-     * installers are PowerShell one-liners there (`irm ... | iex`).
+     * On Windows each goes through PowerShell instead, with no window --
+     * the installers are PowerShell one-liners there (`irm ... | iex`).
      *
      * On macOS all three go through `/bin/sh -c` rather than being executed directly,
      * and the first one has to: it is a pipeline, and a pipe is a shell
@@ -49,6 +48,10 @@ namespace
         // administrator rights, and nothing else is installed first: uv, for
         // Vibe, fetches its own Python. Codex's third step is not a command
         // on Windows at all: Lumen starts its own server (run()).
+        // The two sign-ins get EMPTY input (`$null |`), as they do on the Mac:
+        // the console they would otherwise read has no window, and a program
+        // that thinks a person is at the keyboard may wait at a menu nobody
+        // can see. With nothing to read they just open the browser.
         if (provider == LumenAIKeys::VIBE)
         {
             return (step == 0)
@@ -59,7 +62,7 @@ namespace
         if (codex)
         {
             if (step == 0) return "irm https://chatgpt.com/codex/install.ps1 | iex";
-            if (step == 1) return "& \"" + LumenAICodex::cliPath() + "\" login";
+            if (step == 1) return "$null | & \"" + LumenAICodex::cliPath() + "\" login";
             return std::string();
         }
         if (step == 0) return "irm https://claude.ai/install.ps1 | iex";
@@ -67,8 +70,8 @@ namespace
         {
             const std::string cli = LumenAIClaude::cliPath();
             return cli.empty()
-                ? std::string("& \"$env:USERPROFILE\\.local\\bin\\claude.exe\" auth login")
-                : "& \"" + cli + "\" auth login";
+                ? std::string("$null | & \"$env:USERPROFILE\\.local\\bin\\claude.exe\" auth login")
+                : "$null | & \"" + cli + "\" auth login";
         }
         return std::string();
 #else
@@ -347,10 +350,14 @@ void LumenAISetupFloater::run(EStep step)
     LLProcess::Params p;
 #if LL_WINDOWS
     // <Lumen> Windows PowerShell, by its full path, with the command as one
-    // argument. Not hidden: the window shows the installer working, and a
-    // sign-in that asks for a code to be pasted has somewhere to paste it.
+    // argument, and no window -- as on the Mac, this window says what is
+    // happening and the browser does the signing in. (It was a visible
+    // PowerShell window at first; the author: "it doesn't sound all that
+    // user friendly".)
     p.executable = LumenAIWin::powershell();
+    p.hidden = true;
     p.args.add("-NoProfile");
+    p.args.add("-NonInteractive");   // a question with no window to answer it fails, not waits
     p.args.add("-ExecutionPolicy");
     p.args.add("Bypass");
     p.args.add("-Command");

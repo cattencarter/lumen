@@ -47,6 +47,10 @@
 #include <typeinfo>
 #include <utility>
 
+#if LL_WINDOWS
+bool lumenWindowlessConsole();   // <Lumen> below, with the other Windows code
+#endif
+
 /*****************************************************************************
 *   Helpers
 *****************************************************************************/
@@ -637,8 +641,11 @@ LLProcess::LLProcess(const LLSDOrParams& params):
     // the parent terminates!
 //  chkapr(apr_procattr_detach_set(procattr, mAutokill? 0 : 1));
 #if LL_WINDOWS
-    // <Lumen> See Params::hidden: no console window, pipes kept.
-    if (params.hidden)
+    // <Lumen> See Params::hidden. The child shares the viewer's own console,
+    // which has no window, so neither it nor anything IT starts can open one.
+    // Only if that console could not be made does it fall back to APR's
+    // "detached", which hides this child and not its children.
+    if (params.hidden && !lumenWindowlessConsole())
     {
         chkapr(apr_procattr_detach_set(procattr, 1));
     }
@@ -1162,6 +1169,90 @@ std::ostream& operator<<(std::ostream& out, const LLProcess::Params& params)
 #if LL_WINDOWS
 
 static std::string WindowsErrorString(const std::string& operation);
+
+// <Lumen>
+// Give the viewer a console with no window, once, so the programs Lumen
+// starts (Codex, Claude Code, Mistral Vibe, their installers) and everything
+// they start in turn share it instead of each getting a window of its own.
+//
+// Why not APR's "detached": that is DETACHED_PROCESS, so the child has no
+// console at all, and the first console program IT starts gets a brand new
+// one -- visible, and on Windows 11 opened in Windows Terminal. cmd starting
+// Vibe, PowerShell starting an installer: a window each time.
+//
+// How: a helper started with CREATE_NO_WINDOW owns a console that never has a
+// window; the viewer attaches to it and the helper is ended. The console lives
+// as long as something is attached, which is now the viewer. Ctrl+C and
+// Ctrl+Break on that console are ignored, so a child that signals its own
+// console group cannot take the viewer down with it.
+static BOOL WINAPI lumenIgnoreConsoleBreak(DWORD event)
+{
+    return (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) ? TRUE : FALSE;
+}
+
+bool lumenWindowlessConsole()
+{
+    static int state = 0;   // 0 not tried, 1 have one, -1 could not
+    if (state) return state > 0;
+
+    // A developer's visible console (ShowConsoleWindow) is fine to share.
+    if (GetConsoleWindow() != NULL)
+    {
+        state = 1;
+        return true;
+    }
+
+    wchar_t system_dir[MAX_PATH] = { 0 };
+    GetSystemDirectoryW(system_dir, MAX_PATH);
+    std::wstring cmdline = L"\"" + std::wstring(system_dir) + L"\\cmd.exe\" /d /q /k";
+
+    STARTUPINFOW si = {};
+    si.cb = (DWORD)sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(NULL, &cmdline[0], NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                        NULL, system_dir, &si, &pi))
+    {
+        LL_WARNS("LLProcess") << "Lumen: could not start the console helper ("
+                              << GetLastError() << "); children fall back to detached" << LL_ENDL;
+        state = -1;
+        return false;
+    }
+
+    // The helper's console exists from creation, but attaching can race its
+    // start-up; a few tries over half a second is plenty.
+    bool attached = false;
+    for (int i = 0; i < 25 && !attached; ++i)
+    {
+        if (AttachConsole(pi.dwProcessId))
+        {
+            attached = true;
+        }
+        else if (GetLastError() == ERROR_ACCESS_DENIED)
+        {
+            attached = true;    // already attached to a console of our own
+        }
+        else
+        {
+            Sleep(20);
+        }
+    }
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (!attached)
+    {
+        LL_WARNS("LLProcess") << "Lumen: could not attach to the console helper ("
+                              << GetLastError() << "); children fall back to detached" << LL_ENDL;
+        state = -1;
+        return false;
+    }
+    SetConsoleCtrlHandler(lumenIgnoreConsoleBreak, TRUE);
+    LL_INFOS("LLProcess") << "Lumen: children share a console with no window" << LL_ENDL;
+    state = 1;
+    return true;
+}
+// </Lumen>
 
 void LLProcess::autokill()
 {
