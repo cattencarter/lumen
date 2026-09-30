@@ -15541,7 +15541,7 @@ The assistant wants to do this:
     <form name="form">
       <ignore name="ignore"
        save_option="true"
-       text="When the assistant wants to build: rez, change, link or unlink objects"/>
+       text="When the assistant wants to build: rez, change, link, unlink or take back objects"/>
       <button
        ignore="Always allow"
        index="0"

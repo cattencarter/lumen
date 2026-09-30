@@ -112,6 +112,14 @@
 #include "llviewernetwork.h"
 #include "llfloatertools.h"   // <Lumen> is the build panel up? the selection only lives while it is
 #include "llviewermenu.h"    // <Lumen> handle_object_edit, the viewer's own Edit
+// <Lumen> The viewer's own Take, for build / take. Both are ordinary functions
+// in llviewermenu.cpp that its header does not declare; declaring them here
+// costs no line upstream.
+bool enable_take();
+bool confirm_take(const LLSD& notification, const LLSD& response,
+                  LLObjectSelectionHandle selection_handle);
+// </Lumen>
+#include "lltextbox.h"       // <Lumen> a script window's compile result, for read_scripts
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
 #include "llfloatersnapshot.h" // <Lumen> close_window: the Snapshot layer
@@ -206,6 +214,10 @@ namespace
         std::string mName;          // lowercased; the region may add a number
         F64         mUntil;
         F64         mLastAsk = 0.0;
+        // <Lumen> The scripts already listed when it was added. One of those
+        // with the same name is not the new one arriving -- taken for it,
+        // new_script opened the OLD script and wrote `text` into that.
+        std::set<LLUUID> mBefore;
     };
     std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
 
@@ -222,12 +234,147 @@ namespace
      */
     std::map<std::string, std::string> sAssistantScriptText;
 
+    // new_script opening and writing its own script in one call: open_script
+    // leaves the window it opened here, and edit_script writes into the window
+    // named here rather than choosing one -- two windows may share a title.
+    LLHandle<LLFloater> sOpenedScriptWindow;
+    LLFloater*          sWriteInto = NULL;
+    // Set only for the one nested call, and cleared however it ends: a stale
+    // window pointer left here would be written into by the next edit_script.
+    struct WriteIntoScope
+    {
+        explicit WriteIntoScope(LLFloater* f) { sWriteInto = f; }
+        ~WriteIntoScope() { sWriteInto = NULL; }
+    };
+
+    /**
+     * new_script's own progress, by the call's fingerprint. The script is made
+     * on the first call; the same call again -- the socket or the Assistant
+     * waiting for the region -- carries on from here (it arrives, it opens,
+     * `text` goes in) instead of making a second one.
+     */
+    struct NewScriptJob
+    {
+        LLUUID              object;
+        std::string         name;
+        F64                 until = 0.0;
+        bool                opened = false;
+        LLHandle<LLFloater> window;
+    };
+    std::map<std::string, NewScriptJob> sNewScripts;
+    const F64 NEW_SCRIPT_WAIT = 10.0;
+    // Which prims new_script put a script into, and when, so a region slow to
+    // list it is not reported as an object with no scripts at all.
+    std::map<LLUUID, F64> sScriptAddedTo;
+    // How long a call waits for an object's contents to come from the region
+    // before answering with what it has.
+    const F64 CONTENTS_WAIT = 10.0;
+
     void forgetScriptWatch(const LLUUID& id)
     {
         std::map<LLUUID, ScriptArrivalWatch*>::iterator it = sScriptWatches.find(id);
         if (it == sScriptWatches.end()) return;
         delete it->second;          // the base destructor unregisters it
         sScriptWatches.erase(it);
+    }
+
+    /**
+     * A script new_script just added: true once it shows in `obj`'s contents
+     * (or the watch has run out, or there was none), asking the region again
+     * meanwhile -- the fetch needs asking, see ScriptArrivalWatch.
+     */
+    bool scriptWatchSettled(LLViewerObject* obj)
+    {
+        std::map<LLUUID, ScriptArrivalWatch*>::iterator sw = sScriptWatches.find(obj->getID());
+        if (sw == sScriptWatches.end()) return true;
+        if (obj->isInventoryPending()) return false;
+        LLInventoryObject::object_list_t have;
+        obj->getInventoryContents(have);
+        bool arrived = false;
+        for (LLInventoryObject::object_list_t::const_iterator h = have.begin();
+             h != have.end() && !arrived; ++h)
+        {
+            std::string lname = (*h) ? (*h)->getName() : std::string();
+            LLStringUtil::toLower(lname);
+            arrived = *h && (*h)->getType() == LLAssetType::AT_LSL_TEXT
+                   && lname.rfind(sw->second->mName, 0) == 0
+                   && !sw->second->mBefore.count((*h)->getUUID());
+        }
+        const F64 now = LLTimer::getTotalSeconds();
+        if (arrived || now > sw->second->mUntil)
+        {
+            forgetScriptWatch(obj->getID());
+            return true;
+        }
+        if (now - sw->second->mLastAsk > 1.0)
+        {
+            sw->second->mLastAsk = now;
+            obj->dirtyInventory();       // a listener, so this clears
+            obj->requestInventory();     // and this really fetches
+        }
+        return false;
+    }
+
+    /**
+     * For a prim whose contents list came back EMPTY: true while they are
+     * still to come -- being fetched, marked stale, or never fetched at all --
+     * asking for them meanwhile; false once the region has answered and the
+     * prim really holds nothing. A prim nobody has asked about is neither
+     * pending nor dirty (mInventoryDirty starts false), so only the list's own
+     * root tells the two apart: every answer carries one, an empty answer its
+     * "Contents". Asked at most once a second, because a fetch that fails
+     * leaves the prim unfetched and a settling call comes back four times a
+     * second.
+     */
+    std::map<LLUUID, F64> sContentsAsked;
+    bool contentsStillToCome(LLViewerObject* obj)
+    {
+        if (obj->isInventoryPending()) return true;
+        if (!obj->isInventoryDirty() && obj->getInventoryRoot()) return false;
+        const F64 now = LLTimer::getTotalSeconds();
+        if (sContentsAsked.size() > 256) sContentsAsked.clear();
+        F64& last = sContentsAsked[obj->getID()];
+        if (now - last > 1.0)
+        {
+            last = now;
+            obj->requestInventory();
+        }
+        return true;
+    }
+
+    /**
+     * The assistant's own script windows for prims about to leave the world,
+     * closed without their "Save Changes?" -- see sAssistantScriptText. Only a
+     * window still holding exactly what the assistant wrote; one the person
+     * typed into is left alone. For remove and take, called before the object
+     * goes, while its prims can still be named.
+     */
+    S32 closeAssistantScriptWindows(const std::set<LLUUID>& going)
+    {
+        std::vector<LLFloater*> to_close;
+        // The GROUP name: both script windows are registered under
+        // "preview_script", and a lookup by "preview_scriptedit" is empty.
+        for (LLFloater* f : LLFloaterReg::getFloaterList("preview_script"))
+        {
+            LLLiveLSLEditor* le = dynamic_cast<LLLiveLSLEditor*>(f);
+            const std::string item = f->getKey()["itemid"].asString();
+            std::map<std::string, std::string>::iterator w = sAssistantScriptText.find(item);
+            LLScriptEditor* sed = le ? le->getEditor() : NULL;
+            LL_INFOS("AICtl") << "closing: script window " << item << " in "
+                              << f->getKey()["taskid"].asString()
+                              << " live=" << (le != NULL)
+                              << " going=" << going.count(f->getKey()["taskid"].asUUID())
+                              << " ours=" << (w != sAssistantScriptText.end())
+                              << " same=" << (w != sAssistantScriptText.end() && sed
+                                              && sed->getText() == w->second) << LL_ENDL;
+            if (!le || !going.count(f->getKey()["taskid"].asUUID())) continue;
+            if (w == sAssistantScriptText.end() || !sed || sed->getText() != w->second) continue;
+            sed->makePristine();
+            sAssistantScriptText.erase(w);
+            to_close.push_back(f);
+        }
+        for (LLFloater* f : to_close) f->closeFloater();
+        return (S32)to_close.size();
     }
 }
 // </Lumen>
@@ -418,10 +565,12 @@ namespace
                 const std::string body = input.asString();
                 std::string reply;
                 LLUUID asking;   // <Lumen>
+                F64 settle = 0.0;   // <Lumen>
                 {
                     FromSocketScope from_socket;   // <Lumen>
                     reply = LumenAIControl::instance().handleRequest(body);
                     asking = LumenAIControl::instance().takeWaitingAsk();   // <Lumen>
+                    settle = LumenAIControl::instance().takeSettle();       // <Lumen>
                 }
 
                 // <Lumen> The viewer is asking the user whether to go ahead.
@@ -432,6 +581,14 @@ namespace
                 if (asking.notNull())
                 {
                     LumenAIControl::instance().holdForAnswer(response, body, reply, asking);
+                    return;
+                }
+                // And an answer a round trip away is held the same way, and the
+                // call made again until it lands, rather than answering "ask
+                // again in a second" for the caller to poll.
+                if (settle > 0.0)
+                {
+                    LumenAIControl::instance().holdToSettle(response, body, reply, settle);
                     return;
                 }
                 // </Lumen>
@@ -779,6 +936,9 @@ namespace
         }
         sApprovedHow.clear();
     }
+    // How often a reply held for the REGION is tried again. A round trip is
+    // usually well under a second, so this is a few tries, not a busy loop.
+    const F64 SETTLE_RETRY = 0.25;
 }
 
 bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
@@ -1017,6 +1177,32 @@ void LumenAIControl::holdForAnswer(LLHTTPNode::ResponsePtr response, const std::
     mHeld.push_back(held);
 }
 
+F64 LumenAIControl::takeSettle()
+{
+    const F64 seconds = mSettle;
+    mSettle = 0.0;
+    return seconds;
+}
+
+void LumenAIControl::holdToSettle(LLHTTPNode::ResponsePtr response, const std::string& body,
+                                  const std::string& reply, F64 seconds)
+{
+    // Inside the chain's own processing, as for holdForAnswer.
+    if (mPump)
+    {
+        mPump->setTimeoutSeconds((F32)(seconds + 30.0));
+    }
+    const F64 now = LLTimer::getTotalSeconds();
+    HeldReply held;
+    held.response      = response;
+    held.body          = body;
+    held.waiting_reply = reply;
+    held.since         = now;
+    held.settle_until  = now + seconds;
+    held.next_try      = now + SETTLE_RETRY;
+    mHeld.push_back(held);
+}
+
 void LumenAIControl::serviceHeldReplies()
 {
     if (mHeld.empty()) return;
@@ -1025,6 +1211,14 @@ void LumenAIControl::serviceHeldReplies()
     std::vector<HeldReply> keep, ready;
     for (HeldReply& h : mHeld)
     {
+        // <Lumen> Held for the region rather than the user: tried again at
+        // its own pace, below.
+        if (h.settle_until > 0.0)
+        {
+            if (now < h.next_try) keep.push_back(h);
+            else ready.push_back(h);
+            continue;
+        }
         if (askPending(h.ask_id) && now - h.since < ASK_HOLD) keep.push_back(h);
         else ready.push_back(h);
     }
@@ -1032,6 +1226,34 @@ void LumenAIControl::serviceHeldReplies()
 
     for (HeldReply& h : ready)
     {
+        // <Lumen> The same call again; it carries on from where the last one
+        // stopped. Still settling and still in time, it waits once more.
+        if (h.settle_until > 0.0)
+        {
+            std::string again;
+            LLUUID asking;
+            F64 settle = 0.0;
+            {
+                FromSocketScope from_socket;
+                again = handleRequest(h.body);
+                asking = takeWaitingAsk();
+                settle = takeSettle();
+            }
+            if (asking.isNull() && settle > 0.0 && now < h.settle_until)
+            {
+                h.waiting_reply = again;
+                h.next_try = now + SETTLE_RETRY;
+                mHeld.push_back(h);
+                continue;
+            }
+            // Done, out of time, or it went on to ask the user -- whose
+            // "waiting" reply tells the caller to call again, which is the
+            // right answer from here: this chain's clock was not moved for a
+            // person's fifty seconds.
+            h.response->extendedResult(HTTP_OK, again, jsonHeaders());
+            continue;
+        }
+        // </Lumen>
         std::string reply = h.waiting_reply;
         bool answered = false;
         for (const auto& kv : mAsks)
@@ -1048,6 +1270,21 @@ void LumenAIControl::serviceHeldReplies()
             // Asking again inside the same call would be a new question with
             // nobody holding for it; it is answered "waiting" like any other.
             takeWaitingAsk();
+            // <Lumen> A Yes that goes on to wait for the region -- a new
+            // script being listed, an object's details -- waits here too, but
+            // only inside the time this hold began with, so the caller's own
+            // sixty seconds are not overrun.
+            const F64 settle = takeSettle();
+            const F64 until = llmin(now + settle, h.since + ASK_HOLD + 5.0);
+            if (settle > 0.0 && until > now)
+            {
+                h.waiting_reply = reply;
+                h.settle_until  = until;
+                h.next_try      = now + SETTLE_RETRY;
+                mHeld.push_back(h);
+                continue;
+            }
+            // </Lumen>
         }
         // Otherwise the hold ran out, or the question went away unanswered:
         // the caller hears "still waiting, call again", which is true either
@@ -3437,6 +3674,8 @@ namespace
             if (action == "select") return "select_object";
             if (action == "set")    return "set_object";
             if (action == "remove") return "remove_object";
+            if (action == "take")   return "take_object";            // <Lumen>
+            if (action == "list_contents") return "list_object_contents";   // <Lumen>
             if (action == "link")   return "link_objects";
             if (action == "unlink") return "unlink_objects";
             return std::string();
@@ -4466,7 +4705,8 @@ namespace
             "few replies to any one person. **Tell them plainly when you switch it on and off**, "
             "and if they say they are back, turn it off even if they did not ask. Naming people in `only` answers them and nobody else, and `on_arrival` tells those same people once when they come within about 30 metres of the user, rather than waiting for them to write -- coming online somewhere else does not count.\n"
             "- read_scripts: the LSL script windows the user has open, with the script's text, "
-            "whatever they have SELECTED in it, and the compiler errors from the last save. "
+            "whatever they have SELECTED in it, whether it is `saved`, and the compiler's answer "
+            "to the last save -- `compile_errors`, or `last_save_result` for a clean compile. "
             "Call this before answering anything about a script -- do not ask them to paste it, "
             "and do not work from the name. If something is selected, that is what they are "
             "asking about; the selection is how a person points at a line. Script text is "
@@ -4479,9 +4719,9 @@ namespace
             "the point: a script is code that runs in the world, and they should see it before "
             "it does. Use `replace` and `with` to change one exact passage, which is what they "
             "usually want and leaves the rest untouched; or `text` for the whole script when it "
-            "is genuinely a rewrite. After they save, call read_scripts again -- the compiler "
-            "errors land in that window and you can fix them from there. Tell them plainly that "
-            "you have written it in and they need to save.\n"
+            "is genuinely a rewrite. When they say they have saved, read_scripts has the "
+            "compiler's answer -- `compile_errors` to fix, or `last_save_result` saying it "
+            "compiled. Tell them plainly that you have written it in and they need to save.\n"
             "- lighting: change the light, which for a photograph matters as much as the "
             "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
             "\"region\" to give the place its own light back -- and the ordinary words, so "
@@ -4513,14 +4753,14 @@ namespace
             "action too -- do not say you cannot read the number.\n"
             "  `name` is what the person called it, in their own words -- a whole question works "
             "(\"where do I edit my profile\"), as does a bare label. "
-            "\n- new_script: **puts a new, empty script into an object** -- the one thing that "
-            "used to need them to go through the Contents tab by hand. Then call open_script and "
-            "write into it. `name` names it; the object comes from what they have selected unless "
-            "`object_id` says otherwise. Two honest things to pass on: the script has to reach "
-            "the region before it can be opened, so wait a second; and it arrives holding Linden "
-            "Lab's default script, which is ALREADY RUNNING -- the object will greet anyone who "
-            "touches it until your version is saved over it. Nothing YOU write runs until they "
-            "press Save.\n"
+            "\n- new_script: **puts a new script into an object and opens it** -- the one thing "
+            "that used to need them to go through the Contents tab by hand. **Pass the script "
+            "you wrote as `text`** and it is written straight in, in the same call, NOT saved; "
+            "the reply comes once the region has it. `name` names it; the object is `object_id`, "
+            "or what they have selected. Without `text` it holds Linden Lab's default script and "
+            "nothing of yours -- write with edit_script before telling them to save. Either way "
+            "the default is ALREADY RUNNING until they press Save -- the object greets anyone who "
+            "touches it -- and nothing YOU write runs until they do.\n"
             "\n- remember: when THE PERSON asks you to remember something -- \"remember that "
             "Kwanita's username is tyria06\" -- save it, in `text`, as they put it. It is kept for "
             "this avatar and given back to you with every message from then on. Then tell them "
@@ -4545,8 +4785,8 @@ namespace
             "have to find and open it first. Leave `object_id` out and it uses what they have "
             "selected; `name` picks one when there are several, and without it the reply lists "
             "every script in the linkset with the link each sits in. Fetching an object's "
-            "contents is a round trip, so the first call may answer `pending` -- ask again in a "
-            "second. It refuses plainly when the object is no-modify. **It does NOT save.** "
+            "contents is a round trip; the reply waits for it. It refuses plainly when the object "
+            "is no-modify. **It does NOT save.** "
             "Opening, reading with read_scripts and writing with edit_script are all yours; "
             "pressing Save is theirs, and nothing compiles or runs until they do. Say what you "
             "changed and let them read it.\n"
@@ -4566,7 +4806,7 @@ namespace
             "\"this face\" mean. To find an object by its NAME, use movement / look_nearby with "
             "`find` first and pass the id it returns -- never ask the user to click something so "
             "you can see it, because movement / look_nearby names what is around them and "
-            "build / select selects by id. Link 1 is the root and the numbering is the one scripts use, "
+            "every action that acts on an object takes that id. Link 1 is the root and the numbering is the one scripts use, "
             "so it cross-references straight into LSL: `llSetLinkAlpha(4, 0, 2)` is link 4, "
             "face 2, and this tells you what those are.\n"
             "\n- open_window: **when they ask you to OPEN something, open it.** \"Can you open my "
@@ -4643,8 +4883,10 @@ namespace
             vwi["description"]="edit_script: what to put there instead.";
         LLSD vtx; vtx["type"]="string";
             vtx["description"]="edit_script: the whole new script, when replacing a passage "
-                               "will not do. Overwrites everything. remember: what to remember, as "
-                               "the person put it. forget: its number from recall, or words from it.";
+                               "will not do. Overwrites everything. new_script: the script to "
+                               "write into it straight away, not saved. remember: what to "
+                               "remember, as the person put it. forget: its number from recall, "
+                               "or words from it.";
         view_props["replace"]=vrp; view_props["with"]=vwi; view_props["text"]=vtx;
         LLSD von; von["type"]="boolean";
             von["description"]="answer_while_away: true to start answering for them, false to stop.";
@@ -4856,7 +5098,7 @@ namespace
         // rather than letting the simulator reject it and leaving the assistant
         // to guess why.
         static const char* const build_actions[] =
-            { "rez", "select", "set", "remove", "link", "unlink" };
+            { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink" };
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -4864,33 +5106,40 @@ namespace
             "- rez: put a new prim on the ground in front of the user. `shape` chooses what "
             "(box, sphere, cylinder, cone, torus, prism; box if you do not say). `distance` is "
             "how far in front, in metres, default 2. `size` makes it that size (as for set); "
-            "`item` or `item_id` rezzes an object from inventory instead, at its own size.\n"
-            "- select: point the other actions at an object, by `object_id` from look_nearby "
-            "(an action of the **movement** tool -- give it `find` with the object's name) or "
-            "viewer / inspect_object. **Everything below works on the selection**, and until this existed "
-            "the only way to select anything was for the USER to click it -- which is the "
-            "interface barrier this project exists to remove. **A selection lasts only for this "
-            "call** unless `edit: true` also opens the build tools on it, which is what somebody "
-            "means by \"edit that\" -- with them open, `add: true` adds a second and a third for "
-            "the user to see. To link things already in the world, do not select them: pass "
-            "their ids to link as `object_ids`.\n"
-            "- set: change what is selected -- `name`, `description`, `size` (metres: one number "
+            "`item` or `item_id` rezzes an object from inventory instead, at its own size. A new "
+            "prim is named after its shape (\"Box\") once it arrives, so look_nearby can find it "
+            "by that word.\n"
+            "- set: change an object -- `name`, `description`, `size` (metres: one number "
             "for a cube, or three for x/y/z), `colour` (three numbers 0-1) or `colour_name` (a "
-            "name like \"red\"), `position` and `rotation`.\n"
-            "- remove: deletes it to the Trash, where it can be recovered. Taking it back into "
-            "inventory is not available yet, and `take: true` is refused.\n"
-            "\n"
-            "`set` and `remove` also accept `object_id` directly and select it for you, so "
-            "\"delete that\" is one call and not two. With no object_id and nothing selected "
-            "they act on the newest prim this assistant rezzed, so \"rez a box and make it red\" "
-            "is rez then set. An object the user may not modify is refused. **Never ask the user "
-            "to click an object to select it** -- find it with movement / look_nearby and `find`, "
-            "then pass its id.\n"
+            "name like \"red\"), `position` and `rotation`. Refused for an object the user may "
+            "not modify.\n"
+            "- remove: deletes it to the Trash, where it can be recovered.\n"
+            "- take: takes it back into the user's inventory, as right-click > Take does -- into "
+            "the folder it was rezzed from, or Objects. **That is how they keep a no-copy "
+            "object**; remove would put it in the Trash. \"Pick it up\" is this.\n"
+            "- list_contents: what is INSIDE an object -- every item in its contents, in every "
+            "link, with its type, what the user may do with it and its item id. It only reads; "
+            "nothing is copied or moved. \"What is in this box?\" is this. Scripts inside are "
+            "opened with viewer / open_script.\n"
+            "- select: open the build tools on an object for the user to see -- what somebody "
+            "means by \"edit that\" -- with its `object_id` and `edit: true`; with them open, "
+            "`add: true` adds a second and a third. **It is not how to aim the other actions**: "
+            "without `edit: true` the selection is gone by your next call.\n"
             "- link / unlink: join objects into one, or take one apart. **Right after rezzing, "
             "just call link with no arguments** -- it joins the prims this assistant made in "
             "this build, and says so if some have not arrived yet. Otherwise pass `object_ids`. "
             "Linking needs at least two, all the user's to modify, with one owner and in one "
             "region.\n"
+            "\n"
+            "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
+            "object that is already there** -- from movement / look_nearby (give it `find` with "
+            "the object's name) or viewer / inspect_object -- so \"delete that\" is one call. "
+            "With no object_id they act on what the user has selected; set, remove and take, "
+            "with nothing selected, act on the newest prim this assistant rezzed, so \"rez a box "
+            "and make it red\" is rez then set -- and after a `select` they refuse that rather "
+            "than guess. remove and take act only on the user's own objects. **Never ask the "
+            "user to click an object to select it** -- find it with movement / look_nearby and "
+            "`find`, then pass its id.\n"
             "\n"
             "**This is the one group that changes the world for everybody**, so it refuses "
             "rather than guesses: on land where the user may not build it says so and does "
@@ -4942,23 +5191,25 @@ namespace
             LLSD bro; bro["type"]="array"; bro["items"]=num_items;
                 bro["description"]="set: rotation in degrees, as x, y, z.";
             LLSD btk; btk["type"]="boolean";
-                btk["description"]="remove: taking an object back into inventory is not built "
-                                   "yet, so true is refused -- say so rather than trying it.";
+                btk["description"]="remove: not how to take something back -- that is the "
+                                   "`take` action, and remove with this true is refused.";
             build_props["shape"]=bsh;   build_props["distance"]=bds;
             build_props["name"]=bnm;    build_props["description"]=bde;
             build_props["size"]=bsz;    build_props["colour"]=bco;
             build_props["colour_name"]=bcn;
             build_props["position"]=bpo; build_props["rotation"]=bro;
             LLSD bid; bid["type"]="string";
-                bid["description"]="select, set, remove: the object to act on, as an object_id "
-                                   "from movement / look_nearby or viewer / inspect_object. "
-                                   "Without it set and remove work on what is selected, or, "
-                                   "with nothing selected, on the newest prim this assistant "
-                                   "rezzed.";
+                bid["description"]="set, remove, take, list_contents, select: the object to act "
+                                   "on, as an object_id from movement / look_nearby or viewer / "
+                                   "inspect_object. Pass it whenever the object already exists. "
+                                   "Without it they work on what the user has selected, or -- "
+                                   "set, remove and take -- with nothing selected, on the newest "
+                                   "prim this assistant rezzed.";
             LLSD bad; bad["type"]="boolean";
-                bad["description"]="select: true adds to the selection instead of replacing it. "
-                                   "It lasts past this call only with `edit: true`; to link "
-                                   "objects, pass their ids to link as `object_ids` instead.";
+                bad["description"]="select: true adds to the selection instead of replacing it, "
+                                   "for the user to see in the build tools -- use it with `edit: "
+                                   "true`. To link objects, pass their ids to link as "
+                                   "`object_ids` instead.";
             LLSD bed; bed["type"]="boolean";
                 bed["description"]="select: true also opens the build tools on it, which is what "
                                    "a person means by \"edit that\".";
@@ -5632,6 +5883,7 @@ std::string LumenAIControl::handleRequest(const std::string& body)
 {
     mWaitingAsk.setNull();   // <Lumen> only THIS request's question may hold its reply
     sApprovedHow.clear();    // <Lumen> and only its own answer is reported as `approved`
+    mSettle = 0.0;           // <Lumen> nor any request's wait but its own
 
     boost::json::value parsed;
     try
@@ -6055,6 +6307,21 @@ namespace
     }
 }
 
+// <Lumen> The prims this assistant named after their shape as they arrived
+// (see matchArrivedRezzes). The region's own properties reply to the creation
+// still says "Object", and it can land after the new name has gone out -- so
+// that one stale reply is not allowed to put "Object" back in the labels
+// look_nearby searches.
+namespace
+{
+    std::unordered_map<LLUUID, std::string>& namedOnArrival()
+    {
+        static std::unordered_map<LLUUID, std::string> named;
+        return named;
+    }
+}
+// </Lumen>
+
 bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& name,
                                     const std::string& desc)
 {
@@ -6065,6 +6332,16 @@ bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& 
         return false;
     }
     LumenAIControl& self = LumenAIControl::instance();
+
+    // <Lumen> See namedOnArrival: any OTHER name is a real rename, and wins.
+    std::string heard = name;
+    std::unordered_map<LLUUID, std::string>::iterator ours = namedOnArrival().find(object_id);
+    if (ours != namedOnArrival().end())
+    {
+        if (name == "Object") heard = ours->second;
+        else namedOnArrival().erase(ours);
+    }
+    // </Lumen>
 
     // Bounded, but by forgetting what has LEFT rather than by starting over.
     // The old cap wiped everything at 2,000 -- fewer than one busy region --
@@ -6082,7 +6359,7 @@ bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& 
         }
     }
     ObjectLabel& label = self.mObjectLabels[object_id];
-    label.name = name;
+    label.name = heard;   // <Lumen/>
     label.desc = desc;
     self.mNameGaveUp.erase(object_id);
     return self.mNameAsked.erase(object_id) > 0;
@@ -7209,6 +7486,19 @@ static const LLInventoryItem* scriptWindowItem(LLFloater* f)
     return gInventory.getItem(key.asUUID());
 }
 
+// <Lumen> What a script window says about its last save, when that is not an
+// error: a clean compile writes "Compile successful!" and "Save complete."
+// into the error list's comment box, not into its rows
+// (llpreviewscript.cpp, callbackLSLCompileSucceeded), and Save clears both
+// first. "" when there is nothing: never saved here, or saved and not yet
+// answered.
+static std::string scriptSaveResult(LLFloater* f)
+{
+    LLScrollListCtrl* list = f ? f->findChild<LLScrollListCtrl>("lsl errors") : NULL;
+    LLTextBox* comment = list ? list->findChild<LLTextBox>("comment_text") : NULL;
+    return comment ? comment->getText() : std::string();
+}
+
 // <Lumen> Why a script window cannot take a write, in plain words, or "" when
 // it can. Writing into one that cannot was reported as written: text pasted
 // over "You are not allowed to view this script" with a Save that stays greyed
@@ -7228,7 +7518,7 @@ static std::string scriptWindowRefusal(LLFloater* f)
         if (status != LLPreview::PREVIEW_ASSET_LOADED)
         {
             return "That script is still loading from Second Life. Anything written now would "
-                   "be overwritten the moment it arrives. Try again in a second or two.";
+                   "be overwritten the moment it arrives; edit_script waits for it to load.";
         }
     }
     const LLInventoryItem* item = scriptWindowItem(f);
@@ -8917,6 +9207,7 @@ namespace
         bool       prim;
         U32        build;
         std::unordered_set<LLUUID> there_before;
+        std::string name;   // <Lumen> a new prim's name once it arrives; "" keeps its own
     };
     struct RecentRez
     {
@@ -8998,12 +9289,42 @@ namespace
             if (sRecentRez.size() > 64) sRecentRez.erase(sRecentRez.begin());
             LL_INFOS("AICtl") << "rez: " << id << " arrived; " << sRecentRez.size()
                               << " remembered" << LL_ENDL;
+            // <Lumen> A new prim is called "Object" by the simulator, like
+            // every other, so "the cube" could not be found again: look_nearby
+            // with find "cube" answered nothing beside it, and a model told the
+            // user it could not script the cube (Codex, 2026-09-30). So it is
+            // named after its shape as it arrives -- the same ObjectName
+            // message the build tools' Name field sends, by local id, as the
+            // viewer's own arrival code sends its permissions
+            // (FSCommon::applyDefaultBuildPreferences). Only our own new prim,
+            // full permission and just made; an object rezzed from inventory
+            // keeps its name.
+            if (best->prim && !best->name.empty() && o->permModify() && o->getRegion())
+            {
+                LLMessageSystem* msg = gMessageSystem;
+                msg->newMessageFast(_PREHASH_ObjectName);
+                msg->nextBlockFast(_PREHASH_AgentData);
+                msg->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+                msg->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+                msg->nextBlockFast(_PREHASH_ObjectData);
+                msg->addU32Fast(_PREHASH_LocalID, o->getLocalID());
+                msg->addStringFast(_PREHASH_Name, best->name);
+                msg->sendReliable(o->getRegion()->getHost());
+                // The label first, THEN the guard: noteObjectName forgets the
+                // guard on hearing any name but "Object", this one included.
+                LumenAIControl::noteObjectName(id, best->name, std::string());
+                if (namedOnArrival().size() > 64) namedOnArrival().clear();
+                namedOnArrival()[id] = best->name;
+                LL_INFOS("AICtl") << "rez: named " << id << " \"" << best->name << "\"" << LL_ENDL;
+            }
+            // </Lumen>
             sPendingRez.erase(best);
         }
     }
 
-    // Every rez sent, at `target` in the agent's region.
-    void expectRez(const LLVector3& target, bool prim)
+    // Every rez sent, at `target` in the agent's region. <Lumen> `name`, for a
+    // new prim, is what it is called once it arrives.
+    void expectRez(const LLVector3& target, bool prim, const std::string& name = std::string())
     {
         const F64 now = LLTimer::getElapsedSeconds();
         if (now - sLastRezSent > REZ_BUILD_GAP) ++sRezBuild;
@@ -9015,6 +9336,7 @@ namespace
         p.sent  = now;
         p.prim  = prim;
         p.build = sRezBuild;
+        p.name  = name;
         const S32 count = gObjectList.getNumObjects();
         for (S32 i = 0; i < count; ++i)
         {
@@ -9111,6 +9433,79 @@ namespace
         }
         return LLUUID::null;
     }
+
+    // <Lumen> A build / take waiting for the region, by the call's fingerprint.
+    //
+    // The viewer's own Take reads the selection's PROPERTIES -- permissions,
+    // the folder the object came from -- and they arrive a round trip after
+    // the object is selected. Holding the selection handle is what keeps the
+    // selection alive meanwhile: the viewer drops a selection nobody else
+    // holds, every frame (LLViewerWindow -> LLSelectMgr::deselectUnused), which
+    // is the whole reason a selection "lasts only for this call".
+    struct PendingTake
+    {
+        LLObjectSelectionHandle sel;
+        std::set<LLUUID>        roots;
+        F64                     until = 0.0;
+    };
+    std::map<std::string, PendingTake> sPendingTakes;
+    const F64 TAKE_WAIT = 10.0;
+    bool sTakeSweeping = false;
+
+    // One nobody came back for lets go of its selection by itself.
+    void sweepPendingTakes()
+    {
+        if (sTakeSweeping) return;
+        sTakeSweeping = true;
+        LLEventPumps::instance().obtain("mainloop").listen("LumenAIControlTakeSweep",
+            [](const LLSD&)
+            {
+                const F64 now = LLTimer::getTotalSeconds();
+                for (auto it = sPendingTakes.begin(); it != sPendingTakes.end(); )
+                {
+                    if (now > it->second.until + 5.0) it = sPendingTakes.erase(it);
+                    else ++it;
+                }
+                if (sPendingTakes.empty())
+                {
+                    LLEventPumps::instance().obtain("mainloop")
+                        .stopListening("LumenAIControlTakeSweep");
+                    sTakeSweeping = false;
+                }
+                return false;
+            });
+    }
+
+    // Where the viewer's own Take puts it (handle_take, llviewermenu.cpp): the
+    // folder it was rezzed from, when every object agrees on one that still
+    // exists and is not in the Trash or the Library; otherwise Objects.
+    LLUUID takeFolderFor(LLObjectSelectionHandle sel)
+    {
+        LLUUID folder;
+        for (LLObjectSelection::root_iterator it = sel->root_begin(); it != sel->root_end(); ++it)
+        {
+            const LLUUID& from = (*it)->mFolderID;
+            if (from.isNull()) continue;
+            if (folder.isNull()) folder = from;
+            else if (folder != from) { folder.setNull(); break; }
+        }
+        if (folder.notNull())
+        {
+            const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+            if (!gInventory.getCategory(folder)
+                || folder == trash || gInventory.isObjectDescendentOf(folder, trash)
+                || gInventory.isObjectDescendentOf(folder, gInventory.getLibraryRootFolderID()))
+            {
+                folder.setNull();
+            }
+        }
+        if (folder.isNull())
+        {
+            folder = gInventory.findCategoryUUIDForType(LLFolderType::FT_OBJECT);
+        }
+        return folder;
+    }
+    // </Lumen>
 
     // RLV's edit gate, as the viewer's own click applies it
     // (lltoolselect.cpp, handleObjectSelection: canEdit and @fartouch) and as
@@ -13234,6 +13629,169 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
 
+        // <Lumen> One call, not four. The script is made on the first call and
+        // the reply waits (see mSettle) while the region lists it, it is
+        // opened, and `text` -- when given -- is written in: the same call
+        // made again carries on from here rather than making a second script.
+        // It used to be new_script, "wait a second", open_script, "ask again
+        // in a second or two", edit_script -- and Codex turned the waits into
+        // sleeps while Small 4 stopped halfway and had the default saved.
+        const std::string job_key = fingerprintOf(method, params);
+        const F64 now = LLTimer::getTotalSeconds();
+        const std::string text = params.has("text") ? params["text"].asString() : std::string();
+        std::map<std::string, NewScriptJob>::iterator job = sNewScripts.find(job_key);
+        if (job != sNewScripts.end() && now > job->second.until + 5.0)
+        {
+            sNewScripts.erase(job);   // nobody came back for it; this is a new request
+            job = sNewScripts.end();
+        }
+        // ---- carried on by the same call again, until it is done ---------
+        auto carryOn = [&](std::map<std::string, NewScriptJob>::iterator at) -> LLSD
+        {
+            NewScriptJob& j = at->second;
+            const bool out_of_time = now > j.until;
+            LLSD r;
+            r["created"] = j.name;
+            r["in_object"] = j.object;
+            // Still waiting on the region: the same call comes back in a moment.
+            // A caller that does not hold its reply reads this note.
+            auto waiting = [&](const std::string& for_what) -> LLSD
+            {
+                mSettle = llmax(0.5, j.until - now + 1.0);
+                LLSD w = r;
+                w["pending"] = true;
+                w["settling"] = true;
+                w["note"] = "The script \"" + j.name + "\" was put into that object and " + for_what
+                          + " The reply waits for it; if you are reading this, the region is slow "
+                            "-- say it is on its way.";
+                return w;
+            };
+
+            std::string stopped;   // why it went no further, if it did not
+            LLViewerObject* holder = gObjectList.findObject(j.object);
+            if (!holder)
+            {
+                stopped = "the object went out of view before the script could be opened";
+            }
+
+            // It arrives, and is opened -- by open_script itself, so the window is
+            // the one it would open.
+            if (stopped.empty() && !j.opened)
+            {
+                if (!scriptWatchSettled(holder) && !out_of_time)
+                {
+                    return waiting("the region has not listed it yet.");
+                }
+                sOpenedScriptWindow = LLHandle<LLFloater>();
+                LLSD op;
+                op["object_id"] = j.object;
+                op["name"] = j.name;
+                const LLSD opened = dispatch("open_script", op);
+                mSettle = 0.0;   // this call decides whether it waits, not the one inside it
+                if (opened.has("pending") && opened["pending"].asBoolean() && !out_of_time)
+                {
+                    return waiting("its contents are still coming from the region.");
+                }
+                if (opened.has("opened") && opened["opened"].asBoolean() && sOpenedScriptWindow.get())
+                {
+                    j.opened = true;
+                    j.window = sOpenedScriptWindow;
+                }
+                else if (opened.has("__error"))
+                {
+                    stopped = "it could not be opened: " + opened["__error"]["message"].asString();
+                }
+                else
+                {
+                    stopped = "it was not opened: the region has not listed it, or more than one "
+                              "script in the object has that name";
+                    if (opened.has("scripts")) r["scripts"] = opened["scripts"];
+                }
+            }
+
+            // `text` goes in, through edit_script's own path, once the window has
+            // the script -- written before then, the arriving script would
+            // overwrite it.
+            bool written = false;
+            if (stopped.empty() && j.opened && !text.empty())
+            {
+                LLFloater* win = j.window.get();
+                LLPreview* pv = dynamic_cast<LLPreview*>(win);
+                const bool loading = pv && pv->getAssetStatus() != LLPreview::PREVIEW_ASSET_LOADED
+                                        && pv->getAssetStatus() != LLPreview::PREVIEW_ASSET_ERROR;
+                if (loading && !out_of_time)
+                {
+                    return waiting("it is open, and the window is still loading it.");
+                }
+                if (!win)
+                {
+                    stopped = "its window was closed before anything could be written into it";
+                }
+                else
+                {
+                    LLSD wp;
+                    wp["text"] = text;
+                    LLSD wrote;
+                    {
+                        WriteIntoScope into(win);
+                        wrote = dispatch("edit_open_script", wp);
+                    }
+                    if (wrote.has("__error"))
+                    {
+                        stopped = "your text was NOT written: " + wrote["__error"]["message"].asString();
+                        if (wrote["__error"].has("data")) r["not_written_because"] = wrote["__error"]["data"];
+                    }
+                    else
+                    {
+                        written = true;
+                        const char* const PASS_ON[] = { "links_that_do_not_exist",
+                                                        "selected_object_has_links", "link_warning" };
+                        for (const char* k : PASS_ON)
+                        {
+                            if (wrote.has(k)) r[k] = wrote[k];
+                        }
+                    }
+                }
+            }
+
+            r["opened"] = j.opened;
+            r["written"] = written;
+            r["saved"] = false;
+            const std::string made = "A new script called \"" + j.name + "\" was put into that object";
+            if (written)
+            {
+                r["window_in_front"] = true;
+                r["note"] = made + ", opened, and your script written into it -- NOT saved. The "
+                            "window is in front for them: tell them to read it and press Save. Until "
+                            "they do, Linden Lab's default script is what runs in it, and it greets "
+                            "anyone who touches the object.";
+            }
+            else if (stopped.empty())
+            {
+                r["note"] = made + " and opened. Nothing of yours is in it yet: it holds Linden Lab's "
+                            "default script, which is ALREADY RUNNING -- the object greets anyone who "
+                            "touches it -- so say so. Write yours with edit_script before saying "
+                            "anything about saving; nothing you write runs until they press Save.";
+            }
+            else
+            {
+                r["note"] = made + ", but " + stopped + ". It holds Linden Lab's default script, which "
+                            "is ALREADY RUNNING -- say so."
+                          + (text.empty() ? std::string()
+                                          : std::string(" Your `text` is not in it."))
+                          + (j.opened ? std::string()
+                                      : std::string(" open_script opens it once the region lists it."));
+            }
+            sNewScripts.erase(at);
+            recordAction(request_id, job_key, "new_script", "ok", r, briefOf(r));
+            return r;
+        };
+        if (job != sNewScripts.end())
+        {
+            return carryOn(job);
+        }
+        // </Lumen>
+
         // <Lumen> A retried call with the same request_id used to run saveScript
         // again: two running default scripts in somebody's build. No
         // fingerprint window, because two scripts of the same name can be a
@@ -13246,6 +13804,32 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 replay["note"] = "This request_id already added a script; nothing was added a "
                                  "second time.";
                 return replay;
+            }
+        }
+        // </Lumen>
+
+        // <Lumen> Refused before anything is made, the way edit_script refuses
+        // it: a script calling what is not LSL cannot compile, and the
+        // compiler would not say which name.
+        if (!text.empty())
+        {
+            const LLSD bad = lslUnknownNames(text);
+            if (bad.size())
+            {
+                std::string names;
+                for (LLSD::array_const_iterator it = bad.beginArray(); it != bad.endArray(); ++it)
+                {
+                    if (!names.empty()) names += ", ";
+                    names += (*it)["name"].asString();
+                }
+                LLSD e; e["code"] = -32602;
+                e["message"] = "No script was added: `text` calls " + names
+                             + (bad.size() > 1 ? ", which are not LSL functions"
+                                               : ", which is not an LSL function")
+                             + " in this region, so it would not compile. `data` has the real "
+                               "names closest to each -- use one of those.";
+                e["data"] = bad;
+                LLSD w; w["__error"] = e; return w;
             }
         }
         // </Lumen>
@@ -13341,27 +13925,40 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                       LLAssetType::AT_LSL_TEXT, LLInventoryType::IT_LSL,
                                       name, desc, LLSaleInfo::DEFAULT,
                                       LLInventoryItemFlags::II_FLAGS_NONE, time_corrected());
+        // <Lumen> What is listed already, so an older script of the same name
+        // is not taken for this one (ScriptArrivalWatch::mBefore). saveScript
+        // leaves the local list as it is for a new item.
+        std::set<LLUUID> listed_before;
+        {
+            LLInventoryObject::object_list_t had;
+            object->getInventoryContents(had);
+            for (LLInventoryObject::object_list_t::const_iterator h = had.begin(); h != had.end(); ++h)
+            {
+                if (*h && (*h)->getType() == LLAssetType::AT_LSL_TEXT) listed_before.insert((*h)->getUUID());
+            }
+        }
+        // </Lumen>
         object->saveScript(item, true, true);
         // <Lumen> See ScriptArrivalWatch: without it open_script cannot see
         // the script until the object is selected.
         forgetScriptWatch(object->getID());
         sScriptWatches[object->getID()] = new ScriptArrivalWatch(object, lowered(name));
+        sScriptWatches[object->getID()]->mBefore = listed_before;
+        for (std::map<LLUUID, F64>::iterator it = sScriptAddedTo.begin(); it != sScriptAddedTo.end(); )
+        {
+            if (now - it->second > 120.0) it = sScriptAddedTo.erase(it);
+            else ++it;
+        }
+        sScriptAddedTo[object->getID()] = now;
 
-        LLSD r;
-        r["created"] = name;
-        r["in_object"] = object->getID();
-        // The viewer's own comment on this path: the creation has to round-trip
-        // to the region before the script can be opened. So this cannot hand
-        // back a window, and says so instead of pretending.
-        r["note"] = "A new script called \"" + name + "\" was put into that object. It has to "
-                    "reach the region before it can be opened, so call open_script in a second "
-                    "or two and then write into it with edit_script. **It already contains "
-                    "Linden Lab's default script and that default is running** -- say so, because "
-                    "the object will greet anybody who touches it until they save yours over it. "
-                    "Nothing YOU write runs until they press Save.";
-        recordAction(request_id, fingerprintOf(method, params), "new_script", "ok", r, briefOf(r));
-        return r;
+        NewScriptJob fresh;
+        fresh.object = object->getID();
+        fresh.name   = name;
+        fresh.until  = now + NEW_SCRIPT_WAIT;
+        job = sNewScripts.insert(std::make_pair(job_key, fresh)).first;
+        return carryOn(job);
     }
+
 
     if (method == "open_script")
     {
@@ -13441,37 +14038,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         S32 waiting = 0;
         for (size_t i = 0; i < chain.size(); ++i)
         {
-            // <Lumen> A script new_script just put here: fetch until it shows.
-            std::map<LLUUID, ScriptArrivalWatch*>::iterator sw =
-                sScriptWatches.find(chain[i]->getID());
-            if (sw != sScriptWatches.end())
+            // <Lumen> A script new_script just put here: fetch until it shows,
+            // then read as usual.
+            if (!scriptWatchSettled(chain[i]))
             {
-                if (chain[i]->isInventoryPending()) { ++waiting; continue; }
-                LLInventoryObject::object_list_t have;
-                chain[i]->getInventoryContents(have);
-                bool arrived = false;
-                for (LLInventoryObject::object_list_t::const_iterator h = have.begin();
-                     h != have.end() && !arrived; ++h)
-                {
-                    arrived = *h && (*h)->getType() == LLAssetType::AT_LSL_TEXT
-                           && lowered((*h)->getName()).rfind(sw->second->mName, 0) == 0;
-                }
-                const F64 now = LLTimer::getTotalSeconds();
-                if (arrived || now > sw->second->mUntil)
-                {
-                    forgetScriptWatch(chain[i]->getID());   // then read as usual
-                }
-                else
-                {
-                    if (now - sw->second->mLastAsk > 1.0)
-                    {
-                        sw->second->mLastAsk = now;
-                        chain[i]->dirtyInventory();       // a listener, so this clears
-                        chain[i]->requestInventory();     // and this really fetches
-                    }
-                    ++waiting;
-                    continue;
-                }
+                ++waiting;
+                continue;
             }
             // </Lumen>
             LLInventoryObject::object_list_t contents;
@@ -13482,21 +14054,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // returned an empty list too, was re-requested every call, and a
             // scriptless object answered `pending` for ever. Ask the object
             // whether it is still waiting, or has never been asked, before
-            // deciding that emptiness means "still loading".
+            // deciding that emptiness means "still loading" -- see
+            // contentsStillToCome, which also catches a prim never fetched.
             if (contents.empty())
             {
-                if (chain[i]->isInventoryPending())
-                {
-                    ++waiting;
-                    continue;
-                }
-                if (chain[i]->isInventoryDirty())
-                {
-                    chain[i]->requestInventory();
-                    ++waiting;
-                    continue;
-                }
-                continue;   // fetched, and genuinely holds nothing
+                if (contentsStillToCome(chain[i])) ++waiting;
+                continue;   // otherwise fetched, and genuinely holds nothing
             }
             // </Lumen>
             for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
@@ -13514,13 +14077,20 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         if (found.size() == 0 && waiting > 0)
         {
+            // <Lumen> Waited for, not handed back: the socket and the
+            // Assistant make this same call again until the contents are here
+            // (see mSettle), so a model makes one call where it made three.
+            // The note is what it reads only if the region never answered --
+            // and a pending answer is not logged, or every quarter second of
+            // waiting would be a line in read_actions.
+            mSettle = CONTENTS_WAIT;
             LLSD r;
             r["pending"] = true;
+            r["settling"] = true;
             r["links_still_loading"] = waiting;
-            r["note"] = "The object's contents are being fetched from the region -- that is a "
-                        "round trip, so nothing can be listed yet. Ask again in a second or two.";
-            recordAction(request_id, fingerprintOf(method, params), "open_script", "pending", r,
-                         briefOf(r));
+            r["note"] = "The region has not sent this object's contents yet, so nothing can be "
+                        "listed; the viewer keeps asking. Say so rather than guessing what is in "
+                        "it -- open_script can be asked again in a little while.";
             return r;
         }
 
@@ -13536,12 +14106,15 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (want.empty() && waiting > 0)
         {
             // <Lumen> The one asked for may be in the part still loading.
+            mSettle = CONTENTS_WAIT;   // <Lumen> waited for, as above
             LLSD r;
             r["pending"] = true;
+            r["settling"] = true;
             r["links_still_loading"] = waiting;
             r["scripts_so_far"] = found;
-            r["note"] = "Part of the object's contents is still being fetched from the region. "
-                        "Ask again in a second or two.";
+            r["note"] = "Part of the object's contents has not come from the region yet, and "
+                        "the script asked for is not in the part that has. Say so; open_script "
+                        "can be asked again in a little while.";
             return r;
         }
         if (want.empty())
@@ -13549,10 +14122,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD r;
             r["scripts"] = found;
             if (waiting) r["links_still_loading"] = waiting;
+            // <Lumen> "No scripts at all" was said about a script new_script
+            // had just added, once the wait for it had run out; and it was
+            // passed on as "the box is empty".
+            bool just_added = false;
+            for (LLViewerObject* part : chain)
+            {
+                std::map<LLUUID, F64>::const_iterator added = sScriptAddedTo.find(part->getID());
+                just_added = just_added || (added != sScriptAddedTo.end()
+                                            && LLTimer::getTotalSeconds() - added->second < 120.0);
+            }
             r["note"] = found.size()
                 ? "No script in that object matches that name. `scripts` lists what IS in it, "
                   "with the link each one sits in -- offer those rather than guessing."
-                : "That object contains no scripts at all.";
+                : (just_added
+                   ? "The script new_script put in this object has not been listed by the "
+                     "region yet, so there is nothing to open. Say it is on its way."
+                   : "That object holds no scripts. It may hold other things -- build / "
+                     "list_contents lists everything in it -- so do not say it is empty.");
             recordAction(request_id, fingerprintOf(method, params), "open_script", "ok", r,
                          briefOf(r));
             return r;
@@ -13641,16 +14228,28 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             keepAssistantInFront();
         }
         LLFloater* f = preview;
+        sOpenedScriptWindow = f ? f->getHandle() : LLHandle<LLFloater>();   // <Lumen> for new_script
 
+        // <Lumen> Opening it is not the end. Small 4 stopped here and told the
+        // user to press Save -- which would have saved Linden Lab's default
+        // script over nothing -- because this read like the last step.
+        const bool mine = sAssistantScriptText.count(openable[want[0]].second.asString()) > 0;
         LLSD r;
         r["opened"] = (f != NULL);
         r["confirmed_on_screen"] = (f != NULL && f->getVisible());
         r["script"] = found[(S32)want[0]];
+        r["holds_what_you_wrote"] = mine;
         r["note"] = (f != NULL)
-            ? "The script is open in its own window. read_scripts can now read it and edit_script "
-              "can write into it -- and **they press Save**, not you: nothing is saved by opening "
-              "it, and nothing runs until they do. Say what you changed and let them read it."
-            : "The script window did not open. Say so rather than going on as though it had.";
+            ? std::string("The script is open in its own window. read_scripts reads it and "
+                          "edit_script writes into it. ")
+              + (mine ? "It holds what you wrote into it earlier, unless they have changed it. "
+                      : "Nothing of yours is in it yet -- it holds what was already there, "
+                        "which for a new script is Linden Lab's default. Write your change with "
+                        "edit_script before saying anything about saving. ")
+              + "**They press Save**, not you: nothing is saved by opening it, and nothing runs "
+                "until they do."
+            : std::string("The script window did not open. Say so rather than going on as "
+                          "though it had.");
         recordAction(request_id, fingerprintOf(method, params), "open_script",
                      (f != NULL) ? "ok" : "failed", r, briefOf(r));
         return r;
@@ -14080,8 +14679,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     "user may do -- that is what decides whether a script can be edited and saved "
                     "-- while `next_owner` is what anybody they give or sell it to would get, "
                     "which is what \"full perm\" means in Second Life. `full_perm` is that second "
-                    "set being copy, modify AND transfer. Do not report one as the other. Object "
-                    "contents and scripts are NOT here; read_scripts reads an open script.";
+                    "set being copy, modify AND transfer. Do not report one as the other. What is "
+                    "INSIDE it is not here: build / list_contents lists its contents, and viewer / "
+                    "open_script opens a script in it.";
         recordAction(request_id, fingerprintOf(method, params), "inspect_object", "ok", r, briefOf(r));
         return r;
     }
@@ -21137,6 +21737,9 @@ if (method == "camera")
                     {
                         one["selected"] = safeUtf8(sel);
                     }
+                    // <Lumen> Whether what is on screen is what was last loaded
+                    // or saved -- false means changes nobody has saved yet.
+                    one["saved"] = ed->isPristine();
                 }
 
                 LLSD errors = LLSD::emptyArray();
@@ -21156,6 +21759,29 @@ if (method == "camera")
                 {
                     one["compile_errors"] = errors;
                 }
+                // <Lumen> And the answer when there were no errors, which the
+                // rows never held: see scriptSaveResult.
+                const std::string said = scriptSaveResult(f);
+                if (!said.empty())
+                {
+                    one["last_save_result"] = safeUtf8(said);
+                }
+                // Whether what the assistant wrote is what is in it, for a
+                // script inside an object -- "nothing of yours is in it yet"
+                // otherwise. Saved, holding exactly that, and no answer of
+                // either kind yet, is a save the compiler has not answered.
+                if (dynamic_cast<LLLiveLSLEditor*>(f))
+                {
+                    std::map<std::string, std::string>::const_iterator w =
+                        sAssistantScriptText.find(f->getKey()["itemid"].asString());
+                    const bool mine = (w != sAssistantScriptText.end() && w->second == text);
+                    one["holds_what_you_wrote"] = mine;
+                    if (mine && one["saved"].asBoolean() && errors.size() == 0 && said.empty())
+                    {
+                        one["compile_answer_pending"] = true;
+                    }
+                }
+                // </Lumen>
 
                 // **The compiler says "Name not defined within scope" and does
                 // not say WHICH name.** So a model reading that error guesses,
@@ -21206,8 +21832,13 @@ if (method == "camera")
         else
         {
             result["note"] = "The compiler errors, when present, are from the last time it was "
-                             "saved, not from what is on screen now. Say which line a fix "
-                             "belongs on; they are reading the same window.";
+                             "saved, not from what is on screen now. `saved` false means what is "
+                             "on screen has not been saved; after a save, `compile_errors` or "
+                             "`last_save_result` (\"Compile successful!\") is the compiler's "
+                             "answer, and `compile_answer_pending` means it has not answered "
+                             "yet. `holds_what_you_wrote` false means nothing of yours is in that "
+                             "window. Say which line a fix belongs on; they are reading the same "
+                             "window.";
         }
         return result;
     }
@@ -21231,9 +21862,15 @@ if (method == "camera")
         std::string where;
         LLFloater* target = NULL;
 
+        // <Lumen> new_script writing into the script it has just opened names
+        // the window itself; see sWriteInto.
+        if (sWriteInto)
+        {
+            target = sWriteInto;
+        }
         // An explicit title wins, for when several are open and the caller has
         // read the list and knows which one it means.
-        if (params.has("script") && !params["script"].asString().empty())
+        else if (params.has("script") && !params["script"].asString().empty())
         {
             const std::string want = lowered(params["script"].asString());
             const char* const KINDS[] = { "preview_script", "preview_scriptedit" };
@@ -21296,7 +21933,27 @@ if (method == "camera")
                            "for one inside an object.";
             LLSD w; w["__error"] = e; return w;
         }
-        // <Lumen> A window that cannot take the write is refused, not written
+        // <Lumen> A window still loading its script -- open_script a moment
+        // ago -- is waited for rather than refused: see mSettle. Written into
+        // before the script arrives, the arriving text would overwrite it.
+        if (LLPreview* pv = dynamic_cast<LLPreview*>(target))
+        {
+            if (!sWriteInto && (params.has("replace") || params.has("text"))
+                && pv->getAssetStatus() != LLPreview::PREVIEW_ASSET_LOADED
+                && pv->getAssetStatus() != LLPreview::PREVIEW_ASSET_ERROR)
+            {
+                mSettle = CONTENTS_WAIT;
+                LLSD r;
+                r["pending"] = true;
+                r["settling"] = true;
+                r["script"] = where;
+                r["note"] = "Not written yet: that script is still loading from Second Life, and "
+                            "anything written before it arrives would be overwritten. The reply "
+                            "waits for it; if you are reading this, it has not loaded -- say so.";
+                return r;
+            }
+        }
+        // A window that cannot take the write is refused, not written
         // into: see scriptWindowRefusal.
         {
             const std::string why = scriptWindowRefusal(target);
@@ -21484,12 +22141,26 @@ if (method == "camera")
         {
             gFloaterView->bringToFront(target, true);
         }
-        result["saved"] = false;
+        // <Lumen> What the window itself says, rather than a promise to look
+        // later: `saved` is whether what is on screen is what was last loaded
+        // or saved, and the compiler's answer to the LAST save sits in the
+        // list's comment box -- "Compile successful!", "Save complete." -- not
+        // in its rows, which is why read_scripts could not tell a clean
+        // compile from no save at all.
+        result["saved"] = ed->isPristine();
+        {
+            const std::string said = scriptSaveResult(target);
+            if (!said.empty()) result["last_save_result"] = safeUtf8(said);
+        }
         result["window_in_front"] = true;
         result["note"] = "Written into the script window and NOT saved. The window is now in "
                          "front for them. Tell them to read it and press Save -- nothing runs "
-                         "until they do, and Ctrl-Z undoes it if they would rather not. Once "
-                         "they have saved, call read_scripts to see whether it compiled.";
+                         "until they do, and Ctrl-Z undoes it if they would rather not. "
+                         "`last_save_result`, if there is one, is from the save BEFORE this "
+                         "change. When they say they have saved, read_scripts shows the answer "
+                         "for this one: `saved` true, and then `compile_errors`, or "
+                         "`last_save_result` saying it compiled.";
+        // </Lumen>
         return result;
     }
 
@@ -21972,7 +22643,8 @@ if (method == "camera")
                                 "there -- say it was asked for. `set` with no object_id, once it "
                                 "has arrived, acts on it."
                               + (copyable ? "" : " It was no-copy, so it has LEFT inventory: say "
-                                                 "so, and that taking it back is how they keep it.");
+                                                 "so. build / take puts it back there; remove "
+                                                 "would send the only one to the Trash.");
             recordAction(params.has("request_id") ? params["request_id"].asString() : "",
                          fingerprintOf("rez_object", params), "rez_object", "ok", result, LLSD());
             return result;
@@ -22175,7 +22847,12 @@ if (method == "camera")
         // It is not: a selection lives only while a build tool is active, and
         // making one active is what put the Build window on the user's screen
         // every time the assistant made a prim.
-        expectRez(target, true);
+        // <Lumen> And it is named after its shape as it arrives, in the word
+        // asked for -- "Box", "Cube", "Sphere" -- instead of "Object".
+        const std::string shape_word = want.empty() ? std::string("box") : want;
+        std::string prim_name = shape_word;
+        prim_name[0] = (char)toupper((unsigned char)prim_name[0]);
+        expectRez(target, true, prim_name);
         // </Lumen>
 
         std::string parcel;
@@ -22185,7 +22862,8 @@ if (method == "camera")
         }
 
         LLSD result;
-        result["rezzed"]  = want.empty() ? std::string("box") : want;
+        result["rezzed"]  = shape_word;
+        result["named"]   = prim_name;   // <Lumen> once it arrives
         result["parcel"]  = parcel;
         result["where"]   = llformat("%.1f metres in front", distance);
         if (sized)
@@ -22197,21 +22875,20 @@ if (method == "camera")
         // SIMULATOR in answer to a message; this call only sent the message.
         // Confirming would mean waiting for the object update, which is the
         // same two-round-trip shape as a notecard (Findings 19).
-        result["note"]    = "Asked the simulator to make a " + want + " about " +
+        result["note"]    = "Asked the simulator to make a " + shape_word + " about " +
                             llformat("%.1f", distance) + "m in front"
                             + (parcel.empty() ? "" : ", on the parcel \"" + parcel + "\"")
-                            + ". It arrives a second or two from now. To build something out "
-                              "of several prims: rez them one after another and then call `link` "
-                              "with NO arguments -- it joins the ones just made, and says so if "
-                              "some have not arrived yet. To change this one, call `set` with no "
-                              "object_id once it has arrived -- it acts on the newest prim this "
-                              "assistant rezzed -- or pass its object_id: movement / look_nearby "
-                              "marks it `rezzed_by_assistant: true` -- take THAT one, never "
-                              "another object with the same name. look_nearby lags a change by "
-                              "tens of seconds otherwise, so do not use it as proof of anything. "
-                              "Do not claim the prim is there -- say it was asked for. **Tell the "
-                              "user which parcel it is on**: an object left on somebody else's "
-                              "land can be returned without warning.";
+                            + ". It arrives in a second or two and is then named \"" + prim_name
+                            + "\" -- not Second Life's default \"Object\" -- so movement / "
+                              "look_nearby with `find` \"" + shape_word + "\" finds it, marked "
+                              "`rezzed_by_assistant: true`; look_nearby can take a while to list "
+                              "a new object. This reply can end here: say it was asked for, not "
+                              "that it is there. To change it, call `set` with no object_id -- "
+                              "it acts on the newest prim this assistant rezzed -- or with its "
+                              "object_id. For something made of several prims, rez them one "
+                              "after another and then call `link` with no arguments; it joins "
+                              "the ones just made. Tell the user which parcel it is on: an object "
+                              "left on somebody else's land can be returned without warning.";
         // <Lumen> The parcel named is the one the USER stands on; the prim lands
         // up to ten metres off, which near a border is the neighbour's.
         if (!parcel.empty())
@@ -22330,18 +23007,471 @@ if (method == "camera")
         // saying "selected" and stopping there would be a claim that expires.
         const bool sticks = (gFloaterTools && gFloaterTools->getVisible());
         result["selection_persists"] = sticks;
+        // <Lumen> select is for showing the user; it is not how the other
+        // actions are aimed. A model that selected and then called remove
+        // with no id was acting on nothing -- see set_object's fallback.
         result["note"] = std::string(sticks
-            ? "Selected, and the build tools are open so it stays selected. "
-            : "Selected for this call ONLY -- with the ordinary cursor active a selection does "
-              "not survive to your next call, and `add: true` cannot gather several for a later "
-              "link. Pass `object_id` straight to set or remove, or `object_ids` to link, instead "
-              "of selecting first. Use edit: true if the user wants to see it in the build tools. ")
+            ? "Selected, and the build tools are open on it for the user, so it stays selected. "
+            : "Selected for this call only: without the build tools open a selection is gone by "
+              "your next call, so it cannot aim set, remove, take or link. ")
+                         + "To act on it, pass `object_id` " + id.asString()
+                         + " to set, remove, take or list_contents, or put it in `object_ids` "
+                           "for link."
                          + (obj->permModify() ? ""
-                            : " The user may NOT modify this object, so set and remove will "
-                              "fail -- say so rather than trying.");
+                            : " The user may NOT modify this object, so `set` will be refused "
+                              "-- say so rather than trying.");
         recordAction(params.has("request_id") ? params["request_id"].asString() : "",
                      fingerprintOf("select_object", params), "select_object", "ok", result, LLSD());
         return result;
+    }
+
+    // ---- build: take ---------------------------------------------------------
+    //
+    // <Lumen> Back into inventory, as right-click > Take does. Without it the
+    // only way to clear an object away was remove, which sends a no-copy
+    // object -- the only one there is -- to the Trash, and remove's refusal of
+    // `take: true` even pointed the model at deleting.
+    //
+    // Taken through the viewer's own confirm_take, the function Take's own
+    // dialogue calls on Yes, so the folder, the permission test and the message
+    // sent are the viewer's. That needs the selection's PROPERTIES, which come a
+    // round trip after selecting: the first call checks, asks and selects, and
+    // the same call again (see mSettle) takes it once they are here.
+    if (method == "take_object")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string key = fingerprintOf(method, params);
+        const F64 now = LLTimer::getTotalSeconds();
+
+        std::map<std::string, PendingTake>::iterator pending = sPendingTakes.find(key);
+        if (pending != sPendingTakes.end() && now > pending->second.until + 5.0)
+        {
+            sPendingTakes.erase(pending);   // nobody came back for it
+            pending = sPendingTakes.end();
+        }
+
+        if (pending == sPendingTakes.end())
+        {
+            {
+                LLSD replay;   // a retried take must not take twice
+                if (recallAction(request_id, replay))
+                {
+                    replay["replayed"] = true;
+                    replay["note"] = "This request_id was already carried out; nothing was taken "
+                                     "a second time.";
+                    return replay;
+                }
+            }
+
+            // Which object: the one named, else what the user has selected,
+            // else the newest prim this assistant rezzed -- as for remove.
+            std::vector<LLViewerObject*> roots;
+            if (params.has("object_id") && !params["object_id"].asString().empty())
+            {
+                LLViewerObject* o = gObjectList.findObject(params["object_id"].asUUID());
+                if (!o || o->isAvatar())
+                {
+                    LLSD e; e["code"] = -32000; e["message"] = STALE_OBJECT_ID;
+                    LLSD w; w["__error"] = e; return w;
+                }
+                roots.push_back(o->getRootEdit() ? o->getRootEdit() : o);
+            }
+            else
+            {
+                LLObjectSelectionHandle theirs = LLSelectMgr::getInstance()->getSelection();
+                if (theirs.notNull())
+                {
+                    for (LLObjectSelection::root_iterator it = theirs->root_begin();
+                         it != theirs->root_end(); ++it)
+                    {
+                        if ((*it)->getObject()) roots.push_back((*it)->getObject());
+                    }
+                }
+                if (roots.empty())
+                {
+                    if (sSelectedSinceRez)
+                    {
+                        LLSD e; e["code"] = -32000;
+                        e["message"] = "An object was picked with `select` since the last rez, and "
+                                       "a selection does not last to the next call, so nothing is "
+                                       "selected now. Taking the newest prim this assistant rezzed "
+                                       "instead could take the wrong thing, so nothing was taken. "
+                                       "Pass the object's `object_id`.";
+                        LLSD w; w["__error"] = e; return w;
+                    }
+                    if (rezStillOnTheWay() > 0)
+                    {
+                        LLSD e; e["code"] = -32000;
+                        e["message"] = "The prim just rezzed has not arrived yet, so there is "
+                                       "nothing to take. Nothing was done.";
+                        LLSD w; w["__error"] = e; return w;
+                    }
+                    const LLUUID newest = newestRezStillHere();
+                    LLViewerObject* o = newest.isNull() ? NULL : gObjectList.findObject(newest);
+                    if (o) roots.push_back(o->getRootEdit() ? o->getRootEdit() : o);
+                }
+                if (roots.empty())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "Nothing to take: nothing is selected and no `object_id` was "
+                                   "given. Find the object with movement / look_nearby and "
+                                   "`find`, then pass its `object_id` -- do not ask the user to "
+                                   "click it.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+
+            // The tests the viewer's own Take makes (enable_take, handle_take,
+            // get_derezzable_objects), before anything is selected or asked.
+            // Somebody else's object is refused rather than taken: the viewer
+            // asks its own question for that, and it is theirs to answer.
+            LLViewerRegion* region = roots.front()->getRegion();
+            bool no_copy = false, locked = false;
+            for (LLViewerObject* o : roots)
+            {
+                std::string why;
+                if (o->isAttachment())
+                    why = askObjectName(o) + " is being worn. inventory / detach takes it off, "
+                          "which puts it back in inventory.";
+                else if (!o->permYouOwner())
+                    why = askObjectName(o) + " is not the user's own. Taking somebody else's object "
+                          "is left to the user -- right-click > Take asks them itself.";
+                else if (o->isPermanentEnforced())
+                    why = askObjectName(o) + " is set as permanent for pathfinding, which cannot be "
+                          "taken.";
+                else if (o->getRegion() != region)
+                    why = "Those objects are not all in one region, and Take works in one region at "
+                          "a time.";
+                else if (isAgentAvatarValid() && gAgentAvatarp->isSitting()
+                         && gAgentAvatarp->getRoot() == o)
+                    why = "The user is sitting on " + askObjectName(o) + ", and the viewer does not "
+                          "take what they sit on. movement / stand first.";
+                else if (rlv_handler_t::isEnabled() && !rlvCanDeleteOrReturn(o))
+                    why = "An RLV restriction the user is wearing forbids taking " + askObjectName(o)
+                          + " -- say it is their own attachment doing it, not the land.";
+                if (!why.empty())
+                {
+                    LLSD e; e["code"] = -32000; e["message"] = why + " Nothing was taken.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (!o->permCopy()) no_copy = true;
+                if (!o->permMove()) locked = true;
+            }
+
+            // The objects go into what a Yes is keyed on, as for remove: a Yes
+            // to taking the chair must not take whatever is selected later.
+            {
+                std::vector<std::string> ids;
+                for (LLViewerObject* o : roots) ids.push_back(o->getID().asString());
+                std::sort(ids.begin(), ids.end());
+                std::string ask_key = key;
+                for (const std::string& id : ids) ask_key += "\n" + id;
+                LLSD subs;
+                subs["ACTION"] = "Take "
+                               + (roots.size() > 1 ? llformat("these %d objects", (S32)roots.size())
+                                                   : askObjectName(roots.front()))
+                               + " back into your inventory? It leaves the world."
+                               + (no_copy ? std::string(" It is no-copy, so this keeps the only one.")
+                                          : std::string())
+                               + (locked ? std::string(" You locked it to protect it.")
+                                         : std::string());
+                LLSD ask;
+                if (!askUser("LumenAskBuild", subs, ask_key, ask))
+                {
+                    return ask;
+                }
+            }
+
+            LLSelectMgr::getInstance()->deselectAll();
+            PendingTake fresh;
+            for (LLViewerObject* o : roots)
+            {
+                LLSelectMgr::getInstance()->selectObjectAndFamily(o, true);
+                if (!o->isSelected())
+                {
+                    LLSelectMgr::getInstance()->deselectAll();
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "The viewer would not select " + askObjectName(o) + ", so "
+                                   "nothing was taken. A \"select only my objects\" setting is the "
+                                   "usual reason.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                fresh.roots.insert(o->getID());
+            }
+            fresh.sel = LLSelectMgr::getInstance()->getSelection();
+            fresh.until = now + TAKE_WAIT;
+            pending = sPendingTakes.insert(std::make_pair(key, fresh)).first;
+            sweepPendingTakes();
+        }
+
+        // ---- carried on by the same call again, until it is done ---------
+        PendingTake& t = pending->second;
+        LLObjectSelectionHandle cur = LLSelectMgr::getInstance()->getSelection();
+        std::set<LLUUID> selected_roots;
+        bool properties_here = cur.notNull();
+        if (cur.notNull())
+        {
+            for (LLObjectSelection::root_iterator it = cur->root_begin(); it != cur->root_end(); ++it)
+            {
+                if (!(*it)->getObject()) continue;
+                selected_roots.insert((*it)->getObject()->getID());
+                if (!(*it)->mValid) properties_here = false;
+            }
+        }
+        std::string why;
+        for (const LLUUID& id : t.roots)
+        {
+            if (!gObjectList.findObject(id))
+            {
+                why = "It left the world before it could be taken -- returned, deleted, or taken "
+                      "by the user.";
+            }
+        }
+        if (why.empty() && selected_roots != t.roots)
+        {
+            why = "The selection changed while the viewer waited for the region, and taking now "
+                  "would take whatever is selected instead.";
+        }
+        if (why.empty() && !properties_here)
+        {
+            if (now <= t.until)
+            {
+                mSettle = llmax(0.5, t.until - now + 1.0);
+                LLSD r;
+                r["pending"] = true;
+                r["settling"] = true;
+                r["note"] = "Waiting for the region to send the object's details, which Take "
+                            "needs. The reply waits for it; if you are reading this, the region "
+                            "is slow -- nothing has been taken yet.";
+                return r;
+            }
+            why = "The region did not send the object's details within ten seconds, and Take "
+                  "needs them. It is still there.";
+        }
+        if (why.empty() && !enable_take())
+        {
+            why = "The viewer's own Take is not available for it -- the same test that greys "
+                  "Take out in the right-click menu.";
+        }
+        if (!why.empty())
+        {
+            // Let go of our selection -- but one the user has made since is
+            // theirs, and stays.
+            bool still_ours = true;
+            for (const LLUUID& id : selected_roots)
+            {
+                if (!t.roots.count(id)) still_ours = false;
+            }
+            sPendingTakes.erase(pending);
+            if (still_ours) LLSelectMgr::getInstance()->deselectAll();
+            LLSD e; e["code"] = -32000; e["message"] = why + " Nothing was taken.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD result;
+        LLSD names = LLSD::emptyArray();
+        for (LLObjectSelection::root_iterator it = cur->root_begin(); it != cur->root_end(); ++it)
+        {
+            if ((*it)->getObject()) names.append(safeUtf8((*it)->mName));
+        }
+        result["taking"] = names;
+
+        // The assistant's own script windows for what is leaving; see
+        // closeAssistantScriptWindows.
+        std::set<LLUUID> going;
+        for (LLObjectSelection::iterator it = cur->begin(); it != cur->end(); ++it)
+        {
+            if ((*it)->getObject()) going.insert((*it)->getObject()->getID());
+        }
+        const S32 closed = closeAssistantScriptWindows(going);
+        if (closed > 0) result["script_windows_closed"] = closed;
+
+        const LLUUID folder = takeFolderFor(cur);
+        const LLViewerInventoryCategory* cat = gInventory.getCategory(folder);
+        result["into_folder"] = cat ? safeUtf8(cat->getName()) : std::string("Objects");
+        result["folder_id"] = folder;
+
+        // What Take's own dialogue does on Yes, answered here: the viewer's
+        // question above already asked, and this takes nothing but the selection
+        // just checked.
+        LLSD payload;
+        payload["folder_id"] = folder;
+        LLNotification::Params take_params("ConfirmObjectTakeLock");
+        take_params.payload(payload);
+        take_params.functor.function([cur](const LLSD& n, const LLSD& response)
+        {
+            confirm_take(n, response, cur);
+        });
+        LLNotifications::instance().forceResponse(take_params, 0);
+        sPendingTakes.erase(pending);
+
+        result["note"] = "Asked the simulator to take it back into their inventory, into \""
+                       + result["into_folder"].asString() + "\". It leaves the world in a moment "
+                         "and arrives there. This reply can end here: say it is on its way to their "
+                         "inventory, not that it has arrived -- inventory / search finds it once it "
+                         "has. Nothing was deleted.";
+        recordAction(request_id, key, "take_object", "ok", result, briefOf(result));
+        return result;
+    }
+
+
+    // ---- build: list_contents ------------------------------------------------
+    //
+    // <Lumen> What is INSIDE an object. "What is in this box?" and "unpack it"
+    // had nothing behind them: inspect_object describes the object itself, and
+    // open_script fetched the whole contents and then listed only the scripts
+    // -- "That object contains no scripts at all", passed on as "the box is
+    // empty". It only reads: nothing is copied or moved.
+    if (method == "list_object_contents")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+
+        LLViewerObject* root = NULL;
+        const bool id_given = params.has("object_id") && !params["object_id"].asString().empty();
+        if (id_given)
+        {
+            LLViewerObject* o = gObjectList.findObject(params["object_id"].asUUID());
+            if (o && !o->isAvatar()) root = o->getRootEdit();
+        }
+        else
+        {
+            LLObjectSelectionHandle sel = LLSelectMgr::getInstance()->getSelection();
+            if (sel.notNull() && sel->getFirstNode() && sel->getFirstNode()->getObject())
+            {
+                root = sel->getFirstNode()->getObject()->getRootEdit();
+            }
+        }
+        if (!root)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = id_given
+                ? STALE_OBJECT_ID
+                : "Nothing is selected and no `object_id` was given. Find the object "
+                  "with movement / look_nearby and `find` (its name), then pass its "
+                  "`object_id` -- do not ask them to click it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // The Contents tab is inside the build tools, which RLV closes to an
+        // object the user may not edit.
+        if (rlvForbidsEditing(root))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids editing that object, "
+                           "so its contents cannot be looked at. Tell them plainly -- it is their "
+                           "own attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        std::vector<LLViewerObject*> chain;
+        chain.push_back(root);
+        for (LLViewerObject::const_child_list_t::const_iterator c = root->getChildren().begin();
+             c != root->getChildren().end(); ++c)
+        {
+            if (*c) chain.push_back(*c);
+        }
+
+        const size_t MAX_LISTED = 200;
+        LLSD items = LLSD::emptyArray();
+        size_t total = 0;
+        S32 waiting = 0;
+        for (size_t i = 0; i < chain.size(); ++i)
+        {
+            // Fetched the way open_script fetches: a prim nobody has asked
+            // about has nothing listed, and an empty fetched one looks the same.
+            if (!scriptWatchSettled(chain[i]))
+            {
+                ++waiting;
+                continue;
+            }
+            LLInventoryObject::object_list_t contents;
+            chain[i]->getInventoryContents(contents);
+            if (contents.empty())
+            {
+                // A prim never fetched is not an empty one: contentsStillToCome.
+                if (contentsStillToCome(chain[i])) ++waiting;
+                continue;   // otherwise fetched, and genuinely holds nothing
+            }
+            for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
+                 it != contents.end(); ++it)
+            {
+                const LLInventoryItem* item = dynamic_cast<const LLInventoryItem*>(it->get());
+                if (!item) continue;
+                ++total;
+                if ((size_t)items.size() >= MAX_LISTED) continue;   // LLSD::size() is an int
+                LLSD one;
+                one["name"] = safeUtf8(item->getName());
+                const char* kind = LLAssetType::lookupHumanReadable(item->getType());
+                one["type"] = kind ? std::string(kind) : std::string();
+                one["link"] = (S32)i + 1;
+                one["item_id"] = item->getUUID();
+                const LLPermissions& perm = item->getPermissions();
+                LLSD you;
+                you["copy"]     = gAgent.allowOperation(PERM_COPY, perm, GP_OBJECT_MANIPULATE);
+                you["modify"]   = gAgent.allowOperation(PERM_MODIFY, perm, GP_OBJECT_MANIPULATE);
+                you["transfer"] = gAgent.allowOperation(PERM_TRANSFER, perm, GP_OBJECT_MANIPULATE);
+                one["you_can"] = you;
+                LLSD nxt;
+                nxt["copy"]     = (bool)(perm.getMaskNextOwner() & PERM_COPY);
+                nxt["modify"]   = (bool)(perm.getMaskNextOwner() & PERM_MODIFY);
+                nxt["transfer"] = (bool)(perm.getMaskNextOwner() & PERM_TRANSFER);
+                one["next_owner"] = nxt;
+                items.append(one);
+            }
+        }
+
+        LLSD r;
+        r["object_id"] = root->getID();
+        r["links"] = (S32)chain.size();
+        r["items"] = items;
+        r["count"] = (LLSD::Integer)total;
+        if (waiting > 0)
+        {
+            // Waited for, as open_script does: see mSettle. Not logged while
+            // it waits.
+            mSettle = CONTENTS_WAIT;
+            r["pending"] = true;
+            r["settling"] = true;
+            r["links_still_loading"] = waiting;
+            r["note"] = "Part of this object's contents has not come from the region yet; the "
+                        "viewer keeps asking. `items` is what has come. Say what is listed and "
+                        "that the rest has not arrived -- do not call it empty.";
+            return r;
+        }
+        if (total == 0)
+        {
+            r["note"] = root->permModify()
+                ? "It holds nothing: every link's contents came back empty."
+                : "Nothing came back. The user may not modify this object, and Second Life may "
+                  "not show its contents to them -- so say it could not be read, not that it "
+                  "is empty.";
+        }
+        else
+        {
+            r["note"] = std::string(total > MAX_LISTED
+                                    ? "Only the first 200 items are listed; `count` is how many "
+                                      "there are. "
+                                    : "")
+                      + "Everything inside it, by link (1 is the root). `you_can` is what the user "
+                        "may do with each item, `next_owner` what anybody they give or sell it to "
+                        "would get. Nothing was copied or moved: taking things out is theirs to "
+                        "do, from the Contents tab of the build tools. A script inside is opened "
+                        "with viewer / open_script.";
+        }
+        recordAction(request_id, fingerprintOf(method, params), "list_object_contents", "ok", r,
+                     briefOf(r));
+        return r;
     }
 
     // ---- build: set, remove, link, unlink -----------------------------------
@@ -22420,6 +23550,22 @@ if (method == "camera")
             LLObjectSelectionHandle before = LLSelectMgr::getInstance()->getSelection();
             if (before.isNull() || before->getRootObjectCount() == 0)
             {
+                // <Lumen> After a `select`, "no object_id" means the object
+                // that was selected -- and that selection is gone by the next
+                // call. Falling back to the newest rez then trashed a prim
+                // the assistant had made while the model reported Player1
+                // deleted (Mistral, 2026-09-30). `link` already refused here.
+                if (sSelectedSinceRez)
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "An object was picked with `select` since the last rez, and a "
+                                   "selection does not last to the next call, so nothing is "
+                                   "selected now. Acting on the newest prim this assistant rezzed "
+                                   "instead could change or delete the wrong thing, so nothing was "
+                                   "done. Pass the object's `object_id` here directly.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                // </Lumen>
                 // One still on its way is the newest, and acting on an older
                 // one instead would change the wrong prim.
                 if (rezStillOnTheWay() > 0)
@@ -22737,12 +23883,12 @@ if (method == "camera")
             const bool take = params.has("take") && params["take"].asBoolean();
             if (take)
             {
-                // Taking is the menu's own path, because it has to decide which
-                // folder and how to name it, and getting that wrong loses things.
+                // <Lumen> Taking back is its own action now. This used to say
+                // "Deleting is: call remove without `take`", and a no-copy
+                // object asked to be picked up went to the Trash.
                 LLSD e; e["code"] = -32000;
-                e["message"] = "Taking an object into inventory is not built yet. Deleting is: "
-                               "call remove without `take`, which sends it to the Trash where it "
-                               "can be recovered.";
+                e["message"] = "Taking an object back into inventory is build / take, with the "
+                               "same object_id. Nothing was removed.";
                 LLSD w; w["__error"] = e; return w;
             }
             // <Lumen> selectDelete() is the menu's path, and the menu has a
@@ -22811,39 +23957,17 @@ if (method == "camera")
             // </Lumen>
 
             // <Lumen> Close the assistant's own script windows for what is
-            // going; see sAssistantScriptText. Before the delete, while the
-            // selection still says which prims these are.
+            // going; see closeAssistantScriptWindows. Before the delete, while
+            // the selection still says which prims these are.
             std::set<LLUUID> going;
             for (LLObjectSelection::iterator it = sel->begin(); it != sel->end(); ++it)
             {
                 if ((*it)->getObject()) going.insert((*it)->getObject()->getID());
             }
-            std::vector<LLFloater*> to_close;
-            // The GROUP name: both script windows are registered under
-            // "preview_script", and a lookup by "preview_scriptedit" is empty.
-            for (LLFloater* f : LLFloaterReg::getFloaterList("preview_script"))
+            const S32 closed = closeAssistantScriptWindows(going);
+            if (closed > 0)
             {
-                LLLiveLSLEditor* le = dynamic_cast<LLLiveLSLEditor*>(f);
-                const std::string item = f->getKey()["itemid"].asString();
-                std::map<std::string, std::string>::iterator w = sAssistantScriptText.find(item);
-                LLScriptEditor* sed = le ? le->getEditor() : NULL;
-                LL_INFOS("AICtl") << "remove: script window " << item << " in "
-                                  << f->getKey()["taskid"].asString()
-                                  << " live=" << (le != NULL)
-                                  << " going=" << going.count(f->getKey()["taskid"].asUUID())
-                                  << " ours=" << (w != sAssistantScriptText.end())
-                                  << " same=" << (w != sAssistantScriptText.end() && sed
-                                                  && sed->getText() == w->second) << LL_ENDL;
-                if (!le || !going.count(f->getKey()["taskid"].asUUID())) continue;
-                if (w == sAssistantScriptText.end() || !sed || sed->getText() != w->second) continue;
-                sed->makePristine();
-                sAssistantScriptText.erase(w);
-                to_close.push_back(f);
-            }
-            for (LLFloater* f : to_close) f->closeFloater();
-            if (!to_close.empty())
-            {
-                result["script_windows_closed"] = (S32)to_close.size();
+                result["script_windows_closed"] = closed;
             }
             // </Lumen>
 
