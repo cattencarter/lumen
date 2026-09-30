@@ -265,6 +265,12 @@ private:
     /** <Lumen> End a follow, if there is one; true when there was. */
     bool stopFollowing();
     LLUUID mFollowing;
+    // <Lumen> The last walk_to, so status can say it ended short of where it
+    // was going -- the user took over, or something blocked the way -- rather
+    // than a model waiting for an arrival that is not coming.
+    mutable bool mWalkActive = false;   // status clears it on arrival
+    LLVector3d  mWalkTarget;
+    std::string mWalkTo;
     bool   mFollowListenerUp = false;
     // <Lumen> Whether they were flying when the follow began: it never takes
     // off by itself. Whether the autopilot ran last frame, so the frame it

@@ -729,6 +729,8 @@ namespace
             if (action == "read_messages")      return "Reading messages";
             if (action == "say")                return "Speaking";
             if (action == "send_im")            return "Sending message";
+            if (action == "offer_teleport")     return "Offering a teleport";   // <Lumen>
+            if (action == "request_teleport")   return "Asking for a teleport";
             if (action == "find_person")        return "Finding person";
             if (action == "profile")     return "Reading their profile";
             if (action == "web_presence") return "Looking them up on the web";

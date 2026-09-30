@@ -15216,6 +15216,56 @@ The assistant wants to send [NAME] an instant message, as you:
        text="No"/>
     </form>
   </notification>
+
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
+   name="LumenAskTeleportOffer"
+   type="alertmodal">
+The assistant wants to offer [NAME] a teleport to where you are.[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to offer somebody a teleport to you"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
+   name="LumenAskTeleportRequest"
+   type="alertmodal">
+The assistant wants to ask [NAME] to teleport you to them.[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to ask somebody for a teleport to them"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
   <notification
    icon="alert.tga"
    label="Send to group chat?"

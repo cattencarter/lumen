@@ -42,6 +42,11 @@
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
 #include "llagentui.h"
+#include "llavataractions.h"  // <Lumen> canOfferTeleport
+#include "llrecentpeople.h"   // <Lumen>
+#include "llslurl.h"          // <Lumen> the offer, recorded in their conversation
+#include "fsradar.h"          // <Lumen> teleport to a person, as the radar's Teleport To
+#include "fsradarentry.h"
 #include "lldbstrings.h"    // <Lumen> the 63-character name limit
 #include "llinventorymodelbackgroundfetch.h"
 
@@ -3033,6 +3038,8 @@ namespace
             if (action == "read_messages") return "read_messages";
             if (action == "say")           return "say";
             if (action == "send_im")       return "send_im";
+            if (action == "offer_teleport")   return "offer_teleport";     // <Lumen>
+            if (action == "request_teleport") return "request_teleport";   // <Lumen>
             if (action == "find_person")   return "find_person";
             if (action == "profile")       return "profile";
             if (action == "web_presence")       return "web_presence";
@@ -3258,7 +3265,7 @@ namespace
                                "in the Trash) and save_image; the outfit for wear_outfit and save_outfit; the "
                                "folder for list_folder; the new "
                                "card's title for create_notecard; the new landmark's name for "
-                               "landmark; the person for send_im, give_item, follow and sit "
+                               "landmark; the person for send_im, give_item, follow, teleport and sit "
                                "(sit with them); the group "
                                "for send_group_message. A name "
                                "matching more than one thing is refused, with the candidates "
@@ -3431,7 +3438,8 @@ namespace
 
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
-            { "read_chat", "read_messages", "say", "send_im", "find_person", "profile",
+            { "read_chat", "read_messages", "say", "send_im", "offer_teleport", "request_teleport",
+              "find_person", "profile",
               "web_presence", "catch_up", "show_waiting",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
@@ -3473,6 +3481,12 @@ namespace
             "received; a reply is the only evidence. When they ask to OPEN an IM or a conversation "
             "with someone, pass show_window: true and their conversation window comes up with the "
             "message in it; with show_window and no message it only opens the window.\n"
+            "- offer_teleport: offer a person a teleport to where the user is -- \"bring Whisper "
+            "here\", \"invite Catten over\", \"send her a TP\". By `name` or `agent_id`, with an "
+            "optional `message`. The viewer asks the user first. They choose whether to come.\n"
+            "- request_teleport: ask a person to teleport the user to THEM -- \"ask Catten for a "
+            "TP\", \"can I go to Whisper\". Same arguments. Their answer is an offer, which "
+            "arrives in viewer / read_dialogues for the user to accept.\n"
             "- list_friends: the user's friends and which of them are online. The answer to "
             "\"is anyone about?\", which nothing else could give.\n"
             "- send_group_message: say something in a group's chat, where every member online in "
@@ -3502,8 +3516,11 @@ namespace
             "there is none, the second means the site did not answer. This is the only tool that "
             "asks a website outside Second Life about a person -- primfeed.com learns that "
             "someone looked them up.\n"
-            "- find_person: look someone up by name to get their avatar id. Searches the user's "
-            "friends and the avatars nearby -- the viewer cannot search all of Second Life.\n"
+            "- find_person: look someone up by name to get their avatar id AND where they are -- "
+            "\"where is Catten\", \"is Whisper around\". Searches the user's friends and the "
+            "avatars nearby -- the viewer cannot search all of Second Life. Each person says "
+            "`nearby` and, when they are, `distance` and `region`, as the radar knows it: anyone "
+            "in this region or the ones beside it, far past what look_nearby lists.\n"
             "- list_groups: the groups the user belongs to, and whether they are allowed to send "
             "notices in each.\n"
             "- give_item: offer one inventory item to one person -- a notecard, a landmark, a "
@@ -3611,7 +3628,9 @@ namespace
         move["description"] =
             "Move the avatar around. Pick one with `action`:\n"
             "- teleport: to a named region, optionally to a spot in it, to a `landmark` from "
-            "inventory, or `home: true`. For a landmark pass every word the user used about the "
+            "inventory, `home: true`, or to a PERSON by `name` or `agent_id` -- \"teleport to "
+            "Catten\", \"take me to Whisper\" -- when the radar sees them in this region or one "
+            "beside it; otherwise chat / request_teleport asks them for an offer. For a landmark pass every word the user used about the "
             "place -- its name, the region, anything -- because two landmarks can share a name. "
             "It teleports only when one landmark matches all of them; otherwise it answers with "
             "candidates, and you ask the user which (name and region) before trying again with "
@@ -3809,7 +3828,7 @@ namespace
         // for an ambiguous name says "pass its item_id" -- instructions the
         // model could read and not carry out.
         LLSD mag; mag["type"]="string";
-            mag["description"]="worn_by, camera, follow and sit: the person's avatar id, from "
+            mag["description"]="worn_by, camera, follow, sit and teleport: the person's avatar id, from "
                                "look_nearby or chat / find_person, or from the candidates a "
                                "refusal lists. For worn_by, pass the same one again to collect "
                                "the answer.";
@@ -10322,6 +10341,147 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         return result;
     }
 
+    // <Lumen> chat / offer_teleport and request_teleport: "bring Whisper here",
+    // "ask Catten for a teleport". Addressed to a person by name, which is what
+    // Lumen does that nothing outside the viewer can -- and a message in the
+    // user's name to somebody else, so the viewer asks first, as for an IM.
+    // Accepting an offer that ARRIVES was already answer_dialogue.
+    if (method == "offer_teleport" || method == "request_teleport")
+    {
+        const bool offer = (method == "offer_teleport");
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLSD who_error;
+        const LLUUID to = resolvePerson(params, who_error);
+        if (to.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+        if (to == gAgentID)
+        {
+            LLSD e; e["code"] = -32602; e["message"] = "That is the user themselves.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // The viewer's own checks, from the menu items that do this.
+        if (offer && !LLAvatarActions::canOfferTeleport(to))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The viewer will not offer them a teleport right now: they are a friend "
+                           "who is offline, or an RLV restriction the user wears hides where they "
+                           "are. Nothing was sent.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!offer && gSavedPerAccountSettings.getBOOL("FSRejectTeleportOffersMode"))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The user has \"reject teleport offers and requests\" switched on, so "
+                           "the offer this asks for would be refused when it came. Nothing was "
+                           "sent; they can switch it off in the viewer first.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        const std::string message = params.has("message") ? params["message"].asString()
+                                                          : std::string();
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string print = fingerprintOf(method, params);
+        LLSD replay;
+        if (recallAction(request_id, replay) || recallRecent(print, 60.0, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This was sent moments ago, so it was not sent again.";
+            return replay;
+        }
+
+        LLAvatarName av_name;
+        const bool have_name = LLAvatarNameCache::get(to, &av_name);
+        {
+            LLSD subs;
+            subs["NAME"] = have_name ? av_name.getCompleteName() : to.asString();
+            subs["TEXT"] = message.empty() ? std::string()
+                                           : "\n\nWith the message:\n\n" + askQuote(message);
+            LLSD ask;
+            if (!askUser(offer ? "LumenAskTeleportOffer" : "LumenAskTeleportRequest",
+                         subs, print, ask)) return ask;
+        }
+
+        // What an IM-blocked recipient sees instead of the words, as the
+        // viewer's own offer and request do.
+        std::string text = message;
+        if (RlvActions::isRlvEnabled() && (!RlvActions::canStartIM(to) || !RlvActions::canSendIM(to)))
+        {
+            text = RlvStrings::getString(RlvStringKeys::Hidden::Generic);
+        }
+
+        if (offer)
+        {
+            // send_lures, for one person.
+            LLMessageSystem* msg = gMessageSystem;
+            msg->newMessageFast(_PREHASH_StartLure);
+            msg->nextBlockFast(_PREHASH_AgentData);
+            msg->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+            msg->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+            msg->nextBlockFast(_PREHASH_Info);
+            msg->addU8Fast(_PREHASH_LureType, (U8)0);   // the region fills it in
+            msg->addStringFast(_PREHASH_Message, text);
+            msg->nextBlockFast(_PREHASH_TargetData);
+            msg->addUUIDFast(_PREHASH_TargetID, to);
+            gAgent.sendReliableMessage();
+
+            // Recorded in their conversation, as the viewer's own offer is.
+            LLSD args;
+            args["TO_NAME"] = LLSLURL("agent", to, "completename").getSLURLString();
+            LLSD payload;
+            payload["from_id"] = to;
+            payload["SUPPRESS_TOAST"] = true;
+            LLNotificationsUtil::add("TeleportOfferSent", args, payload);
+            LLRecentPeople::instance().add(to);
+        }
+        else
+        {
+            // LLAvatarActions::teleport_request_callback's message, sent here:
+            // that function takes either a pressed button or the message and
+            // would lose one of them if called from outside its own prompt.
+            std::string from_name;
+            LLAgentUI::buildFullname(from_name);
+            LLMessageSystem* msg = gMessageSystem;
+            msg->newMessageFast(_PREHASH_ImprovedInstantMessage);
+            msg->nextBlockFast(_PREHASH_AgentData);
+            msg->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+            msg->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+            msg->nextBlockFast(_PREHASH_MessageBlock);
+            msg->addBOOLFast(_PREHASH_FromGroup, false);
+            msg->addUUIDFast(_PREHASH_ToAgentID, to);
+            msg->addU8Fast(_PREHASH_Offline, IM_ONLINE);
+            msg->addU8Fast(_PREHASH_Dialog, IM_TELEPORT_REQUEST);
+            msg->addUUIDFast(_PREHASH_ID, LLUUID::null);
+            msg->addU32Fast(_PREHASH_Timestamp, NO_TIMESTAMP);
+            msg->addStringFast(_PREHASH_FromAgentName, from_name);
+            msg->addStringFast(_PREHASH_Message, text);
+            msg->addU32Fast(_PREHASH_ParentEstateID, 0);
+            msg->addUUIDFast(_PREHASH_RegionID, LLUUID::null);
+            msg->addVector3Fast(_PREHASH_Position, gAgent.getPositionAgent());
+            msg->addBinaryDataFast(_PREHASH_BinaryBucket, EMPTY_BINARY_BUCKET,
+                                   EMPTY_BINARY_BUCKET_SIZE);
+            gAgent.sendReliableMessage();
+        }
+
+        LLSD result;
+        result["sent"] = true;
+        result["to"] = have_name ? av_name.getUserName() : to.asString();
+        result["note"] = offer
+            ? "Offered them a teleport to where the user is. They see it and choose; the viewer "
+              "is not told when they accept -- only a refusal comes back, as a notice. Say it "
+              "was offered, not that they are coming."
+            : "Asked them to teleport the user to them. It arrives as a request they can answer "
+              "by sending an offer, which then shows up in viewer / read_dialogues for the user "
+              "to accept. Say it was asked, not that it will happen.";
+        LLSD summary; summary["action"] = method; summary["to"] = to;
+        recordAction(request_id, print, method, "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
     if (method == "read_notecard")
     {
         if (!gInventory.isInventoryUsable())
@@ -11670,6 +11830,52 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         if (wr.corrections.size()) result["read_as"] = wr.corrections;
         if (wr.ignored.size())     result["words_that_matched_nothing"] = wr.ignored;
 
+        // <Lumen> PEOPLE whose names match, from the radar's list: this region
+        // and the ones beside it, at any distance. Codex and Vibe, asked "walk
+        // to catten" with him 143-160 m off in the same region, both came here
+        // first, searched objects within 96 m, found nothing, and said he was
+        // out of reach -- one asked "is Catten a person or a place?" while the
+        // radar showed him. The same RLV rules as the people list above.
+        LLSD people_found = LLSD::emptyArray();
+        if (!nearby_hidden)
+        {
+            std::vector<std::string> words;
+            for (const std::string& w : labelWords(find)) if (w.size() >= 3) words.push_back(lowered(w));
+            uuid_vec_t all_ids;
+            std::vector<LLVector3d> all_pos;
+            LLWorld::getInstance()->getAvatars(&all_ids, &all_pos, me, 1024.f);
+            for (size_t i = 0; i < all_ids.size() && i < all_pos.size() && !words.empty(); ++i)
+            {
+                if (all_ids[i] == gAgentID) continue;
+                if (rlv_on && !RlvActions::canShowName(RlvActions::SNC_DEFAULT, all_ids[i])) continue;
+                LLAvatarName av;
+                if (!LLAvatarNameCache::get(all_ids[i], &av)) continue;
+                const std::string names = lowered(av.getUserName() + " " + av.getDisplayName()
+                                                  + " " + av.getLegacyName());
+                bool hit = false;
+                for (const std::string& w : words) hit = hit || names.find(w) != std::string::npos;
+                if (!hit) continue;
+                LLSD who;
+                who["agent_id"] = all_ids[i];
+                who["name"] = av.getUserName();
+                who["distance"] = (F32)llround((F32)(all_pos[i] - me).magVec());
+                if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(all_pos[i]))
+                {
+                    who["same_region"] = (r == gAgent.getRegion());
+                }
+                people_found.append(who);
+            }
+        }
+        if (people_found.size() > 0)
+        {
+            result["people_found"] = people_found;
+            notes.append("`people_found` are PEOPLE whose names match, from the radar -- in this "
+                         "region or the ones beside it, at any distance, farther than objects are "
+                         "listed. To go to one: movement / walk_to with their name, up to a few "
+                         "hundred metres; farther, chat / offer_teleport or request_teleport.");
+        }
+        // </Lumen>
+
         if (waiting > 0)
         {
             notes.append("Names are still arriving from the region -- call look_nearby again with "
@@ -11721,7 +11927,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // <Lumen> The distance the viewer could actually see, not the one
             // asked for.
             const S32 seen_m = (S32)llmin(radius, gAgentCamera.mDrawDistance);
-            notes.append(llformat("Nothing within %d m has those words in its name or description. "
+            notes.append(llformat("No OBJECT within %d m has those words in its name or description. "
                                   "`names_nearby` is what IS here, nearest first. If one looks like "
                                   "what they meant, suggest it and ASK -- never present it as the "
                                   "answer. Do not say there is no such thing; say you found nothing "
@@ -14930,6 +15136,7 @@ if (method == "camera")
         if (method == "stop_walking")
         {
             const bool was = gAgent.getAutoPilot() || mFollowing.notNull();
+            mWalkActive = false;                // <Lumen> asked to stop: not ended short
             mFollowing.setNull();               // stop re-arming the follow
             mFollowWasPiloting = false;
             gAgent.stopAutoPilot(true);
@@ -15256,6 +15463,9 @@ if (method == "camera")
         const LLVector3 from = gAgent.getPositionAgent();
         gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, NULL, NULL, 1.5f,
                                     0.03f, was_flying);
+        mWalkActive = true;   // <Lumen> see status
+        mWalkTarget = target;
+        mWalkTo     = described;
 
         LL_INFOS("AICtl") << "walk_to: " << described << ", " << distance << "m" << LL_ENDL;
 
@@ -15275,10 +15485,15 @@ if (method == "camera")
         result["note"] = "started_from is where they were when this walk began -- if they ask to "
                          "go back, walk_to those x, y and z. A position read later is somewhere "
                          "along the way, not the start.";
+        // <Lumen> Not "check back after several seconds": Codex took that as an
+        // order to wait, polled for half a minute at a time, and sat at
+        // "Thinking..." after the author took over with his own arrow keys.
         result["confirm_with"] =
-            "Walking takes time and can be blocked by walls, water or a ban line. Call viewer / status "
-            "after several seconds and check the position before telling the user they arrived. "
-            "stop_walking gives up.";
+            "Walking takes time and can be blocked by walls, water or a ban line. Tell the user you "
+            "are on the way and END the reply -- do not wait for the walk to finish. When they ask "
+            "whether they are there, or before something that needs them there, viewer / status "
+            "says `walking`, and `walk_ended_short` when it stopped before arriving (they took over "
+            "with their own keys, or something was in the way). stop_walking gives up.";
         LLSD summary;
         summary["action"] = "walk_to";
         summary["destination"] = described;
@@ -17812,10 +18027,40 @@ if (method == "camera")
         }
         const std::string name = params.has("name") ? params["name"].asString() : std::string();
         LLSD people = findPeople(name);
+        // <Lumen> Where they are, as the radar knows it: the viewer's list of
+        // avatars in this region and the ones beside it, which reaches far past
+        // what it draws. Without it the answer said who somebody was and never
+        // where -- and Vibe, asked "walk to catten" with him 143 m away in the
+        // same region, looked 96 m around, found nobody, and said he was out of
+        // reach. Sonnet had walked to him by name, which uses this very list.
+        const LLVector3d me = gAgent.getPositionGlobal();
+        for (LLSD::array_iterator it = people.beginArray(); it != people.endArray(); ++it)
+        {
+            const LLUUID id = (*it)["agent_id"].asUUID();
+            LLVector3d where;
+            if (id.notNull() && LLWorld::getInstance()->getAvatar(id, where))
+            {
+                (*it)["nearby"] = true;
+                (*it)["distance"] = (F32)llround((F32)dist_vec(me, where));
+                if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(where))
+                {
+                    (*it)["region"] = r->getName();
+                    (*it)["same_region"] = (r == gAgent.getRegion());
+                }
+            }
+            else
+            {
+                (*it)["nearby"] = false;
+            }
+        }
         LLSD result;
         result["people"] = people;
         result["count"] = (LLSD::Integer)people.size();
         result["searched"] = "friends and avatars nearby";
+        result["where_note"] = "`nearby` is what the radar knows: people in this region or the "
+                               "ones beside it, at any distance, with how far in metres. Up to a "
+                               "few hundred metres, movement / walk_to with their name walks there; "
+                               "farther, or not nearby, offer_teleport or request_teleport.";   // </Lumen>
         if (people.size() == 0)
         {
             result["note"] = "Nobody matched. The viewer can only name friends and people nearby; "
@@ -17844,7 +18089,45 @@ if (method == "camera")
 
         LLSD result;
         const bool home = params.has("home") && params["home"].asBoolean();
-        if (home)
+        // <Lumen> To a PERSON: "teleport to catten". The radar's own Teleport To,
+        // which lands a couple of metres short of where it last saw them. Codex,
+        // asked for exactly this with him 143 m away in the same region, said to
+        // wait for him to send an offer -- there was no way to go by name.
+        const bool to_person = !home
+            && (params.has("name") || params.has("agent_id"))
+            && !params.has("region") && !params.has("landmark") && !params.has("place_id");
+        if (to_person)
+        {
+            LLSD who_error;
+            const LLUUID person = resolvePerson(params, who_error);
+            if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+            if (person == gAgentID)
+            {
+                LLSD e; e["code"] = -32602; e["message"] = "That is the user themselves.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            std::shared_ptr<FSRadarEntry> entry = FSRadar::getInstance()
+                ? FSRadar::getInstance()->getEntry(person) : nullptr;
+            if (!entry || entry->getGlobalPos().mdV[VZ] == AVATAR_UNKNOWN_Z_OFFSET)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The radar does not know where they are standing: they are not in "
+                               "this region or the ones beside it, or too high up for their height "
+                               "to be reported. chat / request_teleport asks them to bring the user "
+                               "instead.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLAvatarActions::teleportTo(person);
+            LLAvatarName av;
+            result["destination"] = LLAvatarNameCache::get(person, &av) ? av.getUserName()
+                                                                      : person.asString();
+            result["by"] = "person";
+            result["distance"] = (F32)llround((F32)dist_vec(gAgent.getPositionGlobal(),
+                                                            entry->getGlobalPos()));
+            result["person_note"] = "To where the radar last saw them, a couple of metres short. A "
+                                    "parcel's landing point can put the user somewhere else.";
+        }
+        else if (home)
         {
             gAgent.teleportHome();
             result["destination"] = "home";
@@ -20549,6 +20832,25 @@ LLSD LumenAIControl::toolStatus() const
         if (gAgent.getAutoPilot())
         {
             status["walking_to"] = gAgent.getAutoPilotBehaviorName();
+        }
+        // <Lumen> A walk that is no longer walking, and did not get there.
+        else if (mWalkActive)
+        {
+            const F32 left = (F32)dist_vec(gAgent.getPositionGlobal(), mWalkTarget);
+            if (left > 3.f)
+            {
+                status["walk_ended_short"] = true;
+                status["walk_note"] = llformat("The walk to %s stopped %d m short of it: the user "
+                                               "may have taken over with their own movement keys, "
+                                               "or something blocked the way. Say where they are "
+                                               "now and do not wait for it any longer.",
+                                               mWalkTo.c_str(), (S32)llround(left));
+            }
+            else
+            {
+                status["walk_arrived"] = true;
+                mWalkActive = false;
+            }
         }
         // <Lumen> So a follow and a walk can be told apart.
         if (mFollowing.notNull())
