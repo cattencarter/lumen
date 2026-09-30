@@ -4,6 +4,9 @@
 want in ordinary words — find something in your inventory, put it on, frame a
 photograph, work out where a setting lives — and the viewer does it.
 
+**[needfulsl.com/lumen](https://needfulsl.com/lumen/)** has a five-minute film of
+it in use, the full list of what it can do, and how to set up the AI.
+
 Lumen is a derivative of the
 [Phoenix Firestorm Viewer](https://www.firestormviewer.org), released under the
 **GNU Lesser General Public License version 2.1** — the same licence as the work
