@@ -1047,14 +1047,20 @@ void LumenAIControl::noteAutomaticReply(const std::string& channel, const LLUUID
     // <Lumen> An IM's local copy is added inside LLIMModel::sendMessage, so
     // the newest line in the stream IS this reply -- when it is ours. catch_up
     // reads this to tell "the user answered" from "the assistant said they
-    // were away".
+    // were away". Ours, in their conversation and this reply's length: with
+    // TranslateChat on the copy arrives later, and the newest line could then
+    // be the user's own real answer.
     if (channel != "local chat")
     {
         const LLSD newest = mMessages.read(0, 1);
         if (newest["entries"].size() == 1)
         {
             const LLSD& line = newest["entries"][0];
-            if (line["from_id"].asUUID() == gAgentID)
+            const LLIMModel::LLIMSession* s = LLIMModel::instanceExists()
+                ? LLIMModel::getInstance()->findIMSession(line["session_id"].asUUID()) : NULL;
+            if (line["from_id"].asUUID() == gAgentID
+                && line["message"].asString().size() == characters
+                && (to.isNull() || (s && s->mOtherParticipantID == to)))
             {
                 if (mAutomaticReplySeqs.size() > 2 * MESSAGE_CAPACITY) mAutomaticReplySeqs.clear();
                 mAutomaticReplySeqs.insert((U64)line["seq"].asInteger());
@@ -16827,20 +16833,26 @@ if (method == "camera")
                               "said -- and remember a group's transcript is filed under the "
                               "group's name, and local chat under \"chat\".");
             // <Lumen> and what the person lookup did, so it is not tried again
-            if (!searching && lowered(query) != "chat")
+            if (!searching && by_agent.notNull())
+            {
+                result["note"] = result["note"].asString()
+                    + " A person's is filed under their account name; it looked for the names "
+                      "that agent_id goes by and found none on disk.";
+            }
+            else if (!searching && lowered(query) != "chat")
             {
                 result["note"] = result["note"].asString()
                     + " A person's is filed under their account name; it looked for that too, "
                       "among the people the viewer knows by this name (" + PEOPLE_SEARCHED
                     + ") and found none on disk. If they are known by another name, "
                       "chat / find_person gives their account name, or pass their agent_id.";
-                if (names_loading > 0)
-                {
-                    result["names_still_loading"] = names_loading;
-                    result["note"] = result["note"].asString()
-                        + llformat(" %d names have not loaded yet -- try again in a few "
-                                   "seconds.", names_loading);
-                }
+            }
+            if (names_loading > 0)   // only the person lookup counts these
+            {
+                result["names_still_loading"] = names_loading;
+                result["note"] = result["note"].asString()
+                    + llformat(" %d names have not loaded yet -- try again in a few "
+                               "seconds.", names_loading);
             }
             // </Lumen>
             return result;
