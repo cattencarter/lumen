@@ -1043,6 +1043,25 @@ void LumenAIControl::noteAutomaticReply(const std::string& channel, const LLUUID
     if (to.notNull()) summary["to"] = to;
     summary["characters"] = (LLSD::Integer)characters;
     recordAction("", "", "answer_while_away_reply", "ok", LLSD(), summary);
+
+    // <Lumen> An IM's local copy is added inside LLIMModel::sendMessage, so
+    // the newest line in the stream IS this reply -- when it is ours. catch_up
+    // reads this to tell "the user answered" from "the assistant said they
+    // were away".
+    if (channel != "local chat")
+    {
+        const LLSD newest = mMessages.read(0, 1);
+        if (newest["entries"].size() == 1)
+        {
+            const LLSD& line = newest["entries"][0];
+            if (line["from_id"].asUUID() == gAgentID)
+            {
+                if (mAutomaticReplySeqs.size() > 2 * MESSAGE_CAPACITY) mAutomaticReplySeqs.clear();
+                mAutomaticReplySeqs.insert((U64)line["seq"].asInteger());
+            }
+        }
+    }
+    // </Lumen>
 }
 // </Lumen>
 
@@ -1661,14 +1680,21 @@ namespace
     }
 
     /**
-     * Everyone this viewer can name locally: friends, and avatars nearby.
+     * Everyone this viewer can name locally: friends, avatars nearby, and the
+     * people this session has talked with.
      *
      * There is no local "look up any resident by name" -- that is a server
-     * search. These two sources are what the viewer already knows without
-     * asking anyone, and between them they cover the people a user actually
-     * talks about. Anyone else has to be addressed by agent_id.
+     * search. These are what the viewer already knows without asking anyone,
+     * and between them they cover the people a user actually talks about.
+     * Anyone else has to be addressed by agent_id.
+     *
+     * <Lumen> The conversations and the recent-people list are the viewer's
+     * own People > Recent: "reply to Tasa", who is no friend and has gone, was
+     * refused although her IM was on screen. `still_loading` counts the ones
+     * whose name has not arrived yet, which are asked for and skipped, so a
+     * miss can say "try again" rather than "nobody".
      */
-    LLSD findPeople(const std::string& needle)
+    LLSD findPeople(const std::string& needle, S32* still_loading = NULL)
     {
         const std::string want = lowered(needle);
         std::map<LLUUID, std::string> seen;   // id -> where it came from
@@ -1691,6 +1717,40 @@ namespace
             }
         }
 
+        // <Lumen> One-to-one conversations open this session, then everybody
+        // the viewer's Recent list holds: IMs both ways, local chat, offers.
+        if (LLIMModel::instanceExists())
+        {
+            const std::map<LLUUID, LLIMModel::LLIMSession*>& sessions =
+                LLIMModel::getInstance()->mId2SessionMap;
+            for (std::map<LLUUID, LLIMModel::LLIMSession*>::const_iterator it = sessions.begin();
+                 it != sessions.end(); ++it)
+            {
+                const LLIMModel::LLIMSession* s = it->second;
+                if (!s || !s->isP2PSessionType()) continue;
+                const LLUUID other = s->mOtherParticipantID;
+                if (other.notNull() && other != gAgentID && seen.find(other) == seen.end())
+                {
+                    seen[other] = "conversation";
+                }
+            }
+        }
+        if (LLRecentPeople::instanceExists())
+        {
+            uuid_vec_t recent;
+            LLRecentPeople::instance().get(recent);
+            for (size_t i = 0; i < recent.size(); ++i)
+            {
+                if (recent[i].notNull() && recent[i] != gAgentID
+                    && seen.find(recent[i]) == seen.end())
+                {
+                    seen[recent[i]] = "recent";
+                }
+            }
+        }
+        S32 loading = 0;
+        // </Lumen>
+
         LLSD out = LLSD::emptyArray();
         for (std::map<LLUUID, std::string>::const_iterator it = seen.begin();
              it != seen.end(); ++it)
@@ -1700,14 +1760,21 @@ namespace
             {
                 // Not cached yet. Asking would be an async round trip, and this
                 // handler runs on the frame loop, so it is skipped rather than
-                // waited for. It will be there next time.
+                // waited for. <Lumen> It is asked for, so it is there next time,
+                // and counted, so a miss can say so.
+                if (loading < 32)
+                {
+                    LLAvatarNameCache::get(it->first, [](const LLUUID&, const LLAvatarName&){});
+                }
+                ++loading;
                 continue;
             }
             const std::string user = av.getUserName();
             const std::string disp = av.getDisplayName();
             if (!want.empty()
                 && lowered(user).find(want) == std::string::npos
-                && lowered(disp).find(want) == std::string::npos)
+                && lowered(disp).find(want) == std::string::npos
+                && lowered(av.getAccountName()).find(want) == std::string::npos)   // <Lumen> "maryam.camino"
             {
                 continue;
             }
@@ -1718,8 +1785,84 @@ namespace
             person["known_from"] = it->second;
             out.append(person);
         }
+        if (still_loading) *still_loading = loading;   // <Lumen>
         return out;
     }
+
+    // <Lumen> What findPeople looked through, said the same way everywhere.
+    const char* const PEOPLE_SEARCHED =
+        "the user's friends, the people in this region and the ones beside it, the "
+        "conversations open this session, and the people they have recently talked to or been "
+        "near";
+
+    /**
+     * <Lumen> A person's name as the call gives it. `name` and `person` are the
+     * same thing: the movement tool's schema says `person` for "somebody's
+     * name", chat's actions said `name`, and each action honoured one of them
+     * -- so a model passing the other was refused, or, for camera, framed the
+     * user instead. `person` first when both come: it can only mean a person,
+     * where `name` is an item's or an object's on other actions.
+     */
+    std::string personNameGiven(const LLSD& params)
+    {
+        for (const char* key : { "person", "name" })
+        {
+            if (params.has(key) && params[key].isString() && !params[key].asString().empty())
+            {
+                return params[key].asString();
+            }
+        }
+        return std::string();
+    }
+
+    /** <Lumen> Whether the call names a person at all: agent_id, `name` or `person`. */
+    bool personGiven(const LLSD& params)
+    {
+        return (params.has("agent_id") && !params["agent_id"].asString().empty())
+            || !personNameGiven(params).empty();
+    }
+
+    /** <Lumen> How to call them in a reply: their username, else what was given. */
+    std::string personLabel(const LLUUID& id, const LLSD& params)
+    {
+        LLAvatarName av;
+        if (id.notNull() && LLAvatarNameCache::get(id, &av)) return av.getUserName();
+        const std::string said = personNameGiven(params);
+        return said.empty() ? id.asString() : said;
+    }
+
+    /**
+     * <Lumen> Where the radar has somebody: this region or the ones beside it,
+     * at any distance -- what find_person, list_friends and worn_by all tell.
+     * Fills `nearby` and, when they are, `distance` in metres, `region` and
+     * `same_region`. Under the RLV restrictions that empty the viewer's own
+     * radar (@shownearby) nothing is said, and @showloc keeps the region's
+     * name back, as look_nearby does.
+     */
+    bool radarPlace(const LLUUID& id, LLSD& out)
+    {
+        const bool rlv_on = rlv_handler_t::isEnabled();
+        if (rlv_on && !RlvActions::canShowNearbyAgents())
+        {
+            out["location_hidden"] = true;
+            return false;
+        }
+        LLVector3d where;
+        if (id.isNull() || !LLWorld::getInstance()->getAvatar(id, where))
+        {
+            out["nearby"] = false;
+            return false;
+        }
+        out["nearby"] = true;
+        out["distance"] = (F32)llround((F32)dist_vec(gAgent.getPositionGlobal(), where));
+        if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(where))
+        {
+            if (!(rlv_on && !RlvActions::canShowLocation())) out["region"] = r->getName();
+            out["same_region"] = (r == gAgent.getRegion());
+        }
+        return true;
+    }
+    // </Lumen>
 
     /**
      * Is `want` (lowercased) one of this person's names in full -- username,
@@ -1739,8 +1882,17 @@ namespace
         return sp != std::string::npos && legacy.substr(0, sp) == want;
     }
 
-    /** Same discipline as resolveItem: an id wins, a name must be unambiguous. */
-    LLUUID resolvePerson(const LLSD& params, LLSD& error)
+    /**
+     * Same discipline as resolveItem: an id wins, a name must be unambiguous.
+     *
+     * <Lumen> The ONE way every person-taking action reads its person:
+     * `agent_id`, or a name as `name` or `person`. `for_an_act` is false only
+     * for the read-only lookups (worn_by, profile, web_presence), which keep
+     * taking a single partial match -- the worst outcome there is an answer
+     * about the wrong person, which the model can see. An act on somebody
+     * still needs their name in full.
+     */
+    LLUUID resolvePerson(const LLSD& params, LLSD& error, bool for_an_act = true)
     {
         if (params.has("agent_id") && !params["agent_id"].asString().empty())
         {
@@ -1755,24 +1907,37 @@ namespace
             return id;
         }
 
-        const std::string name = params.has("name") ? params["name"].asString() : std::string();
+        const std::string name = personNameGiven(params);
         if (name.empty())
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "Give either agent_id or name.";
+            e["message"] = "Give the person's agent_id, or their name as `name`.";
             error = e;
             return LLUUID::null;
         }
 
-        const LLSD matches = findPeople(name);
+        S32 loading = 0;
+        const LLSD matches = findPeople(name, &loading);
         if (matches.size() == 0)
         {
+            // <Lumen> What was looked through, what could still arrive, and
+            // the id the model very likely already holds.
+            std::string msg = "Nobody the viewer knows matches \"" + name + "\". It looked at "
+                            + std::string(PEOPLE_SEARCHED) + "; it cannot search all of Second "
+                              "Life by name.";
+            if (loading > 0)
+            {
+                msg += llformat(" %d of those names have not loaded yet, so try again in a few "
+                                "seconds before saying there is nobody.", loading);
+            }
+            msg += " For somebody who wrote to the user, pass the `from_id` chat / read_messages "
+                   "gives as agent_id; for anyone else, ask for their agent_id.";
             LLSD e; e["code"] = -32000;
-            e["message"] = "Nobody the viewer knows locally matches \"" + name +
-                           "\". The viewer can only name friends and people nearby; for anyone "
-                           "else you need their agent_id.";
+            e["message"] = msg;
+            if (loading > 0) e["data"] = LLSD().with("names_still_loading", loading);
             error = e;
             return LLUUID::null;
+            // </Lumen>
         }
         const std::string want = lowered(name);
         if (matches.size() == 1)
@@ -1782,7 +1947,7 @@ namespace
             // Kimberly -- is often somebody else entirely: the person meant is
             // not a friend and has left, so the only candidate left is the
             // wrong one, and an IM or an offer cannot be taken back.
-            if (personNameIsExactly(matches[0]["agent_id"].asUUID(), want))
+            if (!for_an_act || personNameIsExactly(matches[0]["agent_id"].asUUID(), want))
             {
                 return matches[0]["agent_id"].asUUID();
             }
@@ -1816,6 +1981,25 @@ namespace
         {
             return exact_id;
         }
+        // <Lumen> Then one whose name it is in full -- display name, account
+        // name or first name -- among others that merely contain it. With the
+        // Recent list searched too, "catten" also finds a "Cattenberg" met
+        // once, and that must not unsettle the Catten the user means.
+        if (exact == 0)
+        {
+            S32 whole = 0;
+            LLUUID whole_id;
+            for (S32 i = 0; i < (S32)matches.size(); ++i)
+            {
+                if (personNameIsExactly(matches[i]["agent_id"].asUUID(), want))
+                {
+                    ++whole;
+                    whole_id = matches[i]["agent_id"].asUUID();
+                }
+            }
+            if (whole == 1) return whole_id;
+        }
+        // </Lumen>
 
         LLSD e; e["code"] = -32000;
         e["message"] = "More than one person matches \"" + name +
@@ -3281,8 +3465,8 @@ namespace
                                "in the Trash) and save_image; the outfit for wear_outfit and save_outfit; the "
                                "folder for list_folder; the new "
                                "card's title for create_notecard; the new landmark's name for "
-                               "landmark; the person for send_im, give_item, follow, teleport and sit "
-                               "(sit with them); the group "
+                               "landmark; the person for any action about somebody, as `person` "
+                               "is; the group "
                                "for send_group_message. A name "
                                "matching more than one thing is refused, with the candidates "
                                "returned, so you can ask which was meant. A PERSON is only taken "
@@ -3484,11 +3668,14 @@ namespace
             "- read_chat: recent nearby chat, what people and objects around the avatar said out "
             "loud.\n"
             "- read_messages: instant messages, group chat and conferences. Each entry's "
-            "session_type says which; num_unread says how many are unread there.\n"
+            "session_type says which; num_unread says how many are unread there. `from_id` is "
+            "the sender's agent_id, which every action about a person takes -- \"reply to her\" "
+            "needs no lookup.\n"
             "- read_history: what was said in a saved conversation, from the transcripts on "
             "their own computer -- which reach back years, where read_chat and read_messages "
             "hold only this session. `name` is the person or the group, or \"local\" for local "
-            "chat; add `since_days` for a "
+            "chat -- a person by the name the user calls them, which is looked up, or by "
+            "`agent_id`; add `since_days` for a "
             "window and `limit` for how many lines. **This is the tool for \"what did I last "
             "talk to Catten about\" and \"summarise the tribe meeting yesterday\"**, and "
             "read_messages is not; reaching for read_messages there gets you an empty list and "
@@ -3519,13 +3706,18 @@ namespace
             "here\", \"invite Catten over\", \"send her a TP\". By `name` or `agent_id`, with an "
             "optional `message`. The viewer asks the user first. They choose whether to come.\n"
             "- request_teleport: ask a person to teleport the user to THEM -- \"ask Catten for a "
-            "TP\", \"can I go to Whisper\". Same arguments. Their answer is an offer, which "
-            "arrives in viewer / read_dialogues for the user to accept.\n"
+            "TP\". Same arguments. Their answer is an offer, which arrives in viewer / "
+            "read_dialogues for the user to accept. **To GO to somebody** -- \"take me to "
+            "Catten\", \"can I go to Whisper\" -- movement / teleport with their name goes "
+            "straight there when the radar has them (find_person says `nearby`); ask for an "
+            "offer only when it does not.\n"
             "- offer_friendship: offer a person friendship -- \"add Catten as a friend\" -- by "
             "`name` or `agent_id`, with an optional `message`. The viewer asks the user first; "
             "they answer it themselves, and list_friends shows them once they have.\n"
-            "- list_friends: the user's friends and which of them are online. The answer to "
-            "\"is anyone about?\", which nothing else could give.\n"
+            "- list_friends: the user's friends and which of them are online anywhere in Second "
+            "Life -- \"which of my friends are on\". An online friend the radar can see also "
+            "has `nearby`, `distance` and `region`. Online is not HERE: for \"who is here\" "
+            "use movement / look_nearby, which lists everyone around.\n"
             "- send_group_message: say something in a group's chat, where every member online in "
             "that conversation sees it. The group is `group_id` or `group` (its name), the words "
             "are `message`. Different from send_group_notice, which goes to everyone "
@@ -3542,7 +3734,8 @@ namespace
             "is holding (group notices, offers: things that are NOT conversations and never "
             "reach read_messages) and the one-to-one instant messages this session has seen, "
             "which after a login is what arrived while they were away. Group chat and "
-            "conferences are only counted. Summarise it; do not read it out.\n"
+            "conferences are only counted. Each person says who wrote last and whether the user "
+            "has `answered` since. Summarise it; do not read it out.\n"
             "- show_waiting: the reply to catch_up in the Assistant window, when catch_up's note "
             "asks for it -- `items` with one summary per entry, and a `headline`.\n"
             "- web_presence: whether they have a **Primfeed**, and any **Marketplace store** "
@@ -3554,10 +3747,12 @@ namespace
             "asks a website outside Second Life about a person -- primfeed.com learns that "
             "someone looked them up.\n"
             "- find_person: look someone up by name to get their avatar id AND where they are -- "
-            "\"where is Catten\", \"is Whisper around\". Searches the user's friends and the "
-            "avatars nearby -- the viewer cannot search all of Second Life. Each person says "
-            "`nearby` and, when they are, `distance` and `region`, as the radar knows it: anyone "
-            "in this region or the ones beside it, far past what look_nearby lists.\n"
+            "\"where is Catten\", \"is Whisper around\". Searches the user's friends, the "
+            "avatars nearby, and the people this session has talked with -- the viewer cannot "
+            "search all of Second Life. Each person says `nearby` and, when they are, `distance` "
+            "and `region`, as the radar knows it: anyone in this region or the ones beside it. "
+            "Somebody who wrote to the user needs no lookup: the `from_id` in read_messages is "
+            "their agent_id.\n"
             "- list_groups: the groups the user belongs to, whether they are allowed to send "
             "notices in each, and which one is `active` -- the tag over their head.\n"
             "- set_active_group: choose the group whose tag shows over their head -- \"wear my "
@@ -3568,7 +3763,8 @@ namespace
             "told which, so never say it was received. The viewer asks the user itself before "
             "anything is offered, and says so plainly when the item is no-copy. Identify the item "
             "with `item_id` from an inventory search, or `item` for its name, and the person with "
-            "`agent_id`, or `name` for a friend or somebody nearby.\n"
+            "`agent_id`, or `name` for somebody the viewer knows -- a friend, somebody nearby, "
+            "or somebody talked with this session.\n"
             "- send_group_notice: a notice to everyone in one group, with a `subject`, a "
             "`message`, and optionally `item_id` to attach something from inventory. Neither may "
             "contain \"|\", which Second Life uses to separate them. This goes to "
@@ -3588,13 +3784,14 @@ namespace
         LLSD cty;  cty["type"]="string";
             cty["description"]="say: how far it carries -- whisper, normal (default) or shout.";
         LLSD cag;  cag["type"]="string";
-            cag["description"]="send_im / give_item / profile / web_presence: the person's avatar id.";
+            cag["description"]="Any action about a person: their avatar id -- from find_person, "
+                               "a refusal's candidates, or the `from_id` of a message.";
         chat_props["message"]=cmsg; chat_props["channel"]=cch; chat_props["type"]=cty;
         chat_props["agent_id"]=cag; chat_props["name"]=snm;
         LLSD cps; cps["type"]="string";
-            cps["description"]="profile / web_presence: the person's name, instead of agent_id "
-                               "-- it is looked up for you. Pass the same one again to collect "
-                               "the answer.";
+            cps["description"]="Any action about a person: their name, the same as `name` -- it "
+                               "is looked up for you. For profile / web_presence, pass the same "
+                               "one again to collect the answer.";
         chat_props["person"]=cps;
         LLSD csw; csw["type"]="boolean";
             csw["description"]="send_im: true when the user asks to OPEN an IM or a conversation -- "
@@ -3669,7 +3866,7 @@ namespace
             "Move the avatar around. Pick one with `action`:\n"
             "- teleport: to a named region, optionally to a spot in it, to a `landmark` from "
             "inventory, `home: true`, or to a PERSON by `name` or `agent_id` -- \"teleport to "
-            "Catten\", \"take me to Whisper\" -- when the radar sees them in this region or one "
+            "Catten\", \"take me to Whisper\", \"can I go to Catten\" -- when the radar sees them in this region or one "
             "beside it; otherwise chat / request_teleport asks them for an offer. For a landmark pass every word the user used about the "
             "place -- its name, the region, anything -- because two landmarks can share a name. "
             "It teleports only when one landmark matches all of them; otherwise it answers with "
@@ -3774,7 +3971,10 @@ namespace
             "Check this when something did not work: flying, running scripts and taking damage "
             "are all things a parcel can forbid, and that is usually the reason rather than a "
             "fault.\n"
-            "- look_nearby: people and objects around the avatar, with distances. **To look for "
+            "- look_nearby: people and objects around the avatar, with distances. People come "
+            "from the radar: `people` within the radius, and `people_farther` for everyone else "
+            "in this region and the ones beside it -- together, the answer to \"who is here\". "
+            "**To look for "
             "something, pass `find`** -- the user's own word PLUS the words that mean the same "
             "thing, e.g. for \"is there a market here\" `find: \"market shop store vendor mall\"`. "
             "Any one word is enough; spelling, plurals and run-together words are handled. Without "
@@ -3791,9 +3991,11 @@ namespace
             "- worn_by: what somebody ELSE is wearing, and WHO MADE each piece. Give `person` (a "
             "name) or `agent_id`. The viewer cannot see this at all -- it is read by a script in "
             "world, and selecting an object to learn its creator would draw a beam that person "
-            "can see. The reply arrives a moment later, so the first call returns `pending: true` "
-            "and you call again with the same agent_id to collect it. Say nothing about their "
-            "outfit until you have the real answer.\n"
+            "can see. That script sees only the user's region, so for somebody elsewhere it "
+            "answers at once with `in_region: false` and where the radar has them. Otherwise the "
+            "reply arrives a moment later: the first call returns `pending: true` and you call "
+            "again with the same agent_id to collect it. Say nothing about their outfit until "
+            "you have the real answer.\n"
             "  Every item carries `creator_link`. **When you name who made something, write that "
             "`creator_link` value exactly as given instead of the name** -- the viewer turns it "
             "into the person's name with their profile one click away. Copy it verbatim; never "
@@ -3829,7 +4031,7 @@ namespace
         LLSD mh;  mh["type"]="boolean"; mh["description"]="teleport: true goes home and ignores region.";
         LLSD mo;  mo["type"]="string";  mo["description"]="sit / walk_to / touch: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
-        LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256.";
+        LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256. People beyond it are still listed, as people_farther.";
         LLSD mfind; mfind["type"]="string";
             mfind["description"]="look_nearby: words to look for in the names and descriptions of "
                                  "objects nearby -- the user's word and others meaning the same, "
@@ -3874,10 +4076,10 @@ namespace
         // for an ambiguous name says "pass its item_id" -- instructions the
         // model could read and not carry out.
         LLSD mag; mag["type"]="string";
-            mag["description"]="worn_by, camera, follow, sit and teleport: the person's avatar id, from "
-                               "look_nearby or chat / find_person, or from the candidates a "
-                               "refusal lists. For worn_by, pass the same one again to collect "
-                               "the answer.";
+            mag["description"]="Any action about a person -- worn_by, camera, follow, sit, "
+                               "teleport, walk_to, turn: their avatar id, from look_nearby or "
+                               "chat / find_person, or from the candidates a refusal lists. For "
+                               "worn_by, pass the same one again to collect the answer.";
         LLSD mii; mii["type"]="string";
             mii["description"]="pose: the item_id of an animation, from inventory / search or "
                                "from the candidates a refusal lists.";
@@ -3915,8 +4117,9 @@ namespace
                                "(at the lens, the default), `away` (off along the way they face), "
                                "or `free` (left alone).";
         LLSD cpe; cpe["type"]="string";
-            cpe["description"]="Somebody's name, for the actions that are about a person: whose "
-                               "attachments to read, or who to point the camera at. Leave it out "
+            cpe["description"]="Somebody's name, for any action about a person -- the same as "
+                               "`name`: whose attachments to read, who to point the camera at, "
+                               "walk to, turn to, follow, sit with or teleport to. Leave it out "
                                "for the user themselves.";
         move_props["shot"]=csh; move_props["angle"]=can; move_props["height"]=che;
         move_props["gaze"]=cga; move_props["person"]=cpe;
@@ -8088,7 +8291,9 @@ void LumenAIControl::finishWornReply(const LLUUID& who, const LLSD& data)
             result["in_region"] = false;
             result["note"] = "The bridge cannot see them: they are not in this region, or are "
                              "offline. It can only look at avatars in the same region. Say that, "
-                             "never that they are wearing nothing.";
+                             "never that they are wearing nothing. chat / find_person says where "
+                             "the radar has them, and movement / teleport with their name goes "
+                             "to them when it does.";
             sWornReplies[who] = result;
             return;
         }
@@ -11615,10 +11820,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         const bool rlv_on = rlv_handler_t::isEnabled();
         const bool nearby_hidden = rlv_on && !RlvActions::canShowNearbyAgents();
         bool names_hidden = false;
+        // <Lumen> Everyone the radar knows -- this region and the ones beside
+        // it -- not only those inside `radius`. At a club with people 25-150 m
+        // off, "who is here?" was answered "nobody else": the list stopped at
+        // 20 m and nothing said so. Inside the radius is `people` as before;
+        // the rest are `people_farther`, nearest first.
+        struct Farther { LLSD who; F32 d; };
+        std::vector<Farther> farther;
         if (!nearby_hidden)
         {
-            LLWorld::getInstance()->getAvatars(&ids, &positions, me, radius);
+            LLWorld::getInstance()->getAvatars(&ids, &positions, me, 1024.f);
         }
+        // </Lumen>
         for (size_t i = 0; i < ids.size() && i < positions.size(); ++i)
         {
             if (ids[i] == gAgentID)
@@ -11640,9 +11853,29 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 who["agent_id"] = ids[i];
                 who["name"] = known ? av.getUserName() : "(unnamed)";
             }
-            who["distance"] = (F32)(positions[i] - me).magVec();
+            const F32 d = (F32)(positions[i] - me).magVec();
+            who["distance"] = d;
+            // <Lumen>
+            if (d > radius)
+            {
+                who["distance"] = (F32)llround(d);
+                if (positions[i].mdV[VZ] == AVATAR_UNKNOWN_Z_OFFSET) who["height_unknown"] = true;
+                if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(positions[i]))
+                {
+                    who["same_region"] = (r == gAgent.getRegion());
+                }
+                farther.push_back({ who, d });
+                continue;
+            }
+            // </Lumen>
             people.append(who);
         }
+        // <Lumen>
+        std::sort(farther.begin(), farther.end(),
+                  [](const Farther& a, const Farther& b) { return a.d < b.d; });
+        LLSD people_farther = LLSD::emptyArray();
+        for (size_t i = 0; i < farther.size() && i < 20; ++i) people_farther.append(farther[i].who);
+        // </Lumen>
         // </Lumen>
 
         // EVERY root in range, nearest first, and only then cut. Walking in
@@ -11720,6 +11953,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD result;
         result["people"] = people;
         result["radius"] = radius;
+        // <Lumen> and everybody past it, said even when it is nobody -- unless
+        // RLV hides them all, which people_hidden says
+        if (!nearby_hidden) result["people_beyond_radius"] = (S32)farther.size();
+        if (farther.size() > 0) result["people_farther"] = people_farther;
+        // </Lumen>
         // <Lumen> The viewer holds only what the region has sent it, and the
         // region sends as far as the draw distance -- less straight after a
         // teleport. Beyond that an absence is not evidence of anything.
@@ -11761,6 +11999,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                          "names, so those are shown the way the viewer shows them, anonymised. "
                          "Do not try to find out who they are.");
         }
+        // <Lumen>
+        if (!farther.empty())
+        {
+            notes.append(llformat(
+                "`people` are within %d m. `people_farther` are the others the radar knows, in "
+                "this region and the ones beside it, nearest first; `people_beyond_radius` counts "
+                "them all. \"Who is here\" is both: never say nobody else is here while "
+                "people_farther lists anyone -- say how far off they are instead, and whether "
+                "they are in this region (`same_region`).", (S32)radius));
+        }
+        // </Lumen>
 
         if (!searching)
         {
@@ -11927,8 +12176,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             result["people_found"] = people_found;
             notes.append("`people_found` are PEOPLE whose names match, from the radar -- in this "
                          "region or the ones beside it, at any distance, farther than objects are "
-                         "listed. To go to one: movement / walk_to with their name, up to a few "
-                         "hundred metres; farther, chat / offer_teleport or request_teleport.");
+                         "listed. To go to one: movement / walk_to with their name when they are "
+                         "in this region and within a few hundred metres; otherwise movement / "
+                         "teleport with their name, which goes straight to them. chat / "
+                         "request_teleport is only for somebody the radar does not list at all.");
         }
         // </Lumen>
 
@@ -14735,7 +14986,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLVector3 look;
             std::string described;
 
-            if (params.has("name") && !params["name"].asString().empty())
+            if (personGiven(params))   // <Lumen> `name`, `person` or `agent_id`
             {
                 LLSD who_error;
                 const LLUUID person = resolvePerson(params, who_error);
@@ -14756,7 +15007,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     LLSD w; w["__error"] = e; return w;
                 }
                 look.normVec();
-                described = "towards " + params["name"].asString();
+                described = "towards " + personLabel(person, params);
             }
             else if (params.has("heading"))
             {
@@ -14783,7 +15034,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             else
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "Give a direction, a heading in degrees, or a person's name.";
+                e["message"] = "Give a direction, a heading in degrees, or a person's name or "
+                               "agent_id.";
                 LLSD w; w["__error"] = e; return w;
             }
 
@@ -14878,21 +15130,15 @@ if (method == "camera")
                 focus_id = id;
                 who      = "the object";
             }
-            else if ((params.has("name") && !params["name"].asString().empty())
-                     || (params.has("person") && !params["person"].asString().empty())
-                     || (params.has("agent_id") && !params["agent_id"].asString().empty()))
+            else if (personGiven(params))
             {
                 // <Lumen> `person` is what this tool's own schema calls "who to
                 // point the camera at", and an ambiguous name is refused with
                 // "pass their agent_id" -- both were ignored, and the user was
-                // framed instead with "the camera is set". All three count.
-                LLSD pick = params;
-                if (!(pick.has("name") && !pick["name"].asString().empty()) && pick.has("person"))
-                {
-                    pick["name"] = pick["person"];
-                }
+                // framed instead with "the camera is set". All three count,
+                // through the same resolvePerson as every other action.
                 LLSD who_error;
-                const LLUUID person = resolvePerson(pick, who_error);
+                const LLUUID person = resolvePerson(params, who_error);
                 if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
                 if (person == gAgent.getID())
                 {
@@ -14922,11 +15168,7 @@ if (method == "camera")
                     }
                     // </Lumen>
                     focus_id = person;
-                    LLAvatarName av;
-                    who = (pick.has("name") && !pick["name"].asString().empty())
-                        ? pick["name"].asString()
-                        : (LLAvatarNameCache::get(person, &av) ? av.getUserName()
-                                                               : person.asString());
+                    who = personLabel(person, params);
                 }
                 // </Lumen>
             }
@@ -15306,7 +15548,7 @@ if (method == "camera")
             // </Lumen>
 
             LLSD result;
-            result["following"] = params.has("name") ? params["name"].asString() : std::string();
+            result["following"] = personLabel(person, params);   // <Lumen> by agent_id too
             result["stops_at_metres"] = 3.0;
             result["note"] = "Now following, and it keeps going -- this is the one movement that "
                              "does not finish by itself. It ends when they teleport away or go "
@@ -15379,7 +15621,7 @@ if (method == "camera")
             // anybody it draws. The author's idea: *"a 'sit with xxx' so you can
             // sit down on the same object someone else is sitting on."*
             LLUUID sat_with;
-            if (object_id.isNull() && (params.has("name") || params.has("agent_id")))
+            if (object_id.isNull() && personGiven(params))   // <Lumen> `person` too
             {
                 LLSD who_error;
                 const LLUUID person = resolvePerson(params, who_error);
@@ -15521,10 +15763,15 @@ if (method == "camera")
                 described = params["name"].asString();
             }
         }
-        else if (params.has("name") && !params["name"].asString().empty())
+        else if (personGiven(params))   // <Lumen> `name`, `person` or a confirmed agent_id
         {
             LLSD who_error;
             const LLUUID person = resolvePerson(params, who_error);
+            const std::string said = personNameGiven(params);
+            if (person.isNull() && said.empty())
+            {
+                LLSD w; w["__error"] = who_error; return w;   // a bad agent_id
+            }
             if (person.isNull())
             {
                 // **Not a person -- perhaps a thing.** Asked to walk to "the
@@ -15533,7 +15780,7 @@ if (method == "camera")
                 // walked to x 0, y 0 -- the corner of the region -- and called it
                 // "the reported direction". A name that is exactly an object's
                 // near here is what it meant.
-                const std::string want = lowered(params["name"].asString());
+                const std::string want = lowered(said);
                 const LLVector3d me = gAgent.getPositionGlobal();
                 LLViewerObject* best = NULL;
                 F32 best_d = 97.f;
@@ -15559,7 +15806,7 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
                 target = best->getPositionGlobal();
-                described = params["name"].asString();
+                described = said;
                 if (same > 1) described += llformat(" (the nearest of %d)", same);
             }
             else
@@ -15569,11 +15816,12 @@ if (method == "camera")
                 {
                     LLSD e; e["code"] = -32000;
                     e["message"] = "That person is not close enough to walk to. They may be in "
-                                   "another region; teleport instead.";
+                                   "another region; movement / teleport with their name goes to "
+                                   "them when the radar sees them.";
                     LLSD w; w["__error"] = e; return w;
                 }
                 target = where;
-                described = params["name"].asString();
+                described = personLabel(person, params);
             }
         }
         else if (params.has("direction"))
@@ -15615,7 +15863,8 @@ if (method == "camera")
         else
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "Give x and y, a direction and distance, or the name of a person.";
+            e["message"] = "Give an object_id from look_nearby, x and y, a direction and "
+                           "distance, or a person's name or agent_id.";
             LLSD w; w["__error"] = e; return w;
         }
 
@@ -16432,7 +16681,15 @@ if (method == "camera")
         const bool searching = (method == "search_history");
         std::string query = searching
             ? (params.has("query") ? params["query"].asString() : std::string())
-            : (params.has("name")  ? params["name"].asString()  : std::string());
+            : personNameGiven(params);   // <Lumen> `name`, or `person` as elsewhere
+        // <Lumen> Or the person by agent_id -- the from_id read_messages gives
+        // -- read under the names their transcript can be filed as.
+        LLUUID by_agent;
+        if (!searching && params.has("agent_id") && !params["agent_id"].asString().empty())
+        {
+            by_agent = LLUUID(params["agent_id"].asString());
+        }
+        // </Lumen>
         // <Lumen> Local chat is filed as "chat", which nobody would guess.
         if (!searching)
         {
@@ -16456,10 +16713,11 @@ if (method == "camera")
         }
         // </Lumen>
 
-        if (!searching && query.empty())
+        if (!searching && query.empty() && by_agent.isNull())
         {
             LLSD e; e["code"] = -32602;
-            e["message"] = "Give the `name` of the person or group whose conversation to read.";
+            e["message"] = "Give the `name` of the person or group whose conversation to read, "
+                           "or the person's agent_id.";
             LLSD w; w["__error"] = e; return w;
         }
         if (searching && query.empty())
@@ -16484,8 +16742,64 @@ if (method == "camera")
         }
         else
         {
-            files = transcriptsMatching(query, labels);
+            if (by_agent.isNull()) files = transcriptsMatching(query, labels);
         }
+
+        // <Lumen> No transcript answers to the words: try the PERSON they name.
+        // An IM transcript is filed under the account name -- "Maryam Camino",
+        // or "maryam.camino" with legacy log names off -- and people say
+        // "Whisper", which the name cache knows is her display name. So
+        // "what did I last talk to Whisper about?" was told nothing matched.
+        std::string via_person;
+        S32 names_loading = 0;
+        if (!searching && files.empty() && lowered(query) != "chat")
+        {
+            std::vector<LLUUID> who;
+            if (by_agent.notNull())
+            {
+                who.push_back(by_agent);
+            }
+            else
+            {
+                const LLSD people = findPeople(query, &names_loading);
+                for (LLSD::array_const_iterator it = people.beginArray(); it != people.endArray(); ++it)
+                {
+                    who.push_back((*it)["agent_id"].asUUID());
+                }
+            }
+            std::set<std::string> filed_as;
+            for (size_t i = 0; i < who.size(); ++i)
+            {
+                LLAvatarName av;
+                if (!LLAvatarNameCache::get(who[i], &av))
+                {
+                    LLAvatarNameCache::get(who[i], [](const LLUUID&, const LLAvatarName&){});
+                    ++names_loading;
+                    continue;
+                }
+                std::string legacy = av.getLegacyName();
+                const size_t resident = legacy.find(" Resident");
+                if (resident != std::string::npos) legacy.erase(resident);
+                filed_as.insert(lowered(legacy));
+                filed_as.insert(lowered(av.getUserName()));
+                filed_as.insert(lowered(av.getAccountName()));
+            }
+            for (size_t i = 0; i < all_files.size() && !filed_as.empty(); ++i)
+            {
+                const std::string label = transcriptLabel(all_files[i]);
+                if (filed_as.count(lowered(label)))
+                {
+                    files.push_back(all_files[i]);
+                    labels.push_back(label);
+                }
+            }
+            if (!files.empty())
+            {
+                via_person = (query.empty() ? std::string("That agent_id") : "\"" + query + "\"")
+                           + " is " + labels[0] + ", whose transcript is filed under that name.";
+            }
+        }
+        // </Lumen>
 
         // Nothing on disk is a different answer from nothing said, and saying
         // the second when the first is true is how somebody concludes a
@@ -16512,6 +16826,23 @@ if (method == "camera")
                               "Tell them the name did not match rather than that nothing was "
                               "said -- and remember a group's transcript is filed under the "
                               "group's name, and local chat under \"chat\".");
+            // <Lumen> and what the person lookup did, so it is not tried again
+            if (!searching && lowered(query) != "chat")
+            {
+                result["note"] = result["note"].asString()
+                    + " A person's is filed under their account name; it looked for that too, "
+                      "among the people the viewer knows by this name (" + PEOPLE_SEARCHED
+                    + ") and found none on disk. If they are known by another name, "
+                      "chat / find_person gives their account name, or pass their agent_id.";
+                if (names_loading > 0)
+                {
+                    result["names_still_loading"] = names_loading;
+                    result["note"] = result["note"].asString()
+                        + llformat(" %d names have not loaded yet -- try again in a few "
+                                   "seconds.", names_loading);
+                }
+            }
+            // </Lumen>
             return result;
         }
 
@@ -16710,6 +17041,7 @@ if (method == "camera")
         result["searched_lines"] = (LLSD::Integer)scanned;
         if (!searching) result["conversation"] = labels.empty() ? query : labels[0];
         else            result["conversations_searched"] = (LLSD::Integer)files.size();
+        if (!via_person.empty()) result["found_by_person"] = via_person;   // <Lumen>
         if (days > 0)   result["since"] = cutoff;
         result["local_chat_is_logged"] = nearby_logged;
         result["local_chat_saved_before"] = nearby_on_disk;
@@ -17822,8 +18154,18 @@ if (method == "camera")
                 }
                 who["name"] = "(not known yet)";
             }
-            if (LLAvatarTracker::instance().isBuddyOnline(it->first)) online.append(who);
-            else                                                      offline.append(who);
+            if (LLAvatarTracker::instance().isBuddyOnline(it->first))
+            {
+                // <Lumen> Online is not HERE: "Catten and Whisper are about"
+                // was said of two friends in other regions. Where the radar
+                // has them, say it.
+                radarPlace(it->first, who);
+                online.append(who);
+            }
+            else
+            {
+                offline.append(who);
+            }
         }
 
         LLSD result;
@@ -17831,6 +18173,13 @@ if (method == "camera")
         result["offline_count"] = (LLSD::Integer)offline.size();
         result["offline"] = offline;
         result["total"] = (LLSD::Integer)buddies.size();
+        // <Lumen>
+        result["online_note"] = "Online means anywhere in Second Life. `nearby` is whether the "
+                                "radar has them in this region or the ones beside it, with "
+                                "`distance` and `region`; somebody online and not nearby is "
+                                "elsewhere. For \"who is here\", movement / look_nearby lists "
+                                "everyone around, friends or not.";
+        // </Lumen>
         if (unnamed > 0)
         {
             result["names_not_yet_known"] = unnamed;
@@ -18000,41 +18349,69 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        // Who.
-        LLUUID target;
-        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
+        // Who. <Lumen> `person`, `name` or `agent_id`, as every action reads a
+        // person -- this one ignored `name`. A lookup, not an act, so a single
+        // partial match is still taken; the candidates come back when several
+        // match (Findings 41: or the caller is told to ask with nothing to ask
+        // about).
+        LLSD who_error;
+        const LLUUID target = resolvePerson(params, who_error, /*for_an_act*/ false);
+        if (target.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+
+        // <Lumen> The bridge is a script in THIS region and sees nobody outside
+        // it, and the radar already knows who is here. Every model needed two
+        // calls to learn "not in this region, or offline" -- the first always
+        // pending, for somebody the viewer knew was elsewhere -- and then had
+        // no idea where they were or how to get there.
+        // Not under @shownearby, which empties the viewer's own radar: then the
+        // bridge is asked as before, and nothing is said about where they are.
+        if (target != gAgentID
+            && !(rlv_handler_t::isEnabled() && !RlvActions::canShowNearbyAgents()))
         {
-            target = params["agent_id"].asUUID();
+            LLVector3d where;
+            LLViewerRegion* theirs = LLWorld::getInstance()->getAvatar(target, where)
+                ? LLWorld::getInstance()->getRegionFromPosGlobal(where) : NULL;
+            if (!theirs || theirs != gAgent.getRegion())
+            {
+                LLSD result;
+                result["agent_id"] = target;
+                result["name"] = personLabel(target, params);
+                result["in_region"] = false;
+                const bool on_radar = radarPlace(target, result);
+                const bool friend_of = LLAvatarTracker::instance().isBuddy(target);
+                if (friend_of) result["online"] = LLAvatarTracker::instance().isBuddyOnline(target);
+                std::string where_now;
+                if (on_radar)
+                {
+                    where_now = "They are in the region beside this one";
+                    if (result.has("region")) where_now += ", " + result["region"].asString();
+                    where_now += llformat(", about %d m away. movement / teleport with their name "
+                                          "goes straight to them",
+                                          (S32)result["distance"].asReal());
+                }
+                else if (friend_of && !result["online"].asBoolean())
+                {
+                    where_now = "They are offline";
+                }
+                else if (friend_of)
+                {
+                    where_now = "They are online, but not in this region or the ones beside it, "
+                                "so the radar cannot say where. chat / request_teleport asks them "
+                                "for a teleport";
+                }
+                else
+                {
+                    where_now = "They are not in this region or the ones beside it; not being a "
+                                "friend, whether they are online is not known";
+                }
+                result["note"] = where_now + ". What somebody wears is read by a script in "
+                                 "THIS region, which sees nobody outside it, so nothing was asked. "
+                                 "Tell the user that -- never that they are wearing nothing. "
+                                 "worn_by can read them once they are in the user's region.";
+                return result;
+            }
         }
-        else
-        {
-            const std::string who = params.has("person") ? params["person"].asString() : std::string();
-            if (who.empty())
-            {
-                LLSD e; e["code"] = -32602;
-                e["message"] = "Give `person` (a name) or `agent_id`.";
-                LLSD w; w["__error"] = e; return w;
-            }
-            LLSD people = findPeople(who);
-            if (people.size() == 0)
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "Nobody nearby or on the friends list matched \"" + who + "\". "
-                               "The viewer cannot search Second Life for a resident by name.";
-                LLSD w; w["__error"] = e; return w;
-            }
-            if (people.size() > 1)
-            {
-                // Findings 41: attach the candidates or the caller is told to ask
-                // and given nothing to ask about.
-                LLSD e; e["code"] = -32000;
-                e["message"] = "More than one person matched \"" + who + "\". "
-                               "Ask which, then pass their agent_id.";
-                e["data"] = people;
-                LLSD w; w["__error"] = e; return w;
-            }
-            target = people[0]["agent_id"].asUUID();
-        }
+        // </Lumen>
 
         // The bridge is the only way to ask. Say so plainly when it cannot.
         if (!FSLSLBridge::instance().canUseBridge())
@@ -18286,14 +18663,28 @@ if (method == "camera")
         std::vector<LLSD> one_to_one;
         std::map<LLUUID, S32> group_lines;   // session -> lines
         S32 skipped = 0;
+        // <Lumen> Who spoke last in each conversation. The user's own lines are
+        // left out of what is shown, but not out of the question "is anybody
+        // waiting on an answer" -- which was answered "Catten looks like he is
+        // waiting" about a conversation the user had already replied to.
+        struct LastLines { S32 theirs = 0; S32 user = 0; S32 away_reply = 0; };
+        std::map<LLUUID, LastLines> last_lines;   // session -> newest seq of each
         for (LLSD::array_const_iterator it = stream["entries"].beginArray();
              it != stream["entries"].endArray(); ++it)
         {
+            const S32 seq = (*it)["seq"].asInteger();
             if ((*it).has("from_id") && (*it)["from_id"].asUUID() == gAgent.getID())
             {
+                // The away-responder writes as the user; "back shortly" is not
+                // the user having answered.
+                LastLines& l = last_lines[(*it)["session_id"].asUUID()];
+                if (mAutomaticReplySeqs.count((U64)seq)) l.away_reply = seq;
+                else                                     l.user = seq;
                 ++skipped;   // our own half of the conversation, not news
                 continue;
             }
+            last_lines[(*it)["session_id"].asUUID()].theirs = seq;
+            // </Lumen>
             const S32 stype = (*it).has("session_type") ? (*it)["session_type"].asInteger()
                                                         : (S32)LLIMModel::LLIMSession::P2P_SESSION;
             if (stype == LLIMModel::LLIMSession::GROUP_SESSION
@@ -18355,6 +18746,7 @@ if (method == "camera")
         // three cards for it reads as three. The model writes one summary
         // covering all of them; the viewer still owns who and which group.
         LLSD waiting = LLSD::emptyArray();
+        S32 answered_count = 0;   // <Lumen>
         {
             std::map<std::string, S32> seen;   // key -> index into waiting
 
@@ -18373,6 +18765,21 @@ if (method == "camera")
                     if ((*it).has("from_id"))   e["from_id"]   = (*it)["from_id"];
                     if ((*it).has("from_link")) e["from_link"] = (*it)["from_link"];
                     e["said"] = LLSD::emptyArray();
+                    // <Lumen> Who wrote last in that conversation, and whether
+                    // the user has answered since their last line.
+                    std::map<LLUUID, LastLines>::const_iterator ll =
+                        last_lines.find((*it)["session_id"].asUUID());
+                    if (ll != last_lines.end())
+                    {
+                        const LastLines& l = ll->second;
+                        const bool answered = l.user > l.theirs;
+                        e["answered"] = answered;
+                        e["last_from"] = (l.user > l.theirs && l.user > l.away_reply) ? "user"
+                                       : (l.away_reply > l.theirs ? "away_reply" : "them");
+                        if (!answered && l.away_reply > l.theirs) e["away_reply_sent"] = true;
+                        if (answered) ++answered_count;
+                    }
+                    // </Lumen>
                     seen[key] = (S32)waiting.size();
                     waiting.append(e);
                 }
@@ -18407,6 +18814,7 @@ if (method == "camera")
             }
         }
         result["waiting"] = waiting;
+        if (answered_count > 0) result["already_answered"] = answered_count;   // <Lumen>
         // </Lumen>
 
         const std::string intro =
@@ -18419,7 +18827,13 @@ if (method == "camera")
             "group, are not in `waiting`, and are never somebody waiting on an answer -- mention "
             "them at most as a count. `older_messages_left_out`, when present, is how many older "
             "one-to-one lines did not fit; chat / read_messages has them.\n"
-            "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n";
+            "**`waiting` is the list to answer about** -- one entry per PERSON and per GROUP, not per message. An entry with three notices in it is one card, and its summary covers all three.\n"
+            // <Lumen>
+            "Each person's entry says who wrote last (`last_from`). `answered: true` means the "
+            "user replied after their last line: that conversation is NOT waiting on an answer, "
+            "so leave it out of what wants attention. `away_reply_sent` means only the "
+            "away-responder answered -- the user themselves has not.\n";
+            // </Lumen>
         const std::string seems =
             "**Say how it seems, not what it is.** 'Nothing else seems urgent' rather than 'nothing is urgent'; 'Maryam looks like she is waiting on an answer' rather than 'you need to reply to Maryam'. What matters is the user's to decide and you are reporting an impression -- the notice you read as routine may be the one they were waiting for, and you cannot know that.\n";
         // <Lumen> Over the socket nothing draws cards (see show_waiting), so
@@ -18433,7 +18847,7 @@ if (method == "camera")
                 "ABOUT. Summarise, never quote -- 'a dance night on Friday, doors at eight, "
                 "feather theme' rather than the notice's own words.\n"
                 "Then ONE short line on what APPEARS to want attention -- who seems to be waiting "
-                "on an answer, what looks time-critical.\n"
+                "on an answer (never one marked `answered`), what looks time-critical.\n"
                 + seems +
                 "If nothing came in at all, say so in one line.";
             return result;
@@ -18445,7 +18859,7 @@ if (method == "camera")
             "thrown away.\n"
             "Give show_waiting `items`: one entry per id in `waiting`, as {\"id\": that id, "
             "\"summary\": one or two short sentences saying what it is ABOUT}. Summarise, never quote -- 'a dance night on Friday, doors at eight, feather theme' rather than the notice's own words, and a long notice becomes one line. Keep every id and drop nothing.\n"
-            "And `headline`: ONE short line on what APPEARS to want attention -- who seems to be waiting on an answer, what looks time-critical.\n"
+            "And `headline`: ONE short line on what APPEARS to want attention -- who seems to be waiting on an answer (never one marked `answered`), what looks time-critical.\n"
             + seems +
             "If nothing came in at all, call it with no items and a headline saying so.";
         return result;
@@ -18459,35 +18873,12 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        LLUUID who;
-        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
-        {
-            who = params["agent_id"].asUUID();
-        }
-        else
-        {
-            const std::string name = params.has("person") ? params["person"].asString() : std::string();
-            if (name.empty())
-            {
-                LLSD e; e["code"] = -32602; e["message"] = "Give `person` (a name) or `agent_id`.";
-                LLSD w; w["__error"] = e; return w;
-            }
-            LLSD people = findPeople(name);
-            if (people.size() == 0)
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "Nobody nearby or on the friends list matched \"" + name + "\".";
-                LLSD w; w["__error"] = e; return w;
-            }
-            if (people.size() > 1)
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "More than one person matched \"" + name + "\". Ask which, then pass agent_id.";
-                e["data"] = people;
-                LLSD w; w["__error"] = e; return w;
-            }
-            who = people[0]["agent_id"].asUUID();
-        }
+        // <Lumen> The same person lookup as every action: `person`, `name` or
+        // `agent_id`. Read-only, so a single partial match is still taken.
+        LLSD who_error;
+        const LLUUID who = resolvePerson(params, who_error, /*for_an_act*/ false);
+        if (who.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+        // </Lumen>
 
         std::map<LLUUID, LLSD>::iterator got = sWebPresence.find(who);
         if (got != sWebPresence.end())
@@ -18541,35 +18932,12 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        LLUUID who;
-        if (params.has("agent_id") && params["agent_id"].asUUID().notNull())
-        {
-            who = params["agent_id"].asUUID();
-        }
-        else
-        {
-            const std::string name = params.has("person") ? params["person"].asString() : std::string();
-            if (name.empty())
-            {
-                LLSD e; e["code"] = -32602; e["message"] = "Give `person` (a name) or `agent_id`.";
-                LLSD w; w["__error"] = e; return w;
-            }
-            LLSD people = findPeople(name);
-            if (people.size() == 0)
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "Nobody nearby or on the friends list matched \"" + name + "\".";
-                LLSD w; w["__error"] = e; return w;
-            }
-            if (people.size() > 1)
-            {
-                LLSD e; e["code"] = -32000;
-                e["message"] = "More than one person matched \"" + name + "\". Ask which, then pass agent_id.";
-                e["data"] = people;
-                LLSD w; w["__error"] = e; return w;
-            }
-            who = people[0]["agent_id"].asUUID();
-        }
+        // <Lumen> The same person lookup as every action: `person`, `name` or
+        // `agent_id`. Read-only, so a single partial match is still taken.
+        LLSD who_error;
+        const LLUUID who = resolvePerson(params, who_error, /*for_an_act*/ false);
+        if (who.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+        // </Lumen>
 
         std::map<LLUUID, LLSD>::iterator got = sProfiles.find(who);
         if (got != sProfiles.end())
@@ -18604,47 +18972,57 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
             LLSD w; w["__error"] = e; return w;
         }
-        const std::string name = params.has("name") ? params["name"].asString() : std::string();
-        LLSD people = findPeople(name);
+        // <Lumen> `person` is the same as `name`, as everywhere.
+        const std::string name = personNameGiven(params);
+        S32 loading = 0;
+        LLSD people = findPeople(name, &loading);
         // <Lumen> Where they are, as the radar knows it: the viewer's list of
         // avatars in this region and the ones beside it, which reaches far past
         // what it draws. Without it the answer said who somebody was and never
         // where -- and Vibe, asked "walk to catten" with him 143 m away in the
         // same region, looked 96 m around, found nobody, and said he was out of
         // reach. Sonnet had walked to him by name, which uses this very list.
-        const LLVector3d me = gAgent.getPositionGlobal();
         for (LLSD::array_iterator it = people.beginArray(); it != people.endArray(); ++it)
         {
             const LLUUID id = (*it)["agent_id"].asUUID();
-            LLVector3d where;
-            if (id.notNull() && LLWorld::getInstance()->getAvatar(id, where))
+            radarPlace(id, *it);
+            // Online anywhere, which the radar cannot say, for a friend.
+            if (LLAvatarTracker::instance().isBuddy(id))
             {
-                (*it)["nearby"] = true;
-                (*it)["distance"] = (F32)llround((F32)dist_vec(me, where));
-                if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(where))
-                {
-                    (*it)["region"] = r->getName();
-                    (*it)["same_region"] = (r == gAgent.getRegion());
-                }
-            }
-            else
-            {
-                (*it)["nearby"] = false;
+                (*it)["online"] = LLAvatarTracker::instance().isBuddyOnline(id);
             }
         }
         LLSD result;
         result["people"] = people;
         result["count"] = (LLSD::Integer)people.size();
-        result["searched"] = "friends and avatars nearby";
+        result["searched"] = PEOPLE_SEARCHED;
+        // "take me to Catten" went to request_teleport, because this said to --
+        // while movement / teleport by name goes straight to anybody listed.
         result["where_note"] = "`nearby` is what the radar knows: people in this region or the "
-                               "ones beside it, at any distance, with how far in metres. Up to a "
-                               "few hundred metres, movement / walk_to with their name walks there; "
-                               "farther, or not nearby, offer_teleport or request_teleport.";   // </Lumen>
+                               "ones beside it, at any distance, with how far in metres. To go to "
+                               "somebody `nearby`: movement / walk_to with their name when they are "
+                               "in this region (`same_region`) and within a few hundred metres, "
+                               "otherwise movement / teleport with their name, which goes straight "
+                               "to them. Only for somebody NOT nearby does chat / request_teleport "
+                               "ask them for a teleport; offer_teleport brings THEM to the user.";
+        if (loading > 0)
+        {
+            result["names_still_loading"] = loading;
+        }
         if (people.size() == 0)
         {
-            result["note"] = "Nobody matched. The viewer can only name friends and people nearby; "
-                             "it cannot search Second Life for a resident by name.";
+            result["note"] = loading > 0
+                ? llformat("Nobody matched yet, but %d of the people it looked through have "
+                           "names still loading -- try again in a few seconds before saying "
+                           "there is nobody. It cannot search all of Second Life by name; for "
+                           "somebody who wrote to the user, the `from_id` chat / read_messages "
+                           "gives is their agent_id.", loading)
+                : std::string("Nobody matched. It cannot search all of Second Life by name; for "
+                              "somebody who wrote to the user, the `from_id` chat / read_messages "
+                              "gives is their agent_id, which every action about a person "
+                              "takes.");
         }
+        // </Lumen>
         return result;
     }
 
@@ -18673,7 +19051,7 @@ if (method == "camera")
         // asked for exactly this with him 143 m away in the same region, said to
         // wait for him to send an offer -- there was no way to go by name.
         const bool to_person = !home
-            && (params.has("name") || params.has("agent_id"))
+            && personGiven(params)   // <Lumen> `name`, `person` or `agent_id`
             && !params.has("region") && !params.has("landmark") && !params.has("place_id");
         if (to_person)
         {
@@ -18819,7 +19197,7 @@ if (method == "camera")
             {
                 LLSD e; e["code"] = -32602;
                 e["message"] = "Give a region name, a landmark name, a place_id from "
-                               "search_places, or home: true.";
+                               "search_places, a person's name or agent_id, or home: true.";
                 LLSD w; w["__error"] = e; return w;
             }
 

@@ -601,6 +601,10 @@ private:
     bool        mSubscribed;
     Stream      mMessages;   //< IM, group chat and ad-hoc, from one signal
     Stream      mChat;       //< nearby chat
+    /// <Lumen> Which of our own lines in mMessages the away-responder wrote,
+    /// by seq, so catch_up does not count "back shortly" as the user having
+    /// answered somebody.
+    std::unordered_set<U64> mAutomaticReplySeqs;
 
     boost::signals2::connection mMessageConnection;
     boost::signals2::connection mChatConnection;
