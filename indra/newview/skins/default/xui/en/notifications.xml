@@ -15133,7 +15133,7 @@ A new version of Lumen is available ([VERSION]).
    type="alertmodal">
 Lumen allows AI assistants to help you interact with Second Life.
 
-Lumen has been developed and tested with care, but AI can make mistakes. Actions involving your inventory or viewer may therefore have unintended results, including possible asset loss. Please consider Lumen experimental software rather than a finished product.
+Lumen is a proof of concept and AI can make mistakes. Actions involving your inventory or viewer may therefore have unintended results, including possible asset loss. Please consider Lumen experimental software rather than a finished product.
 
 When you use AI features, information needed to process your request may be sent to the AI provider you have selected. This can include chat and instant messages, inventory information, avatar information, nearby-world information, the text of notecards and scripts you ask it to read, and other relevant Second Life data. Messages from other Residents may therefore also be included when the AI is asked to work with conversations.
 
