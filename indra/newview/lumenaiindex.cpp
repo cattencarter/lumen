@@ -179,6 +179,7 @@ void LumenAIIndex::build()
         e.id      = it->getUUID();
         e.lname   = lowered(it->getName());
         e.lfolder = folderPathLower(it->getParentUUID(), path_cache);
+        e.parent  = it->getParentUUID();   // <Lumen>
         e.type    = it->getType();
         // <Lumen> A landmark is also found by where it GOES: "my landmarks in
         // Rio Solimoes" is a question about destinations, which the name and
@@ -727,92 +728,8 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
 
     total_matches = 0;
 
-    // Whether a word occurs, exactly as typed, in some name or folder -- the
-    // test matching itself uses. The vocabulary below is runs of letters and
-    // digits, so a word with an apostrophe or a hyphen ("whisper's", "men's",
-    // "t-shirt") was never "known", and was "corrected" to a nearby word that
-    // then dropped the very item named, with a note saying they mistyped.
-    auto occurs = [this](const std::string& w)
-    {
-        for (const Entry& e : mEntries)
-        {
-            if (e.lname.find(w) != std::string::npos
-                || e.lfolder.find(w) != std::string::npos)
-            {
-                return true;
-            }
-        }
-        return false;
-    };
-
     const std::string whole = lowered(query);
-    std::vector<std::string> words = wordsOf(whole);
-
-    // Correct only what matched nothing at all.
-    //
-    // "tantacio" is not a substring of "tentacio", so the search returned zero
-    // and the assistant reported -- correctly and uselessly -- that there were
-    // no such skirts. Nothing about that is the model's doing: it passed what
-    // it was given and said what it was told.
-    //
-    // This runs after exact matching has already failed for a word, so a
-    // correctly spelled query is never altered and the worst case it replaces
-    // is an empty result.
-    {
-        std::vector<std::string> rebuilt;
-        rebuilt.reserve(words.size() + 1);
-        for (const std::string& w : words)
-        {
-            if (known(w) || occurs(w))
-            {
-                rebuilt.push_back(w);   // matched something: never touched
-                continue;
-            }
-
-            // <Lumen> A plural the edit allowance cannot reach, before anything
-            // else: "scarves" is three edits from "scarf". Reported like any
-            // other correction, because the search did change the word.
-            const std::string single = singularOf(w);
-            if (!single.empty())
-            {
-                if (corrections)
-                {
-                    corrections->push_back(std::make_pair(w, single));
-                }
-                rebuilt.push_back(single);
-                continue;
-            }
-
-            // Then a missing space, before the edit pass, because it is the
-            // more likely mistake and the more certain one: both halves have to
-            // be real words.
-            std::string a, b;
-            if (splitWord(w, a, b))
-            {
-                if (corrections)
-                {
-                    corrections->push_back(std::make_pair(w, a + " " + b));
-                }
-                rebuilt.push_back(a);
-                rebuilt.push_back(b);
-                continue;
-            }
-
-            const std::string fixed = correctWord(w);
-            if (!fixed.empty())
-            {
-                if (corrections)
-                {
-                    corrections->push_back(std::make_pair(w, fixed));
-                }
-                rebuilt.push_back(fixed);
-                continue;
-            }
-
-            rebuilt.push_back(w);       // leave it alone and return nothing
-        }
-        words.swap(rebuilt);
-    }
+    std::vector<std::string> words = repairedWords(wordsOf(whole), corrections);   // <Lumen>
 
     // The phrase bonuses compare against the whole query, so they have to see
     // the corrected spelling too -- otherwise a fixed word still loses every
@@ -1067,3 +984,168 @@ std::vector<LumenAIIndex::Hit> LumenAIIndex::search(const std::string& query,
     }
     return hits;
 }
+
+// <Lumen> Whether a word occurs, exactly as typed, in some name or folder --
+// the test matching itself uses. The vocabulary is runs of letters and digits,
+// so a word with an apostrophe or a hyphen ("whisper's", "men's", "t-shirt")
+// was never "known", and was "corrected" to a nearby word that then dropped
+// the very item named, with a note saying they mistyped.
+bool LumenAIIndex::occurs(const std::string& w) const
+{
+    for (const Entry& e : mEntries)
+    {
+        if (e.lname.find(w) != std::string::npos
+            || e.lfolder.find(w) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Correct only what matched nothing at all.
+//
+// "tantacio" is not a substring of "tentacio", so the search returned zero
+// and the assistant reported -- correctly and uselessly -- that there were
+// no such skirts. Nothing about that is the model's doing: it passed what
+// it was given and said what it was told.
+//
+// This runs after exact matching has already failed for a word, so a
+// correctly spelled query is never altered and the worst case it replaces
+// is an empty result.
+std::vector<std::string> LumenAIIndex::repairedWords(
+    const std::vector<std::string>& words,
+    std::vector<std::pair<std::string, std::string> >* corrections)
+{
+    std::vector<std::string> rebuilt;
+    rebuilt.reserve(words.size() + 1);
+    for (const std::string& w : words)
+    {
+        if (known(w) || occurs(w))
+        {
+            rebuilt.push_back(w);   // matched something: never touched
+            continue;
+        }
+
+        // <Lumen> A plural the edit allowance cannot reach, before anything
+        // else: "scarves" is three edits from "scarf". Reported like any
+        // other correction, because the search did change the word.
+        const std::string single = singularOf(w);
+        if (!single.empty())
+        {
+            if (corrections)
+            {
+                corrections->push_back(std::make_pair(w, single));
+            }
+            rebuilt.push_back(single);
+            continue;
+        }
+
+        // Then a missing space, before the edit pass, because it is the
+        // more likely mistake and the more certain one: both halves have to
+        // be real words.
+        std::string a, b;
+        if (splitWord(w, a, b))
+        {
+            if (corrections)
+            {
+                corrections->push_back(std::make_pair(w, a + " " + b));
+            }
+            rebuilt.push_back(a);
+            rebuilt.push_back(b);
+            continue;
+        }
+
+        const std::string fixed = correctWord(w);
+        if (!fixed.empty())
+        {
+            if (corrections)
+            {
+                corrections->push_back(std::make_pair(w, fixed));
+            }
+            rebuilt.push_back(fixed);
+            continue;
+        }
+
+        rebuilt.push_back(w);       // leave it alone and return nothing
+    }
+    return rebuilt;
+}
+
+// <Lumen> See the header. Items, not names: nothing is collapsed here.
+std::vector<LumenAIIndex::Match> LumenAIIndex::matchAll(
+    const std::string& query,
+    LLAssetType::EType kind,
+    std::vector<std::pair<std::string, std::string> >* corrections,
+    const std::set<LLUUID>* only)
+{
+    if (!mBuilt)
+    {
+        build();
+    }
+
+    std::vector<std::pair<std::string, std::string> > mine;
+    std::vector<std::pair<std::string, std::string> >* fixes = corrections ? corrections : &mine;
+    const size_t fixes_before = fixes->size();
+
+    const std::string whole = lowered(query);
+    const std::vector<std::string> words = repairedWords(wordsOf(whole), fixes);
+
+    // The phrase bonuses see the corrected spelling, as in search().
+    std::string phrase = whole;
+    if (fixes->size() > fixes_before)
+    {
+        phrase.clear();
+        for (const std::string& w : words)
+        {
+            if (!phrase.empty()) phrase += " ";
+            phrase += w;
+        }
+    }
+
+    std::vector<Match> out;
+    for (const Entry& e : mEntries)
+    {
+        if (e.in_trash)
+        {
+            continue;
+        }
+        if (kind != LLAssetType::AT_NONE && e.type != kind)
+        {
+            continue;
+        }
+        if (only && !only->count(e.id))
+        {
+            continue;
+        }
+        bool all = true;
+        for (const std::string& w : words)
+        {
+            if (e.lname.find(w) == std::string::npos &&
+                e.lfolder.find(w) == std::string::npos)
+            {
+                all = false;
+                break;
+            }
+        }
+        if (!all)
+        {
+            continue;
+        }
+        Match m;
+        m.id      = e.id;
+        m.parent  = e.parent;
+        m.type    = e.type;
+        m.creator = e.creator;
+        m.score   = words.empty() ? 0 : score(e.lname, words, phrase, e.lfolder);
+        out.push_back(m);
+    }
+
+    if (!words.empty())
+    {
+        std::stable_sort(out.begin(), out.end(),
+                         [](const Match& a, const Match& b) { return a.score > b.score; });
+    }
+    return out;
+}
+// </Lumen>
