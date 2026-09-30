@@ -20,6 +20,7 @@
 #include "lumenaivibe.h"     // <Lumen>
 #include "lumenaicodex.h"
 #include "lumenaictl.h"
+#include "lumenaiwin.h"      // <Lumen> PowerShell and Windows arguments
 #include "llcoros.h"
 #include "lleventcoro.h"
 #include "lltimer.h"
@@ -29,7 +30,11 @@ namespace
     /**
      * What each step runs.
      *
-     * All three go through `/bin/sh -c` rather than being executed directly,
+     * On Windows each goes through PowerShell instead, in a visible window
+     * so the progress and the sign-in code can be seen and pasted -- the
+     * installers are PowerShell one-liners there (`irm ... | iex`).
+     *
+     * On macOS all three go through `/bin/sh -c` rather than being executed directly,
      * and the first one has to: it is a pipeline, and a pipe is a shell
      * feature. LLProcess runs an executable, not a command line, so without a
      * shell the `| sh` would arrive as two more arguments to curl.
@@ -37,6 +42,36 @@ namespace
     std::string command(const std::string& provider, int step)
     {
         const bool codex = (provider == LumenAIKeys::CODEX);
+#if LL_WINDOWS
+        // <Lumen> On Windows each step is a PowerShell command (see run()),
+        // and each installer is the vendor's own install.ps1 -- all three read
+        // and run in a Windows 11 VM on 2026-09-30 (Findings 43). None needs
+        // administrator rights, and nothing else is installed first: uv, for
+        // Vibe, fetches its own Python. Codex's third step is not a command
+        // on Windows at all: Lumen starts its own server (run()).
+        if (provider == LumenAIKeys::VIBE)
+        {
+            return (step == 0)
+                ? std::string("irm https://astral.sh/uv/install.ps1 | iex; "
+                              "& \"$env:USERPROFILE\\.local\\bin\\uv.exe\" tool install mistral-vibe")
+                : std::string();
+        }
+        if (codex)
+        {
+            if (step == 0) return "irm https://chatgpt.com/codex/install.ps1 | iex";
+            if (step == 1) return "& \"" + LumenAICodex::cliPath() + "\" login";
+            return std::string();
+        }
+        if (step == 0) return "irm https://claude.ai/install.ps1 | iex";
+        if (step == 1)
+        {
+            const std::string cli = LumenAIClaude::cliPath();
+            return cli.empty()
+                ? std::string("& \"$env:USERPROFILE\\.local\\bin\\claude.exe\" auth login")
+                : "& \"" + cli + "\" auth login";
+        }
+        return std::string();
+#else
         // <Lumen> Mistral Vibe's own installer: uv from Astral if it is missing
         // (checksum-checked by the script), then `uv tool install mistral-vibe`.
         // Signing in is not a command at all -- see run().
@@ -90,6 +125,7 @@ namespace
                 return "\"$HOME/.codex/packages/standalone/current/bin/codex\" app-server daemon start";
             default: return "";
         }
+#endif
     }
 
     /** How long to let a step run before saying so. Signing in is a person
@@ -164,7 +200,8 @@ bool LumenAISetupFloater::done(EStep step) const
     {
         case STEP_INSTALL:
             return gDirUtilp->fileExists(dir + "packages" + sep + "standalone" + sep
-                                         + "current" + sep + "bin" + sep + "codex");
+                                         + "current" + sep + "bin" + sep
+                                         + LumenAIWin::exe("codex"));   // <Lumen> .exe on Windows
         case STEP_SIGNIN:
             return gDirUtilp->fileExists(dir + "auth.json");
         case STEP_START:
@@ -285,10 +322,44 @@ void LumenAISetupFloater::run(EStep step)
     }
     // </Lumen>
 
+    // <Lumen> Codex on Windows: the third step is Lumen's own server, not a
+    // daemon to start from a shell. draw() polls listening() for it as it
+    // does for the daemon.
+#if LL_WINDOWS
+    if (mProvider == LumenAIKeys::CODEX && step == STEP_START)
+    {
+        mProc.reset();
+        if (!LumenAICodex::startService() && !LumenAICodex::listening())
+        {
+            mFailed = true;
+            mNote   = "Lumen could not start Codex. Try once more in a minute; if it keeps "
+                      "happening, check that step 2 (signing in) is ticked.";
+            return;
+        }
+        mRunning = step;
+        mSince.reset();
+        mPoll.reset();
+        return;
+    }
+#endif
+    // </Lumen>
+
     LLProcess::Params p;
+#if LL_WINDOWS
+    // <Lumen> Windows PowerShell, by its full path, with the command as one
+    // argument. Not hidden: the window shows the installer working, and a
+    // sign-in that asks for a code to be pasted has somewhere to paste it.
+    p.executable = LumenAIWin::powershell();
+    p.args.add("-NoProfile");
+    p.args.add("-ExecutionPolicy");
+    p.args.add("Bypass");
+    p.args.add("-Command");
+    p.args.add(LumenAIWin::arg(command(mProvider, step)));
+#else
     p.executable = "/bin/sh";
     p.args.add("-c");
     p.args.add(command(mProvider, step));
+#endif
     // NOT autokill: see the destructor. A download or a browser sign-in that
     // is killed halfway leaves the user worse off than never having started.
     p.autokill = false;
@@ -301,6 +372,7 @@ void LumenAISetupFloater::run(EStep step)
     // after a rebuild did exactly what an update does.
     {
         const char* home = getenv("HOME");
+        if (!home || !*home) home = getenv("USERPROFILE");   // <Lumen> Windows
         p.cwd = (home && *home) ? std::string(home)
                                 : gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS, "");
     }

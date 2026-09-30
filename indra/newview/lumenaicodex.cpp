@@ -38,10 +38,20 @@
 #include "llsdjson.h"
 #include "llsdserialize.h"
 
+#include "lumenaiwin.h"   // <Lumen>
+
 #if LL_WINDOWS
-// The app-server uses a named pipe on Windows rather than a unix socket, and
-// that path is not implemented here. Said plainly rather than left to fail
-// with a confusing error: Codex is a macOS and Linux option in Lumen today.
+// <Lumen> On Windows Lumen does not use Codex's daemon at all. It starts its
+// own `codex app-server --listen ws://127.0.0.1:PORT` and speaks the same
+// WebSocket to it over a loopback TCP socket (Findings 43: the daemon refuses
+// an elevated session, and its control socket is one more thing to find).
+#include "llwin32headers.h"   // winsock2.h, after windows.h as it must be
+#include <ws2tcpip.h>
+typedef int sock_io_t;
+#define LUMEN_FD(fd)            ((SOCKET)(fd))
+#define LUMEN_SOCK_ERR()        WSAGetLastError()
+#define LUMEN_SOCK_WOULDBLOCK(e) ((e) == WSAEWOULDBLOCK)
+#define LUMEN_SOCK_INTR(e)      ((e) == WSAEINTR)
 #else
 #include <sys/socket.h>
 #include <sys/select.h>   // <Lumen> bounded waits on the handshake and on send
@@ -49,6 +59,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+typedef ssize_t sock_io_t;
+#define LUMEN_FD(fd)            ((int)(fd))
+#define LUMEN_SOCK_ERR()        errno
+#define LUMEN_SOCK_WOULDBLOCK(e) ((e) == EAGAIN || (e) == EWOULDBLOCK)
+#define LUMEN_SOCK_INTR(e)      ((e) == EINTR)
 #endif
 
 namespace
@@ -60,6 +75,108 @@ namespace
         if (!h || !*h) h = getenv("USERPROFILE");
         return (h && *h) ? std::string(h) : std::string();
     }
+
+    // <Lumen> A socket, closed, and made non-blocking, on either platform.
+    void closeSocket(intptr_t fd)
+    {
+#if LL_WINDOWS
+        closesocket((SOCKET)fd);
+#else
+        ::close((int)fd);
+#endif
+    }
+
+    void setNonBlocking(intptr_t fd)
+    {
+#if LL_WINDOWS
+        u_long on = 1;
+        ioctlsocket((SOCKET)fd, FIONBIO, &on);
+#else
+        fcntl((int)fd, F_SETFL, fcntl((int)fd, F_GETFL, 0) | O_NONBLOCK);
+#endif
+    }
+
+    /** Wait up to `ms` for the socket to be readable (or writable). */
+    int waitFor(intptr_t fd, bool write, int ms)
+    {
+        fd_set set;
+        FD_ZERO(&set);
+#if LL_WINDOWS
+        FD_SET((SOCKET)fd, &set);
+#else
+        FD_SET((int)fd, &set);
+#endif
+        struct timeval wait = { ms / 1000, (ms % 1000) * 1000 };   // select refuses a microsecond count past a second
+        return ::select((int)fd + 1, write ? NULL : &set, write ? &set : NULL, NULL, &wait);
+    }
+
+#if LL_WINDOWS
+    // Lumen's own app-server: the process, and the port it was told to use.
+    LLProcessPtr sServer;
+    U16          sPort = 0;
+
+    bool winsockReady()
+    {
+        static const bool ok = []() { WSADATA d; return WSAStartup(MAKEWORD(2, 2), &d) == 0; }();
+        return ok;
+    }
+
+    /** A port nothing on this machine is using, from the system itself. */
+    U16 freeLoopbackPort()
+    {
+        if (!winsockReady()) return 0;
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) return 0;
+        sockaddr_in a = {};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        U16 port = 0;
+        int len = (int)sizeof(a);
+        if (bind(s, (sockaddr*)&a, (int)sizeof(a)) == 0 && getsockname(s, (sockaddr*)&a, &len) == 0)
+        {
+            port = ntohs(a.sin_port);
+        }
+        closesocket(s);
+        return port;
+    }
+
+    /**
+     * A TCP connection to 127.0.0.1:port, non-blocking, within `ms`; -1 when
+     * nobody answered. A refused loopback connect on Windows is RETRIED by the
+     * system for a second or two, so the wait is bounded rather than trusted.
+     */
+    intptr_t connectLoopback(U16 port, int ms)
+    {
+        if (!winsockReady() || port == 0) return -1;
+        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s == INVALID_SOCKET) return -1;
+        setNonBlocking((intptr_t)s);
+        sockaddr_in a = {};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = htons(port);
+        if (::connect(s, (sockaddr*)&a, (int)sizeof(a)) != 0 && WSAGetLastError() != WSAEWOULDBLOCK)
+        {
+            closesocket(s);
+            return -1;
+        }
+        if (waitFor((intptr_t)s, true, ms) <= 0)
+        {
+            closesocket(s);
+            return -1;
+        }
+        int err = 0;
+        int len = (int)sizeof(err);
+        getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len);
+        if (err != 0)
+        {
+            closesocket(s);
+            return -1;
+        }
+        return (intptr_t)s;
+    }
+#endif
 }
 
 std::string LumenAICodex::socketPath()
@@ -76,7 +193,7 @@ std::string LumenAICodex::cliPath()
     if (home.empty()) return std::string();
     const std::string s = gDirUtilp->getDirDelimiter();
     return home + s + ".codex" + s + "packages" + s + "standalone" + s + "current"
-         + s + "bin" + s + "codex";
+         + s + "bin" + s + LumenAIWin::exe("codex");   // <Lumen> codex.exe on Windows
 }
 
 std::vector<std::string> LumenAICodex::enabledPlugins()
@@ -103,25 +220,36 @@ std::vector<std::string> LumenAICodex::enabledPlugins()
     return out;
 }
 
-bool LumenAICodex::socketPresent() { const std::string p = socketPath(); return !p.empty() && gDirUtilp->fileExists(p); }
+bool LumenAICodex::socketPresent()
+{
+#if LL_WINDOWS
+    // <Lumen> No socket file on Windows: "there" is Lumen's own server
+    // running. Cheap, as the once-a-second heartbeat needs; listening() is the
+    // connect.
+    return sServer && sServer->isRunning();
+#else
+    const std::string p = socketPath();
+    return !p.empty() && gDirUtilp->fileExists(p);
+#endif
+}
 bool LumenAICodex::cliInstalled()  { const std::string p = cliPath();    return !p.empty() && gDirUtilp->fileExists(p); }
 
 std::string LumenAICodex::unavailableHere()
 {
-#if LL_WINDOWS
-    // Not ported: cliPath() has no .exe, the setup runs /bin/sh, and the
-    // app-server's Windows transport is a named pipe connect() does not speak.
-    return "Codex does not work in Lumen on Windows yet. Anthropic, OpenAI or a local "
-           "model work on every platform.";
-#else
+    // <Lumen> Works on Windows too since 2026-09-30, through Lumen's own
+    // app-server on a loopback port (see the top of this file).
     return std::string();
-#endif
 }
 
 bool LumenAICodex::listening()
 {
 #if LL_WINDOWS
-    return false;   // see connect(): not available on Windows here
+    // <Lumen> Ours, running, and answering on its port.
+    if (!sServer || !sServer->isRunning()) return false;
+    const intptr_t fd = connectLoopback(sPort, 50);
+    if (fd < 0) return false;
+    closeSocket(fd);
+    return true;
 #else
     if (!socketPresent()) return false;
     const std::string path = socketPath();
@@ -160,6 +288,32 @@ bool LumenAICodex::startService()
     if (now - sStarted < 120.0) return false;   // tried, and it did not come up
     sStarted = now;
 
+#if LL_WINDOWS
+    // <Lumen> Lumen's own app-server, on a free loopback port, for as long as
+    // the viewer runs (autokill). From the home folder, as below. Watched in
+    // the Windows VM: `codex app-server --listen ws://127.0.0.1:PORT` listens
+    // on localhost only, and serves /readyz.
+    sPort = freeLoopbackPort();
+    if (sPort == 0)
+    {
+        LL_WARNS("LumenAICodex") << "Could not find a free local port for Codex." << LL_ENDL;
+        return false;
+    }
+    LLProcess::Params wp;
+    wp.executable = cliPath();
+    wp.args.add("app-server");
+    wp.args.add("--listen");
+    wp.args.add(llformat("ws://127.0.0.1:%d", (int)sPort));
+    wp.cwd = home;
+    wp.autokill = true;
+    wp.hidden = true;   // no console window for the whole session
+    sServer = LLProcess::create(wp);
+    LL_INFOS("LumenAICodex") << (sServer ? "Started Codex's app-server on port "
+                                         : "Could not start Codex's app-server on port ")
+                             << sPort << LL_ENDL;
+    return (bool)sServer;
+#else
+
     // From the home folder, never from the viewer's own: the service keeps
     // the folder it was started in, and the viewer's is inside the app bundle
     // an update replaces (Findings 41). Not autokill: it is meant to outlive
@@ -175,6 +329,7 @@ bool LumenAICodex::startService()
     LL_INFOS("LumenAICodex") << "Codex's background service was not running; "
                              << (proc ? "starting it" : "could not start it") << LL_ENDL;
     return (bool)proc;
+#endif
 }
 // </Lumen>
 
@@ -183,9 +338,7 @@ LumenAICodex::~LumenAICodex() { close(); }
 
 void LumenAICodex::close()
 {
-#if !LL_WINDOWS
-    if (mFd >= 0) ::close(mFd);
-#endif
+    if (mFd >= 0) closeSocket(mFd);   // <Lumen> either platform
     mFd = -1;
     mIn.clear();
     mUpgraded = false;
@@ -194,8 +347,23 @@ void LumenAICodex::close()
 bool LumenAICodex::connect(std::string& why)
 {
 #if LL_WINDOWS
-    why = unavailableHere();
-    return false;
+    // <Lumen> Lumen's own app-server; the caller starts it and waits when it
+    // is not there yet (startService, then listening()).
+    close();
+    if (!sServer || !sServer->isRunning())
+    {
+        why = "Codex is not running yet.";
+        return false;
+    }
+    mFd = connectLoopback(sPort, 500);   // on the frame loop, so short
+    if (mFd < 0)
+    {
+        why = "Codex is starting but not answering yet.";
+        return false;
+    }
+    if (!handshake(why)) { close(); return false; }
+    mUpgraded = true;
+    return true;
 #else
     close();
     const std::string path = socketPath();
@@ -214,7 +382,7 @@ bool LumenAICodex::connect(std::string& why)
     mFd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (mFd < 0) { why = "Could not make a socket."; return false; }
 
-    if (::connect(mFd, (struct sockaddr*)&addr, sizeof(addr)) != 0)
+    if (::connect(LUMEN_FD(mFd), (struct sockaddr*)&addr, sizeof(addr)) != 0)
     {
         close();
         why = "Codex's background service is not running. Start it with:  "
@@ -229,7 +397,7 @@ bool LumenAICodex::connect(std::string& why)
     // handshake() never bounded anything, because the read never returned to
     // count them. With the socket non-blocking the loop there really does
     // poll, and gives up after a few seconds.
-    fcntl(mFd, F_SETFL, fcntl(mFd, F_GETFL, 0) | O_NONBLOCK);
+    setNonBlocking(mFd);
     if (!handshake(why)) { close(); return false; }
     // </Lumen>
     mUpgraded = true;
@@ -237,7 +405,6 @@ bool LumenAICodex::connect(std::string& why)
 #endif
 }
 
-#if !LL_WINDOWS
 bool LumenAICodex::handshake(std::string& why)
 {
     // A random 16-byte key, as the protocol requires. The server's
@@ -256,7 +423,7 @@ bool LumenAICodex::handshake(std::string& why)
         "Sec-WebSocket-Key: " + key + "\r\n"
         "Sec-WebSocket-Version: 13\r\n\r\n";
 
-    if (::send(mFd, req.data(), req.size(), 0) != (ssize_t)req.size())
+    if (::send(LUMEN_FD(mFd), req.data(), (int)req.size(), 0) != (sock_io_t)req.size())
     {
         why = "Could not send the handshake to Codex.";
         return false;
@@ -275,18 +442,14 @@ bool LumenAICodex::handshake(std::string& why)
                   "five seconds. Is its background service healthy?  codex app-server daemon start";
             return false;
         }
-        fd_set readable;
-        FD_ZERO(&readable);
-        FD_SET(mFd, &readable);
-        struct timeval wait = { 0, 50 * 1000 };   // 50 ms
-        const int ready = ::select(mFd + 1, &readable, NULL, NULL, &wait);
-        if (ready < 0 && errno != EINTR) { why = "Codex refused the connection."; return false; }
+        const int ready = waitFor(mFd, false, 50);   // 50 ms
+        if (ready < 0 && !LUMEN_SOCK_INTR(LUMEN_SOCK_ERR())) { why = "Codex refused the connection."; return false; }
         if (ready <= 0) continue;
 
-        const ssize_t n = ::recv(mFd, buf, sizeof(buf), 0);
+        const sock_io_t n = ::recv(LUMEN_FD(mFd), buf, (int)sizeof(buf), 0);
         if (n > 0) head.append(buf, n);
         else if (n == 0) { why = "Codex closed the connection during the handshake."; return false; }
-        else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        else if (!LUMEN_SOCK_WOULDBLOCK(LUMEN_SOCK_ERR()) && !LUMEN_SOCK_INTR(LUMEN_SOCK_ERR()))
         {
             why = "Codex refused the connection.";
             return false;
@@ -339,20 +502,17 @@ bool LumenAICodex::send(const LLSD& message)
     const F64 deadline = LLTimer::getTotalSeconds() + 5.0;   // <Lumen> bounded
     while (sent < frame.size())
     {
-        const ssize_t w = ::send(mFd, frame.data() + sent, frame.size() - sent, 0);
+        const sock_io_t w = ::send(LUMEN_FD(mFd), frame.data() + sent, (int)(frame.size() - sent), 0);
         if (w > 0) { sent += w; continue; }
-        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+        const int err = LUMEN_SOCK_ERR();
+        if (w < 0 && (LUMEN_SOCK_WOULDBLOCK(err) || LUMEN_SOCK_INTR(err)))
         {
             // <Lumen> The socket is non-blocking, so a full kernel buffer used
             // to make this a busy loop at 100% CPU on the frame loop until the
             // daemon drained it. Wait for writability instead, and give up
             // after a few seconds rather than never.
             if (LLTimer::getTotalSeconds() > deadline) return false;
-            fd_set writable;
-            FD_ZERO(&writable);
-            FD_SET(mFd, &writable);
-            struct timeval wait = { 0, 50 * 1000 };
-            ::select(mFd + 1, NULL, &writable, NULL, &wait);
+            waitFor(mFd, true, 50);
             continue;
             // </Lumen>
         }
@@ -366,11 +526,12 @@ bool LumenAICodex::drain()
     char buf[16384];
     for (;;)
     {
-        const ssize_t n = ::recv(mFd, buf, sizeof(buf), 0);
+        const sock_io_t n = ::recv(LUMEN_FD(mFd), buf, (int)sizeof(buf), 0);
         if (n > 0) { mIn.append(buf, n); continue; }
         if (n == 0) { close(); return false; }          // server hung up
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
-        if (errno == EINTR) continue;
+        const int err = LUMEN_SOCK_ERR();
+        if (LUMEN_SOCK_WOULDBLOCK(err)) return true;
+        if (LUMEN_SOCK_INTR(err)) continue;
         close();
         return false;
     }
@@ -422,10 +583,3 @@ bool LumenAICodex::poll(LLSD& out)
     out = LlsdFromJson(v);
     return true;
 }
-#else
-bool LumenAICodex::handshake(std::string&) { return false; }
-bool LumenAICodex::send(const LLSD&)       { return false; }
-bool LumenAICodex::drain()                 { return false; }
-bool LumenAICodex::frame(std::string&)     { return false; }
-bool LumenAICodex::poll(LLSD&)             { return false; }
-#endif

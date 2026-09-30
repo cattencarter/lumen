@@ -164,6 +164,7 @@ public:
             cwd("cwd"),
             autokill("autokill", true),
             attached("attached", true),
+            hidden("hidden", false),   // <Lumen>
             files("files"),
             postend("postend"),
             desc("desc")
@@ -205,6 +206,13 @@ public:
         /// (The usefulness of attached=true with autokill=false is less
         /// clear, but we don't prohibit that combination.)
         Optional<bool> attached;
+        // <Lumen> Windows only: start it with no console window. A console
+        // program started by a windowed one gets a console of its own, so
+        // every Claude Code turn, and Codex's server for the whole session,
+        // would put a black window on the screen. APR's "detached" does it on
+        // Windows (DETACHED_PROCESS and a hidden window, pipes kept); on POSIX
+        // it would daemonize and close the pipes, so it is ignored there.
+        Optional<bool> hidden;
         /**
          * Up to three FileParam items: for child stdin, stdout, stderr.
          * Passing two FileParam entries means default treatment for stderr,

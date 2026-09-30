@@ -21,7 +21,11 @@
 
 #include <boost/json.hpp>
 
-#if !LL_WINDOWS
+#include "lumenaiwin.h"   // <Lumen>
+
+#if LL_WINDOWS
+#include <wincred.h>      // <Lumen> signedIn(): Credential Manager, by name only
+#else
 #include <cstdlib>
 #include <unistd.h>
 #endif
@@ -89,6 +93,20 @@ namespace
 #endif
     }
 
+    // <Lumen> What Vibe's process needs in its environment on Windows, set in
+    // the viewer's own (LLProcess passes it on, and nothing else the viewer
+    // starts reads these): its settings folder, no telemetry, and UTF-8 --
+    // Python on Windows otherwise reads stdin in the old ANSI code page, and a
+    // Danish question arrives with its letters mangled.
+#if LL_WINDOWS
+    void setVibeEnvironment()
+    {
+        _putenv_s("VIBE_HOME", LumenAIVibe::home().c_str());
+        _putenv_s("VIBE_ENABLE_TELEMETRY", "false");
+        _putenv_s("PYTHONUTF8", "1");
+    }
+#endif
+
     /** The assistant's words in one streamed entry, or empty. */
     std::string assistantText(const LLSD& entry)
     {
@@ -112,10 +130,16 @@ std::string LumenAIVibe::cliPath()
     // uv's, which puts it in ~/.local/bin unless told otherwise.
     const std::string home = homeDir();
     std::vector<std::string> candidates;
+#if LL_WINDOWS
+    // <Lumen> uv on Windows puts vibe.exe in %USERPROFILE%\.local\bin too
+    // (seen in the Windows VM, 2026-09-30), and that folder is not on PATH.
+    if (!home.empty()) candidates.push_back(home + "\\.local\\bin\\vibe.exe");
+#else
     if (const char* xdg = getenv("XDG_BIN_HOME")) { if (*xdg) candidates.push_back(std::string(xdg) + "/vibe"); }
     if (!home.empty()) candidates.push_back(home + "/.local/bin/vibe");
     candidates.push_back("/opt/homebrew/bin/vibe");
     candidates.push_back("/usr/local/bin/vibe");
+#endif
     for (const std::string& c : candidates)
     {
         if (gDirUtilp->fileExists(c)) return c;
@@ -129,17 +153,13 @@ std::string LumenAIVibe::acpPath()
 {
     const std::string cli = cliPath();
     if (cli.empty()) return std::string();
-    return cli.substr(0, cli.rfind('/') + 1) + "vibe-acp";
+    return cli.substr(0, cli.find_last_of("/\\") + 1) + LumenAIWin::exe("vibe-acp");
 }
 
 std::string LumenAIVibe::unavailableHere()
 {
-#if LL_WINDOWS
-    return "Mistral Vibe does not work in Lumen on Windows yet. Mistral's API key works on "
-           "every platform.";
-#else
+    // <Lumen> Works on Windows too since 2026-09-30 (Findings 43).
     return std::string();
-#endif
 }
 
 std::string LumenAIVibe::home()
@@ -153,9 +173,6 @@ std::string LumenAIVibe::home()
 
 bool LumenAIVibe::signedIn(bool fresh)
 {
-#if LL_WINDOWS
-    return false;
-#else
     static F64  s_at  = -100.0;
     static bool s_yes = false;
     const F64 now = LLTimer::getTotalSeconds();
@@ -165,6 +182,23 @@ bool LumenAIVibe::signedIn(bool fresh)
     linkUserEnv();
     const char* env = getenv("MISTRAL_API_KEY");
     s_yes = (env && *env) || envHasKey(gDirUtilp->add(home(), ".env"));
+#if LL_WINDOWS
+    // <Lumen> On Windows Vibe's key is in Credential Manager, filed under
+    // "ai.mistral.vibe" (read in the Windows VM with `cmdkey /list`, which
+    // shows names only). Asked for by that name; the entry's secret is never
+    // looked at, and the list is freed at once.
+    if (!s_yes)
+    {
+        DWORD count = 0;
+        PCREDENTIALW* creds = NULL;
+        if (CredEnumerateW(L"ai.mistral.vibe", 0, &count, &creds) && creds)
+        {
+            s_yes = count > 0;
+            CredFree(creds);
+        }
+    }
+    return s_yes;
+#else
     if (!s_yes)
     {
         // The service names Vibe writes under, current and older. Without -w
@@ -277,6 +311,28 @@ bool LumenAIVibe::start(const std::string& prompt,
     }
 
     LLProcess::Params params;
+#if LL_WINDOWS
+    // <Lumen> On Windows cmd.exe does the one thing /bin/sh does below: feed
+    // the question file to Vibe's stdin (LLProcess cannot open a file there,
+    // and a pipe it never closes would leave Vibe reading for ever). `/s /c`
+    // with the whole command as one argument: APR adds the outer quotes
+    // because it holds spaces, and /s strips exactly those, so the quotes
+    // round the paths inside are cmd's own. Nothing here is user text -- the
+    // question stays in its file -- and the settings go in the environment.
+    setVibeEnvironment();
+    params.executable = LumenAIWin::cmd();
+    params.cwd        = work;
+    {
+        std::string line = "\"" + cli + "\" -p --output streaming --legacy-harness --auto-approve"
+                           " --enabled-tools second_life_* --workdir \"" + work + "\"";
+        if (!resume.empty()) line += " --resume " + resume;
+        line += " < \"" + question + "\"";
+        params.args.add("/d");
+        params.args.add("/s");
+        params.args.add("/c");
+        params.args.add(line);
+    }
+#else
     params.executable = "/bin/sh";
     params.cwd        = work;
     // `$1` is the question, `$2` the settings folder, the rest is Vibe and its
@@ -304,11 +360,13 @@ bool LumenAIVibe::start(const std::string& prompt,
         params.args.add("--resume");
         params.args.add(resume);
     }
+#endif
 
     params.files.add(LLProcess::FileParam());                   // stdin: the shell redirects it
     params.files.add(LLProcess::FileParam().type("pipe"));      // stdout
     params.files.add(LLProcess::FileParam().type("pipe"));      // stderr
     params.autokill = true;   // an abandoned turn takes its process along
+    params.hidden   = true;   // <Lumen> no console window on Windows (llprocess.h)
 
     mProc = LLProcess::create(params);
     if (!mProc)
@@ -486,6 +544,12 @@ bool LumenAIVibeSignIn::run(const std::function<bool()>& still_wanted, std::stri
     }
 
     LLProcess::Params params;
+#if LL_WINDOWS
+    // <Lumen> The helper itself, with its settings in the environment.
+    setVibeEnvironment();
+    params.executable = acp;
+    params.cwd = gDirUtilp->add(LumenAIVibe::home(), "work");
+#else
     params.executable = "/bin/sh";
     params.cwd = gDirUtilp->add(LumenAIVibe::home(), "work");
     params.args.add("-c");
@@ -493,10 +557,12 @@ bool LumenAIVibeSignIn::run(const std::function<bool()>& still_wanted, std::stri
     params.args.add("sh");
     params.args.add(LumenAIVibe::home());
     params.args.add(acp);
+#endif
     params.files.add(LLProcess::FileParam().type("pipe"));      // stdin: the protocol
     params.files.add(LLProcess::FileParam().type("pipe"));      // stdout: the protocol
     params.files.add(LLProcess::FileParam().type("pipe"));      // stderr
     params.autokill = true;
+    params.hidden   = true;   // <Lumen> no console window on Windows (llprocess.h)
     mProc = LLProcess::create(params);
     if (!mProc)
     {

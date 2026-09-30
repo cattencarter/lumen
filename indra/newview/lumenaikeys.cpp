@@ -609,8 +609,13 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                     }
                     else
                     {
+#if LL_WINDOWS
+                        p->say(false, said + "\n\nIf it says not logged in, press Set it up for "
+                                             "me... again to sign in.");
+#else
                         p->say(false, said + "\n\nIf it says not logged in, run  claude auth "
                                              "login  in Terminal once.");
+#endif
                     }
                     p->refresh();
                 });
@@ -930,8 +935,7 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
     const std::string home(env_home);
     const std::string sep  = gDirUtilp->getDirDelimiter();
     const std::string dot  = home + sep + ".codex" + sep;
-    const std::string cli  = dot + "packages" + sep + "standalone" + sep + "current"
-                           + sep + "bin" + sep + "codex";
+    const std::string cli  = LumenAICodex::cliPath();   // <Lumen> codex.exe on Windows
     const std::string auth = dot + "auth.json";
     const std::string sock = dot + "app-server-control" + sep + "app-server-control.sock";
 
@@ -940,20 +944,29 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
         st.text = "Not set up yet. Codex is OpenAI's own small helper program, and it is "
                   "what lets Lumen use the ChatGPT subscription you already pay for instead "
                   "of a paid API key.";
+#if LL_WINDOWS
+        st.command = "irm https://chatgpt.com/codex/install.ps1 | iex";   // <Lumen> in PowerShell
+#else
         st.command = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+#endif
         return st;
     }
     if (!gDirUtilp->fileExists(auth))
     {
         st.text = "Almost. Codex is installed but not signed in to your ChatGPT "
                   "account yet.";
+#if LL_WINDOWS
+        st.command = "& \"" + cli + "\" login";   // <Lumen> not on PATH, in PowerShell
+#else
         st.command = "codex login";
+#endif
         return st;
     }
     // <Lumen> Not running is what every restart of the computer leaves, so
     // Lumen starts it rather than handing the person the setup window again.
     // Only when that did not work is it theirs to see.
-    const bool sock_there = gDirUtilp->fileExists(sock);
+    const bool sock_there = LumenAICodex::socketPresent();   // <Lumen> Lumen's own server on Windows
+    (void)sock;
     if ((!sock_there || (probe && !LumenAICodex::listening()))
         && LumenAICodex::startService())
     {
@@ -966,7 +979,14 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
     {
         st.text = "Almost. Codex is installed and signed in, but it is not running "
                   "yet.";
+#if LL_WINDOWS
+        // <Lumen> On Windows Lumen runs Codex's server itself; there is no
+        // service of Codex's own to start by hand.
+        st.command = "";
+        st.text += " Lumen could not start it -- quitting and reopening Lumen tries again.";
+#else
         st.command = "codex app-server daemon start";
+#endif
         return st;
     }
     // **The file is not the service.** A socket file outlives the process that
@@ -976,7 +996,11 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
     {
         st.text = "Almost. Codex is installed and signed in, but its background service "
                   "is not answering -- it may have stopped without tidying up.";
+#if LL_WINDOWS
+        st.command = "";
+#else
         st.command = "codex app-server daemon start";
+#endif
         return st;
     }
 
@@ -985,7 +1009,11 @@ LumenPanelPreferenceAIKeys::CodexState LumenPanelPreferenceAIKeys::codexStatus(b
                "including the viewer's own tools, over the same endpoint any other assistant "
                "uses. Your ChatGPT account pays for this, so there is no API key and no "
                "separate bill; your plan's limits apply instead.\n"
+#if LL_WINDOWS
+               "If the Assistant will not answer, `codex doctor` in PowerShell checks the "
+#else
                "If the Assistant will not answer, `codex doctor` in Terminal checks the "
+#endif
                "whole installation.";
     return st;
 }

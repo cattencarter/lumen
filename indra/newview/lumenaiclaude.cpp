@@ -10,6 +10,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lumenaiclaude.h"
+#include "lumenaiwin.h"   // <Lumen> Windows arguments and program names
 
 #include "lldir.h"
 #include "llsdjson.h"
@@ -72,6 +73,20 @@ std::string LumenAIClaude::cliPath()
     const std::string s    = gDirUtilp->getDirDelimiter();
 
     std::vector<std::string> candidates;
+#if LL_WINDOWS
+    // <Lumen> Anthropic's Windows installer (install.ps1) puts claude.exe in
+    // %USERPROFILE%\.local\bin, and that folder is not added to PATH (seen in
+    // the Windows VM, 2026-09-30); WinGet links it under LOCALAPPDATA.
+    if (!home.empty())
+    {
+        candidates.push_back(home + s + ".local" + s + "bin" + s + "claude.exe");
+    }
+    if (const char* local = getenv("LOCALAPPDATA"))
+    {
+        if (*local) candidates.push_back(std::string(local) + s + "Microsoft" + s + "WinGet"
+                                         + s + "Links" + s + "claude.exe");
+    }
+#else
     candidates.push_back("/opt/homebrew/bin" + s + "claude");
     candidates.push_back("/usr/local/bin" + s + "claude");
     if (!home.empty())
@@ -80,6 +95,7 @@ std::string LumenAIClaude::cliPath()
         candidates.push_back(home + s + ".claude" + s + "local" + s + "claude");
         candidates.push_back(home + s + ".bun" + s + "bin" + s + "claude");
     }
+#endif
 
     for (size_t i = 0; i < candidates.size(); ++i)
     {
@@ -99,8 +115,13 @@ bool LumenAIClaude::installed()
 bool LumenAIClaude::tooOld(std::string* version)
 {
 #if LL_WINDOWS
+    // <Lumen> Not asked on Windows: the check runs the copy twice through a
+    // shell, which from a windowed program flashes a console at the user, and
+    // every Windows install is new -- the installer of 2026-09-30 gave 2.1.285,
+    // which has --restricted. A copy too old would stop at "unknown option
+    // '--restricted'", which a turn reports in words.
     (void)version;
-    return false;   // not ported at all; unavailableHere() says so
+    return false;
 #else
     const std::string cli = cliPath();
     if (cli.empty()) return false;   // not installed is a different answer
@@ -206,15 +227,9 @@ std::string LumenAIClaude::tooOldText(const std::string& version, bool inPanel)
 
 std::string LumenAIClaude::unavailableHere()
 {
-#if LL_WINDOWS
-    // Not ported: cliPath() looks for Unix names, and every setup step runs
-    // /bin/sh. Say that, rather than "not installed" about a program that may
-    // well be installed.
-    return "Claude Code does not work in Lumen on Windows yet. Anthropic, OpenAI "
-           "or a local model work on every platform.";
-#else
+    // <Lumen> Works on Windows too since 2026-09-30: the same flags, read
+    // off a real Windows 11 (Findings 43).
     return std::string();
-#endif
 }
 
 bool LumenAIClaude::start(const std::string& prompt,
@@ -250,18 +265,21 @@ bool LumenAIClaude::start(const std::string& prompt,
     LLProcess::Params params;
     params.executable = cli;
     params.cwd        = workDir();
+    // <Lumen> Every argument escaped for Windows' command line; identity
+    // elsewhere. See lumenaiwin.h.
+    auto add = [&params](const std::string& a) { params.args.add(LumenAIWin::arg(a)); };
 
     // **`--restricted` is not tidiness, it is the whole safety argument.**
     // Claude Code ships with Bash, a REPL and file editing, and Lumen has no
     // business handing a model the user's shell. The Codex path had to reach
     // this the hard way -- eleven plugins switched off by name after watching
     // it drive the screen -- and here it is one documented flag.
-    params.args.add("--restricted");
-    params.args.add("-p");
-    params.args.add("--output-format");
-    params.args.add("stream-json");
-    params.args.add("--include-partial-messages");
-    params.args.add("--verbose");
+    add("--restricted");
+    add("-p");
+    add("--output-format");
+    add("stream-json");
+    add("--include-partial-messages");
+    add("--verbose");
 
     // Only the viewer's own tools, named explicitly. Anything Claude Code can
     // still reach that we did not ask for is denied rather than prompted --
@@ -273,17 +291,31 @@ bool LumenAIClaude::start(const std::string& prompt,
     // granted it yet", and asked the user to approve a prompt that does not
     // exist. actions-check.py now fails when a tool the viewer declares is
     // not named on this list.
-    params.args.add("--allowedTools");
-    params.args.add("mcp__second_life__inventory,mcp__second_life__chat,"
+    add("--allowedTools");
+    add("mcp__second_life__inventory,mcp__second_life__chat,"
                     "mcp__second_life__movement,mcp__second_life__viewer,"
                     "mcp__second_life__build");
 
     // The endpoint, as a config string rather than a file, so there is no
     // temporary file to write, leave behind, or have somebody else edit.
-    params.args.add("--mcp-config");
-    params.args.add(llformat("{\"mcpServers\":{\"second_life\":"
-                             "{\"type\":\"http\",\"url\":\"http://127.0.0.1:%d/mcp\"}}}",
-                             (int)port));
+    add("--mcp-config");
+    const std::string mcp = llformat("{\"mcpServers\":{\"second_life\":"
+                                     "{\"type\":\"http\",\"url\":\"http://127.0.0.1:%d/mcp\"}}}",
+                                     (int)port);
+#if LL_WINDOWS
+    // <Lumen> On Windows as a FILE. The JSON is full of quotation marks, and
+    // however they are escaped the argument crosses two parsers; a path does
+    // not. Rewritten every turn, in Claude Code's own folder, like the
+    // instructions below.
+    {
+        const std::string file = gDirUtilp->add(workDir(), "lumen_mcp.json");
+        llofstream out(file.c_str(), std::ios::out | std::ios::trunc | std::ios::binary);
+        if (out.is_open()) { out << mcp; out.close(); }
+        add(out.fail() ? mcp : file);
+    }
+#else
+    add(mcp);
+#endif
 
     // **And ONLY the endpoint.** `--mcp-config` adds to the user's own MCP
     // servers rather than replacing them, so a Claude Code user's mail or
@@ -296,8 +328,8 @@ bool LumenAIClaude::start(const std::string& prompt,
     // without this flag. `--disable-slash-commands` ("Disable all skills")
     // keeps their skills out for the same reason. Both flags checked against
     // `claude --help`, 2.1.278.
-    params.args.add("--strict-mcp-config");
-    params.args.add("--disable-slash-commands");
+    add("--strict-mcp-config");
+    add("--disable-slash-commands");
 
     // <Lumen> The instructions go in a FILE, not on the command line. LLProcess
     // writes every launch's full command line into Lumen.log at INFO, so an
@@ -320,26 +352,26 @@ bool LumenAIClaude::start(const std::string& prompt,
         }
         if (written)
         {
-            params.args.add("--append-system-prompt-file");
-            params.args.add(file);
+            add("--append-system-prompt-file");
+            add(file);
         }
         else
         {
             LL_WARNS("LumenAI") << "Could not write the instructions file; passing them "
                                    "on the command line instead." << LL_ENDL;
-            params.args.add("--append-system-prompt");
-            params.args.add(system);
+            add("--append-system-prompt");
+            add(system);
         }
     }
     if (!model.empty())
     {
-        params.args.add("--model");
-        params.args.add(model);
+        add("--model");
+        add(model);
     }
     if (!resume.empty())
     {
-        params.args.add("--resume");
-        params.args.add(resume);
+        add("--resume");
+        add(resume);
     }
 
     // **The question goes in as an argument, not down stdin.** LLProcess runs
@@ -355,14 +387,15 @@ bool LumenAIClaude::start(const std::string& prompt,
     // option parsing there, and also stops a variadic option such as
     // --mcp-config taking the prompt as a second value when none of the
     // optional ones above are passed.
-    params.args.add("--");
-    params.args.add(prompt);
+    add("--");
+    add(prompt);
 
     params.files.add(LLProcess::FileParam());                   // stdin, unused
     params.files.add(LLProcess::FileParam().type("pipe"));      // stdout
     params.files.add(LLProcess::FileParam().type("pipe"));      // stderr
 
     params.autokill = true;   // a turn that is abandoned takes its process along
+    params.hidden   = true;   // <Lumen> no console window on Windows (llprocess.h)
 
     // **Every tool, with its description, from the first turn.** By default
     // Claude Code shows a model only the tool NAMES and makes it look each one

@@ -30,6 +30,7 @@
 #define LUMEN_AI_CODEX_H
 
 #include "llsd.h"
+#include <cstdint>
 #include <string>
 
 /**
@@ -123,7 +124,9 @@ private:
     bool drain();                      // read whatever is waiting, never blocking
     bool frame(std::string& payload);  // one text frame out of mIn, if complete
 
-    S32         mFd;
+    // <Lumen> intptr_t, not S32: on Windows this holds a winsock SOCKET, a
+    // pointer-sized handle. Negative is "none" either way (INVALID_SOCKET is ~0).
+    intptr_t    mFd;
     std::string mIn;
     bool        mUpgraded;
 };

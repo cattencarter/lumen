@@ -636,6 +636,13 @@ LLProcess::LLProcess(const LLSDOrParams& params):
     // want. autokill=false just means not to implicitly kill the child when
     // the parent terminates!
 //  chkapr(apr_procattr_detach_set(procattr, mAutokill? 0 : 1));
+#if LL_WINDOWS
+    // <Lumen> See Params::hidden: no console window, pipes kept.
+    if (params.hidden)
+    {
+        chkapr(apr_procattr_detach_set(procattr, 1));
+    }
+#endif
 
     if (mAutokill)
     {
