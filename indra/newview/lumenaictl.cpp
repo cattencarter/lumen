@@ -3894,7 +3894,8 @@ namespace
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
         LLSD mpid; mpid["type"]="string";
-            mpid["description"]="teleport: the `id` of a place search_places returned. The viewer "
+            mpid["description"]="teleport: the `id` of a place search_places returned, or of an "
+                                "event search_events returned (where it is held). The viewer "
                                 "asks the user before going there.";
         move_props["place_id"]=mpid;
         // <Lumen> touch: a part and a face, for the objects whose script cares.
@@ -5450,10 +5451,10 @@ namespace
                 }
                 else if (!local)
                 {
-                    // Theirs, from another region or parcel: the viewer keeps
-                    // the spot it left from for its own "back". Within one
-                    // parcel it keeps nothing, and the teleport history is all
-                    // there is.
+                    // Theirs, from another region: the viewer keeps the spot it
+                    // left from for its own "back" (LLAgent, TELEPORT_MOVING).
+                    // Within one region it keeps nothing, and the teleport
+                    // history is all there is.
                     LLSLURL from;
                     gAgent.getTeleportSourceSLURL(from);
                     if (from.isSpatial())
@@ -9068,19 +9069,25 @@ namespace
      */
     std::map<U32, LLSD> sEventWhere;   // event id -> region, x, y, z
     std::map<U32, F64>  sEventAsked;   // event id -> when it was last asked for
+    std::map<U32, S32>  sEventOwed;    // event id -> replies to our own requests not yet in
 
     void eventInfoReply(LLMessageSystem* msg, void** user)
     {
         U32 event_id = 0;
         msg->getU32("EventData", "EventID", event_id);
-        // Ours when we asked for it in the last few minutes -- a second reply
-        // to a question asked twice is still ours, and must not set a reminder.
+        // Ours while a request of ours is still unanswered and recent -- a
+        // second reply to a question asked twice is still ours, and must not
+        // set a reminder. Once ours are in, a reply is the user's own again:
+        // the Search window's "remind me" asks the same message.
+        auto owed = sEventOwed.find(event_id);
         auto asked = sEventAsked.find(event_id);
-        if (asked == sEventAsked.end() || LLTimer::getElapsedSeconds() - asked->second > 300.0)
+        if (owed == sEventOwed.end() || owed->second <= 0 || asked == sEventAsked.end()
+            || LLTimer::getElapsedSeconds() - asked->second > 300.0)
         {
             LLEventNotifier::processEventInfoReply(msg, user);
             return;
         }
+        --owed->second;
         LLEventInfo info;
         info.unpack(msg);
         LLSD w;
@@ -9105,6 +9112,7 @@ namespace
         auto asked = sEventAsked.find(event_id);
         if (asked != sEventAsked.end() && now - asked->second < 30.0) return;
         sEventAsked[event_id] = now;
+        ++sEventOwed[event_id];
         // Set with every request rather than once, so the reply to one of ours
         // can never reach the viewer's handler alone and set a reminder.
         gMessageSystem->setHandlerFunc("EventInfoReply", &eventInfoReply);
