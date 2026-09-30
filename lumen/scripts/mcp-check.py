@@ -231,6 +231,9 @@ def main():
         # past Second Life's 63-character limit is refused by the handler
         # before anything is created, which proves the action is reached.
         ("movement", "landmark"):       {"name": "x" * 70},
+        # go_back with nothing else walks or teleports them back to where they
+        # were. A `how` that is neither walk nor teleport is refused first.
+        ("movement", "go_back"):        {"how": "__check_only__"},
     }
 
     # And the ones with no refusing argument at all, which are NOT called.

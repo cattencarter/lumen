@@ -116,6 +116,9 @@
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
 #include "llfloatersnapshot.h" // <Lumen> close_window: the Snapshot layer
 #include "llremoteparcelrequest.h" // <Lumen> where a directory result is
+#include "lleventnotifier.h"   // <Lumen> where an event is held, as the Search window asks
+#include "llteleporthistory.h" // <Lumen> go_back: the viewer's own Back
+#include "llcallbacklist.h"    // <Lumen> a teleport failure's reason, read the next frame
 #include "llvovolume.h"       // <Lumen> a rigged mesh's drawn box, for framing small avatars
 #include "llviewerjointattachment.h"
 #include "llwindow.h"         //   incBusyCount, balanced when it arrives
@@ -757,6 +760,25 @@ namespace
     // gives a tool call, so the caller hears "still waiting" rather than a
     // timeout it would read as a failure.
     const F64 ASK_HOLD = 50.0;
+
+    // How the question the call now being handled was answered, when it was
+    // answered Yes: "clicked Yes" or "always allowed". Set by askUser, added to
+    // the result as `approved` by the tools/call front door, and cleared for
+    // every request -- one place rather than every gated handler. A remembered
+    // Yes put nothing on the screen and said nothing in the result, so a model
+    // told the user "the viewer will ask you to confirm" after the words had
+    // already gone out.
+    std::string sApprovedHow;
+
+    void markApproved(LLSD& result)
+    {
+        if (!sApprovedHow.empty() && result.isMap() && !result.has("__error")
+            && !result.has("waiting_for_user"))
+        {
+            result["approved"] = sApprovedHow;
+        }
+        sApprovedHow.clear();
+    }
 }
 
 bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
@@ -818,6 +840,7 @@ bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
 
     if (ask.state == 1)
     {
+        sApprovedHow = ask.remembered ? "always allowed" : "clicked Yes";   // <Lumen> see markApproved
         mAsks.erase(it);
         return true;
     }
@@ -3071,6 +3094,7 @@ namespace
         {
             if (action == "teleport")      return "teleport";
             if (action == "walk_to")       return "walk_to";
+            if (action == "go_back")       return "go_back";   // <Lumen>
             if (action == "stop_walking")  return "stop_walking";
             if (action == "sit")           return "sit";
             if (action == "touch")         return "touch";   // <Lumen>
@@ -3577,7 +3601,9 @@ namespace
             "Anything said or sent in the user's name -- say, send_im, send_group_message, "
             "send_group_notice, give_item -- is put to them by the viewer first, with Yes and No, "
             "unless they have told it always to allow that kind. Do not ask permission in the "
-            "conversation as well. If they say No you are told; accept it.";
+            "conversation as well. If they say No you are told; accept it. A result with "
+            "`approved` has already been answered -- it is done, so do not say a question is "
+            "coming.";
         LLSD chat_props;
         chat_props["action"] = actionProperty(chat_actions, LL_ARRAY_SIZE(chat_actions), "What to do. Required.");
         LLSD cmsg; cmsg["type"]="string";
@@ -3659,7 +3685,7 @@ namespace
 
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
-            { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
+            { "teleport", "walk_to", "go_back", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
               "touch", "gesture", "set_home", "follow", "camera", "pose", "stop_pose", "save_photo",
               "fly", "turn", "where_am_i", "landmark",
               "search_places", "search_events" };
@@ -3682,6 +3708,11 @@ namespace
             "either fixed (north, south, east, west and the between ones) or relative to the way "
             "the avatar is facing (forward, back, left, right). For short distances in sight; use "
             "teleport to cross the grid.\n"
+            "- go_back: take them back to where they were before the last walk or teleport -- "
+            "\"take me back\", \"go back to where I was\", \"back where we started\". The viewer "
+            "picks the way: on foot after a walk in this region, by teleport after a teleport. "
+            "`how: \"walk\"` or `\"teleport\"` only when they said which. Home is a different "
+            "place; never answer this with home.\n"
             "- fly: `enabled: true` to take off, false to land. viewer / status reports flying.\n"
             "- turn: face a compass `direction`, a `heading` in degrees (0 north, 90 east), or a "
             "person by `name`. Turning does not move the avatar, and it is what makes \"forward\" "
@@ -3721,19 +3752,19 @@ namespace
             "the folder. Frame it with camera first, and say where the file is rather than "
             "what is in it -- you cannot see it.\n"
             "- camera: move the view, for looking at something or setting up a photo. `shot` "
-            "picks a framing: \"face\" (head and shoulders), \"upper\" (head to waist), "
-            "\"body\" (head to feet, for showing an outfit), \"wide\" (them and their "
-            "surroundings), or \"reset\" to give the camera back. The ordinary words work too "
-            "-- \"portrait\", \"upper body\", \"full body\", \"close-up\". "
+            "picks a framing: \"face\" (head and shoulders -- a portrait or a close-up), "
+            "\"upper\" (head to waist), \"body\" (head to feet, for showing an outfit), \"wide\" "
+            "(them and their surroundings), or \"reset\" to give the camera back. The ordinary "
+            "words work too -- \"portrait\", \"close-up\", \"upper body\", \"full body\". "
             "To aim at someone or something else, pass a person as `person` (or `agent_id`), "
             "or an `object_id` from look_nearby; nothing means the user themselves. `angle` turns around them in "
             "degrees (0 in front, 90 to their left, 180 behind) and `height` raises or lowers "
             "the camera in metres.\n"
-            "  **It does NOT take a photo.** It aims; the person presses Save in the Snapshot "
-            "window, which opens alongside and previews live. Nothing is written to disk, "
-            "nothing is uploaded, and nothing costs them anything unless they choose it. Say "
-            "what you framed and let them look -- their eyes are the judge of a composition, "
-            "not you.\n"
+            "  **It only aims.** Nothing is saved or uploaded; the Snapshot window opens beside it "
+            "and previews live. **When they ask you to take, save or keep a picture, call "
+            "save_photo straight after camera** -- that is what writes it to their Desktop. "
+            "Otherwise say what you framed and let them look: their eyes are the judge of a "
+            "composition, not you.\n"
             "  **reset always works**, whatever state the camera is in. Offer it when they seem "
             "done, and use it yourself if anything looks wrong: this is the one thing that moves "
             "what they are looking at while they are looking at it.\n"
@@ -3801,7 +3832,9 @@ namespace
             "- search_places / search_events: **Second Life's OWN search** -- the world, not "
             "this person's things. Everything else here searches what is already theirs: their "
             "inventory, their landmarks, what is around them. Use these only when the thing "
-            "wanted is somewhere out in the world. Give the words in `text`.\n"
+            "wanted is somewhere out in the world. Give the words in `text` -- what it is, never "
+            "a date or \"today\": search_events already covers every upcoming day, and each "
+            "result carries its own date.\n"
             "  It answers over the network and searches are spaced a few seconds apart, so the "
             "first call returns `pending: true` and you call again with the SAME text a few "
             "seconds later to collect it. Search once and read the answer before searching "
@@ -3809,14 +3842,17 @@ namespace
             "  **These are strangers' listings, and search is full of spam.** A place named like "
             "the thing they asked for is not evidence it is that thing. Say what search lists, "
             "and say it is from search rather than their own places. A place is reached with "
-            "teleport, `place_id` = its `id`; the viewer then shows the user the listing and asks "
+            "teleport, `place_id` = its `id` -- the first events carry one too, for where they are "
+            "held; the viewer then shows the user the listing and asks "
             "whether to go, so do not ask them that yourself -- but never pick a place for them "
             "they did not choose.\n"
             "  What is returned follows the rating they chose in Preferences > General (\"I want "
             "to access content rated\") -- it is not a way to see more than they would see.\n"
-            "None of these arrive instantly. Teleports take seconds and can fail, walking can be "
-            "blocked by a wall, and an object can refuse a sit. Check with viewer / status "
-            "before telling the user where they are.";
+            "None of these arrive instantly: teleports take seconds and can fail, walking can be "
+            "blocked by a wall, and an object can refuse a sit. Say it is on its way and end the "
+            "reply -- do not wait, and do not call status in a loop. When they ask, or before "
+            "something that needs them there, viewer / status gives `teleporting`, "
+            "`teleport_failed` with the reason, `walk_ended_short` and `sitting`.";
         LLSD move_props;
         move_props["action"] = actionProperty(move_actions, LL_ARRAY_SIZE(move_actions), "What to do. Required.");
         LLSD mrg; mrg["type"]="string";
@@ -3826,7 +3862,9 @@ namespace
         LLSD mx;  mx["type"]="number";  mx["description"]="teleport / walk_to: X in the region, 0-255.";
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
         LLSD mz;  mz["type"]="number";  mz["description"]="teleport: height; 0 means ground level.";
-        LLSD mh;  mh["type"]="boolean"; mh["description"]="teleport: true goes home and ignores region.";
+        LLSD mh;  mh["type"]="boolean";
+            mh["description"]="teleport: true goes to their HOME and ignores region. Not \"take me "
+                              "back\" -- that is go_back.";
         LLSD mo;  mo["type"]="string";  mo["description"]="sit / walk_to / touch: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
         LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256.";
@@ -3884,9 +3922,15 @@ namespace
         move_props["agent_id"]=mag; move_props["item_id"]=mii;
         LLSD mtx; mtx["type"]="string";
         mtx["description"]="search_places / search_events: the words to look for in Second "
-                           "Life's own search. Pass the same text again to collect the "
-                           "answer.";
+                           "Life's own search -- what the place or event is, never a date or "
+                           "\"today\" (events already cover every upcoming day). Pass the same "
+                           "text again to collect the answer.";
         move_props["text"]=mtx;
+        // <Lumen> go_back: which way, when the user said.
+        LLSD mhow; mhow["type"]="string";
+            mhow["description"]="go_back: \"walk\" or \"teleport\", only when they said which. "
+                                "Leave it out and the viewer picks the way they came.";
+        move_props["how"]=mhow;
 
         // **The camera's own parameters, which were never declared.** `camera`
         // reads `shot`, `angle`, `height`, `gaze` and `person`, and not one of
@@ -3900,10 +3944,11 @@ namespace
         // tool, and for the same reason: the schema is a FIFTH list and nothing
         // compares it to the handlers.
         LLSD csh; csh["type"]="string";
-            csh["description"]="camera: how much to frame -- `face`, `upper` (head and torso), "
-                               "`body` (head to feet, the default), `wide` (the surroundings), or "
-                               "`reset` to give the camera back. Ordinary words work too: "
-                               "portrait, close-up, torso, full body, scene.";
+            csh["description"]="camera: how much to frame -- `face` (head and shoulders), `upper` "
+                               "(head and torso), `body` (head to feet, the default), `wide` (the "
+                               "surroundings), or `reset` to give the camera back. Ordinary words "
+                               "work too: portrait and close-up (face), torso (upper), full body, "
+                               "scene.";
         LLSD can; can["type"]="number";
             can["description"]="camera: which side to shoot from, in degrees clockwise from in "
                                "front of the subject. 0 is face on, 90 is their left, 180 behind.";
@@ -3940,8 +3985,11 @@ namespace
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
-            "region, position, and whether it is sitting, walking or flying. Call this first, and "
-            "again to confirm anything that takes time.\n"
+            "region, position, and whether it is sitting, walking, flying or teleporting -- and "
+            "how the last walk or teleport ended (`walk_ended_short`, `teleport_arrived`, "
+            "`teleport_failed` with the reason). Read it when they ask where they are or whether "
+            "something worked, or before an act that needs them in a place; it is not needed "
+            "before every request.\n"
             "- read_actions: which tools you used, when, and whether each worked. Shows that "
             "something was said and how long it was, never the words. Use it to tell the user what "
             "you did, and to check whether something you are unsure about already happened. "
@@ -5137,6 +5185,7 @@ bool LumenAIControl::tick(const LLSD&)
 std::string LumenAIControl::handleRequest(const std::string& body)
 {
     mWaitingAsk.setNull();   // <Lumen> only THIS request's question may hold its reply
+    sApprovedHow.clear();    // <Lumen> and only its own answer is reported as `approved`
 
     boost::json::value parsed;
     try
@@ -5181,6 +5230,9 @@ std::string LumenAIControl::handleRequest(const std::string& body)
     {
         return rpcError(id, -32603, std::string("Internal error: ") + e.what());
     }
+    // <Lumen> A tool called by its own name, which keeps curl useful; tools/call
+    // has already done this inside the answer it wraps.
+    if (method != "tools/call") markApproved(result);
 
     if (result.has("__error"))
     {
@@ -5308,6 +5360,180 @@ namespace
         global += LLVector3d(sTeleportLocal.mV[VX], sTeleportLocal.mV[VY], sTeleportLocal.mV[VZ]);
         gAgent.teleportViaLocation(global);
     }
+
+    // <Lumen> How the last teleport went, and where go_back goes.
+    //
+    // A teleport's own reply can only say one was asked for, and status used
+    // to give region and position and nothing else -- so "still on its way"
+    // and "it failed" looked the same, models polled status in a loop, and one
+    // told the user "Teleporting home. A moment." while still standing in the
+    // region it never left. The parcel manager signals when ANY teleport lands
+    // or fails; the viewer's own "Teleport failed" window says why.
+    struct MoveWatch
+    {
+        bool        connected = false;
+        // The last teleport the assistant asked for.
+        std::string asked_to;
+        F64         asked_at = 0.0;
+        bool        asked_open = false;       //< neither landed nor failed yet
+        LLVector3d  asked_from;               //< where they stood when it was asked
+        // How the last teleport -- anybody's -- ended.
+        F64         landed_at = 0.0;
+        bool        landed_reported = true;   //< status has said teleport_arrived
+        F64         failed_at = 0.0;
+        std::string failed_reason;
+        // Where going back after the last teleport leads: the spot it left from,
+        // exactly for one of ours, by region and position for one of theirs.
+        F64         back_at = 0.0;            //< when that teleport landed; 0 = none seen
+        bool        back_global_known = false;
+        LLVector3d  back_global;
+        std::string back_region;
+        LLVector3   back_local;
+        // The last walk the assistant started.
+        F64         walk_at = 0.0;
+        LLVector3d  walk_from;
+        LLUUID      walk_region;
+    };
+    MoveWatch& moveWatch() { static MoveWatch w; return w; }
+
+    // A teleport of ours that has not landed after this long is not the one
+    // that lands next.
+    const F64 TELEPORT_ASK_KEEPS = 180.0;
+    // "Take me back" after a walk half an hour ago is not about that walk.
+    const F64 WALK_BACK_KEEPS = 1800.0;
+
+    /** The viewer's own words for the teleport that just failed, or empty. */
+    std::string teleportFailureText()
+    {
+        std::string text;
+        LLDate newest;
+        LLNotificationChannelPtr visible = LLNotifications::instance().getChannel("Visible");
+        if (!visible) return text;
+        visible->forEachNotification(
+            [&text, &newest](LLNotificationPtr n)
+            {
+                if (!n || n->isCancelled()) return;
+                const std::string& name = n->getName();
+                if (!LLStringUtil::startsWith(name, std::string("CouldNotTeleport"))
+                    && !LLStringUtil::startsWith(name, std::string("TeleportEntryAccessBlocked")))
+                {
+                    return;
+                }
+                if (!text.empty() && n->getDate() < newest) return;
+                newest = n->getDate();
+                text = n->getMessage();
+            });
+        return text;
+    }
+
+    void watchTeleports()
+    {
+        MoveWatch& w = moveWatch();
+        if (w.connected) return;
+        w.connected = true;
+        LLViewerParcelMgr::getInstance()->setTeleportFinishedCallback(
+            [](const LLVector3d&, const bool& local)
+            {
+                MoveWatch& mw = moveWatch();
+                const F64 now = LLTimer::getElapsedSeconds();
+                const bool ours = mw.asked_open && now - mw.asked_at < TELEPORT_ASK_KEEPS;
+                mw.asked_open = false;
+                mw.landed_at = now;
+                mw.back_at = now;
+                mw.back_global_known = false;
+                mw.back_region.clear();
+                if (ours)
+                {
+                    mw.back_global_known = true;
+                    mw.back_global = mw.asked_from;
+                    mw.landed_reported = false;
+                }
+                else if (!local)
+                {
+                    // Theirs, from another region or parcel: the viewer keeps
+                    // the spot it left from for its own "back". Within one
+                    // parcel it keeps nothing, and the teleport history is all
+                    // there is.
+                    LLSLURL from;
+                    gAgent.getTeleportSourceSLURL(from);
+                    if (from.isSpatial())
+                    {
+                        mw.back_region = from.getRegion();
+                        mw.back_local = from.getPosition();
+                    }
+                }
+            });
+        LLViewerParcelMgr::getInstance()->setTeleportFailedCallback(
+            []()
+            {
+                MoveWatch& mw = moveWatch();
+                mw.failed_at = LLTimer::getElapsedSeconds();
+                mw.failed_reason.clear();
+                mw.asked_open = false;
+                // The viewer puts its "Teleport failed" window up just after
+                // this signal, in the same message, so its words are there to
+                // read on the next frame.
+                doOnIdleOneTime([]() { moveWatch().failed_reason = safeUtf8(teleportFailureText()); });
+            });
+    }
+
+    /** Where they stand now, as started_from reports it. */
+    LLSD hereForReturn()
+    {
+        LLSD at;
+        if (gAgent.getRegion()) at["region"] = gAgent.getRegion()->getName();
+        const LLVector3 pos = gAgent.getPositionAgent();
+        at["x"] = pos.mV[VX]; at["y"] = pos.mV[VY]; at["z"] = pos.mV[VZ];
+        return at;
+    }
+
+    void noteTeleportAsked(const std::string& to)
+    {
+        watchTeleports();
+        MoveWatch& mw = moveWatch();
+        mw.asked_to   = to;
+        mw.asked_at   = LLTimer::getElapsedSeconds();
+        mw.asked_open = true;
+        mw.asked_from = gAgent.getPositionGlobal();
+        mw.landed_reported = true;
+        mw.failed_at  = 0.0;   // an older failure is not this one's
+        mw.failed_reason.clear();
+    }
+
+    void noteWalkStarted(const LLVector3d& from, const LLUUID& region_id)
+    {
+        watchTeleports();   // a teleport after this walk makes it no longer the last move
+        MoveWatch& mw = moveWatch();
+        mw.walk_at     = LLTimer::getElapsedSeconds();
+        mw.walk_from   = from;
+        mw.walk_region = region_id;
+    }
+
+    const char* teleportStage(LLAgent::ETeleportState state, bool looking_up)
+    {
+        switch (state)
+        {
+            case LLAgent::TELEPORT_START:
+            case LLAgent::TELEPORT_REQUESTED:     return "asked Second Life";
+            case LLAgent::TELEPORT_MOVING:        return "on the way";
+            case LLAgent::TELEPORT_START_ARRIVAL:
+            case LLAgent::TELEPORT_ARRIVING:      return "arriving";
+            case LLAgent::TELEPORT_LOCAL:         return "moving within the region";
+            case LLAgent::TELEPORT_PENDING:       return "waiting for the one before it";
+            default:                              break;
+        }
+        return looking_up ? "finding the region" : "landing";
+    }
+
+    // The same words wherever a teleport is asked for. Not "call status after a
+    // few seconds": models took that as an order, and polled.
+    const char* const TELEPORT_UNDER_WAY =
+        "Teleporting takes several seconds and can fail. Tell the user it is on the way and END "
+        "the reply -- do not wait for it. When they ask whether they arrived, or before "
+        "something that needs them there, viewer / status gives `teleporting` while it is under "
+        "way, `teleport_arrived` once it lands, and `teleport_failed` with the reason if it did "
+        "not happen. started_from is where they were; movement / go_back takes them back there.";
+    // </Lumen>
 }
 
 
@@ -8830,6 +9056,69 @@ namespace
     ParcelLocator& parcelLocator() { static ParcelLocator l; return l; }
     const S32 PARCELS_LOCATED = 12;   // the first few; nobody reads a hundred
 
+    /**
+     * <Lumen> Where an EVENT is held. The directory lists an event by name and
+     * date and nothing else, so "take me to that event" had no place to go and
+     * a model guessed a region. The Search window asks EventInfoRequest for an
+     * event it shows; this asks the same, for the first few results.
+     *
+     * The reply is read by a handler put in front of the viewer's own, which
+     * it then calls -- the chain DirEventsReply uses, set here when a lookup
+     * is sent rather than in llstartup.cpp, so no upstream file changes.
+     */
+    std::map<U32, LLSD> sEventWhere;   // event id -> region, x, y, z
+    std::map<U32, F64>  sEventAsked;   // event id -> when it was last asked for
+
+    void eventInfoReply(LLMessageSystem* msg, void** user)
+    {
+        U32 event_id = 0;
+        msg->getU32("EventData", "EventID", event_id);
+        // Ours when we asked for it in the last few minutes -- a second reply
+        // to a question asked twice is still ours, and must not set a reminder.
+        auto asked = sEventAsked.find(event_id);
+        if (asked == sEventAsked.end() || LLTimer::getElapsedSeconds() - asked->second > 300.0)
+        {
+            LLEventNotifier::processEventInfoReply(msg, user);
+            return;
+        }
+        LLEventInfo info;
+        info.unpack(msg);
+        LLSD w;
+        w["region"] = safeUtf8(info.mSimName);
+        w["x"] = fmod(info.mPosGlobal.mdV[VX], (F64)REGION_WIDTH_METERS);
+        w["y"] = fmod(info.mPosGlobal.mdV[VY], (F64)REGION_WIDTH_METERS);
+        w["z"] = info.mPosGlobal.mdV[VZ];
+        sEventWhere[event_id] = w;
+        // The viewer's own handler still runs, so an open Search window showing
+        // this event gets its answer too -- with a listener of ours connected
+        // for the length of the call. With no listener at all,
+        // LLEventNotifier::add() takes a reply for a request to be REMINDED,
+        // and looking an event up for the assistant would set a reminder.
+        boost::signals2::scoped_connection quiet(
+            gEventNotifier.setEventInfoCallback([](LLEventInfo) { return true; }));
+        LLEventNotifier::processEventInfoReply(msg, user);
+    }
+
+    void askEventWhere(U32 event_id)
+    {
+        const F64 now = LLTimer::getElapsedSeconds();
+        auto asked = sEventAsked.find(event_id);
+        if (asked != sEventAsked.end() && now - asked->second < 30.0) return;
+        sEventAsked[event_id] = now;
+        // Set with every request rather than once, so the reply to one of ours
+        // can never reach the viewer's handler alone and set a reminder.
+        gMessageSystem->setHandlerFunc("EventInfoReply", &eventInfoReply);
+        // The same message the Search window's event panel sends.
+        gMessageSystem->newMessageFast(_PREHASH_EventInfoRequest);
+        gMessageSystem->nextBlockFast(_PREHASH_AgentData);
+        gMessageSystem->addUUIDFast(_PREHASH_AgentID, gAgent.getID());
+        gMessageSystem->addUUIDFast(_PREHASH_SessionID, gAgent.getSessionID());
+        gMessageSystem->nextBlockFast(_PREHASH_EventData);
+        gMessageSystem->addU32Fast(_PREHASH_EventID, event_id);
+        gAgent.sendReliableMessage();
+    }
+    // </Lumen>
+
     struct WebReply
     {
         S32         http = 0;       // 0 when nothing answered at all
@@ -9343,6 +9632,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         }
 
         LLSD inner = dispatch(target, call_args);
+        markApproved(inner);   // <Lumen> how the viewer's question was answered, if it asked
 
         // <Lumen> For testing a model by USING it: every tool call, whoever made
         // it, and what it answered. Off unless LumenAITest is switched on in
@@ -9546,15 +9836,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         result["said"] = message;
         result["channel"] = channel;
         result["type"] = kind;
-        result["chat_seq_before"] = seq_before;
+        result["spoken"] = true;
         // <Lumen> Channel chat is heard by scripts only and is never echoed
         // back to the speaker, so the read-back cannot see it -- and a model
         // told to look, and not finding it, sent the command again.
         if (channel == 0)
         {
-            result["confirm_with"] =
-                "Call read_chat with since=" + LLSD(seq_before).asString() +
-                " to see it echoed back and confirm it was spoken.";
+            // Data, not an order. "Call read_chat with since=N to confirm" was
+            // obeyed on every say at the cost of a whole round trip, and one
+            // model pasted it into its reply to the user. The sequence is here
+            // for when the echo matters -- a question whether it was heard.
+            result["echo_after_seq"] = seq_before;
         }
         else
         {
@@ -11358,6 +11650,33 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     }
                 }
             }
+            else
+            {
+                // And where the first events are held: see sEventWhere. The
+                // same `id` a place carries, so teleport takes it the same way
+                // and the viewer asks the user the same question first.
+                LLSD& rows = result["results"];
+                for (S32 k = 0; k < (S32)rows.size() && k < PARCELS_LOCATED; ++k)
+                {
+                    LLSD& row = rows[k];
+                    const U32 eid = (U32)row["event_id"].asInteger();
+                    auto w = sEventWhere.find(eid);
+                    if (w == sEventWhere.end())
+                    {
+                        askEventWhere(eid);
+                        ++locating;
+                        continue;
+                    }
+                    if (w->second["region"].asString().empty()) continue;   // listed nowhere
+                    row["region"] = w->second["region"];
+                    row["x"] = w->second["x"]; row["y"] = w->second["y"]; row["z"] = w->second["z"];
+                    row["map_link"] = mapLink(row["region"].asString(), row["x"].asReal(),
+                                              row["y"].asReal(), row["z"].asReal());
+                    row["id"] = llformat("event-%u", eid);
+                    sSearchPlaceById[row["id"].asString()] = row;
+                    ++located;
+                }
+            }
             // </Lumen>
 
             // The directory says WHY it returned nothing, and the reasons are
@@ -11398,13 +11717,25 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                  "That is about the WORLD directory only -- it is not about "
                                  "their inventory, their landmarks, or what is around them, "
                                  "which are separate searches. Say which you checked.";
+                // <Lumen> Not "there is no live music today": this was every
+                // upcoming day, and only these words.
+                if (events)
+                {
+                    result["searched"] = "every upcoming day, for these words as written";
+                    result["try_other_words"] =
+                        "The directory matches the words, not what they mean: \"live music\" "
+                        "does not find a listing that says \"concert\", \"band\" or \"DJ\". Try "
+                        "the words a listing might use before saying there is nothing on. The "
+                        "text should name the kind of event only -- this already covers every "
+                        "upcoming day, so leave dates and \"today\" out of it.";
+                }
             }
             else
             {
                 result["note"] = events
-                    ? "Upcoming events the DIRECTORY lists under those words -- other "
-                      "people's listings, not the user's own. The first page only. Times "
-                      "are Second Life time. Ask which one they meant before acting."
+                    ? "Upcoming events the DIRECTORY lists under those words, for every day from "
+                      "now on -- other people's listings, not the user's own. The first page "
+                      "only. `date` is Second Life time. Ask which one they meant before acting."
                     : "Places the DIRECTORY lists under those words -- other people's "
                       "parcels, not the user's own landmarks or anything nearby. The first "
                       "page only, ranked by the directory and not by us. A name matching "
@@ -11419,12 +11750,17 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 if (locating > 0)
                 {
                     result["locations_pending"] = locating;
-                    result["locations_note"] = "Asked Second Life where the first ones are. Call "
-                                               "search_places again in a second with the same "
-                                               "text and they will carry a region and a map link.";
+                    result["locations_note"] = std::string("Asked Second Life where the first ones ")
+                        + (events ? "are held. Call search_events" : "are. Call search_places")
+                        + " again in a second with the same text and they will carry a region "
+                          "and a map link.";
                 }
             }
             result["source"] = "directory";
+            // <Lumen> Kept while the first results' locations are still on their
+            // way, so the next call answers from this same search with them
+            // filled in, rather than asking the directory all over again.
+            const bool keep = locating > 0 && now - it->second.asked < 60.0;
             auto failed = sWebPlacesFailed.find(key);
             if (failed != sWebPlacesFailed.end())
             {
@@ -11434,7 +11770,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     "which matches the words only as one phrase in a parcel's NAME. A place "
                     "can be listed and still be missed here -- say the web search failed "
                     "rather than that there is nothing.";
-                sWebPlacesFailed.erase(failed);
+                if (!keep) sWebPlacesFailed.erase(failed);
             }
             else if (!events && !LLGridManager::getInstance()->isInSLMain())
             {
@@ -11442,8 +11778,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     "This grid's own directory. It matches the words only as one phrase in a "
                     "parcel's name, so a place can exist and be missed.";
             }
-            mDirByQuery.erase(it->second.query_id);
-            mDirSearches.erase(it);
+            if (!keep)
+            {
+                mDirByQuery.erase(it->second.query_id);
+                mDirSearches.erase(it);
+            }
             return result;
         }
 
@@ -14811,14 +15150,17 @@ if (method == "camera")
             // aims at the chin, and the picture came back with the top of her
             // head cut off. A missing option is not a neutral absence -- it is
             // answered with the nearest wrong one.
+            // <Lumen> "portrait" is head and shoulders, as the description says
+            // and as a person means it. It went to head-to-waist, and Haiku told
+            // the user "head and shoulders" about a shot that was not.
             if (shot == "upper" || shot == "upper body" || shot == "upperbody"
                 || shot == "torso" || shot == "half" || shot == "waist"
-                || shot == "portrait" || shot == "bust")
+                || shot == "bust")
             {
                 shot = "upper";
             }
             else if (shot == "head" || shot == "close" || shot == "closeup"
-                     || shot == "close-up" || shot == "face")
+                     || shot == "close-up" || shot == "face" || shot == "portrait")
             {
                 shot = "face";
             }
@@ -15343,7 +15685,10 @@ if (method == "camera")
             gAgent.standUp();
             LLSD result;
             result["requested"] = "stand";
-            result["confirm_with"] = "Call viewer / status and check sitting to confirm.";
+            // <Lumen> Not "call status to confirm", which models obeyed at once, or in a loop.
+            result["confirm_with"] = "Asked; they get up in a moment. Say so and end the reply. "
+                                     "viewer / status gives `sitting` if they ask, or before "
+                                     "something that needs them standing.";
             LLSD summary; summary["action"] = "stand";
             recordAction(request_id, fingerprintOf("stand", params), "stand", "ok", result, summary);
             return result;
@@ -15367,7 +15712,9 @@ if (method == "camera")
                 LLSD result;
                 if (ended_follow) result["ended_follow"] = true;
                 result["requested"] = "sit on the ground";
-                result["confirm_with"] = "Call viewer / status and check sitting to confirm.";
+                result["confirm_with"] = "Asked; they sit down in a moment. Say so and end the "
+                                         "reply. viewer / status gives `sitting` if they ask, or "
+                                         "before something that needs them seated.";   // <Lumen>
                 LLSD summary; summary["action"] = "sit"; summary["on"] = "ground";
                 recordAction(request_id, fingerprintOf("sit", params), "sit", "ok", result, summary);
                 return result;
@@ -15462,14 +15809,18 @@ if (method == "camera")
                 result["with"] = sat_with;
                 result["with_note"] = "On the object they are sitting on. Where the avatar lands is "
                                       "the object's choice: a free seat, a spot beside them, or a "
-                                      "refusal when it is full. Check before saying they are "
-                                      "sitting together.";
+                                      "refusal when it is full -- so say it has been asked, not "
+                                      "that they are sitting together.";
             }
             // The object decides. It can refuse, it can be full, it can be too
             // far, and it can put the avatar somewhere unexpected.
+            // <Lumen> Said as walk_to says it: an order to call status after a
+            // second or two was obeyed literally, and in loops.
             result["confirm_with"] =
-                "The object decides whether the avatar may sit and where. Call viewer / status after a "
-                "second or two and check sitting before telling the user it worked.";
+                "The object decides whether the avatar may sit and where, a second or two from now. "
+                "Say it has been asked and END the reply -- do not wait for it. viewer / status gives "
+                "`sitting` if they ask, or before something that needs them seated; it stays false "
+                "when the object refused.";
             LLSD summary; summary["action"] = "sit"; summary["on"] = object_id;
             recordAction(request_id, fingerprintOf("sit", params), "sit", "ok", result, summary);
             return result;
@@ -15646,6 +15997,7 @@ if (method == "camera")
         // answered with a status read taken a moment AFTER setting off, 13 m
         // up and mid-flight, because nothing had recorded the start.
         const LLVector3 from = gAgent.getPositionAgent();
+        noteWalkStarted(gAgent.getPositionGlobal(), region->getRegionID());   // <Lumen> go_back
         gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, NULL, NULL, 1.5f,
                                     0.03f, was_flying);
         mWalkActive = true;   // <Lumen> see status
@@ -15667,9 +16019,9 @@ if (method == "camera")
         start["region"] = region->getName();
         start["x"] = from.mV[VX]; start["y"] = from.mV[VY]; start["z"] = from.mV[VZ];
         result["started_from"] = start;
-        result["note"] = "started_from is where they were when this walk began -- if they ask to "
-                         "go back, walk_to those x, y and z. A position read later is somewhere "
-                         "along the way, not the start.";
+        result["note"] = "started_from is where they were when this walk began; movement / go_back "
+                         "takes them back there. A position read later is somewhere along the way, "
+                         "not the start.";
         // <Lumen> Not "check back after several seconds": Codex took that as an
         // order to wait, polled for half a minute at a time, and sat at
         // "Thinking..." after the author took over with his own arrow keys.
@@ -18728,15 +19080,15 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
 
+                LLSD result;
+                result["started_from"] = hereForReturn();   // <Lumen> for go_back
+                noteTeleportAsked(safeUtf8(lm->getName()));
                 gAgent.teleportViaLandmark(lm->getAssetUUID());
 
-                LLSD result;
                 result["destination"] = safeUtf8(lm->getName());
                 result["by"] = "landmark";
                 result["landmark"] = lm_how;
-                result["confirm_with"] =
-                    "Teleporting takes several seconds and can fail. Call viewer / status after a few "
-                    "seconds and check the region before telling the user they arrived.";
+                result["confirm_with"] = TELEPORT_UNDER_WAY;   // <Lumen>
                 LLSD summary;
                 summary["destination"] = safeUtf8(lm->getName());
                 summary["by"] = "landmark";
@@ -18854,15 +19206,201 @@ if (method == "camera")
         // The region is looked up over the network before the teleport is even
         // issued, and the teleport itself takes seconds more. Reporting success
         // here would be reporting that a request was made.
-        result["confirm_with"] =
-            "Teleporting takes several seconds and can fail. Call viewer / status after a few seconds and "
-            "check the region and position before telling the user it worked.";
+        // <Lumen> And so status can say how it is going, and go_back can undo it.
+        result["started_from"] = hereForReturn();
+        noteTeleportAsked(result["destination"].asString());
+        result["confirm_with"] = TELEPORT_UNDER_WAY;
+        // </Lumen>
 
         LLSD summary;
         summary["destination"] = result["destination"];
         recordAction(request_id, fingerprintOf("teleport", params), "teleport", "ok", result, summary);
         return result;
     }
+
+    // <Lumen> "Take me back." Nothing had that verb, so with no walk in its
+    // conversation a model answered it by teleporting HOME, to another region,
+    // and another teleported for a 5 m return. The viewer knows how they got
+    // here, so it chooses: back on foot after a walk in this region, back by
+    // teleport after a teleport, and the viewer's own Back when neither was
+    // the assistant's. See moveWatch().
+    if (method == "go_back")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        LLSD replay;
+        if (recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already carried out.";
+            return replay;
+        }
+        const std::string how = params.has("how") ? lowered(params["how"].asString()) : std::string();
+        if (!how.empty() && how != "walk" && how != "teleport")
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "`how` is \"walk\" or \"teleport\", or leave it out and the viewer "
+                           "chooses. Nothing was done.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLViewerRegion* region = gAgent.getRegion();
+        if (!region)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not in a region yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        watchTeleports();
+        // Copied, not referenced: the walk or teleport made below records a
+        // new move of its own.
+        const MoveWatch mw = moveWatch();
+        const F64 now = LLTimer::getElapsedSeconds();
+        const LLVector3d here = gAgent.getPositionGlobal();
+
+        // The walk, when it is the latest move and it began in this region.
+        const bool walk_here = mw.walk_at > 0.0 && now - mw.walk_at < WALK_BACK_KEEPS
+                            && mw.walk_at > mw.back_at && mw.walk_region == region->getRegionID();
+        const F32 walk_left = walk_here ? (F32)dist_vec(here, mw.walk_from) : 0.f;
+
+        if (how == "walk" && (!walk_here || walk_left > 250.f))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = std::string(walk_here
+                               ? "Where the last walk began is too far to walk back to, "
+                               : mw.walk_at <= 0.0
+                               ? "The assistant has not walked them anywhere this session, "
+                               : mw.walk_at < mw.back_at
+                               ? "They have teleported since the last walk, "
+                               : "The last walk began in another region or too long ago, ")
+                         + "so there is no way back on foot. Call go_back without `how` and "
+                           "the viewer picks the way. Nothing was done.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD result;
+        LLVector3d target;
+        bool by_global = false;      // teleport straight to `target`
+        bool by_history = false;     // ... as the viewer's own Back does
+        std::string where;           // the region, when it is known
+        std::string back_to;         // what "back" was taken to mean, said in the reply
+
+        if (walk_here && how != "teleport" && walk_left <= 250.f)
+        {
+            if (walk_left < 2.f)
+            {
+                result["already_there"] = true;
+                result["note"] = "They are standing where the last walk began.";
+                return result;
+            }
+            // walk_to by position, which checks everything a walk needs.
+            const LLVector3 local = region->getPosRegionFromGlobal(mw.walk_from);
+            LLSD walk;
+            walk["x"] = local.mV[VX]; walk["y"] = local.mV[VY]; walk["z"] = local.mV[VZ];
+            result = dispatch("walk_to", walk);
+            if (result.has("__error")) return result;
+            result["went_back_by"] = "walking";
+            back_to = "where the last walk began";
+        }
+        else if (walk_here)
+        {
+            by_global = true;
+            target = mw.walk_from;
+            back_to = "where the last walk began";
+        }
+        else if (mw.back_at > 0.0 && mw.back_global_known)
+        {
+            by_global = true;
+            target = mw.back_global;
+            back_to = "where the last teleport left from";
+        }
+        else if (mw.back_at > 0.0 && !mw.back_region.empty())
+        {
+            // teleport by region, which looks the region up and does the rest.
+            LLSD tp;
+            tp["region"] = mw.back_region;
+            tp["x"] = mw.back_local.mV[VX]; tp["y"] = mw.back_local.mV[VY];
+            tp["z"] = mw.back_local.mV[VZ];
+            result = dispatch("teleport", tp);
+            if (result.has("__error")) return result;
+            result["went_back_by"] = "teleport";
+            back_to = "where the last teleport left from, as the viewer recorded it";
+        }
+        else
+        {
+            // Neither move was the assistant's: the navigation bar's Back.
+            LLTeleportHistory* history = LLTeleportHistory::getInstance();
+            const LLTeleportHistory::slurl_list_t& items = history->getItems();
+            const S32 at = history->getCurrentItemIndex();
+            if (at < 1 || at >= (S32)items.size() || items[at - 1].mGlobalPos.isExactlyZero())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nothing records where they were before: no walk or teleport the "
+                               "assistant made this session, and nothing earlier in the viewer's "
+                               "teleport history. Ask them where they mean. Home is a different "
+                               "place -- do not go there instead. Nothing was done.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            by_global = by_history = true;
+            target = items[at - 1].mGlobalPos;
+            where = safeUtf8(items[at - 1].getTitle());
+            back_to = "the place before this one in the viewer's teleport history, where its Back "
+                      "button goes";
+        }
+
+        if (by_global)
+        {
+            if (dist_vec(here, target) < 2.0)
+            {
+                result["already_there"] = true;
+                result["note"] = "They are standing where they were before.";
+                return result;
+            }
+            // The check teleportViaLocation makes, asked first: it refuses in
+            // silence, and this would have said it was on the way.
+            if (RlvActions::isRlvEnabled()
+                && (RlvActions::isLocalTp(target) ? !RlvActions::canTeleportToLocal(target)
+                                                  : !RlvActions::canTeleportToLocation()))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "An RLV restriction the user is wearing forbids that teleport, so "
+                               "nothing was done. Say it is their own attachment.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (where.empty())
+            {
+                if (LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosGlobal(target))
+                {
+                    where = r->getName();
+                }
+                else if (LLSimInfo* sim = LLWorldMap::getInstance()->simInfoFromPosGlobal(target))
+                {
+                    where = sim->getName();
+                }
+            }
+            result["started_from"] = hereForReturn();
+            noteTeleportAsked(where.empty() ? std::string("where they were") : where);
+            if (by_history) LLTeleportHistory::getInstance()->goBack();
+            else            gAgent.teleportViaLocation(target);
+            if (!where.empty()) result["destination"] = where;
+            result["went_back_by"] = "teleport";
+            result["confirm_with"] = TELEPORT_UNDER_WAY;
+        }
+
+        result["went_back_to"] = back_to;
+        LL_INFOS("AICtl") << "go_back: " << result["went_back_by"].asString() << " to " << back_to
+                          << LL_ENDL;
+        LLSD summary;
+        summary["action"] = "go_back";
+        summary["by"] = result["went_back_by"];
+        recordAction(request_id, fingerprintOf("go_back", params), "go_back", "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
 
     if (method == "read_dialogues")
     {
@@ -21442,7 +21980,57 @@ LLSD LumenAIControl::toolStatus() const
         if (!lost.empty())
         {
             status["teleport_not_found"] = teleportLookupLostNote(lost);
+            moveWatch().asked_open = false;   // <Lumen> said here; not a second failure below
         }
+        // <Lumen> A teleport under way, and how the last one ended. See moveWatch().
+        watchTeleports();
+        {
+            MoveWatch& mw = moveWatch();
+            const F64 t = LLTimer::getElapsedSeconds();
+            const LLAgent::ETeleportState tp = gAgent.getTeleportState();
+            const bool looking_up = !sTeleportLookingUp.empty() && t - sTeleportLookupSent < 5.0;
+            if (tp != LLAgent::TELEPORT_NONE || looking_up
+                || LLViewerParcelMgr::getInstance()->getTeleportInProgress())
+            {
+                status["teleporting"] = true;
+                status["teleport_stage"] = teleportStage(tp, looking_up);
+                if (mw.asked_open) status["teleporting_to"] = mw.asked_to;
+                status["teleport_note"] = "On its way. Say so and end the reply; the region and "
+                                          "position here are not final until `teleporting` is "
+                                          "gone.";
+            }
+            else if (mw.failed_at > mw.landed_at && t - mw.failed_at < 600.0)
+            {
+                status["teleport_failed"] = true;
+                if (mw.failed_reason.empty()) mw.failed_reason = safeUtf8(teleportFailureText());
+                status["teleport_failed_reason"] = mw.failed_reason.empty()
+                    ? std::string("Second Life refused it without a reason the viewer could read.")
+                    : mw.failed_reason;
+                status["teleport_note"] = "The last teleport did not happen: they are still where "
+                                          "this says. Tell them, with the reason.";
+            }
+            else if (mw.asked_open && t - mw.asked_at > 10.0)
+            {
+                // Asked for, not under way, never landed and never refused.
+                mw.asked_open = false;
+                mw.failed_at = t;
+                mw.failed_reason = "It did not arrive and Second Life sent no refusal: the viewer "
+                                   "gave up waiting for it, or something stopped it before it "
+                                   "began -- an RLV restriction the user wears does that without "
+                                   "a word.";
+                status["teleport_failed"] = true;
+                status["teleport_failed_reason"] = mw.failed_reason;
+                status["teleport_note"] = "The teleport to " + mw.asked_to + " did not happen: "
+                                          "they are still where this says. Tell them.";
+            }
+            else if (!mw.landed_reported)
+            {
+                mw.landed_reported = true;
+                status["teleport_arrived"] = true;
+                if (!mw.asked_to.empty()) status["teleported_to"] = mw.asked_to;
+            }
+        }
+        // </Lumen>
     }
 
     return status;

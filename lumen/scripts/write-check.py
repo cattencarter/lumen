@@ -92,9 +92,9 @@ def main():
     # --- 1. it speaks, and the echo proves it ----------------------------
     rid = "write-check-A"
     r = call(url, "say", {"message": marker, "request_id": rid}).get("result", {})
-    check("say returns chat_seq_before rather than claiming success",
-          "chat_seq_before" in r, str(r)[:160])
-    seq0 = r.get("chat_seq_before", 0)
+    check("say returns echo_after_seq, where its echo can be read back from",
+          "echo_after_seq" in r, str(r)[:160])
+    seq0 = r.get("echo_after_seq", 0)
 
     said = lines_since(url, seq0)
     check("the words come back through read_chat",
@@ -108,7 +108,7 @@ def main():
     r2 = call(url, "say", {"message": marker, "request_id": rid}).get("result", {})
     check("a repeated request_id is reported as a replay", r2.get("replayed") is True, str(r2)[:200])
     check("the replay returns the original answer",
-          r2.get("chat_seq_before") == seq0, str(r2)[:200])
+          r2.get("echo_after_seq") == seq0, str(r2)[:200])
 
     time.sleep(3)
     after = call(url, "read_chat", {"since": seq_before_retry, "limit": 50}) \
