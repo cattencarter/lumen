@@ -191,7 +191,10 @@ bool LumenAIVibe::signedIn(bool fresh)
     {
         DWORD count = 0;
         PCREDENTIALW* creds = NULL;
-        if (CredEnumerateW(L"ai.mistral.vibe", 0, &count, &creds) && creds)
+        // The filter is a name prefix followed by "*", as Microsoft documents
+        // it; the entry itself is "ai.mistral.vibe" (read with cmdkey in the
+        // VM). Names only -- the secret is never looked at.
+        if (CredEnumerateW(L"ai.mistral.vibe*", 0, &count, &creds) && creds)
         {
             s_yes = count > 0;
             CredFree(creds);
