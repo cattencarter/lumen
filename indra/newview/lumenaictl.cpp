@@ -211,6 +211,10 @@ namespace
         std::string mName;          // lowercased; the region may add a number
         F64         mUntil;
         F64         mLastAsk = 0.0;
+        // <Lumen> The scripts already listed when it was added. One of those
+        // with the same name is not the new one arriving -- taken for it,
+        // new_script opened the OLD script and wrote `text` into that.
+        std::set<LLUUID> mBefore;
     };
     std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
 
@@ -290,7 +294,8 @@ namespace
             std::string lname = (*h) ? (*h)->getName() : std::string();
             LLStringUtil::toLower(lname);
             arrived = *h && (*h)->getType() == LLAssetType::AT_LSL_TEXT
-                   && lname.rfind(sw->second->mName, 0) == 0;
+                   && lname.rfind(sw->second->mName, 0) == 0
+                   && !sw->second->mBefore.count((*h)->getUUID());
         }
         const F64 now = LLTimer::getTotalSeconds();
         if (arrived || now > sw->second->mUntil)
@@ -305,6 +310,33 @@ namespace
             obj->requestInventory();     // and this really fetches
         }
         return false;
+    }
+
+    /**
+     * For a prim whose contents list came back EMPTY: true while they are
+     * still to come -- being fetched, marked stale, or never fetched at all --
+     * asking for them meanwhile; false once the region has answered and the
+     * prim really holds nothing. A prim nobody has asked about is neither
+     * pending nor dirty (mInventoryDirty starts false), so only the list's own
+     * root tells the two apart: every answer carries one, an empty answer its
+     * "Contents". Asked at most once a second, because a fetch that fails
+     * leaves the prim unfetched and a settling call comes back four times a
+     * second.
+     */
+    std::map<LLUUID, F64> sContentsAsked;
+    bool contentsStillToCome(LLViewerObject* obj)
+    {
+        if (obj->isInventoryPending()) return true;
+        if (!obj->isInventoryDirty() && obj->getInventoryRoot()) return false;
+        const F64 now = LLTimer::getTotalSeconds();
+        if (sContentsAsked.size() > 256) sContentsAsked.clear();
+        F64& last = sContentsAsked[obj->getID()];
+        if (now - last > 1.0)
+        {
+            last = now;
+            obj->requestInventory();
+        }
+        return true;
     }
 
     /**
@@ -8585,9 +8617,11 @@ namespace
                 msg->addU32Fast(_PREHASH_LocalID, o->getLocalID());
                 msg->addStringFast(_PREHASH_Name, best->name);
                 msg->sendReliable(o->getRegion()->getHost());
+                // The label first, THEN the guard: noteObjectName forgets the
+                // guard on hearing any name but "Object", this one included.
+                LumenAIControl::noteObjectName(id, best->name, std::string());
                 if (namedOnArrival().size() > 64) namedOnArrival().clear();
                 namedOnArrival()[id] = best->name;
-                LumenAIControl::noteObjectName(id, best->name, std::string());
                 LL_INFOS("AICtl") << "rez: named " << id << " \"" << best->name << "\"" << LL_ENDL;
             }
             // </Lumen>
@@ -12573,6 +12607,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             {
                 r["note"] = made + ", but " + stopped + ". It holds Linden Lab's default script, which "
                             "is ALREADY RUNNING -- say so."
+                          + (text.empty() ? std::string()
+                                          : std::string(" Your `text` is not in it."))
                           + (j.opened ? std::string()
                                       : std::string(" open_script opens it once the region lists it."));
             }
@@ -12719,11 +12755,25 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                       LLAssetType::AT_LSL_TEXT, LLInventoryType::IT_LSL,
                                       name, desc, LLSaleInfo::DEFAULT,
                                       LLInventoryItemFlags::II_FLAGS_NONE, time_corrected());
+        // <Lumen> What is listed already, so an older script of the same name
+        // is not taken for this one (ScriptArrivalWatch::mBefore). saveScript
+        // leaves the local list as it is for a new item.
+        std::set<LLUUID> listed_before;
+        {
+            LLInventoryObject::object_list_t had;
+            object->getInventoryContents(had);
+            for (LLInventoryObject::object_list_t::const_iterator h = had.begin(); h != had.end(); ++h)
+            {
+                if (*h && (*h)->getType() == LLAssetType::AT_LSL_TEXT) listed_before.insert((*h)->getUUID());
+            }
+        }
+        // </Lumen>
         object->saveScript(item, true, true);
         // <Lumen> See ScriptArrivalWatch: without it open_script cannot see
         // the script until the object is selected.
         forgetScriptWatch(object->getID());
         sScriptWatches[object->getID()] = new ScriptArrivalWatch(object, lowered(name));
+        sScriptWatches[object->getID()]->mBefore = listed_before;
         for (std::map<LLUUID, F64>::iterator it = sScriptAddedTo.begin(); it != sScriptAddedTo.end(); )
         {
             if (now - it->second > 120.0) it = sScriptAddedTo.erase(it);
@@ -12834,21 +12884,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             // returned an empty list too, was re-requested every call, and a
             // scriptless object answered `pending` for ever. Ask the object
             // whether it is still waiting, or has never been asked, before
-            // deciding that emptiness means "still loading".
+            // deciding that emptiness means "still loading" -- see
+            // contentsStillToCome, which also catches a prim never fetched.
             if (contents.empty())
             {
-                if (chain[i]->isInventoryPending())
-                {
-                    ++waiting;
-                    continue;
-                }
-                if (chain[i]->isInventoryDirty())
-                {
-                    chain[i]->requestInventory();
-                    ++waiting;
-                    continue;
-                }
-                continue;   // fetched, and genuinely holds nothing
+                if (contentsStillToCome(chain[i])) ++waiting;
+                continue;   // otherwise fetched, and genuinely holds nothing
             }
             // </Lumen>
             for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
@@ -21426,8 +21467,15 @@ if (method == "camera")
         }
         if (!why.empty())
         {
+            // Let go of our selection -- but one the user has made since is
+            // theirs, and stays.
+            bool still_ours = true;
+            for (const LLUUID& id : selected_roots)
+            {
+                if (!t.roots.count(id)) still_ours = false;
+            }
             sPendingTakes.erase(pending);
-            LLSelectMgr::getInstance()->deselectAll();
+            if (still_ours) LLSelectMgr::getInstance()->deselectAll();
             LLSD e; e["code"] = -32000; e["message"] = why + " Nothing was taken.";
             LLSD w; w["__error"] = e; return w;
         }
@@ -21557,14 +21605,9 @@ if (method == "camera")
             chain[i]->getInventoryContents(contents);
             if (contents.empty())
             {
-                if (chain[i]->isInventoryPending()) { ++waiting; continue; }
-                if (chain[i]->isInventoryDirty())
-                {
-                    chain[i]->requestInventory();
-                    ++waiting;
-                    continue;
-                }
-                continue;   // fetched, and genuinely holds nothing
+                // A prim never fetched is not an empty one: contentsStillToCome.
+                if (contentsStillToCome(chain[i])) ++waiting;
+                continue;   // otherwise fetched, and genuinely holds nothing
             }
             for (LLInventoryObject::object_list_t::const_iterator it = contents.begin();
                  it != contents.end(); ++it)
@@ -21572,7 +21615,7 @@ if (method == "camera")
                 const LLInventoryItem* item = dynamic_cast<const LLInventoryItem*>(it->get());
                 if (!item) continue;
                 ++total;
-                if (items.size() >= MAX_LISTED) continue;
+                if ((size_t)items.size() >= MAX_LISTED) continue;   // LLSD::size() is an int
                 LLSD one;
                 one["name"] = safeUtf8(item->getName());
                 const char* kind = LLAssetType::lookupHumanReadable(item->getType());
