@@ -577,7 +577,7 @@ bool LumenAICodex::poll(LLSD& out)
     std::string text;
     if (!frame(text)) return false;
 
-    boost::json::error_code ec;
+    boost::system::error_code ec;   // <Lumen> json::error_code is deprecated, an error under MSVC
     const boost::json::value v = boost::json::parse(text, ec);
     if (ec) return false;
     out = LlsdFromJson(v);
