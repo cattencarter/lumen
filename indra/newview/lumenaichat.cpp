@@ -748,6 +748,7 @@ namespace
             if (action == "walk_to")       return "Moving avatar";
             if (action == "stop_walking")  return "Stopping";
             if (action == "sit")           return "Sitting down";
+            if (action == "touch")         return "Touching it";   // <Lumen>
             if (action == "stand")         return "Standing up";
             if (action == "fly")           return "Flying";
             if (action == "turn")          return "Turning";

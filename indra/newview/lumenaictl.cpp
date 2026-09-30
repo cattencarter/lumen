@@ -35,6 +35,7 @@
 #include "llsettingssky.h"
 #include "llvirtualtrackball.h"
 #include "rlvactions.h"
+#include "lltoolgrab.h"      // <Lumen> send_ObjectGrab_message, for touch
 #include "llviewercamera.h"
 #include "lumenainotecache.h"
 #include "lumenaimemory.h"
@@ -1177,6 +1178,53 @@ namespace
         }
         return out;
     }
+
+    // <Lumen> What a left-click on this prim does, by the viewer's own rule
+    // (final_click_action in lltoolpie.cpp, repeated here rather than exported
+    // from an upstream file): the prim's own click setting, else its root's,
+    // else a touch -- and "None" on the root lets a child's own setting stand.
+    // The author: *"object can have settings that define what the avatar
+    // action is on touch. it can be if you click you sit on it. or click and
+    // you buy it."* Touch always behaves as right-click > Touch; this is what
+    // tells the model that a person's click would have done something else.
+    std::string clickDoes(LLViewerObject* obj)
+    {
+        if (!obj || obj->isAttachment()) return "touch";
+        LLViewerObject* root = obj->getRootEdit();
+        const U8 own  = obj->getClickAction();
+        const U8 from = root ? root->getClickAction() : CLICK_ACTION_TOUCH;
+        U8 act = CLICK_ACTION_TOUCH;
+        if (from == CLICK_ACTION_DISABLED || own) act = own;
+        else if (from)                            act = from;
+        switch (act)
+        {
+            case CLICK_ACTION_SIT:        return "sit";
+            case CLICK_ACTION_BUY:        return "buy";
+            case CLICK_ACTION_PAY:        return "pay";
+            case CLICK_ACTION_OPEN:       return "open";
+            case CLICK_ACTION_PLAY:       return "play_media";
+            case CLICK_ACTION_OPEN_MEDIA: return "open_media";
+            case CLICK_ACTION_ZOOM:       return "zoom";
+            case CLICK_ACTION_DISABLED:
+            case CLICK_ACTION_IGNORE:     return "nothing";
+            default:                      return "touch";
+        }
+    }
+
+    /** What to tell the model about a click that is not a touch, or empty. */
+    std::string clickNote(const std::string& does)
+    {
+        if (does == "sit")        return "A click on this sits you on it. For \"click it\" or \"sit on it\", use movement / sit with this object_id.";
+        if (does == "buy")        return "A click on this opens the viewer's Buy window for it. The assistant never buys or pays: tell them to click it themselves if they want it.";
+        if (does == "pay")        return "A click on this opens the viewer's Pay window for it. The assistant never pays: tell them to click it themselves if they want to.";
+        if (does == "open")       return "A click on this opens its contents, which the assistant cannot do yet: tell them to click it.";
+        if (does == "play_media") return "A click on this plays or pauses the parcel's music or media, which the assistant cannot do yet.";
+        if (does == "open_media") return "A click on this opens its media, which the assistant cannot do yet.";
+        if (does == "zoom")       return "A click on this only zooms the camera to it; movement / camera frames things.";
+        if (does == "nothing")    return "A click on this is set to do nothing.";
+        return std::string();
+    }
+    // </Lumen>
 
     /** Step back to a character boundary, so a cut never splits one. */
     size_t utf8Boundary(const std::string& text, size_t at)
@@ -3005,6 +3053,7 @@ namespace
             if (action == "walk_to")       return "walk_to";
             if (action == "stop_walking")  return "stop_walking";
             if (action == "sit")           return "sit";
+            if (action == "touch")         return "touch";   // <Lumen>
             if (action == "stand")         return "stand";
             if (action == "look_nearby")   return "look_nearby";
             if (action == "worn_by")       return "worn_by";
@@ -3209,7 +3258,8 @@ namespace
                                "in the Trash) and save_image; the outfit for wear_outfit and save_outfit; the "
                                "folder for list_folder; the new "
                                "card's title for create_notecard; the new landmark's name for "
-                               "landmark; the person for send_im and give_item; the group "
+                               "landmark; the person for send_im, give_item, follow and sit "
+                               "(sit with them); the group "
                                "for send_group_message. A name "
                                "matching more than one thing is refused, with the candidates "
                                "returned, so you can ask which was meant. A PERSON is only taken "
@@ -3553,7 +3603,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
-              "follow", "camera", "pose", "stop_pose", "save_photo",
+              "touch", "follow", "camera", "pose", "stop_pose", "save_photo",
               "fly", "turn", "where_am_i", "landmark",
               "search_places", "search_events" };
         LLSD move;
@@ -3635,9 +3685,21 @@ namespace
             "nearby can be followed. Say plainly that it is following and that it will keep "
             "doing so -- this is the one movement that does not finish on its own.\n"
             "- stop_walking: give up a walk in progress, and stop following.\n"
-            "- sit: on an object by `object_id`, or `ground: true` where the avatar stands. An "
-            "object decides whether the avatar may sit and where it ends up.\n"
+            "- sit: on an object by `object_id`, or `ground: true` where the avatar stands, or "
+            "WITH somebody -- their `name` or `agent_id` -- on whatever they are sitting on: \"sit "
+            "with Catten\", \"sit next to her\", \"join them on the couch\". An object decides "
+            "whether the avatar may sit and where it ends up.\n"
             "- stand: get up.\n"
+            "- touch: click an object in the world, by `object_id` from look_nearby -- a door, a "
+            "dance ball, an info board, a game, a menu on a vendor. \"Click\", \"press\", \"open "
+            "the door\" and \"start it\" are this. `link` touches one part of a linked object, "
+            "`face` one face of it. What happens is up to its script: afterwards look in viewer / "
+            "read_dialogues for a menu it opened and chat / read_chat for what it said, and say "
+            "what you SAW. It refuses when nothing in the object listens for a touch, and it "
+            "cannot press a HUD's buttons. A person's click on some objects does something else "
+            "instead -- look_nearby and inspect_object give it as `click`: `sit` means use sit; "
+            "`buy` and `pay` are never done by the assistant, so tell them to click it themselves; "
+            "`open`, `play_media` and `open_media` it cannot do yet.\n"
             "- landmark: make a landmark of where the avatar is standing, in the Landmarks folder "
             "-- World > Landmark This Place. `name` is optional; without it the landmark is named "
             "after the parcel, as the viewer does. Use it for \"landmark this\", \"remember this "
@@ -3700,7 +3762,7 @@ namespace
         LLSD my;  my["type"]="number";  my["description"]="teleport / walk_to: Y in the region, 0-255.";
         LLSD mz;  mz["type"]="number";  mz["description"]="teleport: height; 0 means ground level.";
         LLSD mh;  mh["type"]="boolean"; mh["description"]="teleport: true goes home and ignores region.";
-        LLSD mo;  mo["type"]="string";  mo["description"]="sit / walk_to: the object's id, from look_nearby.";
+        LLSD mo;  mo["type"]="string";  mo["description"]="sit / walk_to / touch: the object's id, from look_nearby.";
         LLSD mg;  mg["type"]="boolean"; mg["description"]="sit: true sits on the ground.";
         LLSD mrd; mrd["type"]="number"; mrd["description"]="look_nearby: metres to look -- default 20, or 96 with `find`; at most 256.";
         LLSD mfind; mfind["type"]="string";
@@ -3732,12 +3794,22 @@ namespace
             mpid["description"]="teleport: the `id` of a place search_places returned. The viewer "
                                 "asks the user before going there.";
         move_props["place_id"]=mpid;
+        // <Lumen> touch: a part and a face, for the objects whose script cares.
+        LLSD mlink; mlink["type"]="number";
+            mlink["description"]="touch: which part of a linked object, by link number -- 1 is "
+                                 "the root, as inspect_object counts them. Leave it out to touch "
+                                 "the object itself.";
+        LLSD mface; mface["type"]="number";
+            mface["description"]="touch: which face of that part, for the scripts that care -- a "
+                                 "panel of buttons often does. Leave it out otherwise.";
+        move_props["link"]=mlink; move_props["face"]=mface;
+        // </Lumen>
         // Read by worn_by and pose, and declared on no tool they belong to:
         // worn_by says "call again with the same agent_id" and pose's refusal
         // for an ambiguous name says "pass its item_id" -- instructions the
         // model could read and not carry out.
         LLSD mag; mag["type"]="string";
-            mag["description"]="worn_by, camera and follow: the person's avatar id, from "
+            mag["description"]="worn_by, camera, follow and sit: the person's avatar id, from "
                                "look_nearby or chat / find_person, or from the candidates a "
                                "refusal lists. For worn_by, pass the same one again to collect "
                                "the answer.";
@@ -11483,6 +11555,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 thing["object_id"] = around[i].o->getID();
                 thing["distance"] = around[i].d;
                 if (rezzedByAssistant(around[i].o->getID())) thing["rezzed_by_assistant"] = true;
+                {   // <Lumen> only when a click is not a touch, to keep the list short
+                    const std::string does = clickDoes(around[i].o);
+                    if (does != "touch") thing["click"] = does;
+                }
                 if (const ObjectLabel* label = objectLabel(around[i].o->getID()))
                 {
                     thing["name"] = safeUtf8(label->name);
@@ -11574,6 +11650,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD hit;
             hit["object_id"] = n.o->getID();
             if (ours) hit["rezzed_by_assistant"] = true;
+            {   // <Lumen>
+                const std::string does = clickDoes(n.o);
+                if (does != "touch") hit["click"] = does;
+            }
             hit["name"] = safeUtf8(label->name);
             const std::string d = shortDesc(label->desc);
             if (!d.empty()) hit["description"] = safeUtf8(d);
@@ -12309,6 +12389,14 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         LLSD r;
         r["id"] = root->getID();
         if (rezzedByAssistant(root->getID())) r["rezzed_by_assistant"] = true;   // <Lumen>
+        // <Lumen> What a person's click on it does, and whether a touch reaches a script.
+        r["click"] = clickDoes(root);
+        {
+            bool listens = false;
+            for (LLViewerObject* part : chain) listens = listens || (part && part->flagHandleTouch());
+            r["listens_for_touch"] = listens;   // somewhere in it: the root or a part
+        }
+        if (!clickNote(r["click"].asString()).empty()) r["click_note"] = clickNote(r["click"].asString());
         r["links"] = (S32)chain.size();
         r["from_selection"] = from_selection;
 
@@ -13800,6 +13888,129 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     // inside it is unreachable for anything not on that list -- which is how
     // `lighting` answered "Method not found" while plainly present in the file.
     // Findings 38, met a second time, in the same `if`.
+    // <Lumen> movement / touch: click something in the world, as right-click >
+    // Touch does. The same two messages the viewer's own Touch and Area
+    // Search send, with Area Search's default pick, because that is the case
+    // here too: an object found in a list, never clicked on screen.
+    if (method == "touch")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // A retried call must not touch twice: two touches can undo one --
+        // a door opened and shut again.
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        LLSD replay;
+        if (!request_id.empty() && recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already carried out.";
+            return replay;
+        }
+
+        const LLUUID id(params.has("object_id") ? params["object_id"].asString() : std::string());
+        LLViewerObject* obj = id.notNull() ? gObjectList.findObject(id) : NULL;
+        if (!obj || obj->isDead() || !obj->getRegion())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "No object with that id is in view. Find it with movement / look_nearby "
+                           "and pass the id it gives.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (obj->isAvatar())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "That is a person, not an object.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLViewerObject* root = obj->getRootEdit();
+        if (root && root->isHUDAttachment())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That is a HUD, and touch cannot press a HUD's buttons yet: they are "
+                           "places on the screen, not objects in the world. Tell them which button "
+                           "to click.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // One part of a linkset, counted as inspect_object counts: root first.
+        if (params.has("link") && root)
+        {
+            std::vector<LLViewerObject*> chain;
+            chain.push_back(root);
+            for (LLViewerObject::const_child_list_t::const_iterator c = root->getChildren().begin();
+                 c != root->getChildren().end(); ++c)
+            {
+                if (*c) chain.push_back(*c);
+            }
+            const S32 n = params["link"].asInteger();
+            if (n < 1 || n > (S32)chain.size())
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = (chain.size() == 1)
+                    ? std::string("That object is a single part, so there is no link to pick.")
+                    : llformat("That object has %d parts; link must be 1 to %d.",
+                               (S32)chain.size(), (S32)chain.size());
+                LLSD w; w["__error"] = e; return w;
+            }
+            obj = chain[n - 1];
+        }
+
+        // **Nothing to touch is not a touch that did nothing.** The viewer greys
+        // its own Touch out unless the prim or its root has a touch handler; a
+        // click there may sit, pay or open media instead, and saying "touched"
+        // would read as "and nothing happened" -- a fact about the wrong thing.
+        const LLViewerObject* parent = (const LLViewerObject*)obj->getParent();
+        const std::string does = clickDoes(obj);
+        if (!obj->flagHandleTouch() && !(parent && parent->flagHandleTouch())
+            && !(root && root->flagHandleTouch()))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing in that object listens for a touch, so touching it would do "
+                           "nothing." + (clickNote(does).empty() ? std::string()
+                                                                 : " " + clickNote(does));
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (RlvActions::isRlvEnabled() && !RlvActions::canTouch(obj))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing forbids touching that (an RLV "
+                           "restriction), so it was not touched.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLPickInfo pick;   // Area Search's: a sane default, no face, no texture spot
+        if (params.has("face")) pick.mObjectFace = params["face"].asInteger();
+        send_ObjectGrab_message(obj, pick, LLVector3::zero);
+        send_ObjectDeGrab_message(obj, pick);
+
+        LLSD result;
+        result["touched"] = obj->getID();
+        if (root && root != obj) result["part_of"] = root->getID();
+        std::unordered_map<LLUUID, ObjectLabel>::const_iterator label =
+            mObjectLabels.find(root ? root->getID() : obj->getID());
+        if (label != mObjectLabels.end() && !label->second.name.empty())
+        {
+            result["name"] = safeUtf8(label->second.name);
+        }
+        // <Lumen> A touch ran its script; a person's click would have done this instead.
+        if (does != "touch")
+        {
+            result["click"] = does;
+            result["click_note"] = "This touched its script, as right-click > Touch does. " + clickNote(does);
+        }
+        result["note"] = "Touched. What happens is up to its script and takes a moment: a menu it "
+                         "opens is in viewer / read_dialogues, and anything it says is in chat / "
+                         "read_chat. Say you touched it, not what it did, until you have looked.";
+        LLSD summary; summary["action"] = "touch"; summary["object"] = obj->getID();
+        recordAction(request_id, fingerprintOf("touch", params), "touch", "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
     if (method == "walk_to" || method == "stop_walking" || method == "sit"
         || method == "stand"  || method == "fly"        || method == "turn"
         || method == "follow" || method == "camera"
@@ -14770,11 +14981,51 @@ if (method == "camera")
                 return result;
             }
 
-            const LLUUID object_id(params["object_id"].asString());
+            LLUUID object_id(params["object_id"].asString());
+            // <Lumen> "Sit with Catten": the object they are sitting on. A seated
+            // avatar hangs off that object's root, so the viewer knows it for
+            // anybody it draws. The author's idea: *"a 'sit with xxx' so you can
+            // sit down on the same object someone else is sitting on."*
+            LLUUID sat_with;
+            if (object_id.isNull() && (params.has("name") || params.has("agent_id")))
+            {
+                LLSD who_error;
+                const LLUUID person = resolvePerson(params, who_error);
+                if (person.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+                if (person == gAgent.getID())
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "That is the user themselves.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                LLVOAvatar* them = dynamic_cast<LLVOAvatar*>(gObjectList.findObject(person));
+                if (!them || them->isDead())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "That person is not close enough for the viewer to see what they "
+                                   "are sitting on. Walk or teleport nearer first.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                LLViewerObject* seat = (LLViewerObject*)them->getParent();
+                if (!seat || seat->isAvatar())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "They are not sitting on anything right now -- standing, or "
+                                   "sitting on the ground, which is not a seat to share. To sit "
+                                   "beside them on the ground, walk_to them and then sit with "
+                                   "ground: true.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (LLViewerObject* root = seat->getRootEdit()) seat = root;
+                object_id = seat->getID();
+                sat_with = person;
+            }
+            // </Lumen>
             if (object_id.isNull())
             {
                 LLSD e; e["code"] = -32602;
-                e["message"] = "Give object_id (from look_nearby), or ground: true.";
+                e["message"] = "Give object_id (from look_nearby), a person's name to sit with "
+                               "them, or ground: true.";
                 LLSD w; w["__error"] = e; return w;
             }
             LLViewerObject* object = gObjectList.findObject(object_id);
@@ -14814,6 +15065,14 @@ if (method == "camera")
             if (ended_follow) result["ended_follow"] = true;
             result["requested"] = "sit";
             result["object_id"] = object_id;
+            if (sat_with.notNull())   // <Lumen>
+            {
+                result["with"] = sat_with;
+                result["with_note"] = "On the object they are sitting on. Where the avatar lands is "
+                                      "the object's choice: a free seat, a spot beside them, or a "
+                                      "refusal when it is full. Check before saying they are "
+                                      "sitting together.";
+            }
             // The object decides. It can refuse, it can be full, it can be too
             // far, and it can put the avatar somewhere unexpected.
             result["confirm_with"] =
@@ -18652,6 +18911,17 @@ if (method == "camera")
             e["data"] = offered;
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> The viewer puts Block on every script menu, and blocking is
+        // the author's to do, not the assistant's -- his call, 2026-09-30, that
+        // blocking is too risky to hand over for now. Ignore only closes it.
+        if (chosen == "Client_Side_Mute")
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Block silences that object, and blocking is left to the user: tell "
+                           "them it is the Block button on that menu if they want it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
         response[chosen] = true;
 
         const std::string kind = n->getName();
