@@ -43,6 +43,14 @@
 #include "lllandmarkactions.h"
 #include "llagentui.h"
 #include "llavataractions.h"  // <Lumen> canOfferTeleport
+#include "llgroupactions.h"   // <Lumen> set_active_group
+#include "llgesturemgr.h"     // <Lumen> movement / gesture
+#include "llmultigesture.h"
+#include "aoengine.h"          // <Lumen> the AO folder stays where it is
+#include "llstatusbar.h"       // <Lumen> viewer / music: the status bar's own music button
+#include "llvieweraudio.h"
+#include "llviewermedia.h"
+#include "llaudioengine.h"
 #include "llrecentpeople.h"   // <Lumen>
 #include "llslurl.h"          // <Lumen> the offer, recorded in their conversation
 #include "fsradar.h"          // <Lumen> teleport to a person, as the radar's Teleport To
@@ -3030,6 +3038,9 @@ namespace
             if (action == "show")            return "show_item";
             if (action == "open")            return "open_item";
             if (action == "save_image")      return "save_image";
+            if (action == "new_folder")      return "new_folder";   // <Lumen>
+            if (action == "move")            return "move_item";    // <Lumen>
+            if (action == "rename")          return "rename_item";  // <Lumen>
             return "";
         }
         if (group == "chat")
@@ -3039,6 +3050,8 @@ namespace
             if (action == "say")           return "say";
             if (action == "send_im")       return "send_im";
             if (action == "offer_teleport")   return "offer_teleport";     // <Lumen>
+            if (action == "set_active_group") return "set_active_group";   // <Lumen>
+            if (action == "offer_friendship") return "offer_friendship";   // <Lumen>
             if (action == "request_teleport") return "request_teleport";   // <Lumen>
             if (action == "find_person")   return "find_person";
             if (action == "profile")       return "profile";
@@ -3061,6 +3074,8 @@ namespace
             if (action == "stop_walking")  return "stop_walking";
             if (action == "sit")           return "sit";
             if (action == "touch")         return "touch";   // <Lumen>
+            if (action == "gesture")       return "gesture";   // <Lumen>
+            if (action == "set_home")      return "set_home";  // <Lumen>
             if (action == "stand")         return "stand";
             if (action == "look_nearby")   return "look_nearby";
             if (action == "worn_by")       return "worn_by";
@@ -3095,6 +3110,7 @@ namespace
             if (action == "remember")      return "remember";
             if (action == "forget")        return "forget";
             if (action == "recall")        return "recall";
+            if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
@@ -3291,7 +3307,7 @@ namespace
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
-              "save_outfit", "show", "open", "save_image" };
+              "save_outfit", "show", "open", "save_image", "new_folder", "move", "rename" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -3375,6 +3391,17 @@ namespace
             "than be told it. An animation opens a preview window with play buttons -- it does "
             "not start playing; movement/pose does that. Only those four kinds -- for clothing "
             "use wear, and opening a landmark would teleport them, so it is refused.\n"
+            "- new_folder: make a folder, named `name`, inside `folder_id` (an id, or a path as "
+            "search gives it in `folder`); without folder_id it goes at the top of their "
+            "inventory. It appears a moment later; list_folder then shows it with its id.\n"
+            "- move: put an item (`item_id`) or a folder (`folder_id`) into another folder, "
+            "`to_folder` -- an id, or a path as search gives it. \"Tidy my skirts into one "
+            "folder\" is new_folder, then move each one. Second Life's own folders, Current "
+            "Outfit, the Library, the AO and the LSL bridge stay where they are, and nothing is "
+            "moved into the Trash -- that is delete. The answer says where it was, so it can be "
+            "put back.\n"
+            "- rename: give an item (`item_id`) or a folder (`folder_id`) a new name, `new_name`. "
+            "Only what they may modify, and not Second Life's own folders.\n"
             "- save_image: write a picture from their inventory to a file on their own "
             "computer, as a PNG. It lands on their DESKTOP unless they have already chosen "
             "somewhere for snapshots, because a folder you have to go looking for is no help "
@@ -3423,6 +3450,13 @@ namespace
         inv_props["add"]=iadd;
         inv_props["folder_id"]=ifd; inv_props["item_id"]=sid; inv_props["name"]=snm;
         inv_props["replace"]=irp; inv_props["text"]=itx; inv_props["limit"]=slim;
+        // <Lumen> move and rename
+        LLSD ito; ito["type"]="string";
+            ito["description"]="move: the folder to put it in -- an id, or a path exactly as a "
+                               "search result gives it in `folder`.";
+        LLSD inn; inn["type"]="string"; inn["description"]="rename: the new name.";
+        inv_props["to_folder"]=ito; inv_props["new_name"]=inn;
+        // </Lumen>
                 LLSD sort_p; sort_p["type"]="string";
         sort_p["description"] =
             "How to order results for `search`: \"best\" (default) ranks by how well the name "
@@ -3439,7 +3473,7 @@ namespace
         // ---- chat ----------------------------------------------------------
         static const char* const chat_actions[] =
             { "read_chat", "read_messages", "say", "send_im", "offer_teleport", "request_teleport",
-              "find_person", "profile",
+              "find_person", "profile", "set_active_group", "offer_friendship",
               "web_presence", "catch_up", "show_waiting",
               "list_groups", "send_group_notice", "give_item", "list_friends",
               "send_group_message", "read_history", "search_history" };
@@ -3487,6 +3521,9 @@ namespace
             "- request_teleport: ask a person to teleport the user to THEM -- \"ask Catten for a "
             "TP\", \"can I go to Whisper\". Same arguments. Their answer is an offer, which "
             "arrives in viewer / read_dialogues for the user to accept.\n"
+            "- offer_friendship: offer a person friendship -- \"add Catten as a friend\" -- by "
+            "`name` or `agent_id`, with an optional `message`. The viewer asks the user first; "
+            "they answer it themselves, and list_friends shows them once they have.\n"
             "- list_friends: the user's friends and which of them are online. The answer to "
             "\"is anyone about?\", which nothing else could give.\n"
             "- send_group_message: say something in a group's chat, where every member online in "
@@ -3521,8 +3558,11 @@ namespace
             "avatars nearby -- the viewer cannot search all of Second Life. Each person says "
             "`nearby` and, when they are, `distance` and `region`, as the radar knows it: anyone "
             "in this region or the ones beside it, far past what look_nearby lists.\n"
-            "- list_groups: the groups the user belongs to, and whether they are allowed to send "
-            "notices in each.\n"
+            "- list_groups: the groups the user belongs to, whether they are allowed to send "
+            "notices in each, and which one is `active` -- the tag over their head.\n"
+            "- set_active_group: choose the group whose tag shows over their head -- \"wear my "
+            "Tapi tag\", \"switch my group to X\" -- by `group` (its name) or `group_id`; "
+            "`group: \"none\"` hides the tag.\n"
             "- give_item: offer one inventory item to one person -- a notecard, a landmark, a "
             "copy of an object. They get an offer they can accept or decline; the viewer is not "
             "told which, so never say it was received. The viewer asks the user itself before "
@@ -3620,7 +3660,7 @@ namespace
         // ---- movement -------------------------------------------------------
         static const char* const move_actions[] =
             { "teleport", "walk_to", "stop_walking", "sit", "stand", "look_nearby", "worn_by",
-              "touch", "follow", "camera", "pose", "stop_pose", "save_photo",
+              "touch", "gesture", "set_home", "follow", "camera", "pose", "stop_pose", "save_photo",
               "fly", "turn", "where_am_i", "landmark",
               "search_places", "search_events" };
         LLSD move;
@@ -3719,6 +3759,12 @@ namespace
             "instead -- look_nearby and inspect_object give it as `click`: `sit` means use sit; "
             "`buy` and `pay` are never done by the assistant, so tell them to click it themselves; "
             "`open`, `play_media` and `open_media` it cannot do yet.\n"
+            "- gesture: play one of the user's active gestures -- \"wave\", \"do my /hug\" -- by "
+            "`name`: its name or its trigger. With no name it lists them. A gesture can speak in "
+            "local chat and play sounds, so everybody nearby sees and hears it; the viewer asks "
+            "the user first. Only ACTIVE gestures (the Gestures window) can be played.\n"
+            "- set_home: make where the avatar stands their home -- World > Set Home to Here. "
+            "Second Life answers in a moment, and refuses on land where they may not set home.\n"
             "- landmark: make a landmark of where the avatar is standing, in the Landmarks folder "
             "-- World > Landmark This Place. `name` is optional; without it the landmark is named "
             "after the parcel, as the viewer does. Use it for \"landmark this\", \"remember this "
@@ -3886,7 +3932,7 @@ namespace
               "answer_while_away", "read_scripts", "edit_script", "lighting",
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
-              "open_script", "new_script", "remember", "forget", "recall" };
+              "open_script", "new_script", "remember", "forget", "recall", "music" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -3996,6 +4042,11 @@ namespace
             "memory\" -- do not recall: call open_window with name \"assistant memory\", which "
             "opens Comm > Assistant Memory..., where they can read and edit both their own note "
             "and this list.\n"
+            "- music: the parcel's music stream. With nothing else it says what is set and whether "
+            "it is playing; `play: true` or `false` starts or stops it for the user -- the music "
+            "button in the viewer's top bar, heard by them alone. `url` changes the stream the "
+            "PARCEL plays, for everybody on it, and only works where the user may change the "
+            "land's media; the viewer asks them first.\n"
             "\n- open_script: **opens a script that lives INSIDE an object**, so they do not "
             "have to find and open it first. Leave `object_id` out and it uses what they have "
             "selected; `name` picks one when there are several, and without it the reply lists "
@@ -4254,6 +4305,11 @@ namespace
                                   "asked for: settings clamp, and a value outside the range comes "
                                   "back changed. Report the value in `now`, never the one you sent.";
             view_props["value"]=lv;
+            LLSD lplay; lplay["type"]="boolean";
+                lplay["description"]="music: true starts the parcel's stream for the user, false stops it.";
+            LLSD lurl; lurl["type"]="string";
+                lurl["description"]="music: a new stream address for the parcel -- everybody on it hears it.";
+            view_props["play"]=lplay; view_props["url"]=lurl;
             // </Lumen>
             struct { const char* key; const char* desc; } nums[] = {
                 { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
@@ -14094,6 +14150,135 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     // inside it is unreachable for anything not on that list -- which is how
     // `lighting` answered "Method not found" while plainly present in the file.
     // Findings 38, met a second time, in the same `if`.
+    // <Lumen> movement / set_home: World > Set Home to Here, which sends the
+    // request and leaves Second Life to answer -- it allows home only on land
+    // the user owns or may set home on, and says so itself.
+    if (method == "set_home")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        gAgent.setStartPosition(START_LOCATION_ID_HOME);
+        LLSD result;
+        result["requested"] = "set home here";
+        result["note"] = "Asked Second Life to make this spot their home, replacing the old one. "
+                         "It answers with a notice a moment later -- \"Home position set\", or why "
+                         "not (usually: this is not land where they may set home). Say it was "
+                         "asked, and what it answered if they want to know.";
+        LLSD summary; summary["action"] = "set_home";
+        recordAction(params.has("request_id") ? params["request_id"].asString() : std::string(),
+                     fingerprintOf("set_home", params), "set_home", "ok", result, summary);
+        return result;
+    }
+
+    // <Lumen> movement / gesture: one of the user's ACTIVE gestures, by name or
+    // trigger. Only active ones can play (LLGestureMgr::playGesture ignores the
+    // rest), and a gesture speaks and sounds where others are, so it asks.
+    if (method == "gesture")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        struct Candidate { LLUUID id; std::string name; std::string trigger; };
+        std::vector<Candidate> active;
+        const LLGestureMgr::item_map_t& items = LLGestureMgr::instance().getActiveGestures();
+        for (LLGestureMgr::item_map_t::const_iterator it = items.begin(); it != items.end(); ++it)
+        {
+            Candidate c;
+            c.id = it->first;
+            if (const LLViewerInventoryItem* item = gInventory.getItem(it->first)) c.name = item->getName();
+            if (it->second) c.trigger = it->second->mTrigger;
+            active.push_back(c);
+        }
+        const std::string want = lowered(params.has("name") ? params["name"].asString() : std::string());
+        if (want.empty())
+        {
+            LLSD list = LLSD::emptyArray();
+            for (const Candidate& c : active)
+            {
+                LLSD one; one["name"] = safeUtf8(c.name);
+                if (!c.trigger.empty()) one["trigger"] = safeUtf8(c.trigger);
+                list.append(one);
+            }
+            LLSD result;
+            result["active_gestures"] = list;
+            result["note"] = "These are the ones that can be played, by name or trigger.";
+            return result;
+        }
+        // A trigger said exactly ("/wave" or "wave") wins; then every word in a name.
+        std::vector<const Candidate*> hits;
+        const std::string bare = (want.size() > 1 && want[0] == '/') ? want.substr(1) : want;
+        for (const Candidate& c : active)
+        {
+            std::string trig = lowered(c.trigger);
+            if (!trig.empty() && trig[0] == '/') trig = trig.substr(1);
+            if (!trig.empty() && trig == bare) hits.push_back(&c);
+        }
+        if (hits.empty())
+        {
+            for (const Candidate& c : active)
+            {
+                const std::string n = lowered(c.name);
+                bool all = true;
+                for (const std::string& w : labelWords(bare)) all = all && n.find(lowered(w)) != std::string::npos;
+                if (all && !labelWords(bare).empty()) hits.push_back(&c);
+            }
+        }
+        if (hits.size() != 1)
+        {
+            LLSD e; e["code"] = -32000;
+            LLSD cands = LLSD::emptyArray();
+            for (const Candidate* c : hits)
+            {
+                LLSD one; one["name"] = safeUtf8(c->name);
+                if (!c->trigger.empty()) one["trigger"] = safeUtf8(c->trigger);
+                cands.append(one);
+            }
+            e["message"] = hits.empty()
+                ? "None of their active gestures has that name or trigger. Call gesture with no "
+                  "name for the list; an inactive one has to be switched on in the Gestures "
+                  "window first."
+                : "More than one active gesture matches. Ask which one.";
+            if (hits.size() > 1) e["data"] = cands;
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!gSavedPerAccountSettings.getBOOL("FSGesturesEnabled"))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Gestures are switched off in this viewer's settings, so it would not play.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (RlvActions::isRlvEnabled() && !RlvActions::canPlayGestures())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing forbids playing gestures right "
+                           "now -- say it is their own attachment.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const Candidate& g = *hits[0];
+        const std::string print = fingerprintOf("gesture", params);
+        {
+            LLSD subs;
+            subs["NAME"] = safeUtf8(g.name);
+            LLSD ask;
+            if (!askUser("LumenAskGesture", subs, print, ask)) return ask;
+        }
+        LLGestureMgr::instance().playGesture(g.id);
+        LLSD result;
+        result["played"] = safeUtf8(g.name);
+        if (!g.trigger.empty()) result["trigger"] = safeUtf8(g.trigger);
+        result["note"] = "Playing. Whatever it says or sounds, people nearby see and hear.";
+        LLSD summary; summary["action"] = "gesture"; summary["gesture"] = g.id;
+        recordAction(params.has("request_id") ? params["request_id"].asString() : std::string(),
+                     print, "gesture", "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
     // <Lumen> movement / touch: click something in the world, as right-click >
     // Touch does. The same two messages the viewer's own Touch and Area
     // Search send, with Area Search's default pick, because that is the case
@@ -15638,6 +15823,202 @@ if (method == "camera")
     // window would have made: a new name is Save As (makeNewOutfitLinks), an
     // existing one is made the current outfit and then Save (updateBaseOutfit),
     // which also keeps the outfit's picture.
+    // <Lumen> inventory / new_folder, move and rename: tidying, which until now
+    // the assistant could only watch. The viewer's own rules for what may move
+    // (LLFolderBridge::isItemMovable, isLockedFolder, RLV's folder locks), plus
+    // three of Lumen's: nothing in Current Outfit (that is wearing), nothing in
+    // the Library, and nothing into the Trash (that is delete). Reversible, so
+    // no question -- and every answer says where the thing was.
+    if (method == "new_folder" || method == "move_item" || method == "rename_item")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLInventoryModel& m = gInventory;
+        const LLUUID cof   = m.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT);
+        const LLUUID trash = m.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+        const LLUUID lib   = m.getLibraryRootFolderID();
+        auto within = [](const LLUUID& id, const LLUUID& top) -> bool
+        {
+            return top.notNull() && (id == top || gInventory.isObjectDescendentOf(id, top));
+        };
+        // Why this may not move or be renamed, or empty.
+        auto held = [&](const LLUUID& id, bool folder) -> std::string
+        {
+            if (within(id, lib))  return "It is in the Library, which is Linden Lab's, not theirs.";
+            if (within(id, cof))  return "It is in Current Outfit, which is what they are wearing -- use wear or detach.";
+            if (within(id, FSLSLBridge::instance().getBridgeFolder()))
+                return "It is the LSL bridge's, which the viewer needs where it is.";
+            if (within(id, AOEngine::instance().getAOFolder()))
+                return "It is their animation overrider's, which finds its animations by where they are.";
+            if (folder)
+            {
+                LLViewerInventoryCategory* cat = m.getCategory(id);
+                if (!cat) return "No folder with that id.";
+                if (LLFolderType::lookupIsProtectedType(cat->getPreferredType()))
+                    return "It is one of Second Life's own folders.";
+                if (cat->getName() == ROOT_FIRESTORM_FOLDER || cat->getName() == RLV_ROOT_FOLDER)
+                    return "It is a folder the viewer and RLV look for by name.";
+                if (m.getProtectedCategories().count(id))
+                    return "It is protected in the viewer's own settings.";
+            }
+            return std::string();
+        };
+        const std::string request_id = params.has("request_id") ? params["request_id"].asString()
+                                                               : std::string();
+        LLSD replay;
+        if (!request_id.empty() && recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already carried out.";
+            return replay;
+        }
+
+        LLSD result;
+        if (method == "new_folder")
+        {
+            std::string name = params.has("name") ? params["name"].asString() : std::string();
+            LLInventoryObject::correctInventoryName(name);
+            if (name.empty())
+            {
+                LLSD e; e["code"] = -32602; e["message"] = "Give the new folder a `name`.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLUUID parent = m.getRootFolderID();
+            if (params.has("folder_id") && !params["folder_id"].asString().empty())
+            {
+                LLSD where; where["folder_id"] = params["folder_id"];
+                LLSD folder_error;
+                parent = resolveFolder(where, folder_error);
+                if (parent.isNull()) { LLSD w; w["__error"] = folder_error; return w; }
+            }
+            if (within(parent, lib) || within(parent, cof) || within(parent, trash))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Not there: the Library, Current Outfit and the Trash are not places "
+                               "for their own folders.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            m.createNewCategory(parent, LLFolderType::FT_NONE, name);
+            result["creating"] = safeUtf8(name);
+            result["in"] = parent == m.getRootFolderID() ? std::string("(top of inventory)")
+                                                          : folderPath(parent);
+            result["note"] = "It appears in a moment. list_folder on that folder then shows it "
+                             "with its id, for moving things into.";
+        }
+        else
+        {
+            const bool folder = params.has("folder_id") && !params["folder_id"].asString().empty()
+                             && !params.has("item_id");
+            LLUUID id;
+            LLSD pick_error;
+            if (folder)
+            {
+                LLSD where; where["folder_id"] = params["folder_id"];
+                id = resolveFolder(where, pick_error);
+            }
+            else
+            {
+                id = resolveItem(params, pick_error);
+            }
+            if (id.isNull()) { LLSD w; w["__error"] = pick_error; return w; }
+            const std::string why = held(id, folder);
+            if (!why.empty())
+            {
+                LLSD e; e["code"] = -32000; e["message"] = why + " It was left as it is.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLViewerInventoryItem*     item = folder ? NULL : m.getItem(id);
+            LLViewerInventoryCategory* cat  = folder ? m.getCategory(id) : NULL;
+            const LLUUID parent_now = folder ? (cat ? cat->getParentUUID() : LLUUID::null)
+                                             : (item ? item->getParentUUID() : LLUUID::null);
+            result["name"] = safeUtf8(folder ? (cat ? cat->getName() : std::string())
+                                             : (item ? item->getName() : std::string()));
+            result["was_in"] = (parent_now == m.getRootFolderID()) ? std::string("(top of inventory)")
+                                                                    : folderPath(parent_now);
+            result["was_in_id"] = parent_now;
+
+            if (method == "move_item")
+            {
+                const std::string to = params.has("to_folder") ? params["to_folder"].asString()
+                                                               : std::string();
+                if (to.empty())
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "Give `to_folder`: the folder to put it in, by id or path.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                LLSD where; where["folder_id"] = to;
+                LLSD dest_error;
+                const LLUUID dest = resolveFolder(where, dest_error);
+                if (dest.isNull()) { LLSD w; w["__error"] = dest_error; return w; }
+                std::string no;
+                if (within(dest, trash))     no = "Moving into the Trash is deleting -- use delete.";
+                else if (within(dest, lib))  no = "The Library is Linden Lab's.";
+                else if (within(dest, cof))  no = "Current Outfit is what they wear -- use wear.";
+                else if (folder && within(dest, id)) no = "A folder cannot go inside itself.";
+                else if (depth_nesting_in_marketplace(dest) >= 0)
+                    no = "Marketplace listings have rules of their own; do that in the viewer.";
+                else if (RlvActions::isRlvEnabled()
+                         && !(folder ? RlvFolderLocks::instance().canMoveFolder(id, dest)
+                                     : RlvFolderLocks::instance().canMoveItem(id, dest)))
+                    no = "An RLV lock the user is wearing holds it where it is.";
+                if (!no.empty())
+                {
+                    LLSD e; e["code"] = -32000; e["message"] = no + " Nothing was moved.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (folder) m.changeCategoryParent(cat, dest, false);
+                else        change_item_parent(id, dest);
+                result["moved_to"] = folderPath(dest);
+                result["note"] = "Moved. To put it back, move it to was_in_id.";
+            }
+            else   // rename_item
+            {
+                std::string new_name = params.has("new_name") ? params["new_name"].asString()
+                                                              : std::string();
+                LLInventoryObject::correctInventoryName(new_name);
+                if (new_name.empty())
+                {
+                    LLSD e; e["code"] = -32602; e["message"] = "Give `new_name`.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (item && (!item->getPermissions().allowModifyBy(gAgent.getID())
+                             || item->getInventoryType() == LLInventoryType::IT_CALLINGCARD
+                             || item->getIsLinkType()))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "That cannot be renamed: it is not theirs to modify, or it is a "
+                                   "link or a calling card, which the viewer does not rename.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                if (RlvActions::isRlvEnabled()
+                    && !(folder ? RlvFolderLocks::instance().canRenameFolder(id)
+                                : RlvFolderLocks::instance().canRenameItem(id)))
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "An RLV lock the user is wearing keeps its name. Nothing changed.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                result["was_named"] = result["name"];
+                if (folder) rename_category(&m, id, new_name);
+                else
+                {
+                    LLSD updates; updates["name"] = new_name;
+                    update_inventory_item(id, updates, NULL);
+                }
+                result["renamed_to"] = safeUtf8(new_name);
+                result["note"] = "Renamed. To undo, rename it back to was_named.";
+            }
+        }
+        LLSD summary; summary["action"] = method; summary["result"] = result;
+        recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
     if (method == "save_outfit")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -16778,17 +17159,215 @@ if (method == "camera")
             one["can_send_notices"] =
                 gAgent.hasPowerInGroup(gAgent.mGroups[i].mID, GP_NOTICES_SEND);
             one["accepts_notices"] = gAgent.mGroups[i].mAcceptNotices;
+            if (gAgent.mGroups[i].mID == gAgent.getGroupID()) one["active"] = true;   // <Lumen> the tag
             groups.append(one);
         }
 
         LLSD result;
         result["groups"] = groups;
+        result["active_group"] = gAgent.getGroupID().isNull() ? std::string("none")   // <Lumen>
+                                                              : gAgent.getGroupName();
         result["count"] = (LLSD::Integer)groups.size();
         result["note"] = "can_send_notices is whether the user may post a notice to that group. "
                          "accepts_notices is only whether they receive them; it says nothing "
                          "about what they may send.";
         return result;
     }
+
+    // <Lumen> viewer / music: the parcel's stream. Starting and stopping it is the
+    // top bar's music button (LLStatusBar::toggleStream, which also runs the
+    // viewer's media filter) and reaches nobody else; changing the address is a
+    // change to the LAND, which everybody there hears, so it asks.
+    if (method == "music")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLParcel* parcel = LLViewerParcelMgr::getInstance()->getAgentParcel();
+        LLSD result;
+        if (params.has("url") && !params["url"].asString().empty())
+        {
+            const std::string url = params["url"].asString();
+            if (!parcel || !LLViewerParcelMgr::isParcelModifiableByAgent(parcel, GP_LAND_CHANGE_MEDIA))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "They may not change this parcel's music -- only its owner, or a "
+                               "group member with the right to change its media. Nothing changed.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (url.compare(0, 7, "http://") != 0 && url.compare(0, 8, "https://") != 0)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = "A music stream address starts with http:// or https://.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            const std::string print = fingerprintOf("music", params);
+            {
+                LLSD subs;
+                subs["PARCEL"] = safeUtf8(parcel->getName());
+                subs["URL"] = askQuote(url, 300);
+                LLSD ask;
+                if (!askUser("LumenAskParcelMusic", subs, print, ask)) return ask;
+            }
+            result["was"] = safeUtf8(parcel->getMusicURL());
+            parcel->setMusicURL(url);
+            LLViewerParcelMgr::getInstance()->sendParcelPropertiesUpdate(parcel);
+            result["parcel_music"] = safeUtf8(url);
+            result["note"] = "The parcel now plays this, for everybody on it. `was` is what it "
+                             "played before, if they want it back.";
+            LLSD summary; summary["action"] = "music"; summary["url_changed"] = true;
+            recordAction(params.has("request_id") ? params["request_id"].asString() : std::string(),
+                         print, "music", "ok", result, summary);
+            return result;
+        }
+        if (params.has("play"))
+        {
+            const bool play = params["play"].asBoolean();
+            if (play && LLViewerMedia::getInstance()->getParcelAudioURL().empty())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "This parcel has no music stream set, so there is nothing to play.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (!gStatusBar)
+            {
+                LLSD e; e["code"] = -32000; e["message"] = "The viewer's music control is not up yet.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            gStatusBar->toggleStream(play);
+            result["requested"] = play ? "play" : "stop";
+            result["note"] = play
+                ? "Starting the parcel's stream for them; it can take a few seconds to be heard, "
+                  "and the viewer may first ask whether to allow that address."
+                : "Stopped the parcel's music for them. Nobody else is affected.";
+        }
+        const std::string now_url = LLViewerMedia::getInstance()->getParcelAudioURL();
+        result["parcel_music"] = safeUtf8(now_url);
+        if (parcel) result["parcel"] = safeUtf8(parcel->getName());
+        if (gAudiop)
+        {
+            const S32 state = gAudiop->isInternetStreamPlaying();
+            result["playing"] = (state == 1) ? "playing" : (state == 2) ? "paused" : "stopped";
+        }
+        if (now_url.empty()) result["note_parcel"] = "This parcel has no music stream set.";
+        return result;
+    }
+
+    // <Lumen> chat / offer_friendship: the viewer's own offer (its private
+    // requestFriendship, which is this), behind its own question.
+    if (method == "offer_friendship")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLSD who_error;
+        const LLUUID to = resolvePerson(params, who_error);
+        if (to.isNull()) { LLSD w; w["__error"] = who_error; return w; }
+        if (to == gAgentID)
+        {
+            LLSD e; e["code"] = -32602; e["message"] = "That is the user themselves.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (LLAvatarTracker::instance().isBuddy(to))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "They are already friends.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string message = params.has("message") ? params["message"].asString()
+                                                          : std::string();
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string print = fingerprintOf("offer_friendship", params);
+        LLSD replay;
+        if (recallAction(request_id, replay) || recallRecent(print, 60.0, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This was sent moments ago, so it was not sent again.";
+            return replay;
+        }
+        LLAvatarName av;
+        const bool have_name = LLAvatarNameCache::get(to, &av);
+        const std::string name = have_name ? av.getCompleteName() : to.asString();
+        {
+            LLSD subs;
+            subs["NAME"] = name;
+            subs["TEXT"] = message.empty() ? std::string()
+                                           : "\n\nWith the message:\n\n" + askQuote(message);
+            LLSD ask;
+            if (!askUser("LumenAskFriendship", subs, print, ask)) return ask;
+        }
+        std::string text = message;
+        if (RlvActions::isRlvEnabled() && (!RlvActions::canStartIM(to) || !RlvActions::canSendIM(to)))
+        {
+            text = RlvStrings::getString(RlvStringKeys::Hidden::Generic);
+        }
+        send_improved_im(to, name, text, IM_ONLINE, IM_FRIENDSHIP_OFFERED,
+                         gInventory.findCategoryUUIDForType(LLFolderType::FT_CALLINGCARD));
+        LLSD args; args["TO_NAME"] = name;
+        LLSD payload; payload["from_id"] = to;
+        LLNotificationsUtil::add("FriendshipOffered", args, payload);
+        LLRecentPeople::instance().add(to);
+
+        LLSD result;
+        result["sent"] = true;
+        result["to"] = have_name ? av.getUserName() : to.asString();
+        result["note"] = "Offered. They accept or decline themselves; list_friends shows them "
+                         "once they have accepted. Say it was offered, not that they are friends.";
+        LLSD summary; summary["action"] = "offer_friendship"; summary["to"] = to;
+        recordAction(request_id, print, "offer_friendship", "ok", result, summary);
+        return result;
+    }
+
+    // <Lumen> chat / set_active_group: the group whose tag shows over their
+    // head -- "wear my Tapi tag", "hide my group tag". The viewer's own
+    // LLGroupActions::activate, with RLV's @setgroup check said in words
+    // (the viewer's own call just returns).
+    if (method == "set_active_group")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string asked = lowered(params.has("group") ? params["group"].asString()
+                                                             : std::string());
+        LLUUID group;
+        if (asked != "none" && asked != "no group" && asked != "nothing")
+        {
+            LLSD group_error;
+            group = resolveGroup(params, group_error);
+            if (group.isNull()) { LLSD w; w["__error"] = group_error; return w; }
+        }
+        if (RlvActions::isRlvEnabled() && !RlvActions::canChangeActiveGroup()
+            && gRlvHandler.getAgentGroup() != group)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "An RLV restriction the user is wearing holds their active group, so "
+                           "it was not changed -- say it is their own attachment.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLGroupActions::activate(group);
+
+        LLSD result;
+        LLGroupData data;
+        result["active_group"] = group.isNull() ? std::string("none")
+                               : (gAgent.getGroupData(group, data) ? data.mName : group.asString());
+        result["note"] = group.isNull()
+            ? "Asked to show no group tag. It changes over their head in a moment."
+            : "Asked to make that the active group; its tag shows over their head in a moment, "
+              "with the title their role in it gives. list_groups says which is active once the "
+              "region has answered.";
+        LLSD summary; summary["action"] = "set_active_group"; summary["group"] = group;
+        recordAction(params.has("request_id") ? params["request_id"].asString() : std::string(),
+                     fingerprintOf("set_active_group", params), "set_active_group", "ok",
+                     result, summary);
+        return result;
+    }
+    // </Lumen>
 
     if (method == "give_item")
     {

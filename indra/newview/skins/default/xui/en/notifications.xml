@@ -15245,6 +15245,31 @@ The assistant wants to offer [NAME] a teleport to where you are.[TEXT]
   <notification
    icon="alert.tga"
    label="Send an instant message?"
+   name="LumenAskFriendship"
+   type="alertmodal">
+The assistant wants to offer [NAME] your friendship.[TEXT]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to offer somebody your friendship"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
    name="LumenAskTeleportRequest"
    type="alertmodal">
 The assistant wants to ask [NAME] to teleport you to them.[TEXT]
@@ -15253,6 +15278,60 @@ The assistant wants to ask [NAME] to teleport you to them.[TEXT]
       <ignore name="ignore"
        save_option="true"
        text="When the assistant wants to ask somebody for a teleport to them"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
+   name="LumenAskGesture"
+   type="alertmodal">
+The assistant wants to play your gesture "[NAME]". Whatever it says or sounds, people nearby see and hear.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to play one of your gestures"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   label="Send an instant message?"
+   name="LumenAskParcelMusic"
+   type="alertmodal">
+The assistant wants to change the music stream of the parcel [PARCEL] to:
+
+[URL]
+
+Everybody on the parcel hears it.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to change a parcel's music stream"/>
       <button
        ignore="Always allow"
        index="0"

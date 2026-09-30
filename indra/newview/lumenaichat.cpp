@@ -722,6 +722,9 @@ namespace
             if (action == "show")             return "Opening inventory";
             if (action == "open")             return "Opening item";
             if (action == "save_image")       return "Saving the picture";
+            if (action == "new_folder")       return "Making a folder";   // <Lumen>
+            if (action == "move")             return "Moving it";
+            if (action == "rename")           return "Renaming it";
         }
         else if (group == "chat")
         {
@@ -730,6 +733,8 @@ namespace
             if (action == "say")                return "Speaking";
             if (action == "send_im")            return "Sending message";
             if (action == "offer_teleport")     return "Offering a teleport";   // <Lumen>
+            if (action == "set_active_group")   return "Changing group tag";
+            if (action == "offer_friendship")   return "Offering friendship";
             if (action == "request_teleport")   return "Asking for a teleport";
             if (action == "find_person")        return "Finding person";
             if (action == "profile")     return "Reading their profile";
@@ -751,6 +756,8 @@ namespace
             if (action == "stop_walking")  return "Stopping";
             if (action == "sit")           return "Sitting down";
             if (action == "touch")         return "Touching it";   // <Lumen>
+            if (action == "gesture")       return "Playing a gesture";
+            if (action == "set_home")      return "Setting home";
             if (action == "stand")         return "Standing up";
             if (action == "fly")           return "Flying";
             if (action == "turn")          return "Turning";
@@ -787,6 +794,7 @@ namespace
             if (action == "remember")      return "Remembering";
             if (action == "forget")        return "Forgetting";
             if (action == "recall")        return "Reading what it remembers";
+            if (action == "music")         return "Seeing to the music";   // <Lumen>
         }
 
         return action.empty() ? group : (group + "." + action);
