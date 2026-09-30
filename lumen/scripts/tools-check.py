@@ -108,11 +108,11 @@ def main():
     check("inventory is readable", "items" in inv, str(inv)[:160])
     # The search stops early once it has enough, so a capped result reports a
     # floor rather than inventing an exact total it never counted.
-    total = inv.get("matched", inv.get("matched_at_least", 0))
+    total = inv.get("distinct_names_matched", inv.get("matched_at_least", 0))
     check("it reports how many it found", total > 0, str(inv)[:160])
     check("it honours the limit", len(inv.get("items", [])) <= 100, str(len(inv.get('items', []))))
     check("a capped search says so rather than claiming an exact total",
-          ("matched_at_least" in inv) != ("matched" in inv), str(inv)[:200])
+          ("matched_at_least" in inv) != ("distinct_names_matched" in inv), str(inv)[:200])
     check("it says when it truncated", inv.get("truncated") is True, str(inv)[:200])
     kinds = {}
     for it in inv.get("items", []):

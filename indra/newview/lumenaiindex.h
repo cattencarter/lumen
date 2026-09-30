@@ -123,6 +123,33 @@ public:
                             std::vector<std::pair<std::string, std::string> >* corrections = NULL,
                             std::string*        fit_used = NULL);
 
+    /** <Lumen> One matching ITEM, as matchAll() returns it. */
+    struct Match
+    {
+        LLUUID             id;
+        LLUUID             parent;
+        LLAssetType::EType type = LLAssetType::AT_NONE;
+        LLUUID             creator;
+        S32                score = 0;
+    };
+
+    /**
+     * <Lumen> Every item matching every word of @a query in its name or its
+     * folder, with the same spelling repair search() makes, best first -- one
+     * entry per ITEM: no copies collapsed, nothing in the Trash, no links.
+     *
+     * search() answers "which names"; this answers "which items". A lookup by
+     * name has to see every candidate to know whether one is unique, the
+     * notecard name filter must not lose two of three cards called "Read Me",
+     * and a list of what is worn must not fold two worn earrings into one.
+     *
+     * @param only  If given, only these ids are considered -- what is worn.
+     */
+    std::vector<Match> matchAll(const std::string& query,
+                                LLAssetType::EType kind,
+                                std::vector<std::pair<std::string, std::string> >* corrections = NULL,
+                                const std::set<LLUUID>* only = NULL);
+
     /**
      * The body-fit token in a name -- "larax", "maitreya", "legacy" -- or "".
      *
@@ -213,6 +240,7 @@ private:
          * box and can never find the garment.
          */
         std::string        lfolder;
+        LLUUID             parent;    // <Lumen> the folder it is in, for matchAll()
         LLAssetType::EType type = LLAssetType::AT_NONE;
         LLUUID             creator;
         time_t             acquired = 0;
@@ -232,6 +260,17 @@ private:
     bool               mBuilt = false;
 
     void build();
+
+    /** <Lumen> Whether @a w occurs, exactly as typed, in some name or folder. */
+    bool occurs(const std::string& w) const;
+
+    /**
+     * <Lumen> The query's words with a word that matches nothing repaired --
+     * a plural, a missing space, a misspelling -- each repair reported in
+     * @a corrections. Shared by search() and matchAll() so they cannot drift.
+     */
+    std::vector<std::string> repairedWords(const std::vector<std::string>& words,
+                                           std::vector<std::pair<std::string, std::string> >* corrections);
 
     /**
      * How well a name answers a query.
