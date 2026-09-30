@@ -1115,6 +1115,20 @@ namespace
         if (!gSavedSettings.getBOOL("LumenAILocalThinking")) body["reasoning_effort"] = "none";
     }
 
+    // <Lumen> Mistral caches a prompt only when the request names the
+    // conversation it belongs to -- `prompt_cache_key`, per Mistral's own
+    // prompt-caching page -- and without it nearly every turn paid full price
+    // for the same tool descriptions and instructions (measured 2026-09-30:
+    // "cached 0" on most of a 25-request run, 43,000-208,000 tokens in each).
+    // Cached tokens cost a tenth. One random key per run of the viewer: every
+    // conversation in it starts with that same prefix, and the key says
+    // nothing about who is asking.
+    void addMistralCacheKey(LLSD& body)
+    {
+        static const std::string key = "lumen-" + LLUUID::generateNewID().asString();
+        body["prompt_cache_key"] = key;
+    }
+
     LLSD openAITools()
     {
         LLSD out = LLSD::emptyArray();
@@ -3738,6 +3752,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             body["tools"]    = openAITools();
             addReasoningEffort(body, model);
             if (is_local) addLocalReasoning(body);   // <Lumen>
+            if (provider == LumenAIKeys::MISTRAL) addMistralCacheKey(body);   // <Lumen>
 
             // OpenAI takes the system prompt as the first message rather than
             // as its own field.
@@ -4940,6 +4955,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
     const bool is_local  = (provider == LumenAIKeys::LOCAL);
     const bool is_openai = (provider == LumenAIKeys::OPENAI) || is_local
                         || (provider == LumenAIKeys::MISTRAL);   // <Lumen> same dialect
+    const bool is_mistral = (provider == LumenAIKeys::MISTRAL);   // <Lumen> its cache key
     const std::string model = gSavedSettings.getString(modelSetting(provider));
     // <Lumen> Where to send it, decided now, beside the key: providerUrl()
     // reads the setting live, and the provider can change during the wait.
@@ -4950,7 +4966,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
 
     LLCoros::instance().launch("LumenAIAutoRespond",
         [from_id, session_id, from, messages, system, model, key, is_openai, is_local, speak_aloud,
-         url, gen]()
+         url, gen, is_mistral]()
     {
         // <Lumen> Whatever happens below, this person is answerable again
         // afterwards. The erase used to sit at the very end, so a throw out
@@ -5001,6 +5017,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
 
             addReasoningEffort(body, model);
             if (is_local) addLocalReasoning(body);   // <Lumen>
+            if (is_mistral) addMistralCacheKey(body);   // <Lumen>
 
             if (!key.empty()) headers["Authorization"] = "Bearer " + key;
         }
