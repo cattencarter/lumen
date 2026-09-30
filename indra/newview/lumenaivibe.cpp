@@ -151,7 +151,7 @@ std::string LumenAIVibe::home()
     return d;
 }
 
-bool LumenAIVibe::signedIn()
+bool LumenAIVibe::signedIn(bool fresh)
 {
 #if LL_WINDOWS
     return false;
@@ -159,7 +159,7 @@ bool LumenAIVibe::signedIn()
     static F64  s_at  = -100.0;
     static bool s_yes = false;
     const F64 now = LLTimer::getTotalSeconds();
-    if (now - s_at < 3.0) return s_yes;
+    if (!fresh && now - s_at < 3.0) return s_yes;
     s_at = now;
 
     linkUserEnv();

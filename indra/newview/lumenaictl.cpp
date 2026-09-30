@@ -260,9 +260,18 @@ namespace
         F64                 until = 0.0;
         bool                opened = false;
         LLHandle<LLFloater> window;
+        S32                 reopens = 0;   // <Lumen> windows that could not load it
     };
     std::map<std::string, NewScriptJob> sNewScripts;
-    const F64 NEW_SCRIPT_WAIT = 10.0;
+    // <Lumen> 30, not 10: on the beta grid, 2026-09-30, the region took longer
+    // than ten seconds to list a new script, so the held reply came back
+    // "pending" and Codex and Vibe called eight times, Mistral three. Still
+    // inside the sixty seconds Codex gives a tool call.
+    const F64 NEW_SCRIPT_WAIT = 30.0;
+    // How long after its wait a job is still carried on by the same call,
+    // rather than taken as a new request -- a model that comes back a minute
+    // later must not make a second script. Two minutes, as the waits elsewhere.
+    const F64 NEW_SCRIPT_KEEP = 120.0;
     // Which prims new_script put a script into, and when, so a region slow to
     // list it is not reported as an object with no scripts at all.
     std::map<LLUUID, F64> sScriptAddedTo;
@@ -3379,20 +3388,30 @@ namespace
         // copies of one name come from -- each with its own folder, which is
         // what tells them apart.
         std::vector<LLViewerInventoryItem*> ordered;
+        S32 by_folder = 0;   // <Lumen> candidates whose FOLDER holds the words
         {
             std::set<LLUUID> matched_ids, taken;
             for (size_t i = 0; i < items.size(); ++i) matched_ids.insert(items[i]->getUUID());
             size_t index_total = 0;
             const std::vector<LumenAIIndex::Hit> hits =
                 LumenAIIndex::instance().search(want_name, kind, LLUUID::null, 200, index_total);
+            // <Lumen> In search's order, INCLUDING what matches only by its
+            // folder. Kept to name matches, "wear the tentacio skirt" asked
+            // between three boxes called "*Tentacio* ... skirt" while the skirt
+            // itself -- "alba skirt larax white" in the Tentacio folder, and
+            // search's first answer -- was never in the question.
+            // Not in the Trash, and no links: the same as the walk above.
+            const LLUUID trash_id = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
             for (const LumenAIIndex::Hit& h : hits)
             {
                 if (ordered.size() >= 10) break;
-                if (!matched_ids.count(h.id) || !taken.insert(h.id).second) continue;
-                if (LLViewerInventoryItem* it = gInventory.getItem(h.id))
-                {
-                    ordered.push_back(it);
-                }
+                if (!taken.insert(h.id).second) continue;
+                LLViewerInventoryItem* it = gInventory.getItem(h.id);
+                if (!it || it->getIsLinkType()) continue;
+                if (trash_id.notNull() && gInventory.isObjectDescendentOf(h.id, trash_id)) continue;
+                if (kind != LLAssetType::AT_NONE && it->getType() != kind) continue;
+                if (!matched_ids.count(h.id)) ++by_folder;
+                ordered.push_back(it);
             }
             for (size_t i = 0; i < items.size() && ordered.size() < 10; ++i)
             {
@@ -3406,15 +3425,28 @@ namespace
             candidates.append(itemToLLSD(it));
         }
         LLSD e; e["code"] = -32000;
-        e["message"] = llformat("%d inventory items match \"", (S32)items.size()) + name
-                     + (items.size() > ordered.size()
-                        ? llformat("\"; the %d closest are attached. ", (S32)ordered.size())
-                        : std::string("\". "))
-                     + "Ask which one, then pass its item_id"
-                     + (items.size() > 10
-                        ? std::string(" -- or, with this many, narrow it first with "
-                                      "inventory / search and a more specific query.")
-                        : std::string("."));
+        std::string msg;
+        if (by_folder > 0)   // <Lumen>
+        {
+            msg = llformat("%d inventory items have \"", (S32)items.size()) + name
+                + "\" in their own name, and more match by the folder they are in. "
+                + llformat("The %d closest are attached, %d of them by their folder -- in Second "
+                           "Life that is often the garment itself, while an item named like the "
+                           "product is the box it came in. ", (S32)ordered.size(), by_folder);
+        }
+        else
+        {
+            msg = llformat("%d inventory items match \"", (S32)items.size()) + name
+                + (items.size() > ordered.size()
+                   ? llformat("\"; the %d closest are attached. ", (S32)ordered.size())
+                   : std::string("\". "));
+        }
+        msg += "Ask which one, then pass its item_id";
+        msg += (items.size() > 10)
+             ? std::string(" -- or, with this many, narrow it first with "
+                           "inventory / search and a more specific query.")
+             : std::string(".");
+        e["message"] = msg;
         e["data"] = candidates;
         error = e;
         return LLUUID::null;
@@ -11418,8 +11450,77 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             return replay;
         }
 
+        // <Lumen> Only something worn can be taken off, so a name is looked
+        // for among what is worn FIRST -- in its own name or its folder, a
+        // misspelling repaired, as search does. Across the whole inventory,
+        // "take off the tentacio skirt" with that skirt on asked between three
+        // unworn boxes whose own names held the words (2026-09-30). Nothing
+        // worn matching falls through to the whole inventory as before, whose
+        // answer then says it is already off.
+        LLUUID worn_pick;
+        if (method == "detach"
+            && !(params.has("item_id") && !params["item_id"].asString().empty())
+            && params.has("name") && !params["name"].asString().empty())
+        {
+            std::set<LLUUID> worn_set;
+            LLInventoryModel::cat_array_t*  cof_cats  = NULL;
+            LLInventoryModel::item_array_t* cof_links = NULL;
+            gInventory.getDirectDescendentsOf(LLAppearanceMgr::instance().getCOF(),
+                                              cof_cats, cof_links);
+            if (cof_links)
+            {
+                for (size_t i = 0; i < cof_links->size(); ++i)
+                {
+                    if (LLViewerInventoryItem* real = (*cof_links)[i]->getLinkedItem())
+                    {
+                        worn_set.insert(real->getUUID());
+                    }
+                }
+            }
+            const std::string want = params["name"].asString();
+            std::vector<std::pair<std::string, std::string> > spelling;
+            const std::vector<LumenAIIndex::Match> hits =
+                LumenAIIndex::instance().matchAll(want, LLAssetType::AT_NONE, &spelling, &worn_set);
+            // An exact name settles it, as it does by name elsewhere:
+            // "nativecollar" beside "nativecollar_small" and "_large".
+            S32 exact = 0;
+            LLUUID exact_id;
+            for (const LumenAIIndex::Match& m : hits)
+            {
+                LLViewerInventoryItem* it = gInventory.getItem(m.id);
+                if (it && lowered(it->getName()) == lowered(want)) { ++exact; exact_id = m.id; }
+            }
+            if (exact == 1)
+            {
+                worn_pick = exact_id;
+            }
+            else if (hits.size() == 1 && spelling.empty())
+            {
+                worn_pick = hits[0].id;
+            }
+            else if (!hits.empty())
+            {
+                LLSD candidates = LLSD::emptyArray();
+                for (size_t i = 0; i < hits.size() && i < 10; ++i)
+                {
+                    if (LLViewerInventoryItem* it = gInventory.getItem(hits[i].id))
+                    {
+                        candidates.append(itemToLLSD(it));
+                    }
+                }
+                LLSD e; e["code"] = -32000;
+                e["message"] = llformat("%d of the things they are wearing match \"", (S32)hits.size())
+                    + want + "\" (by name or by the folder each is in"
+                    + (spelling.empty() ? std::string() : ", with a word corrected")
+                    + "). Ask which one to take off, then pass its item_id.";
+                e["data"] = candidates;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
         LLSD error;
-        const LLUUID id = resolveItem(params, error);
+        const LLUUID id = worn_pick.notNull() ? worn_pick : resolveItem(params, error);
+        // </Lumen>
         if (id.isNull())
         {
             LLSD w; w["__error"] = error; return w;
@@ -13640,7 +13741,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         const F64 now = LLTimer::getTotalSeconds();
         const std::string text = params.has("text") ? params["text"].asString() : std::string();
         std::map<std::string, NewScriptJob>::iterator job = sNewScripts.find(job_key);
-        if (job != sNewScripts.end() && now > job->second.until + 5.0)
+        if (job != sNewScripts.end() && now > job->second.until + NEW_SCRIPT_KEEP)
         {
             sNewScripts.erase(job);   // nobody came back for it; this is a new request
             job = sNewScripts.end();
@@ -13663,7 +13764,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 w["settling"] = true;
                 w["note"] = "The script \"" + j.name + "\" was put into that object and " + for_what
                           + " The reply waits for it; if you are reading this, the region is slow "
-                            "-- say it is on its way.";
+                            "-- say it is on its way. The same new_script call made again later "
+                            "carries on from here and makes no second script.";
                 return w;
             };
 
@@ -13723,6 +13825,21 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 {
                     return waiting("it is open, and the window is still loading it.");
                 }
+                // <Lumen> A window opened before the region could hand it the
+                // script says it could not load it, and stays that way. Closed
+                // and opened again, it loads -- which is what Sonnet had to do
+                // by hand, in thirteen calls (2026-09-30). Twice at most.
+                if (pv && pv->getAssetStatus() == LLPreview::PREVIEW_ASSET_ERROR
+                    && j.reopens < 2 && !out_of_time)
+                {
+                    ++j.reopens;
+                    win->closeFloater();
+                    j.opened = false;
+                    j.window = LLHandle<LLFloater>();
+                    return waiting("its window could not load it the first time, so it is being "
+                                   "opened again.");
+                }
+                // </Lumen>
                 if (!win)
                 {
                     stopped = "its window was closed before anything could be written into it";
@@ -18851,6 +18968,10 @@ if (method == "camera")
                 // from "Second Life" and was counted as the other person's.
                 if (who.empty() || who == "second life" || who == lowered(SYSTEM_FROM)
                     || who == lowered(INTERACTIVE_SYSTEM_FROM)) continue;
+                // <Lumen> Nor Second Life's own answer when they were offline,
+                // which is logged under THEIR name: "User not online - inventory
+                // has been saved." came back as the last thing Catten said.
+                if (lines[i]["said"].asString().rfind("User not online - ", 0) == 0) continue;
                 if (me.count(who))
                 {
                     if (last_me.isUndefined()) last_me = lines[i];

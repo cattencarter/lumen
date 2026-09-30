@@ -222,6 +222,13 @@ void LumenAISetupFloater::signedIn(bool ok, const std::string& why)
 // <Lumen>
 void LumenAISetupFloater::vibeSignedIn(bool ok, const std::string& why)
 {
+    // <Lumen> Asked afresh: the check below and every one after it read a
+    // three-second cache, and a sign-in that finished inside those three
+    // seconds -- the browser already signed in to Mistral -- left the cached
+    // "no" in place. Nothing polls once the step is over, so step 2 went on
+    // looking undone, and the author pressed it again for a second browser
+    // page (2026-09-30).
+    if (ok) LumenAIVibe::signedIn(true);
     mRunning = STEP_COUNT;
     mFailed  = !ok && !done(STEP_SIGNIN);
     mNote    = mFailed

@@ -57,7 +57,9 @@ public:
      * Asks `security` without `-w`, so the key itself is never read. Cached
      * for a few seconds, because Preferences asks once a second.
      */
-    static bool        signedIn();
+    // <Lumen> `fresh` skips the three-second cache: the setup window asks
+    // straight after a sign-in, when a cached "no" is known to be stale.
+    static bool        signedIn(bool fresh = false);
 
     /** Why this provider cannot work on this platform at all, or empty. */
     static std::string unavailableHere();
