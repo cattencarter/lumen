@@ -595,8 +595,8 @@ bool LumenAIVibeSignIn::run(const std::function<bool()>& still_wanted, std::stri
     }
     if (!offered)
     {
-        why = "This copy of Mistral Vibe cannot sign in from Lumen. Open Terminal, type  vibe "
-              "--setup  and press Return, then come back.";
+        why = "This copy of Mistral Vibe cannot sign in from Lumen. Open a terminal window, "
+              "type  vibe --setup  and press Return, then come back.";
         stop();
         return false;
     }

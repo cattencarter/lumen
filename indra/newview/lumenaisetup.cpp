@@ -598,7 +598,7 @@ void LumenAISetupFloater::refresh()
         if (LLTextBox* t = findChild<LLTextBox>("desc_2"))
             t->setText(std::string("Your web browser opens on Mistral's own page and you sign in "
                                    "there. Lumen never sees your password, and the key Mistral "
-                                   "hands Vibe goes into your Mac's Keychain, where Vibe keeps it."));
+                                   "hands Vibe is kept in your computer's own password store."));
     }
     // </Lumen>
 

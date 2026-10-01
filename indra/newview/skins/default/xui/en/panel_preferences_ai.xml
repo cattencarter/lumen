@@ -344,7 +344,7 @@
 
         <text type="string" follows="left|top" layout="topleft" name="local_requirements"
          left="20" top="172" width="480" height="54" word_wrap="true">
-            Needs a model that can use tools, loaded with a context of at least 32,000 tokens (LM Studio's default is too small). A 27B model worked well in our tests; an 8B one gets lost on longer requests. On a Mac, count on 32 GB of memory or more.
+            Needs a model that can use tools, loaded with a context of at least 32,000 tokens (LM Studio's default is too small). A 27B model worked well in our tests; an 8B one gets lost on longer requests. Count on 32 GB of memory or more.
         </text>
 
         <check_box control_name="LumenAILocalThinking" follows="left|top" layout="topleft"

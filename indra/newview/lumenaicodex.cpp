@@ -438,8 +438,8 @@ bool LumenAICodex::handshake(std::string& why)
     {
         if (LLTimer::getTotalSeconds() > deadline)
         {
-            why = "Codex accepted the connection but did not answer the handshake within "
-                  "five seconds. Is its background service healthy?  codex app-server daemon start";
+            why = "Codex accepted the connection but did not answer within five seconds. "
+                  "Try again in a moment; if it keeps happening, quit and reopen Lumen.";
             return false;
         }
         const int ready = waitFor(mFd, false, 50);   // 50 ms
