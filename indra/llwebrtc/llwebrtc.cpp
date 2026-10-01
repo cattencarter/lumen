@@ -540,9 +540,18 @@ void LLWebRTCImpl::workerDeployDevices()
 #else
     mDeviceModule->SetRecordingDevice(recordingDevice);
 #endif
-    mDeviceModule->InitMicrophone();
+    // <Lumen> Get the microphone ready only when it is about to record. Doing it
+    // here unconditionally opened it at start-up, before the login screen, so
+    // macOS asked for microphone access before anybody had spoken. Every path
+    // that starts recording (unmuting, tuning, and the start below) calls
+    // InitRecording itself first, so nothing waits on this.
     mDeviceModule->SetStereoRecording(false);
-    mDeviceModule->InitRecording();
+    if ((!mMute && mPeerConnections.size()) || mTuningMode)
+    {
+        mDeviceModule->InitMicrophone();
+        mDeviceModule->ForceInitRecording();
+    }
+    // </Lumen>
 
     int16_t playoutDevice = PLAYOUT_DEVICE_DEFAULT;
     int16_t playout_device_start = 0;
@@ -951,7 +960,7 @@ void LLWebRTCImpl::intSetMute(bool mute, int delay_ms)
                     // Flag the device is being interacted with for the Co-routine in case something goes wrong.
                     gWebRTCUpdateDevices = true;
                     // </FS:minerjr> [FIRE-36022]
-                    mDeviceModule->InitRecording();
+                    mDeviceModule->ForceInitRecording();
                     mDeviceModule->ForceStartRecording();
                     // <FS:minerjr> [FIRE-36022] - Removing my USB headset crashes entire viewer
                     // Finally signal to the co-routine everyting is OK.

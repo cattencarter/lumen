@@ -228,7 +228,14 @@ public:
     int32_t StopPlayout() override { return inner_->StopPlayout(); }
     bool    Playing() const override { return inner_->Playing(); }
 
-    int32_t InitRecording() override { return inner_->InitRecording(); }
+    // <Lumen> Ignored for the same reason as StartRecording below: webrtc.lib
+    // sends one when a stream connects, and on macOS preparing to record is
+    // what asks for microphone access -- so joining a region's voice asked
+    // before anybody had pressed Speak. The app prepares it itself, through
+    // ForceInitRecording, right before it starts recording.
+    int32_t InitRecording() override { return 0; }
+    int32_t ForceInitRecording() { return inner_->InitRecording(); }
+    // </Lumen>
     bool    RecordingIsInitialized() const override { return inner_->RecordingIsInitialized(); }
     int32_t StartRecording() override {
         // ignore start recording as webrtc.lib will
