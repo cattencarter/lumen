@@ -263,6 +263,19 @@ private:
     LLTextBox*    mStatus     = nullptr;
     LLButton*     mSendBtn    = nullptr;
 
+    // <Lumen> Talking instead of typing (lumenaispeech.h). What is said goes
+    // into the typing box, after whatever was typed before the mic was
+    // clicked, and the person presses Enter -- the author's choice, so a
+    // misheard word can be fixed before it reaches the assistant.
+    LLButton*   mMicBtn          = nullptr;
+    bool        mListening       = false;
+    bool        mVoiceMicWasOpen = false;   // voice chat's mic, closed while we listen
+    std::string mSpokenPrefix;
+    void onMic();
+    void endListening(const std::string& error);
+    void onClose(bool app_quitting) override;
+    // </Lumen>
+
     // Provider-native message history. Anthropic and OpenAI disagree about
     // how a tool call and its result are written down, and translating between
     // them loses things quietly, so the history is kept in whichever shape the

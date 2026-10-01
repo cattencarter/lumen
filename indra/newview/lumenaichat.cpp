@@ -43,6 +43,8 @@
 #include "lumenaimemory.h"
 
 #include "llbutton.h"
+#include "llvoiceclient.h"   // <Lumen> voice chat's mic stays shut while the mic button listens
+#include "lumenaispeech.h"   // <Lumen>
 #include "fsnearbychathub.h"
 #include "llchat.h"
 #include "llagent.h"
@@ -1355,6 +1357,14 @@ LumenAIChatFloater::~LumenAIChatFloater()
     // of it that runs somewhere else -- a Codex turn would otherwise go on
     // calling tools with nobody reading.
     if (mBusy) abandonTurn();
+    if (mListening)   // <Lumen> never leave the microphone on behind a gone window
+    {
+        LumenAISpeech::cancel();
+        if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
+        {
+            LLVoiceClient::getInstance()->setUserPTTState(true);
+        }
+    }
 }
 
 // <Lumen>
@@ -1461,6 +1471,28 @@ bool LumenAIChatFloater::postBuild()
     {
         clear->setCommitCallback([this](LLUICtrl*, const LLSD&) { onClear(); });
     }
+    // <Lumen> The mic, where there is a speech engine; elsewhere the typing
+    // box takes its room.
+    mMicBtn = findChild<LLButton>("mic_btn");
+    if (mMicBtn)
+    {
+        if (LumenAISpeech::supported())
+        {
+            mMicBtn->setCommitCallback([this](LLUICtrl*, const LLSD&) { onMic(); });
+        }
+        else
+        {
+            mMicBtn->setVisible(false);
+            if (mInput)
+            {
+                LLRect r = mInput->getRect();
+                r.mRight = mMicBtn->getRect().mRight;
+                mInput->setShape(r);
+            }
+            mMicBtn = nullptr;
+        }
+    }
+    // </Lumen>
 
     mMessages = LLSD::emptyArray();
     setBusy(false);
@@ -1955,8 +1987,90 @@ void LumenAIChatFloater::draw()
         setActivity("Thinking...");
     }
     if (!mBusy) mThinkingPending = false;   // the turn ended; nothing to promise
+    // <Lumen> Words arrive while the person talks; show them as they come.
+    if (mListening)
+    {
+        const LumenAISpeech::Update u = LumenAISpeech::poll();
+        if (mInput && (u.changed || (u.finished && !u.text.empty())))
+        {
+            mInput->setText(mSpokenPrefix + u.text);
+            mInput->setCursorToEnd();
+        }
+        if (u.finished) endListening(u.error);
+    }
+    // </Lumen>
     LLFloater::draw();
 }
+
+// <Lumen>
+void LumenAIChatFloater::onMic()
+{
+    if (mListening)
+    {
+        // Finish rather than throw away: the last words still come in, and
+        // draw() ends it when they have.
+        LumenAISpeech::stop();
+        if (mMicBtn) mMicBtn->setToggleState(true);
+        return;
+    }
+    if (mBusy)
+    {
+        if (mMicBtn) mMicBtn->setToggleState(false);
+        return;
+    }
+    std::string why;
+    if (!LumenAISpeech::start(gSavedSettings.getString("LumenAISpeechLanguage"), why))
+    {
+        if (mMicBtn) mMicBtn->setToggleState(false);
+        sayNote(why);
+        return;
+    }
+    mListening = true;
+    mSpokenPrefix = mInput ? mInput->getText() : std::string();
+    if (!mSpokenPrefix.empty() && mSpokenPrefix.back() != ' ') mSpokenPrefix += ' ';
+
+    // What is said to the assistant must not also go out to the people
+    // nearby: if voice chat's mic is open, it is shut until this is done.
+    mVoiceMicWasOpen = false;
+    if (LLVoiceClient::instanceExists() && LLVoiceClient::getInstance()->getUserPTTState())
+    {
+        mVoiceMicWasOpen = true;
+        LLVoiceClient::getInstance()->setUserPTTState(false);
+    }
+    if (mMicBtn) mMicBtn->setToggleState(true);
+    setActivity("Listening... pause, or click the mic again, to stop.");
+}
+
+void LumenAIChatFloater::endListening(const std::string& error)
+{
+    mListening = false;
+    if (mMicBtn) mMicBtn->setToggleState(false);
+    if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
+    {
+        LLVoiceClient::getInstance()->setUserPTTState(true);
+    }
+    mVoiceMicWasOpen = false;
+    if (!mBusy) setActivity(std::string());
+    if (!error.empty()) sayNote(error);
+    if (mInput)
+    {
+        mInput->setFocus(true);
+        mInput->setCursorToEnd();
+    }
+}
+
+void LumenAIChatFloater::onClose(bool app_quitting)
+{
+    // Closing only hides this window, and a hidden window must not go on
+    // listening. Thrown away rather than finished: nobody is looking.
+    if (mListening)
+    {
+        LumenAISpeech::cancel();
+        endListening(std::string());
+    }
+    LLFloater::onClose(app_quitting);
+}
+// </Lumen>
 
 void LumenAIChatFloater::sayHeader()
 {
@@ -2092,6 +2206,7 @@ void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 
     if (mSendBtn) mSendBtn->setEnabled(!busy);
     if (mInput)   mInput->setEnabled(!busy);
+    if (mMicBtn)  mMicBtn->setEnabled(!busy);   // <Lumen>
 
     // Empty when idle. The bar reports what is happening, and nothing is.
     setActivity(busy ? (note.empty() ? std::string("Working") : note) : std::string());
@@ -2131,6 +2246,12 @@ void LumenAIChatFloater::onSend()
     if (mBusy || !mInput)
     {
         return;
+    }
+    // <Lumen> Enter while still listening sends what is in the box now.
+    if (mListening)
+    {
+        LumenAISpeech::cancel();
+        endListening(std::string());
     }
 
     const std::string text = mInput->getText();

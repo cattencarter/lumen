@@ -974,6 +974,7 @@ set(viewer_HEADER_FILES
     fsareasearch.h
     fsareasearchmenu.h
     lumenaichat.h
+    lumenaispeech.h
     lumenaiindex.h
     lumenfolders.h
     lumenupdate.h
@@ -1896,6 +1897,17 @@ if (DARWIN)
     SKIP_PRECOMPILE_HEADERS TRUE
   )
 
+  # <Lumen> Talking to the assistant: Apple's Speech framework. ARC for this
+  # one file only; the rest of the viewer's Objective-C manages memory by hand.
+  LIST(APPEND viewer_SOURCE_FILES lumenaispeech_mac.mm)
+  set_source_files_properties(
+    lumenaispeech_mac.mm
+    PROPERTIES
+    SKIP_PRECOMPILE_HEADERS TRUE
+    COMPILE_FLAGS "-fobjc-arc"
+  )
+  # </Lumen>
+
   # This should be compiled with the viewer.
   LIST(APPEND viewer_SOURCE_FILES llappdelegate-objc.mm)
   set_source_files_properties(
@@ -2653,6 +2665,12 @@ if (WINDOWS)
                                 COMPILE_FLAGS "/w"
                                 SKIP_PRECOMPILE_HEADERS ON)
 endif (WINDOWS)
+# </Lumen>
+
+# <Lumen> The Assistant's mic button (lumenaispeech_mac.mm).
+if (DARWIN)
+    target_link_libraries(${VIEWER_BINARY_NAME} "-framework Speech" "-framework AVFoundation")
+endif (DARWIN)
 # </Lumen>
 
 target_link_libraries(${VIEWER_BINARY_NAME}

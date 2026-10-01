@@ -53,10 +53,25 @@
      layout="topleft"
      left="10"
      top="408"
-     width="248"
+     width="218"
      name="input"
      commit_on_focus_lost="false"
      label="Ask for something..." />
+    <!-- <Lumen> Talk instead of typing. NOT voice chat: what is said here goes
+         into the typing box above and nowhere else, and voice chat's own mic
+         is closed while it listens. Hidden where there is no speech engine yet
+         (lumenaispeech.h); the typing box then takes the room back. -->
+    <button
+     follows="right|bottom"
+     height="22"
+     layout="topleft"
+     left="234"
+     top="408"
+     width="24"
+     image_overlay="Microphone_On"
+     is_toggle="true"
+     name="mic_btn"
+     tool_tip="Talk instead of typing. Click again, or pause, to stop. What you say goes into the box, not to voice chat." />
 
     <button
      follows="right|bottom"
