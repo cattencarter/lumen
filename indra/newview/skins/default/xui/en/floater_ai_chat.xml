@@ -73,7 +73,7 @@
      image_overlay="Command_Speak_Icon"
      is_toggle="true"
      name="mic_btn"
-     tool_tip="Talk instead of typing. Click again, or pause, to stop. What you say goes into the box, not to voice chat." />
+     tool_tip="Talk instead of typing. Pause, or click again, to stop. What you say goes to the assistant, not to voice chat." />
 
     <button
      follows="right|bottom"

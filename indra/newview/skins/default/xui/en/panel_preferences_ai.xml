@@ -524,6 +524,16 @@
           Nicknames people use for you in chat, separated by commas. Needed when your display name is not what anyone types.
       </text>
 
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="388" width="480" height="14" font="SansSerifBold">
+          Talking instead of typing
+      </text>
+
+      <check_box control_name="LumenAISpeechAutoSend" follows="left|top" layout="topleft"
+       left="20" top="408" width="480" height="16"
+       name="speech_auto_send"
+       label="Send what I say as soon as I stop talking" />
+
     </panel>
 
     <!-- =========================== Permissions =========================== -->

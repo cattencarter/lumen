@@ -1996,7 +1996,18 @@ void LumenAIChatFloater::draw()
             mInput->setText(mSpokenPrefix + u.text);
             mInput->setCursorToEnd();
         }
-        if (u.finished) endListening(u.error);
+        if (u.finished)
+        {
+            endListening(u.error);
+            // The author: send it when they stop talking, unless they would
+            // rather read it first (Preferences > AI > Assistant). Only real
+            // words: "Nothing was heard" and a refusal send nothing.
+            if (!u.text.empty() && u.error.empty()
+                && gSavedSettings.getBOOL("LumenAISpeechAutoSend"))
+            {
+                onSend();
+            }
+        }
     }
     // </Lumen>
     LLFloater::draw();
@@ -2038,7 +2049,9 @@ void LumenAIChatFloater::onMic()
         LLVoiceClient::getInstance()->setUserPTTState(false);
     }
     if (mMicBtn) mMicBtn->setToggleState(true);
-    setActivity("Listening... pause, or click the mic again, to stop.");
+    setActivity(gSavedSettings.getBOOL("LumenAISpeechAutoSend")
+                ? "Listening... pause, or click the mic again, to send."
+                : "Listening... pause, or click the mic again, to stop.");
 }
 
 void LumenAIChatFloater::endListening(const std::string& error)
