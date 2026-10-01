@@ -265,14 +265,21 @@ private:
 
     // <Lumen> Talking instead of typing (lumenaispeech.h). What is said goes
     // into the typing box, after whatever was typed before the mic was
-    // clicked, and the person presses Enter -- the author's choice, so a
-    // misheard word can be fixed before it reaches the assistant.
+    // clicked. It is sent when the person stops talking (LumenAISpeechAutoSend,
+    // the author's preference, 2026-10-01), or waits for Enter with that off.
+    // With LumenAISpeechKeepListening as well, one click is a conversation:
+    // it listens again after each answer until the mic is clicked off.
     LLButton*   mMicBtn          = nullptr;
     bool        mListening       = false;
+    bool        mKeepListening   = false;   // the mic stays on across answers
+    F64         mHeardAt         = 0.0;     // last words heard, for ending a silent conversation
     bool        mVoiceMicWasOpen = false;   // voice chat's mic, closed while we listen
     std::string mSpokenPrefix;
     void onMic();
+    bool startListening();
     void endListening(const std::string& error);
+    void stopMic(const std::string& note);
+    void giveVoiceBack();
     void onClose(bool app_quitting) override;
     // </Lumen>
 

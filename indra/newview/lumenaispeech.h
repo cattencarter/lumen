@@ -36,6 +36,7 @@ namespace LumenAISpeech
         std::string text;               // everything heard so far, this time
         bool        finished = false;   // listening has ended; text is the last word
         std::string error;              // why it ended badly, in plain words; empty when not
+        bool        nothing_heard = false;   // finished with no words, nobody's fault (silence)
     };
 
 #if LL_DARWIN

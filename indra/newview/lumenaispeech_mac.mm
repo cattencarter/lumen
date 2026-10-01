@@ -33,6 +33,7 @@ namespace
         std::string error;
         double      last_change  = 0.0;
         bool        any          = false;   // anything at all heard this time
+        bool        silence      = false;   // Apple said "no speech detected"
     };
     Heard sHeard;
 
@@ -76,6 +77,7 @@ namespace
         sHeard.error.clear();
         sHeard.last_change = now();
         sHeard.any = false;
+        sHeard.silence = false;
     }
 
     void teardown()
@@ -174,6 +176,7 @@ namespace
                 // Words beat a complaint: with something heard, an error just
                 // means it is over. Without, say which it was -- 1110 is
                 // Apple's "no speech detected", which is nobody's fault.
+                if (!sHeard.any && error.code == 1110) sHeard.silence = true;
                 if (!sHeard.any && sHeard.error.empty())
                 {
                     sHeard.error = (error.code == 1110)
@@ -316,6 +319,9 @@ LumenAISpeech::Update LumenAISpeech::poll()
         u.text = sHeard.text;
         final_result = sHeard.final_result;
         u.error = sHeard.error;
+        // Ended with no words and nothing wrong: the person just did not
+        // speak -- a timeout before the first word, or Apple's 1110.
+        u.nothing_heard = sHeard.text.empty() && (sHeard.error.empty() || sHeard.silence);
 
         // A pause ends it, as does a long take or a long silence before the
         // first word -- so nobody has to find the button again to stop.

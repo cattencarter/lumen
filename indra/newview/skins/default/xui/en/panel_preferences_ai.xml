@@ -534,6 +534,12 @@
        name="speech_auto_send"
        label="Send what I say as soon as I stop talking" />
 
+      <check_box control_name="LumenAISpeechKeepListening" follows="left|top" layout="topleft"
+       enabled_control="LumenAISpeechAutoSend"
+       left="20" top="428" width="480" height="16"
+       name="speech_keep_listening"
+       label="Keep listening after each answer, until I click the mic again" />
+
     </panel>
 
     <!-- =========================== Permissions =========================== -->

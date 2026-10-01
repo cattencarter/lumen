@@ -1357,13 +1357,10 @@ LumenAIChatFloater::~LumenAIChatFloater()
     // of it that runs somewhere else -- a Codex turn would otherwise go on
     // calling tools with nobody reading.
     if (mBusy) abandonTurn();
-    if (mListening)   // <Lumen> never leave the microphone on behind a gone window
+    if (mListening) LumenAISpeech::cancel();   // <Lumen> never leave the microphone on behind a gone window
+    if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
     {
-        LumenAISpeech::cancel();
-        if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
-        {
-            LLVoiceClient::getInstance()->setUserPTTState(true);
-        }
+        LLVoiceClient::getInstance()->setUserPTTState(true);
     }
 }
 
@@ -1998,16 +1995,39 @@ void LumenAIChatFloater::draw()
         }
         if (u.finished)
         {
-            endListening(u.error);
-            // The author: send it when they stop talking, unless they would
-            // rather read it first (Preferences > AI > Assistant). Only real
-            // words: "Nothing was heard" and a refusal send nothing.
-            if (!u.text.empty() && u.error.empty()
-                && gSavedSettings.getBOOL("LumenAISpeechAutoSend"))
+            if (mKeepListening && u.nothing_heard)
             {
-                onSend();
+                // Silence is not an end in a conversation: listen again, below,
+                // unless nobody has said anything for two minutes.
+                mListening = false;
+                if (LLTimer::getElapsedSeconds() - mHeardAt > 120.0)
+                {
+                    stopMic("Stopped listening: nothing was said for two minutes.");
+                }
+            }
+            else
+            {
+                if (mKeepListening && u.text.empty())
+                {
+                    stopMic(std::string());   // a real failure ends the conversation
+                }
+                endListening(u.error);
+                // The author: send it when they stop talking, unless they would
+                // rather read it first (Preferences > AI > Assistant). Only real
+                // words: "Nothing was heard" and a refusal send nothing.
+                if (!u.text.empty() && u.error.empty()
+                    && gSavedSettings.getBOOL("LumenAISpeechAutoSend"))
+                {
+                    mHeardAt = LLTimer::getElapsedSeconds();
+                    onSend();
+                }
             }
         }
+    }
+    // A conversation listens again once the answer is in.
+    if (mKeepListening && !mListening && !mBusy && !startListening())
+    {
+        stopMic(std::string());   // startListening has said why
     }
     // </Lumen>
     LLFloater::draw();
@@ -2016,10 +2036,18 @@ void LumenAIChatFloater::draw()
 // <Lumen>
 void LumenAIChatFloater::onMic()
 {
+    if (mKeepListening && !mListening)
+    {
+        // Between takes, while the assistant answers: the click ends it.
+        stopMic(std::string());
+        return;
+    }
     if (mListening)
     {
         // Finish rather than throw away: the last words still come in, and
-        // draw() ends it when they have.
+        // draw() ends it when they have. In a conversation this is the last
+        // take -- what was said is still sent.
+        mKeepListening = false;
         LumenAISpeech::stop();
         if (mMicBtn) mMicBtn->setToggleState(true);
         return;
@@ -2029,40 +2057,58 @@ void LumenAIChatFloater::onMic()
         if (mMicBtn) mMicBtn->setToggleState(false);
         return;
     }
+    // Keeping on only makes sense when a pause sends; with sending off the
+    // words wait for Enter, and there is nothing to listen again after.
+    mKeepListening = gSavedSettings.getBOOL("LumenAISpeechAutoSend")
+                  && gSavedSettings.getBOOL("LumenAISpeechKeepListening");
+    mHeardAt = LLTimer::getElapsedSeconds();
+    if (!startListening())
+    {
+        mKeepListening = false;
+        if (mMicBtn) mMicBtn->setToggleState(false);
+        return;
+    }
+    if (mMicBtn) mMicBtn->setToggleState(true);
+}
+
+bool LumenAIChatFloater::startListening()
+{
     std::string why;
     if (!LumenAISpeech::start(gSavedSettings.getString("LumenAISpeechLanguage"), why))
     {
-        if (mMicBtn) mMicBtn->setToggleState(false);
         sayNote(why);
-        return;
+        return false;
     }
     mListening = true;
     mSpokenPrefix = mInput ? mInput->getText() : std::string();
     if (!mSpokenPrefix.empty() && mSpokenPrefix.back() != ' ') mSpokenPrefix += ' ';
 
     // What is said to the assistant must not also go out to the people
-    // nearby: if voice chat's mic is open, it is shut until this is done.
-    mVoiceMicWasOpen = false;
-    if (LLVoiceClient::instanceExists() && LLVoiceClient::getInstance()->getUserPTTState())
+    // nearby: if voice chat's mic is open, it is shut until this is done --
+    // in a conversation, until the mic is clicked off, not after each take.
+    if (!mVoiceMicWasOpen && LLVoiceClient::instanceExists()
+        && LLVoiceClient::getInstance()->getUserPTTState())
     {
         mVoiceMicWasOpen = true;
         LLVoiceClient::getInstance()->setUserPTTState(false);
     }
-    if (mMicBtn) mMicBtn->setToggleState(true);
-    setActivity(gSavedSettings.getBOOL("LumenAISpeechAutoSend")
-                ? "Listening... pause, or click the mic again, to send."
-                : "Listening... pause, or click the mic again, to stop.");
+    if (mKeepListening)
+        setActivity("Listening... pause to send. Click the mic to stop listening.");
+    else if (gSavedSettings.getBOOL("LumenAISpeechAutoSend"))
+        setActivity("Listening... pause, or click the mic again, to send.");
+    else
+        setActivity("Listening... pause, or click the mic again, to stop.");
+    return true;
 }
 
 void LumenAIChatFloater::endListening(const std::string& error)
 {
     mListening = false;
-    if (mMicBtn) mMicBtn->setToggleState(false);
-    if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
+    if (!mKeepListening)
     {
-        LLVoiceClient::getInstance()->setUserPTTState(true);
+        if (mMicBtn) mMicBtn->setToggleState(false);
+        giveVoiceBack();
     }
-    mVoiceMicWasOpen = false;
     if (!mBusy) setActivity(std::string());
     if (!error.empty()) sayNote(error);
     if (mInput)
@@ -2072,15 +2118,40 @@ void LumenAIChatFloater::endListening(const std::string& error)
     }
 }
 
+void LumenAIChatFloater::giveVoiceBack()
+{
+    if (mVoiceMicWasOpen && LLVoiceClient::instanceExists())
+    {
+        LLVoiceClient::getInstance()->setUserPTTState(true);
+    }
+    mVoiceMicWasOpen = false;
+}
+
+void LumenAIChatFloater::stopMic(const std::string& note)
+{
+    // Ends listening and a conversation alike, throwing away a take in
+    // progress; used by the mic between takes, Clear, closing, and failures.
+    mKeepListening = false;
+    if (mListening)
+    {
+        LumenAISpeech::cancel();
+        mListening = false;
+    }
+    giveVoiceBack();
+    if (mMicBtn)
+    {
+        mMicBtn->setToggleState(false);
+        mMicBtn->setEnabled(!mBusy);
+    }
+    if (!mBusy) setActivity(std::string());
+    if (!note.empty()) sayNote(note);
+}
+
 void LumenAIChatFloater::onClose(bool app_quitting)
 {
     // Closing only hides this window, and a hidden window must not go on
     // listening. Thrown away rather than finished: nobody is looking.
-    if (mListening)
-    {
-        LumenAISpeech::cancel();
-        endListening(std::string());
-    }
+    if (mListening || mKeepListening) stopMic(std::string());
     LLFloater::onClose(app_quitting);
 }
 // </Lumen>
@@ -2219,7 +2290,7 @@ void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 
     if (mSendBtn) mSendBtn->setEnabled(!busy);
     if (mInput)   mInput->setEnabled(!busy);
-    if (mMicBtn)  mMicBtn->setEnabled(!busy);   // <Lumen>
+    if (mMicBtn)  mMicBtn->setEnabled(!busy || mKeepListening);   // <Lumen> clicking ends a conversation
 
     // Empty when idle. The bar reports what is happening, and nothing is.
     setActivity(busy ? (note.empty() ? std::string("Working") : note) : std::string());
@@ -2234,6 +2305,7 @@ void LumenAIChatFloater::onClear()
     // process. So a running turn is stopped first, for real.
     const bool was_busy = mBusy;
     if (was_busy) abandonTurn();
+    if (mListening || mKeepListening) stopMic(std::string());
     // </Lumen>
     mMessages = LLSD::emptyArray();
     mHistoryProvider.clear();
