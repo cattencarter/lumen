@@ -3408,7 +3408,7 @@ void LumenAIChatFloater::noticeCodexMemory()
         return;   // already said, for this same change
     }
     mCodexMemoryNoticed = fingerprint;
-    sayNote("Your memory changed. Codex uses the old version until you press Clear.");
+    sayNote("Your memory changed. Codex uses the old version until you press Clear (the bin, bottom right).");
 }
 
 /**
@@ -3728,7 +3728,7 @@ void LumenAIChatFloater::runVibeTurn(const std::string& user_text)
     }
     else if (!stopped_by.empty())
     {
-        sayNote("Mistral Vibe stopped at its own limit. Press Clear to start a new conversation.");
+        sayNote("Mistral Vibe stopped at its own limit. Press Clear (the bin, bottom right) to start a new conversation.");
     }
     else if (answer.empty())
     {

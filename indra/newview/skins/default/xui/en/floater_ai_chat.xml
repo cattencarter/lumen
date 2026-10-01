@@ -53,22 +53,24 @@
      layout="topleft"
      left="10"
      top="408"
-     width="218"
+     width="278"
      name="input"
      commit_on_focus_lost="false"
      label="Ask for something..." />
     <!-- <Lumen> Talk instead of typing. NOT voice chat: what is said here goes
          into the typing box above and nowhere else, and voice chat's own mic
          is closed while it listens. Hidden where there is no speech engine yet
-         (lumenaispeech.h); the typing box then takes the room back. -->
+         (lumenaispeech.h); the typing box then takes the room back.
+         The toolbar's Speak icon, not Microphone_On: that one is drawn at 20%
+         opacity throughout, so the button looked switched off while it worked. -->
     <button
      follows="right|bottom"
      height="22"
      layout="topleft"
-     left="234"
+     left="294"
      top="408"
      width="24"
-     image_overlay="Microphone_On"
+     image_overlay="Command_Speak_Icon"
      is_toggle="true"
      name="mic_btn"
      tool_tip="Talk instead of typing. Click again, or pause, to stop. What you say goes into the box, not to voice chat." />
@@ -77,21 +79,24 @@
      follows="right|bottom"
      height="22"
      layout="topleft"
-     left="264"
+     left="324"
      top="408"
      width="76"
      label="Send"
      name="send_btn" />
 
+    <!-- <Lumen> Clear is the bin icon rather than a word, so the typing box
+         gets the room (the author, 2026-10-01). The same bin the viewer uses
+         for removing things elsewhere; the tooltip carries the word. -->
     <button
      follows="right|bottom"
      height="22"
      layout="topleft"
-     left="346"
+     left="406"
      top="408"
-     width="84"
-     label="Clear"
+     width="24"
+     image_overlay="TrashItem_Off"
      name="clear_btn"
-     tool_tip="Start a new conversation" />
+     tool_tip="Clear: start a new conversation. Also stops an answer that is still running." />
 
 </floater>
