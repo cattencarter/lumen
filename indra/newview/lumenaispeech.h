@@ -17,11 +17,15 @@
  * macOS: Apple's Speech framework (lumenaispeech_mac.mm). English is recognised
  * on the machine; Danish goes to Apple's servers (checked on the Mac Studio:
  * supportsOnDeviceRecognition false for da-DK).
- * Windows: Windows.Media.SpeechRecognition (lumenaispeech_win.cpp), continuous
- * dictation on Microsoft's servers -- it needs "Online speech recognition" on
- * in Settings > Privacy & security > Speech, and listens in Windows' own speech
- * language -- or in English when dictation does not offer that one, which is
- * the case for Danish (the author's laptop, 2026-10-02).
+ * Windows: Whisper (whisper.cpp), on the computer itself (lumenaispeech_win.cpp).
+ * Windows' own speech for programs was tried first and given up, measured on
+ * the author's laptop, 2026-10-02: its online dictation answered "Unknown"
+ * with no words even outside Lumen, while Win+H heard him fine, and the older
+ * on-device recogniser heard "in the direction of it" at a confidence of 0.02.
+ * Whisper's model is a download the person agrees to first -- the author:
+ * *"the installation must be easy and painless, guide the user through, and
+ * give the option to say no"* -- so the setup functions below say what is
+ * missing, fetch it on request, and remove it again. English only.
  *
  * Everything here is called on the main thread. The framework answers on its
  * own threads; those answers are kept behind a lock and handed over by poll(),
@@ -45,6 +49,22 @@ namespace LumenAISpeech
         std::string error;              // why it ended badly, in plain words; empty when not
         bool        nothing_heard = false;   // finished with no words, nobody's fault (silence)
         std::string note;               // something to tell the person once, not an error
+        std::string activity;           // for the status bar while this goes on; empty leaves it
+    };
+
+    /**
+     * What the recogniser needs before it can listen. On a Mac Apple's is part
+     * of the system, so it is always Ready. On Windows, Whisper's model is a
+     * one-time download that the person agrees to first.
+     */
+    enum class Setup { Ready, NotInstalled, Downloading, Failed };
+
+    struct SetupState
+    {
+        Setup       state = Setup::Ready;
+        long long   done  = 0;          // bytes downloaded so far
+        long long   total = 0;          // bytes in all
+        std::string error;              // why the last attempt failed, in plain words
     };
 
 #if LL_DARWIN || LL_WINDOWS
@@ -82,7 +102,31 @@ namespace LumenAISpeech
 
     /** The computer's own language as a tag ("en_DK", "en-US"), or empty. */
     std::string ownLanguage();
+#endif
+
+#if LL_WINDOWS
+    SetupState setupState();
+
+    /** Start the download; false with `why` when it cannot begin. */
+    bool startSetup(std::string& why);
+
+    /** Stop a download and throw away what came. */
+    void cancelSetup();
+
+    /** Delete the downloaded model; the mic asks again next time. */
+    void removeSetup();
+
+    /** How big the download is, in words ("148 MB"). */
+    std::string setupSize();
 #else
+    inline SetupState setupState() { return SetupState(); }
+    inline bool startSetup(std::string&) { return true; }
+    inline void cancelSetup() {}
+    inline void removeSetup() {}
+    inline std::string setupSize() { return std::string(); }
+#endif
+
+#if !(LL_DARWIN || LL_WINDOWS)
     inline bool supported() { return false; }
     inline bool start(const std::string&, std::string& why)
     {

@@ -15166,6 +15166,29 @@ How this information is processed, stored, or retained depends on your chosen AI
        whose name begins with LumenAsk. Keep that prefix. -->
   <notification
    icon="alert.tga"
+   label="Talk to the assistant"
+   name="LumenSetupSpeech"
+   type="alertmodal">
+To hear you, Lumen uses Whisper, a speech recogniser that runs on this computer. Your words are worked out here; only the text goes to the assistant, as if you had typed it. Whisper on Windows understands English.
+
+It needs a one-time download of [SIZE] from Hugging Face, where the Whisper speech model is published. That takes a minute or two on a normal connection, and you can go on using Lumen meanwhile.
+
+You can remove it again in Preferences &gt; AI &gt; Assistant.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Download"
+       text="Download it"/>
+      <button
+       default="true"
+       index="1"
+       name="NotNow"
+       text="Not now"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
    label="Say this as you?"
    name="LumenAskSay"
    type="alertmodal">

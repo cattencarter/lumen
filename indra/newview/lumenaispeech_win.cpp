@@ -1,91 +1,95 @@
 /**
  * @file lumenaispeech_win.cpp
- * @brief Windows' own speech recognition behind the Assistant's mic button.
+ * @brief Whisper, on the computer itself, behind the Assistant's mic button.
  *
  * Copyright (C) 2026 Catten Carter
  * Based on Phoenix Firestorm and on the Second Life Viewer.
  * Licensed under the GNU Lesser General Public License, version 2.1.
  *
- * The counterpart of lumenaispeech_mac.mm: Windows.Media.SpeechRecognition,
- * called directly through C++/WinRT, so nothing is drawn but our own button --
- * unlike Win+H, which puts the system's dictation panel over the viewer.
- * Continuous dictation; Windows does it on Microsoft's servers, which is why
- * it needs Settings > Privacy & security > Speech > Online speech recognition
- * switched on, and says so in words when it is off.
+ * WHY NOT WINDOWS' OWN. The first version called Windows.Media.SpeechRecognition,
+ * the counterpart of Apple's Speech framework. On the author's laptop it
+ * prepared its dictation, opened the microphone and answered "Unknown" with no
+ * words -- also from a PowerShell script outside Lumen, while Win+H heard him
+ * fine on the same machine (2026-10-02). Others have reported the same since
+ * 2022, with no fix. Windows' older on-device recogniser (SAPI) heard
+ * something "in the direction of it" at a confidence of 0.02, and is being
+ * retired. So the words are worked out by Whisper (whisper.cpp, MIT licence),
+ * which the Windows build compiles from source and ships in whisper\ beside
+ * the viewer (.github/workflows/lumen-windows.yml, viewer_manifest.py).
  *
- * **Every speech object lives on one worker thread of its own, in the
- * multi-threaded apartment.** The viewer's main thread is a single-threaded
- * apartment (llappviewerwin32.cpp, at start-up) whose window messages are
- * pumped on another thread, so an object made there may never get Windows'
- * answers delivered -- the first version did exactly that on the author's
- * laptop: no complaint, and no words. The main thread only posts start, stop
- * and cancel to the worker, and reads what was heard from behind a lock, the
- * same shape as the Mac file: a pause, a long take or a long silence before
- * the first word ends it, by the same clock the Mac uses.
+ * HOW. The microphone is recorded here with waveIn -- part of Windows, nothing
+ * to install -- at 16 kHz, the rate Whisper wants, and a pause is found by
+ * loudness rather than by words, so the take can end itself as it does on the
+ * Mac. The take is written as a WAV file and whisper-cli.exe, started with no
+ * window, turns it into text; then both files are deleted. Whisper is a
+ * separate program rather than linked in: it is compiled with its own
+ * settings, and a crash in it cannot take the viewer down.
+ * It does not show words AS they are said, as Apple's does -- the text arrives
+ * a second or two after the pause, with "Writing down what you said..." in the
+ * Assistant's status bar meanwhile.
  *
- * No precompiled header (CMakeLists.txt), and the viewer's one header here,
- * llerror.h, comes after the WinRT headers, so windows.h and its macros never
- * stand in front of them. The log says what happened, never what was said.
+ * THE MODEL is a one-time download the person agrees to first: the author,
+ * 2026-10-02, *"the installation must be easy and painless, guide the user
+ * through, and give the option to say no."* English only (ggml-base.en, 148
+ * MB), because Windows was never going to listen in Danish anyway and the
+ * English-only model is the better one at that size. It is fetched by
+ * Windows' own curl.exe from Hugging Face, pinned to one revision, and
+ * checked against its SHA-256 before it is used. It lives in
+ * %LOCALAPPDATA%\Lumen\whisper -- local, not roaming, so a company's roaming
+ * profile does not carry 148 MB around -- and Preferences can remove it.
+ *
+ * Every program is started with its working folder set to that folder and
+ * given only plain ASCII file names, because whisper-cli reads its arguments in
+ * the system code page and a user name with an "ø" in it would otherwise break
+ * the paths. The log says what happened, never what was said.
  */
+
+#include "linden_common.h"
 
 #include "lumenaispeech.h"
 
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Globalization.h>
-#include <winrt/Windows.Media.SpeechRecognition.h>
-
 #include "llerror.h"
+#include "llwin32headers.h"
+
+#include <mmsystem.h>
+#include <bcrypt.h>
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
-#include <condition_variable>
+#include <cmath>
 #include <cstdint>
-#include <deque>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
-
-using namespace winrt;
-using namespace winrt::Windows::Foundation;
-using namespace winrt::Windows::Media::SpeechRecognition;
-using winrt::Windows::Globalization::Language;
+#include <vector>
 
 namespace
 {
-    // What the framework has said, from its own threads. Read by poll().
-    struct Heard
-    {
-        std::mutex  m;
-        std::string committed;      // phrases Windows has finished with
-        std::string hypothesis;     // the phrase still being heard
-        bool        changed      = false;
-        bool        final_result = false;   // the session has ended
-        std::string error;
-        double      last_change  = 0.0;
-        bool        any          = false;   // anything at all heard this time
-        bool        silence      = false;   // ended on silence, nobody's fault
-        bool        started      = false;   // the session is listening
-        std::string start_error;            // it could not start, and why
-        std::string note;                   // to say once, when listening begins
-    };
-    Heard sHeard;
+    // ---- the model -------------------------------------------------------
 
-    enum Phase { IDLE, STARTING, LISTENING, STOPPING };
-    Phase  sPhase = IDLE;
-    double sStarted = 0.0;
-    double sStoppedAt = 0.0;
+    // Pinned to one revision of the repository, and checked against its own
+    // SHA-256 (Hugging Face's LFS record), so nothing else can arrive under
+    // this name.
+    const wchar_t* const MODEL_FILE = L"ggml-base.en.bin";
+    const wchar_t* const MODEL_PART = L"ggml-base.en.bin.part";
+    const wchar_t* const MODEL_URL =
+        L"https://huggingface.co/ggerganov/whisper.cpp/resolve/"
+        L"5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin";
+    const long long MODEL_BYTES = 147964211LL;
+    const char* const MODEL_SHA256 =
+        "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
 
-    // Each start() gets a new number; an answer carrying an old one belongs
-    // to a session already thrown away and is ignored.
-    std::atomic<int> sGeneration{ 0 };
+    // ---- the same clock as the Mac's --------------------------------------
 
-    // The same clock as the Mac's.
-    const double PAUSE_ENDS  = 1.8;
-    const double LONGEST     = 55.0;
-    const double FIRST_WORD  = 10.0;
-    const double FINAL_GRACE = 4.0;   // after stop(), for the last word to come back
+    const double PAUSE_ENDS = 1.8;    // seconds of quiet after speech
+    const double LONGEST    = 55.0;   // one take at most
+    const double FIRST_WORD = 10.0;   // silence before anything is said
+    const int    RATE       = 16000;  // what Whisper wants
+    const double WRITE_TIMEOUT = 90.0;   // whisper-cli on a slow computer
 
     double now()
     {
@@ -93,401 +97,635 @@ namespace
         return duration<double>(steady_clock::now().time_since_epoch()).count();
     }
 
-    // HRESULTs Windows gives for the two settings a person can fix.
-    const int32_t SPEECH_PRIVACY_NOT_ACCEPTED = static_cast<int32_t>(0x80045509);
-    const int32_t ACCESS_DENIED               = static_cast<int32_t>(0x80070005);
-
-    const char* PRIVACY_OFF =
-        "Windows' online speech recognition is switched off, and Lumen needs it to turn "
-        "what you say into text. You can switch it on in Settings > Privacy & security > "
-        "Speech.";
-    const char* MIC_REFUSED =
-        "Lumen could not use the microphone. Check that one is connected, and that "
-        "Settings > Privacy & security > Microphone lets desktop apps use it.";
-    const char* NOTHING_HEARD =
+    const char* const NOTHING_HEARD =
         "Nothing was heard. Windows listens with its default microphone, which is chosen "
         "in Settings > System > Sound > Input.";
-    const char* NO_ENGLISH =
-        "Windows cannot take dictation in its own language, and has no English to fall "
-        "back on. Adding English in Settings > Time & language > Language & region lets "
-        "the mic listen in English.";
+    const char* const ONLY_SILENCE =
+        "Windows opened the microphone but sent only silence. Check that Settings > "
+        "Privacy & security > Microphone lets desktop apps use it, and that the "
+        "microphone is not muted.";
+    const char* const NO_MICROPHONE =
+        "Lumen could not open a microphone. Check that one is connected and chosen in "
+        "Settings > System > Sound > Input, and that Settings > Privacy & security > "
+        "Microphone lets desktop apps use it.";
 
-    std::string fromError(const hresult_error& e)
-    {
-        const int32_t code = e.code();
-        if (code == SPEECH_PRIVACY_NOT_ACCEPTED) return PRIVACY_OFF;
-        if (code == ACCESS_DENIED) return MIC_REFUSED;
-        const std::string said = to_string(e.message());
-        return "Speech recognition could not start"
-            + (said.empty() ? std::string(".") : ": " + said);
-    }
+    // ---- paths -----------------------------------------------------------
 
-    std::string fromStatus(SpeechRecognitionResultStatus status)
+    /** %LOCALAPPDATA%\Lumen\whisper, made when asked for. Empty if impossible. */
+    std::wstring dataDir(bool make)
     {
-        switch (status)
+        const wchar_t* local = _wgetenv(L"LOCALAPPDATA");
+        if (!local || !*local) return std::wstring();
+        std::wstring lumen = std::wstring(local) + L"\\Lumen";
+        std::wstring dir = lumen + L"\\whisper";
+        if (make)
         {
-        case SpeechRecognitionResultStatus::TopicLanguageNotSupported:
-        case SpeechRecognitionResultStatus::GrammarLanguageMismatch:
-            return "Windows' speech recognition does not understand this language. It "
-                   "listens in the speech language set in Settings > Time & language > "
-                   "Speech.";
-        case SpeechRecognitionResultStatus::NetworkFailure:
-            return "Windows' speech recognition needs the internet, and could not reach "
-                   "it.";
-        case SpeechRecognitionResultStatus::MicrophoneUnavailable:
-            return MIC_REFUSED;
-        case SpeechRecognitionResultStatus::AudioQualityFailure:
-            return "The sound was too quiet or too noisy to make out.";
-        case SpeechRecognitionResultStatus::TimeoutExceeded:
-        case SpeechRecognitionResultStatus::PauseLimitExceeded:
-            return NOTHING_HEARD;
-        default:
-            return "Speech recognition stopped.";
+            CreateDirectoryW(lumen.c_str(), nullptr);
+            CreateDirectoryW(dir.c_str(), nullptr);
         }
+        return dir;
     }
 
-    void resetHeard()
+    std::wstring inData(const wchar_t* name)
     {
-        std::lock_guard<std::mutex> lock(sHeard.m);
-        sHeard.committed.clear();
-        sHeard.hypothesis.clear();
-        sHeard.changed = false;
-        sHeard.final_result = false;
-        sHeard.error.clear();
-        sHeard.last_change = now();
-        sHeard.any = false;
-        sHeard.silence = false;
-        sHeard.started = false;
-        sHeard.start_error.clear();
-        sHeard.note.clear();
+        const std::wstring dir = dataDir(false);
+        return dir.empty() ? std::wstring() : dir + L"\\" + name;
     }
 
-    /** Everything heard so far; caller holds the lock. */
-    std::string textLocked()
+    /** whisper\whisper-cli.exe beside the viewer, where the installer puts it. */
+    std::wstring whisperExe()
     {
-        if (sHeard.hypothesis.empty()) return sHeard.committed;
-        if (sHeard.committed.empty()) return sHeard.hypothesis;
-        return sHeard.committed + " " + sHeard.hypothesis;
+        wchar_t self[MAX_PATH * 2] = {};
+        const DWORD n = GetModuleFileNameW(nullptr, self, MAX_PATH * 2);
+        if (n == 0 || n >= MAX_PATH * 2) return std::wstring();
+        std::wstring dir(self, n);
+        const size_t slash = dir.find_last_of(L"\\/");
+        if (slash == std::wstring::npos) return std::wstring();
+        return dir.substr(0, slash) + L"\\whisper\\whisper-cli.exe";
     }
 
-    void failStart(int generation, const std::string& why)
+    std::wstring curlExe()
     {
-        if (generation != sGeneration.load()) return;
-        std::lock_guard<std::mutex> lock(sHeard.m);
-        if (sHeard.start_error.empty()) sHeard.start_error = why;
+        const wchar_t* root = _wgetenv(L"SystemRoot");
+        return std::wstring((root && *root) ? root : L"C:\\Windows") + L"\\System32\\curl.exe";
     }
 
-    bool sameTag(const std::string& a, const std::string& b)
+    long long fileSize(const std::wstring& path)
     {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i)
-        {
-            if (std::tolower(static_cast<unsigned char>(a[i]))
-                != std::tolower(static_cast<unsigned char>(b[i]))) return false;
-        }
-        return true;
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        if (path.empty() || !GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return -1;
+        if (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return -1;
+        return (static_cast<long long>(a.nFileSizeHigh) << 32) | a.nFileSizeLow;
+    }
+
+    bool modelPresent()
+    {
+        return fileSize(inData(MODEL_FILE)) == MODEL_BYTES;
+    }
+
+    /** The first line of a small log file, for an error message. */
+    std::string firstLine(const std::wstring& path)
+    {
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return std::string();
+        char buf[512] = {};
+        DWORD got = 0;
+        ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
+        CloseHandle(f);
+        std::string s(buf, got);
+        const size_t end = s.find_first_of("\r\n");
+        if (end != std::string::npos) s.resize(end);
+        // Only printable ASCII goes into a message: a log is not trusted text.
+        std::string out;
+        for (char c : s) if (c >= 32 && c < 127) out.push_back(c);
+        return out;
     }
 
     /**
-     * The language asked for, if Windows can dictate in it; else Windows' own
-     * speech language; else English -- the author, 2026-10-02: "if it isn't
-     * supported", default to English. Dictation is offered in a short list of
-     * languages and Danish is not on it. Null when not even English is there.
-     * `note` is set, once ever, when English stands in.
+     * Start a program with no window, working in `dir`, with stdin from NUL
+     * and stdout and stderr to `log` (in `dir`). The handle is the caller's.
      */
-    Language pickLanguage(const std::string& wanted, std::string& note, bool& noted)
+    HANDLE launch(const std::wstring& exe, const std::wstring& args, const std::wstring& dir,
+                  const std::wstring& log, DWORD& error)
     {
-        const auto offered = SpeechRecognizer::SupportedTopicLanguages();
-        auto find = [&offered](const std::string& tag) -> Language
+        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+        HANDLE in  = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE out = CreateFileW((dir + L"\\" + log).c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        STARTUPINFOW si = {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput  = in;
+        si.hStdOutput = out;
+        si.hStdError  = out;
+        PROCESS_INFORMATION pi = {};
+
+        // The command line is the program's own path in quotes, then the
+        // arguments, which are built here from fixed words and ASCII names.
+        std::wstring line = L"\"" + exe + L"\" " + args;
+        std::vector<wchar_t> buf(line.begin(), line.end());
+        buf.push_back(0);
+        const BOOL ok = CreateProcessW(exe.c_str(), buf.data(), nullptr, nullptr, TRUE,
+                                       CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi);
+        error = ok ? 0 : GetLastError();
+        if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
+        if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
+        if (!ok) return nullptr;
+        CloseHandle(pi.hThread);
+        return pi.hProcess;
+    }
+
+    /** SHA-256 of a file, as lowercase hex; empty if it could not be read. */
+    std::string sha256Of(const std::wstring& path)
+    {
+        BCRYPT_ALG_HANDLE alg = nullptr;
+        BCRYPT_HASH_HANDLE hash = nullptr;
+        if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return std::string();
+        std::string hex;
+        if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0)
         {
-            for (const Language& l : offered)
+            HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+            if (f != INVALID_HANDLE_VALUE)
             {
-                if (sameTag(to_string(l.LanguageTag()), tag)) return l;
+                std::vector<unsigned char> buf(1 << 20);
+                DWORD got = 0;
+                bool ok = true;
+                while (ReadFile(f, buf.data(), (DWORD)buf.size(), &got, nullptr) && got > 0)
+                {
+                    if (BCryptHashData(hash, buf.data(), got, 0) != 0) { ok = false; break; }
+                }
+                CloseHandle(f);
+                unsigned char digest[32] = {};
+                if (ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0)
+                {
+                    static const char* const digits = "0123456789abcdef";
+                    for (unsigned char b : digest)
+                    {
+                        hex.push_back(digits[b >> 4]);
+                        hex.push_back(digits[b & 15]);
+                    }
+                }
             }
-            return nullptr;
+            BCryptDestroyHash(hash);
+        }
+        BCryptCloseAlgorithmProvider(alg, 0);
+        return hex;
+    }
+
+    // ---- the download ----------------------------------------------------
+
+    struct Download
+    {
+        std::mutex  m;
+        bool        running = false;
+        bool        cancel  = false;
+        std::string error;     // the last attempt's, until the next one
+    };
+    // Never destroyed: a download thread may still be finishing at exit.
+    Download* sDownload = new Download();
+
+    std::string curlError(DWORD code, const std::string& said)
+    {
+        switch (code)
+        {
+        case 6:  return "the computer could not find huggingface.co. Is it online?";
+        case 7:  return "huggingface.co did not answer. Is the computer online, or does a firewall block it?";
+        case 28: return "the connection was too slow and timed out.";
+        case 35:
+        case 60: return "Windows did not trust the connection to Hugging Face. A company network that "
+                        "inspects traffic can cause this.";
+        case 23: return "the file could not be written. Is the disk full?";
+        case 22: return "Hugging Face refused the request (" + (said.empty() ? std::string("an HTTP error") : said) + ").";
+        default: break;
+        }
+        return "the download stopped (curl " + std::to_string(code) + (said.empty() ? std::string() : ": " + said) + ").";
+    }
+
+    void runDownload()
+    {
+        auto fail = [](const std::string& why)
+        {
+            LL_WARNS("LumenAISpeech") << "Model download failed: " << why << LL_ENDL;
+            std::lock_guard<std::mutex> lock(sDownload->m);
+            sDownload->running = false;
+            sDownload->error = why;
         };
 
-        if (!wanted.empty())
-        {
-            if (Language l = find(wanted)) return l;
-        }
-        Language own = SpeechRecognizer::SystemSpeechLanguage();
-        if (own)
-        {
-            if (Language l = find(to_string(own.LanguageTag()))) return l;
-        }
+        const std::wstring dir = dataDir(true);
+        const std::wstring part = dir + L"\\" + MODEL_PART;
+        const std::wstring model = dir + L"\\" + MODEL_FILE;
 
-        // Not offered: English instead, the nearest one first.
-        Language english = find("en-US");
-        if (!english) english = find("en-GB");
-        if (!english)
+        long long have = fileSize(part);
+        if (have > MODEL_BYTES)
         {
-            for (const Language& l : offered)
+            DeleteFileW(part.c_str());
+            have = -1;
+        }
+        if (have < MODEL_BYTES)
+        {
+            // -C - carries on from a .part a cancelled or broken attempt left.
+            std::wstring args = L"--fail --location --silent --show-error --retry 3 "
+                                L"--connect-timeout 30 --stderr download.log ";
+            if (have > 0) args += L"-C - ";
+            args += L"--output ";
+            args += MODEL_PART;
+            args += L" \"";
+            args += MODEL_URL;
+            args += L"\"";
+
+            DWORD error = 0;
+            HANDLE p = launch(curlExe(), args, dir, L"download-out.log", error);
+            if (!p)
             {
-                const std::string tag = to_string(l.LanguageTag());
-                if (tag.size() >= 2 && sameTag(tag.substr(0, 2), "en")) { english = l; break; }
+                fail("Windows' own download program, curl.exe, could not be started (error " +
+                     std::to_string(error) + ").");
+                return;
+            }
+            LL_INFOS("LumenAISpeech") << "Downloading the speech model" << (have > 0 ? ", resuming" : "") << LL_ENDL;
+            for (;;)
+            {
+                if (WaitForSingleObject(p, 250) == WAIT_OBJECT_0) break;
+                bool cancel = false;
+                {
+                    std::lock_guard<std::mutex> lock(sDownload->m);
+                    cancel = sDownload->cancel;
+                }
+                if (cancel)
+                {
+                    TerminateProcess(p, 1);
+                    WaitForSingleObject(p, 5000);
+                    CloseHandle(p);
+                    DeleteFileW(part.c_str());
+                    LL_INFOS("LumenAISpeech") << "Model download stopped by the user" << LL_ENDL;
+                    std::lock_guard<std::mutex> lock(sDownload->m);
+                    sDownload->running = false;
+                    sDownload->error.clear();
+                    return;
+                }
+            }
+            DWORD code = 0;
+            GetExitCodeProcess(p, &code);
+            CloseHandle(p);
+            if (code != 0)
+            {
+                std::string said = firstLine(dir + L"\\download.log");
+                const std::string prefix = "curl: ";
+                if (said.compare(0, prefix.size(), prefix) == 0) said = said.substr(prefix.size());
+                fail(curlError(code, said));
+                return;
             }
         }
-        if (english && !noted)
+
+        if (fileSize(part) != MODEL_BYTES)
         {
-            const std::string name = own ? to_string(own.DisplayName()) : std::string("this language");
-            note = "Windows cannot take dictation in " + name + ", so the mic listens in English.";
-            noted = true;
+            DeleteFileW(part.c_str());
+            fail("the file that arrived was the wrong size, so it was thrown away. Try again.");
+            return;
         }
-        return english;
+        if (sha256Of(part) != MODEL_SHA256)
+        {
+            DeleteFileW(part.c_str());
+            fail("the file that arrived was not the one Lumen asked for (its checksum did not "
+                 "match), so it was thrown away. Try again.");
+            return;
+        }
+        if (!MoveFileExW(part.c_str(), model.c_str(), MOVEFILE_REPLACE_EXISTING))
+        {
+            fail("the file could not be put in place (error " + std::to_string(GetLastError()) + ").");
+            return;
+        }
+        DeleteFileW((dir + L"\\download.log").c_str());
+        DeleteFileW((dir + L"\\download-out.log").c_str());
+        LL_INFOS("LumenAISpeech") << "Speech model downloaded and checked" << LL_ENDL;
+        std::lock_guard<std::mutex> lock(sDownload->m);
+        sDownload->running = false;
+        sDownload->error.clear();
     }
 
-    // ------------------------------------------------------------------
-    // The worker. Only this thread ever touches a speech object.
-    // ------------------------------------------------------------------
+    // ---- one take --------------------------------------------------------
 
-    struct Command
+    struct Take
     {
-        enum Kind { START, STOP, CANCEL };
-        Kind        kind = CANCEL;
-        int         generation = 0;
-        std::string language;
+        std::mutex m;
+        // Set by the main thread.
+        bool stop   = false;
+        bool cancel = false;
+        // Set by the recording thread.
+        bool   opened    = false;
+        bool   any       = false;    // speech was heard
+        double lastVoice = 0.0;      // when it was last heard
+        bool   writing   = false;    // whisper-cli is turning it into text
+        bool   done      = false;
+        bool   silenceOnly = false;  // every sample was zero
+        std::string text;
+        std::string error;
     };
 
-    struct Worker
-    {
-        std::mutex              m;
-        std::condition_variable cv;
-        std::deque<Command>     queue;
+    enum Phase { IDLE, LISTENING, WRITING };
+    Phase  sPhase   = IDLE;
+    double sStarted = 0.0;
+    bool   sSaidWriting = false;
+    bool   sEnglishNoted = false;
+    std::shared_ptr<Take> sTake;
 
-        SpeechRecognizer recognizer{ nullptr };
-        SpeechRecognizer::HypothesisGenerated_revoker onHypothesis;
-        SpeechContinuousRecognitionSession::ResultGenerated_revoker onResult;
-        SpeechContinuousRecognitionSession::Completed_revoker onCompleted;
-        bool languageNoted = false;
-    };
-    // Made once and never destroyed: the worker may still be waiting on its
-    // lock when the viewer exits, and must not find the lock already gone.
-    Worker* sWorker = nullptr;
-
-    void release(Worker& w)
+    /** Whisper's marks for what is not speech: [BLANK_AUDIO], (music), ... */
+    std::string cleaned(const std::string& raw)
     {
-        w.onHypothesis.revoke();
-        w.onResult.revoke();
-        w.onCompleted.revoke();
-        if (w.recognizer)
+        std::string out;
+        int depth = 0;
+        for (char c : raw)
         {
-            try { w.recognizer.Close(); } catch (...) {}
+            if (c == '[' || c == '(') { ++depth; continue; }
+            if ((c == ']' || c == ')') && depth > 0) { --depth; continue; }
+            if (depth > 0) continue;
+            out.push_back((c == '\r' || c == '\n' || c == '\t') ? ' ' : c);
         }
-        w.recognizer = nullptr;
+        // Collapse runs of spaces and trim.
+        std::string tidy;
+        for (char c : out)
+        {
+            if (c == ' ' && (tidy.empty() || tidy.back() == ' ')) continue;
+            tidy.push_back(c);
+        }
+        while (!tidy.empty() && tidy.back() == ' ') tidy.pop_back();
+        return tidy;
     }
 
-    void doStart(Worker& w, const Command& c)
+    bool writeWav(const std::wstring& path, const std::vector<int16_t>& pcm)
     {
-        release(w);   // anything left of a session before
-        const int generation = c.generation;
-        if (generation != sGeneration.load()) return;   // cancelled before it began
-
-        std::string note;
-        Language lang = pickLanguage(c.language, note, w.languageNoted);
-        if (!lang)
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return false;
+        const uint32_t data = (uint32_t)(pcm.size() * sizeof(int16_t));
+        unsigned char h[44] = {};
+        auto put32 = [&h](int at, uint32_t v) { for (int i = 0; i < 4; ++i) h[at + i] = (unsigned char)(v >> (8 * i)); };
+        auto put16 = [&h](int at, uint16_t v) { h[at] = (unsigned char)v; h[at + 1] = (unsigned char)(v >> 8); };
+        memcpy(h, "RIFF", 4); put32(4, 36 + data); memcpy(h + 8, "WAVE", 4);
+        memcpy(h + 12, "fmt ", 4); put32(16, 16); put16(20, 1); put16(22, 1);
+        put32(24, RATE); put32(28, RATE * 2); put16(32, 2); put16(34, 16);
+        memcpy(h + 36, "data", 4); put32(40, data);
+        DWORD wrote = 0;
+        bool ok = WriteFile(f, h, sizeof(h), &wrote, nullptr) && wrote == sizeof(h);
+        if (ok && data > 0)
         {
-            LL_WARNS("LumenAISpeech") << "No language Windows can take dictation in" << LL_ENDL;
-            failStart(generation, NO_ENGLISH);
+            ok = WriteFile(f, pcm.data(), data, &wrote, nullptr) && wrote == data;
+        }
+        CloseHandle(f);
+        return ok;
+    }
+
+    std::string readUtf8File(const std::wstring& path)
+    {
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return std::string();
+        std::string s;
+        char buf[4096];
+        DWORD got = 0;
+        while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0 && s.size() < 65536) s.append(buf, got);
+        CloseHandle(f);
+        if (s.size() >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
+            s.erase(0, 3);
+        return s;
+    }
+
+    void finish(const std::shared_ptr<Take>& take, const std::string& text, const std::string& error)
+    {
+        std::lock_guard<std::mutex> lock(take->m);
+        take->text = text;
+        take->error = error;
+        take->writing = false;
+        take->done = true;
+    }
+
+    /** Whisper turns the take into text. Runs on the recording thread. */
+    void transcribe(const std::shared_ptr<Take>& take, std::vector<int16_t>& pcm)
+    {
+        const std::wstring dir = dataDir(true);
+        if (dir.empty() || !modelPresent())
+        {
+            finish(take, std::string(), "The speech model is missing. Click the mic to download it again.");
             return;
         }
-        LL_INFOS("LumenAISpeech") << "Listening in " << to_string(lang.LanguageTag())
-                                  << (c.language.empty() ? std::string(" (Windows' own)")
-                                                         : " (asked for " + c.language + ")")
-                                  << LL_ENDL;
-
-        w.recognizer = SpeechRecognizer(lang);
-        w.recognizer.Constraints().Append(
-            SpeechRecognitionTopicConstraint(SpeechRecognitionScenario::Dictation, L"dictation"));
-
-        w.onHypothesis = w.recognizer.HypothesisGenerated(auto_revoke,
-            [generation](const SpeechRecognizer&, const SpeechRecognitionHypothesisGeneratedEventArgs& args)
-            {
-                if (generation != sGeneration.load()) return;
-                try
-                {
-                    const std::string said = to_string(args.Hypothesis().Text());
-                    bool first = false;
-                    {
-                        std::lock_guard<std::mutex> lock(sHeard.m);
-                        if (said != sHeard.hypothesis)
-                        {
-                            sHeard.hypothesis = said;
-                            sHeard.changed = true;
-                            sHeard.last_change = now();
-                            if (!said.empty() && !sHeard.any) { sHeard.any = true; first = true; }
-                        }
-                    }
-                    if (first) LL_INFOS("LumenAISpeech") << "First words heard" << LL_ENDL;
-                }
-                catch (...) {}
-            });
-
-        SpeechContinuousRecognitionSession session = w.recognizer.ContinuousRecognitionSession();
-        w.onResult = session.ResultGenerated(auto_revoke,
-            [generation](const SpeechContinuousRecognitionSession&,
-                         const SpeechContinuousRecognitionResultGeneratedEventArgs& args)
-            {
-                if (generation != sGeneration.load()) return;
-                try
-                {
-                    const SpeechRecognitionResult result = args.Result();
-                    std::lock_guard<std::mutex> lock(sHeard.m);
-                    sHeard.hypothesis.clear();
-                    if (result.Status() == SpeechRecognitionResultStatus::Success
-                        && result.Confidence() != SpeechRecognitionConfidence::Rejected)
-                    {
-                        const std::string said = to_string(result.Text());
-                        if (!said.empty())
-                        {
-                            if (!sHeard.committed.empty()) sHeard.committed += " ";
-                            sHeard.committed += said;
-                            sHeard.any = true;
-                        }
-                    }
-                    sHeard.changed = true;
-                    sHeard.last_change = now();
-                }
-                catch (...) {}
-            });
-
-        w.onCompleted = session.Completed(auto_revoke,
-            [generation](const SpeechContinuousRecognitionSession&,
-                         const SpeechContinuousRecognitionCompletedEventArgs& args)
-            {
-                if (generation != sGeneration.load()) return;
-                try
-                {
-                    const SpeechRecognitionResultStatus status = args.Status();
-                    LL_INFOS("LumenAISpeech") << "Session ended, status " << static_cast<int>(status) << LL_ENDL;
-                    std::lock_guard<std::mutex> lock(sHeard.m);
-                    // Words beat a complaint: with something heard, the end of
-                    // the session just means it is over.
-                    if (!sHeard.any)
-                    {
-                        if (status == SpeechRecognitionResultStatus::TimeoutExceeded
-                            || status == SpeechRecognitionResultStatus::PauseLimitExceeded)
-                        {
-                            sHeard.silence = true;
-                        }
-                        if (status != SpeechRecognitionResultStatus::Success
-                            && status != SpeechRecognitionResultStatus::UserCanceled
-                            && sHeard.error.empty())
-                        {
-                            sHeard.error = fromStatus(status);
-                        }
-                    }
-                    sHeard.final_result = true;
-                }
-                catch (...) {}
-            });
-
-        // On this thread, in the multi-threaded apartment, waiting is allowed.
-        const SpeechRecognitionCompilationResult compiled = w.recognizer.CompileConstraintsAsync().get();
-        LL_INFOS("LumenAISpeech") << "Dictation prepared, status " << static_cast<int>(compiled.Status()) << LL_ENDL;
-        if (compiled.Status() != SpeechRecognitionResultStatus::Success)
+        // Loud enough to hear: Whisper copes with quiet sound, not with sound
+        // near the floor. The laptop this was written for gave 8 out of 100.
+        int peak = 1;
+        for (int16_t s : pcm) peak = (std::max)(peak, std::abs((int)s));
+        const double gain = (std::min)(20.0, 29000.0 / peak);
+        if (gain > 1.05)
         {
-            failStart(generation, fromStatus(compiled.Status()));
-            release(w);
+            for (int16_t& s : pcm)
+            {
+                const double v = s * gain;
+                s = (int16_t)(std::max)(-32767.0, (std::min)(32767.0, v));
+            }
+        }
+        const std::wstring wav = dir + L"\\take.wav";
+        const std::wstring txt = dir + L"\\take.txt";
+        DeleteFileW(txt.c_str());
+        if (!writeWav(wav, pcm))
+        {
+            finish(take, std::string(), "What was said could not be saved for Whisper to read.");
             return;
         }
-        if (generation != sGeneration.load())
         {
-            release(w);
+            std::lock_guard<std::mutex> lock(take->m);
+            take->writing = true;
+        }
+
+        const unsigned hw = std::thread::hardware_concurrency();
+        const unsigned threads = (std::max)(2u, (std::min)(8u, hw / 2));
+        std::wstring args = L"-m ";
+        args += MODEL_FILE;
+        args += L" -f take.wav -l en -nt -np -sns -ng -t " + std::to_wstring(threads) + L" -otxt -of take";
+
+        const double began = now();
+        DWORD error = 0;
+        HANDLE p = launch(whisperExe(), args, dir, L"whisper.log", error);
+        if (!p)
+        {
+            DeleteFileW(wav.c_str());
+            finish(take, std::string(), "Whisper could not be started (error " + std::to_string(error) +
+                   "). Reinstalling Lumen puts it back.");
             return;
         }
-        session.StartAsync().get();
-        LL_INFOS("LumenAISpeech") << "Listening" << LL_ENDL;
-        std::lock_guard<std::mutex> lock(sHeard.m);
-        sHeard.started = true;
-        sHeard.last_change = now();
-        if (!note.empty()) sHeard.note = note;
-    }
-
-    void doStop(Worker& w, const Command& c)
-    {
-        if (!w.recognizer || c.generation != sGeneration.load()) return;
-        // The words still being heard come back as one last result, then
-        // the session's Completed -- poll() waits a little for both.
-        w.recognizer.ContinuousRecognitionSession().StopAsync().get();
-    }
-
-    void doCancel(Worker& w)
-    {
-        if (w.recognizer)
-        {
-            try { w.recognizer.ContinuousRecognitionSession().CancelAsync().get(); } catch (...) {}
-        }
-        release(w);
-    }
-
-    void run(Worker* w)
-    {
-        try
-        {
-            init_apartment(apartment_type::multi_threaded);
-        }
-        catch (const hresult_error& e)
-        {
-            LL_WARNS("LumenAISpeech") << "Speech thread got no apartment: " << to_string(e.message()) << LL_ENDL;
-        }
+        bool cancelled = false;
+        bool timedOut = false;
         for (;;)
         {
-            Command c;
+            if (WaitForSingleObject(p, 100) == WAIT_OBJECT_0) break;
             {
-                std::unique_lock<std::mutex> lock(w->m);
-                w->cv.wait(lock, [w] { return !w->queue.empty(); });
-                c = w->queue.front();
-                w->queue.pop_front();
+                std::lock_guard<std::mutex> lock(take->m);
+                cancelled = take->cancel;
             }
-            try
+            if (cancelled || now() - began > WRITE_TIMEOUT)
             {
-                switch (c.kind)
-                {
-                case Command::START:  doStart(*w, c); break;
-                case Command::STOP:   doStop(*w, c);  break;
-                case Command::CANCEL: doCancel(*w);   break;
-                }
-            }
-            catch (const hresult_error& e)
-            {
-                LL_WARNS("LumenAISpeech") << "Speech failed: 0x" << std::hex
-                                          << static_cast<uint32_t>(static_cast<int32_t>(e.code())) << std::dec
-                                          << " " << to_string(e.message()) << LL_ENDL;
-                if (c.kind == Command::START) failStart(c.generation, fromError(e));
-                release(*w);
-            }
-            catch (...)
-            {
-                LL_WARNS("LumenAISpeech") << "Speech failed" << LL_ENDL;
-                if (c.kind == Command::START) failStart(c.generation, "Speech recognition could not start.");
-                release(*w);
+                timedOut = !cancelled;
+                TerminateProcess(p, 1);
+                WaitForSingleObject(p, 5000);
+                break;
             }
         }
+        DWORD code = 0;
+        GetExitCodeProcess(p, &code);
+        CloseHandle(p);
+        // What was said is not kept: the recording goes as soon as it is read.
+        DeleteFileW(wav.c_str());
+        const std::string raw = readUtf8File(txt);
+        DeleteFileW(txt.c_str());
+
+        if (cancelled)
+        {
+            finish(take, std::string(), std::string());
+            return;
+        }
+        if (timedOut)
+        {
+            finish(take, std::string(), "Whisper took too long to write down what was said.");
+            return;
+        }
+        if (code != 0)
+        {
+            const std::string said = firstLine(dir + L"\\whisper.log");
+            LL_WARNS("LumenAISpeech") << "whisper-cli exited with " << code << LL_ENDL;
+            finish(take, std::string(), "Whisper could not write down what was said (code " +
+                   std::to_string(code) + (said.empty() ? std::string() : ": " + said) + ").");
+            return;
+        }
+        DeleteFileW((dir + L"\\whisper.log").c_str());
+        const std::string text = cleaned(raw);
+        LL_INFOS("LumenAISpeech") << "Whisper wrote " << text.size() << " characters in "
+                                  << (int)((now() - began) * 1000) << " ms" << LL_ENDL;
+        finish(take, text, std::string());
     }
 
-    void post(Command::Kind kind, int generation, const std::string& language = std::string())
+    /** Records one take until told to stop, then has Whisper write it down. */
+    void record(std::shared_ptr<Take> take)
     {
-        if (!sWorker)
+        HANDLE ready = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        WAVEFORMATEX fmt = {};
+        fmt.wFormatTag = WAVE_FORMAT_PCM;
+        fmt.nChannels = 1;
+        fmt.nSamplesPerSec = RATE;
+        fmt.wBitsPerSample = 16;
+        fmt.nBlockAlign = 2;
+        fmt.nAvgBytesPerSec = RATE * 2;
+
+        HWAVEIN in = nullptr;
+        const MMRESULT opened = waveInOpen(&in, WAVE_MAPPER, &fmt, (DWORD_PTR)ready, 0, CALLBACK_EVENT);
+        if (opened != MMSYSERR_NOERROR)
         {
-            sWorker = new Worker();
-            std::thread(run, sWorker).detach();
+            LL_WARNS("LumenAISpeech") << "waveInOpen failed: " << opened << LL_ENDL;
+            CloseHandle(ready);
+            finish(take, std::string(), opened == MMSYSERR_ALLOCATED
+                   ? std::string("The microphone is in use by another program.")
+                   : std::string(NO_MICROPHONE));
+            return;
         }
+        LL_INFOS("LumenAISpeech") << "Listening" << LL_ENDL;
         {
-            std::lock_guard<std::mutex> lock(sWorker->m);
-            Command c;
-            c.kind = kind;
-            c.generation = generation;
-            c.language = language;
-            sWorker->queue.push_back(c);
+            std::lock_guard<std::mutex> lock(take->m);
+            take->opened = true;
         }
-        sWorker->cv.notify_one();
+
+        const int BUFFERS = 8;
+        const int SAMPLES = RATE / 10;   // 100 ms each
+        std::vector<std::vector<int16_t>> data(BUFFERS, std::vector<int16_t>(SAMPLES));
+        std::vector<WAVEHDR> headers(BUFFERS);
+        for (int i = 0; i < BUFFERS; ++i)
+        {
+            WAVEHDR& h = headers[i];
+            memset(&h, 0, sizeof(h));
+            h.lpData = (LPSTR)data[i].data();
+            h.dwBufferLength = SAMPLES * sizeof(int16_t);
+            waveInPrepareHeader(in, &h, sizeof(h));
+            waveInAddBuffer(in, &h, sizeof(h));
+        }
+        waveInStart(in);
+
+        std::vector<int16_t> pcm;
+        pcm.reserve(RATE * 60);
+        // Loudness, in 20 ms frames: the quietest so far is the room, and
+        // speech is clearly above it. The floor rises slowly, so a fan that
+        // starts does not read as somebody talking forever.
+        const int FRAME = RATE / 50;
+        double floorLevel = -1.0;
+        int loudRun = 0;
+        long long firstVoice = -1, lastVoiceAt = -1;
+        bool anyNonZero = false;
+        bool cancelled = false;
+
+        for (bool stopping = false; !stopping; )
+        {
+            WaitForSingleObject(ready, 50);
+            {
+                std::lock_guard<std::mutex> lock(take->m);
+                stopping = take->stop || take->cancel;
+                cancelled = take->cancel;
+            }
+            for (int i = 0; i < BUFFERS; ++i)
+            {
+                WAVEHDR& h = headers[i];
+                if (!(h.dwFlags & WHDR_DONE)) continue;
+                const int got = (int)(h.dwBytesRecorded / sizeof(int16_t));
+                const int16_t* s = data[i].data();
+                for (int f = 0; f + FRAME <= got; f += FRAME)
+                {
+                    double sum = 0.0;
+                    for (int k = 0; k < FRAME; ++k)
+                    {
+                        const double v = s[f + k];
+                        sum += v * v;
+                        if (s[f + k] != 0) anyNonZero = true;
+                    }
+                    const double rms = std::sqrt(sum / FRAME);
+                    if (floorLevel < 0.0 || rms < floorLevel) floorLevel = rms;
+                    else floorLevel += (rms - floorLevel) * 0.002;
+                    const bool loud = rms > (std::max)(floorLevel * 3.0, 60.0);
+                    loudRun = loud ? loudRun + 1 : 0;
+                    const long long at = (long long)pcm.size() + f;
+                    if (loudRun >= 3)   // 60 ms of it, not a click
+                    {
+                        if (firstVoice < 0) firstVoice = at;
+                        lastVoiceAt = at;
+                        std::lock_guard<std::mutex> lock(take->m);
+                        take->any = true;
+                        take->lastVoice = now();
+                    }
+                }
+                pcm.insert(pcm.end(), s, s + got);
+                h.dwFlags &= ~WHDR_DONE;
+                if (!stopping) waveInAddBuffer(in, &h, sizeof(h));
+            }
+        }
+        waveInReset(in);
+        for (WAVEHDR& h : headers) waveInUnprepareHeader(in, &h, sizeof(h));
+        waveInClose(in);
+        CloseHandle(ready);
+
+        if (cancelled)
+        {
+            finish(take, std::string(), std::string());
+            return;
+        }
+        if (!anyNonZero)
+        {
+            std::lock_guard<std::mutex> lock(take->m);
+            take->silenceOnly = true;
+            take->done = true;
+            return;
+        }
+        if (firstVoice < 0)
+        {
+            finish(take, std::string(), std::string());   // nothing said
+            return;
+        }
+        // From a little before the first word to a little after the last.
+        const long long from = (std::max)(0LL, firstVoice - RATE * 3 / 10);
+        const long long to = (std::min)((long long)pcm.size(), lastVoiceAt + RATE / 2);
+        std::vector<int16_t> spoken(pcm.begin() + from, pcm.begin() + to);
+        transcribe(take, spoken);
+    }
+
+    /** Is Windows' own language English? Then nobody needs telling. */
+    bool windowsSpeaksEnglish()
+    {
+        return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ENGLISH;
     }
 }
 
+// ---- the public half --------------------------------------------------------
+
 bool LumenAISpeech::supported()
 {
-    return true;
+    // A build without Whisper -- built by hand rather than by the workflow --
+    // has no mic button, as on a computer with no speech engine at all.
+    static const bool there = fileSize(whisperExe()) > 0;
+    return there;
 }
 
 bool LumenAISpeech::listening()
@@ -495,159 +733,202 @@ bool LumenAISpeech::listening()
     return sPhase != IDLE;
 }
 
-bool LumenAISpeech::start(const std::string& language, std::string& why)
+bool LumenAISpeech::start(const std::string& /*language: English only here*/, std::string& why)
 {
     if (sPhase != IDLE) return true;
-    resetHeard();
-    const int generation = ++sGeneration;
-    post(Command::START, generation, language);
-    // Whatever goes wrong now arrives through poll(), from the worker.
-    why.clear();
-    sPhase = STARTING;
+    if (!supported())
+    {
+        why = "This copy of Lumen has no Whisper, so it cannot listen. Reinstalling Lumen puts it back.";
+        return false;
+    }
+    if (!modelPresent())
+    {
+        why = "Speech recognition is not set up yet. Click the mic to set it up.";
+        return false;
+    }
+    sTake = std::make_shared<Take>();
+    std::thread(record, sTake).detach();
+    sPhase = LISTENING;
     sStarted = now();
+    sSaidWriting = false;
     return true;
 }
 
 void LumenAISpeech::stop()
 {
-    if (sPhase == STARTING)
-    {
-        cancel();
-        return;
-    }
-    if (sPhase != LISTENING) return;
-    post(Command::STOP, sGeneration.load());
-    sPhase = STOPPING;
-    sStoppedAt = now();
+    if (sPhase != LISTENING || !sTake) return;
+    std::lock_guard<std::mutex> lock(sTake->m);
+    sTake->stop = true;
+    sPhase = WRITING;
 }
 
 void LumenAISpeech::cancel()
 {
-    ++sGeneration;   // nothing still on its way is wanted now
-    post(Command::CANCEL, sGeneration.load());
+    if (sTake)
+    {
+        std::lock_guard<std::mutex> lock(sTake->m);
+        sTake->cancel = true;
+    }
+    sTake.reset();   // the thread keeps its own copy and cleans up alone
     sPhase = IDLE;
-    resetHeard();
 }
 
 LumenAISpeech::Update LumenAISpeech::poll()
 {
     Update u;
-    if (sPhase == IDLE) return u;
+    if (sPhase == IDLE || !sTake) return u;
 
-    if (sPhase == STARTING)
+    if (!sEnglishNoted && !windowsSpeaksEnglish())
     {
-        std::string why;
-        bool started = false;
-        {
-            std::lock_guard<std::mutex> lock(sHeard.m);
-            why = sHeard.start_error;
-            started = sHeard.started;
-            if (started && !sHeard.note.empty())
-            {
-                u.note = sHeard.note;   // once, the first time it is so
-                sHeard.note.clear();
-            }
-        }
-        if (!why.empty())
-        {
-            LL_INFOS("LumenAISpeech") << "Could not start: " << why << LL_ENDL;
-            ++sGeneration;
-            post(Command::CANCEL, sGeneration.load());
-            sPhase = IDLE;
-            u.finished = true;
-            u.error = why;
-            return u;
-        }
-        if (!started)
-        {
-            // Preparing dictation and opening the microphone takes a moment;
-            // if Windows never answers, give up rather than wait for ever.
-            if (now() - sStarted > FIRST_WORD)
-            {
-                LL_WARNS("LumenAISpeech") << "Windows never said it was listening" << LL_ENDL;
-                ++sGeneration;
-                post(Command::CANCEL, sGeneration.load());
-                sPhase = IDLE;
-                u.finished = true;
-                u.error = "Windows' speech recognition did not start.";
-            }
-            return u;
-        }
-        sPhase = LISTENING;
-        sStarted = now();
-        return u;   // listening now
+        sEnglishNoted = true;
+        u.note = "Whisper on Windows understands English, so speak to the assistant in English.";
     }
 
-    bool final_result = false;
-    const char* why_ended = nullptr;
+    bool done = false, any = false, writing = false, silenceOnly = false;
+    double lastVoice = 0.0;
+    std::string text, error;
     {
-        std::lock_guard<std::mutex> lock(sHeard.m);
-        u.changed = sHeard.changed;
-        sHeard.changed = false;
-        u.text = textLocked();
-        final_result = sHeard.final_result;
-        u.error = sHeard.error;
-        // Ended with no words and nothing wrong: the person just did not
-        // speak -- a timeout before the first word, or Windows' own silence.
-        u.nothing_heard = u.text.empty() && (sHeard.error.empty() || sHeard.silence);
+        std::lock_guard<std::mutex> lock(sTake->m);
+        done = sTake->done;
+        any = sTake->any;
+        writing = sTake->writing;
+        silenceOnly = sTake->silenceOnly;
+        lastVoice = sTake->lastVoice;
+        text = sTake->text;
+        error = sTake->error;
+    }
 
-        // A pause ends it, as does a long take or a long silence before the
-        // first word -- so nobody has to find the button again to stop.
-        if (sPhase == LISTENING && !final_result)
+    if (!done)
+    {
+        if (sPhase == LISTENING)
         {
             const double t = now();
-            if (sHeard.any && t - sHeard.last_change > PAUSE_ENDS) why_ended = "a pause";
-            else if (t - sStarted > LONGEST)                       why_ended = "the longest take";
-            else if (!sHeard.any && t - sStarted > FIRST_WORD)     why_ended = "no first word";
-            else return u;
+            const char* why = nullptr;
+            if (any && t - lastVoice > PAUSE_ENDS) why = "a pause";
+            else if (t - sStarted > LONGEST)       why = "the longest take";
+            else if (!any && t - sStarted > FIRST_WORD) why = "no first word";
+            if (why)
+            {
+                LL_INFOS("LumenAISpeech") << "Stopping after " << why << LL_ENDL;
+                stop();
+            }
         }
-    }
-
-    if (sPhase == LISTENING && !final_result)
-    {
-        LL_INFOS("LumenAISpeech") << "Stopping after " << why_ended << LL_ENDL;
-        stop();   // takes no lock
-        return u;
-    }
-    if (sPhase == STOPPING && !final_result && now() - sStoppedAt < FINAL_GRACE)
-    {
+        if (writing && !sSaidWriting)
+        {
+            sSaidWriting = true;
+            u.activity = "Writing down what you said...";
+        }
         return u;
     }
 
-    // Done: the last word is in, or it is not coming.
-    LL_INFOS("LumenAISpeech") << "Done listening, " << (u.text.empty() ? "no words" : "words heard") << LL_ENDL;
-    ++sGeneration;
-    post(Command::CANCEL, sGeneration.load());
+    sTake.reset();
     sPhase = IDLE;
     u.finished = true;
-    if (!u.text.empty()) u.error.clear();   // words beat a late complaint
-    else if (u.error.empty()) u.error = NOTHING_HEARD;
+    u.changed = !text.empty();
+    u.text = text;
+    if (silenceOnly)
+    {
+        u.error = ONLY_SILENCE;
+    }
+    else if (!error.empty())
+    {
+        u.error = error;
+    }
+    else if (text.empty())
+    {
+        u.nothing_heard = true;
+        u.error = NOTHING_HEARD;
+    }
     return u;
 }
 
 std::vector<std::pair<std::string, std::string>> LumenAISpeech::languages()
 {
-    std::vector<std::pair<std::string, std::string>> out;
-    try
-    {
-        for (const Language& l : SpeechRecognizer::SupportedTopicLanguages())
-        {
-            out.emplace_back(to_string(l.LanguageTag()), to_string(l.DisplayName()));
-        }
-    }
-    catch (...) {}
-    std::sort(out.begin(), out.end(),
-              [](const auto& a, const auto& b) { return a.second < b.second; });
-    return out;
+    return { { "en", "English" } };
 }
 
 std::string LumenAISpeech::ownLanguage()
 {
-    try
+    return "en";
+}
+
+// ---- setting it up ----------------------------------------------------------
+
+LumenAISpeech::SetupState LumenAISpeech::setupState()
+{
+    SetupState s;
+    s.total = MODEL_BYTES;
+    bool running = false;
+    std::string error;
     {
-        if (Language own = SpeechRecognizer::SystemSpeechLanguage())
-            return to_string(own.LanguageTag());
+        std::lock_guard<std::mutex> lock(sDownload->m);
+        running = sDownload->running;
+        error = sDownload->error;
     }
-    catch (...) {}
-    return std::string();
+    if (running)
+    {
+        s.state = Setup::Downloading;
+        s.done = (std::max)(0LL, fileSize(inData(MODEL_PART)));
+        return s;
+    }
+    if (modelPresent())
+    {
+        s.state = Setup::Ready;
+        s.done = MODEL_BYTES;
+        return s;
+    }
+    s.state = error.empty() ? Setup::NotInstalled : Setup::Failed;
+    s.error = error;
+    return s;
+}
+
+bool LumenAISpeech::startSetup(std::string& why)
+{
+    if (!supported())
+    {
+        why = "This copy of Lumen has no Whisper, so there is nothing to set up.";
+        return false;
+    }
+    if (dataDir(true).empty())
+    {
+        why = "Windows did not say where this user's local files go (LOCALAPPDATA).";
+        return false;
+    }
+    if (fileSize(curlExe()) <= 0)
+    {
+        why = "Windows' own download program, curl.exe, is not on this computer. It comes "
+              "with Windows 10 from 2018 onwards.";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(sDownload->m);
+        if (sDownload->running) return true;
+        sDownload->running = true;
+        sDownload->cancel = false;
+        sDownload->error.clear();
+    }
+    std::thread(runDownload).detach();
+    return true;
+}
+
+void LumenAISpeech::cancelSetup()
+{
+    std::lock_guard<std::mutex> lock(sDownload->m);
+    if (sDownload->running) sDownload->cancel = true;
+}
+
+void LumenAISpeech::removeSetup()
+{
+    cancelSetup();
+    if (sPhase != IDLE) cancel();
+    DeleteFileW(inData(MODEL_FILE).c_str());
+    DeleteFileW(inData(MODEL_PART).c_str());
+    std::lock_guard<std::mutex> lock(sDownload->m);
+    sDownload->error.clear();
+    LL_INFOS("LumenAISpeech") << "Speech model removed" << LL_ENDL;
+}
+
+std::string LumenAISpeech::setupSize()
+{
+    return "148 MB";
 }

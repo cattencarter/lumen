@@ -45,6 +45,7 @@
 #include "llbutton.h"
 #include "llvoiceclient.h"   // <Lumen> voice chat's mic stays shut while the mic button listens
 #include "lumenaispeech.h"   // <Lumen>
+#include "llnotificationsutil.h"   // <Lumen> the speech download question
 #include "fsnearbychathub.h"
 #include "llchat.h"
 #include "llagent.h"
@@ -1989,6 +1990,7 @@ void LumenAIChatFloater::draw()
     {
         const LumenAISpeech::Update u = LumenAISpeech::poll();
         if (!u.note.empty()) sayNote(u.note);
+        if (!u.activity.empty() && !mBusy) setActivity(u.activity);
         if (mInput && (u.changed || (u.finished && !u.text.empty())))
         {
             mInput->setText(mSpokenPrefix + u.text);
@@ -2025,6 +2027,7 @@ void LumenAIChatFloater::draw()
             }
         }
     }
+    if (mWatchSetup) watchSpeechSetup();
     // A conversation listens again once the answer is in.
     if (mKeepListening && !mListening && !mBusy && !startListening())
     {
@@ -2058,6 +2061,26 @@ void LumenAIChatFloater::onMic()
         if (mMicBtn) mMicBtn->setToggleState(false);
         return;
     }
+    // Where the recogniser is a download (Whisper, on Windows), it is asked
+    // about before anything is fetched -- the author: guide them through, and
+    // let them say no. On a Mac it is always ready and this does nothing.
+    {
+        const LumenAISpeech::SetupState st = LumenAISpeech::setupState();
+        if (st.state != LumenAISpeech::Setup::Ready)
+        {
+            if (mMicBtn) mMicBtn->setToggleState(false);
+            if (st.state == LumenAISpeech::Setup::Downloading)
+            {
+                sayNote("Speech recognition is still downloading. The mic works as soon as it is done.");
+                mWatchSetup = true;
+            }
+            else
+            {
+                offerSpeechSetup(st.error);
+            }
+            return;
+        }
+    }
     // Keeping on only makes sense when a pause sends; with sending off the
     // words wait for Enter, and there is nothing to listen again after.
     mKeepListening = gSavedSettings.getBOOL("LumenAISpeechAutoSend")
@@ -2071,6 +2094,87 @@ void LumenAIChatFloater::onMic()
     }
     if (mMicBtn) mMicBtn->setToggleState(true);
 }
+
+// <Lumen> In megabytes, as the question and Preferences say it.
+static std::string megabytes(long long bytes)
+{
+    return std::to_string((bytes + 500000) / 1000000) + " MB";
+}
+
+// <Lumen> The viewer's own question, not a system one: what Whisper is, that
+// the words stay on the computer, where the download comes from and how big
+// it is, and how to remove it. "Not now" is the default button, so Enter or
+// the close box fetch nothing. The assistant cannot answer it (lumenaictl.cpp
+// refuses any LumenSetup question as it refuses a LumenAsk one).
+void LumenAIChatFloater::offerSpeechSetup(const std::string& last_error)
+{
+    if (!last_error.empty()) sayNote("The last download did not finish: " + last_error);
+    LLSD args;
+    args["SIZE"] = LumenAISpeech::setupSize();
+    LLHandle<LLFloater> handle = getHandle();
+    LLNotificationsUtil::add("LumenSetupSpeech", args, LLSD(),
+        [handle](const LLSD& notification, const LLSD& response)
+        {
+            const bool yes = LLNotificationsUtil::getSelectedOption(notification, response) == 0;
+            if (LumenAIChatFloater* self = dynamic_cast<LumenAIChatFloater*>(handle.get()))
+            {
+                self->onSpeechSetupAnswer(yes);
+            }
+            else if (yes)
+            {
+                std::string why;
+                LumenAISpeech::startSetup(why);   // the window went; the download need not
+            }
+        });
+}
+
+void LumenAIChatFloater::onSpeechSetupAnswer(bool yes)
+{
+    if (!yes)
+    {
+        sayNote("Not now, then. Click the mic again whenever you like, or set it up in "
+                "Preferences > AI > Assistant.");
+        return;
+    }
+    std::string why;
+    if (!LumenAISpeech::startSetup(why))
+    {
+        sayNote(why);
+        return;
+    }
+    mWatchSetup = true;
+    mSetupWatch.reset();
+    sayNote("Downloading speech recognition (" + LumenAISpeech::setupSize() + "). You can go on "
+            "typing meanwhile; this window says so when the mic is ready.");
+}
+
+// Twice a second while a download runs: how far it has got, in the status bar
+// when nothing else is using it, and one line when it ends either way.
+void LumenAIChatFloater::watchSpeechSetup()
+{
+    if (mSetupWatch.getElapsedTimeF32() < 0.5f) return;
+    mSetupWatch.reset();
+    const LumenAISpeech::SetupState st = LumenAISpeech::setupState();
+    const bool barFree = !mBusy && !mListening;
+    if (st.state == LumenAISpeech::Setup::Downloading)
+    {
+        if (barFree)
+        {
+            setActivity("Downloading speech recognition: " + megabytes(st.done) + " of " +
+                        megabytes(st.total));
+        }
+        return;
+    }
+    mWatchSetup = false;
+    if (barFree) setActivity(std::string());
+    if (st.state == LumenAISpeech::Setup::Ready)
+        sayNote("Speech recognition is ready. Click the mic and talk.");
+    else if (st.state == LumenAISpeech::Setup::Failed)
+        sayNote("The download did not finish: " + st.error + " Click the mic to try again.");
+    else
+        sayNote("The speech recognition download was stopped.");
+}
+// </Lumen>
 
 // <Lumen> Which language the mic listens in -- the author, 2026-10-02: the
 // Language choice (Talking instead of typing) when there is one; else the viewer's own language when it

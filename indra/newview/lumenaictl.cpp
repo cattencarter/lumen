@@ -3909,8 +3909,10 @@ namespace
             {
                 if (!n || n->isCancelled() || n->isRespondedTo()) return;
                 // <Lumen> The viewer asking the user about something the
-                // assistant wants to do is not the assistant's to answer.
-                if (n->getName().compare(0, 8, "LumenAsk") == 0) return;
+                // assistant wants to do is not the assistant's to answer --
+                // nor is a LumenSetup question, which starts a download.
+                if (n->getName().compare(0, 8, "LumenAsk") == 0
+                    || n->getName().compare(0, 10, "LumenSetup") == 0) return;
 
                 LLSD one;
                 one["id"] = n->getID();
@@ -22309,7 +22311,8 @@ if (method == "camera")
         // giving itself permission -- the one thing the question exists to
         // prevent. read_dialogues does not list these; this refuses them if an
         // id arrives anyway.
-        if (n->getName().compare(0, 8, "LumenAsk") == 0)
+        if (n->getName().compare(0, 8, "LumenAsk") == 0
+            || n->getName().compare(0, 10, "LumenSetup") == 0)
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "That is the viewer asking the USER whether you may do something. "

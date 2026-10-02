@@ -29,6 +29,7 @@
 #define LUMEN_AICHAT_H
 
 #include "llfloater.h"
+#include "llframetimer.h"
 #include "llsingleton.h"
 #include "llsd.h"
 #include "lluuid.h"
@@ -281,6 +282,14 @@ private:
     void stopMic(const std::string& note);
     void giveVoiceBack();
     void onClose(bool app_quitting) override;
+    // Where the recogniser is a download (Whisper, on Windows): the first
+    // click asks before anything is fetched, and the window follows the
+    // download until it is ready or has failed.
+    bool        mWatchSetup      = false;
+    LLFrameTimer mSetupWatch;
+    void offerSpeechSetup(const std::string& last_error);
+    void onSpeechSetupAnswer(bool yes);
+    void watchSpeechSetup();
     // </Lumen>
 
     // Provider-native message history. Anthropic and OpenAI disagree about

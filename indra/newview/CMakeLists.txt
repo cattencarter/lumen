@@ -2023,9 +2023,10 @@ if (WINDOWS)
          llwindebug.cpp
          )
 
-    # <Lumen> Talking to the assistant: Windows.Media.SpeechRecognition through
-    # C++/WinRT. No precompiled header, so windows.h and its macros never stand
-    # in front of the WinRT headers.
+    # <Lumen> Talking to the assistant: the microphone through waveIn, the
+    # words through Whisper (a separate program the Windows workflow builds).
+    # No precompiled header: the file brings in windows.h itself, with
+    # mmsystem.h and bcrypt.h, which WIN32_LEAN_AND_MEAN leaves out.
     list(APPEND viewer_SOURCE_FILES lumenaispeech_win.cpp)
     set_source_files_properties(
       lumenaispeech_win.cpp
@@ -2683,8 +2684,8 @@ if (DARWIN)
     target_link_libraries(${VIEWER_BINARY_NAME} "-framework Speech" "-framework AVFoundation")
 endif (DARWIN)
 if (WINDOWS)
-    # The WinRT umbrella library: activation of Windows' own runtime classes.
-    target_link_libraries(${VIEWER_BINARY_NAME} windowsapp)
+    # waveIn for the microphone; BCrypt to check the downloaded speech model.
+    target_link_libraries(${VIEWER_BINARY_NAME} winmm bcrypt)
 endif (WINDOWS)
 # </Lumen>
 

@@ -70,6 +70,41 @@ jobs:
         run: autobuild configure -c ReleaseOS -A 64 -- -DVIEWER_CHANNEL:STRING=Lumen -DPACKAGE:BOOL=ON
         shell: cmd
 
+      # Whisper, which turns what is said to the Assistant's mic into text on
+      # Windows (lumenaispeech_win.cpp). Built from source at one pinned
+      # commit, with its own settings rather than the viewer's, and dropped in
+      # lumen-whisper/ beside the build, where viewer_manifest.py picks it up
+      # for the installer. Between Configure and Build because the build
+      # directory exists only after the one and the manifest runs during the
+      # other.
+      #  - Shared libraries with every CPU variant, chosen when it starts:
+      #    Lumen asks for no AVX2, so neither may this.
+      #  - No OpenMP, whose runtime the installer does not carry; the static
+      #    C runtime, so whisper\ needs nothing from beside the viewer.
+      - name: Whisper
+        working-directory: lumen
+        shell: pwsh
+        run: |
+          $commit = '927cfce34f31707e17f2bff35c349632fb9e2c3a'   # v1.9.4
+          git clone --quiet --depth 1 --branch v1.9.4 https://github.com/ggml-org/whisper.cpp ../whisper.cpp
+          $got = git -C ../whisper.cpp rev-parse HEAD
+          if ($got -ne $commit) { throw "whisper.cpp v1.9.4 is $got, not the commit this was checked against" }
+          cmake -S ../whisper.cpp -B ../whisper-build -G "Visual Studio 17 2022" -A x64 `
+            -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON `
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF `
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_BUILD_EXAMPLES=ON `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE -ne 0) { throw "whisper.cpp did not configure" }
+          cmake --build ../whisper-build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "whisper.cpp did not build" }
+          $build = (Get-ChildItem -Directory build-vc* | Select-Object -First 1).FullName
+          $out = Join-Path $build 'lumen-whisper'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item ../whisper-build/bin/Release/whisper-cli.exe $out
+          Copy-Item ../whisper-build/bin/Release/*.dll $out
+          Copy-Item ../whisper.cpp/LICENSE (Join-Path $out 'LICENSE-whisper.txt')
+          Get-ChildItem $out | Format-Table Name, Length
+
       - name: Build
         working-directory: lumen
         env:

@@ -219,6 +219,9 @@ private:
      */
     void syncModelCombo(LLComboBox* combo, const std::string& setting);
     void fillSpeechLanguages();   // <Lumen> the mic's Language list
+    void refreshSpeechSetup();    // <Lumen> Windows: Whisper's model, there or not
+    std::string mSpeechSetupWhy;  // why the last Download click could not begin
+    std::string mSpeechSetupShown;
 
     /** See draw(). Seeded by refresh(), so switching provider never trips it. */
     LLFrameTimer mWatch;

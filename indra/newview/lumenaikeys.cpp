@@ -826,6 +826,42 @@ void LumenPanelPreferenceAIKeys::fillSpeechLanguages()
     LLComboBox* combo = findChild<LLComboBox>("speech_language");
     if (!combo) return;
 
+#if LL_WINDOWS
+    // Whisper hears English only, so there is no language to choose; the row
+    // says instead whether its model is here, and fetches or removes it.
+    if (LumenAISpeech::supported())
+    {
+        combo->setVisible(false);
+        if (LLUICtrl* label = findChild<LLUICtrl>("speech_language_label")) label->setVisible(false);
+        if (LLButton* btn = findChild<LLButton>("speech_setup_btn"))
+        {
+            btn->setVisible(true);
+            btn->setCommitCallback([this](LLUICtrl*, const LLSD&)
+            {
+                mSpeechSetupWhy.clear();
+                const LumenAISpeech::Setup state = LumenAISpeech::setupState().state;
+                if (state == LumenAISpeech::Setup::Downloading)
+                {
+                    LumenAISpeech::cancelSetup();
+                }
+                else if (state == LumenAISpeech::Setup::Ready)
+                {
+                    LumenAISpeech::removeSetup();
+                }
+                else
+                {
+                    std::string why;
+                    if (!LumenAISpeech::startSetup(why)) mSpeechSetupWhy = why;
+                }
+                refreshSpeechSetup();
+            });
+        }
+        if (LLUICtrl* text = findChild<LLUICtrl>("speech_setup_text")) text->setVisible(true);
+        refreshSpeechSetup();
+        return;
+    }
+#endif
+
     const auto offered = LumenAISpeech::languages();
     if (offered.empty())
     {
@@ -851,6 +887,50 @@ void LumenPanelPreferenceAIKeys::fillSpeechLanguages()
         combo->add(value, LLSD(value), ADD_BOTTOM);
         combo->setValue(LLSD(value));
     }
+}
+
+// <Lumen> The Windows row: what is there, and the one button that changes it.
+// Called once a second by draw() while the panel is on screen, so a download
+// started from the mic shows its progress here too.
+void LumenPanelPreferenceAIKeys::refreshSpeechSetup()
+{
+#if LL_WINDOWS
+    LLUICtrl* text = findChild<LLUICtrl>("speech_setup_text");
+    LLButton* btn = findChild<LLButton>("speech_setup_btn");
+    if (!text || !btn || !text->getVisible()) return;
+
+    const LumenAISpeech::SetupState st = LumenAISpeech::setupState();
+    auto mb = [](long long bytes) { return std::to_string((bytes + 500000) / 1000000) + " MB"; };
+    std::string line, label;
+    switch (st.state)
+    {
+    case LumenAISpeech::Setup::Ready:
+        line = "Speech recognition: installed. Whisper runs on this computer and understands English.";
+        label = "Remove";
+        break;
+    case LumenAISpeech::Setup::Downloading:
+        line = "Speech recognition: downloading, " + mb(st.done) + " of " + mb(st.total) + ".";
+        label = "Stop";
+        break;
+    case LumenAISpeech::Setup::Failed:
+        line = "Speech recognition: the download did not finish -- " + st.error;
+        label = "Try again";
+        break;
+    default:
+        line = "Speech recognition: not installed. Whisper runs on this computer; it is a one-time "
+               "download of " + LumenAISpeech::setupSize() + " from Hugging Face.";
+        label = "Download";
+        break;
+    }
+    if (!mSpeechSetupWhy.empty()) line = mSpeechSetupWhy;
+    if (line + label != mSpeechSetupShown)
+    {
+        mSpeechSetupShown = line + label;
+        text->setValue(LLSD(line));
+        text->setToolTip(line);
+        btn->setLabel(label);
+    }
+#endif
 }
 // </Lumen>
 
@@ -1116,6 +1196,7 @@ void LumenPanelPreferenceAIKeys::draw()
     if (mWatch.getElapsedTimeF32() > 1.f)
     {
         mWatch.reset();
+        refreshSpeechSetup();   // <Lumen> a download's progress, on Windows
         const std::string provider = gSavedSettings.getString("LumenAIProvider");
         if (provider == LumenAIKeys::CODEX || provider == LumenAIKeys::CLAUDECODE
             || provider == LumenAIKeys::VIBE)   // <Lumen>

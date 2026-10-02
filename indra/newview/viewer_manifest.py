@@ -880,6 +880,19 @@ class Windows_x86_64_Manifest(ViewerManifest):
                 self.path("libvlccore.dll")
                 self.path("plugins/")
 
+        # <Lumen> Whisper, which hears the Assistant's mic on Windows. The
+        # Windows workflow builds it from source into lumen-whisper/ beside the
+        # build; a build made without it still works and simply has no mic
+        # button (lumenaispeech_win.cpp). Checked first, because a pattern that
+        # matches nothing is fatal here.
+        whisper_src = os.path.join(self.args['build'], os.pardir, 'lumen-whisper')
+        if os.path.isfile(os.path.join(whisper_src, 'whisper-cli.exe')):
+            with self.prefix(src=whisper_src, dst="whisper"):
+                self.path("whisper-cli.exe")
+                self.path("*.dll")
+                self.path("LICENSE-whisper.txt")
+        # </Lumen>
+
         if not self.is_packaging_viewer():
             self.package_file = "copied_deps"
 

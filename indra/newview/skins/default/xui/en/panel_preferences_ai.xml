@@ -533,13 +533,27 @@
            (LumenAISpeech::languages), so it never offers a language the
            Mac or Windows does not have; the first item is the computer's own. -->
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="370" width="70" height="16">
+       left="20" top="370" width="70" height="16"
+       name="speech_language_label">
           Language
       </text>
 
       <combo_box control_name="LumenAISpeechLanguage" follows="left|top" layout="topleft"
        left="90" top="366" width="240" height="22"
        name="speech_language" />
+
+      <!-- <Lumen> Windows only, in the Language row's place: Whisper hears
+           English only, and its model is a download, so the row says whether
+           it is there and offers to fetch, stop or remove it. Shown in C++. -->
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="364" width="370" height="28" word_wrap="true"
+       name="speech_setup_text" visible="false">
+          Speech recognition
+      </text>
+
+      <button follows="left|top" layout="topleft"
+       left="400" top="366" width="110" height="22"
+       name="speech_setup_btn" label="Download" visible="false" />
 
       <check_box control_name="LumenAISpeechAutoSend" follows="left|top" layout="topleft"
        left="20" top="396" width="480" height="16"
