@@ -13,12 +13,19 @@
  * it needs Settings > Privacy & security > Speech > Online speech recognition
  * switched on, and says so in words when it is off.
  *
- * Same shape as the Mac file: everything here is called on the main thread,
- * the framework answers on its own threads, and its answers wait behind a lock
- * for poll(). A pause, a long take or a long silence before the first word
- * ends it here, by the same clock the Mac uses. No viewer headers on purpose,
- * and no precompiled header (CMakeLists.txt), so nothing drags windows.h and
- * its macros in front of the WinRT headers.
+ * **Every speech object lives on one worker thread of its own, in the
+ * multi-threaded apartment.** The viewer's main thread is a single-threaded
+ * apartment (llappviewerwin32.cpp, at start-up) whose window messages are
+ * pumped on another thread, so an object made there may never get Windows'
+ * answers delivered -- the first version did exactly that on the author's
+ * laptop: no complaint, and no words. The main thread only posts start, stop
+ * and cancel to the worker, and reads what was heard from behind a lock, the
+ * same shape as the Mac file: a pause, a long take or a long silence before
+ * the first word ends it, by the same clock the Mac uses.
+ *
+ * No precompiled header (CMakeLists.txt), and the viewer's one header here,
+ * llerror.h, comes after the WinRT headers, so windows.h and its macros never
+ * stand in front of them. The log says what happened, never what was said.
  */
 
 #include "lumenaispeech.h"
@@ -28,12 +35,17 @@
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Media.SpeechRecognition.h>
 
+#include "llerror.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
+#include <thread>
 
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
@@ -56,6 +68,7 @@ namespace
         bool        silence      = false;   // ended on silence, nobody's fault
         bool        started      = false;   // the session is listening
         std::string start_error;            // it could not start, and why
+        std::string note;                   // to say once, when listening begins
     };
     Heard sHeard;
 
@@ -67,11 +80,6 @@ namespace
     // Each start() gets a new number; an answer carrying an old one belongs
     // to a session already thrown away and is ignored.
     std::atomic<int> sGeneration{ 0 };
-
-    SpeechRecognizer sRecognizer{ nullptr };
-    SpeechRecognizer::HypothesisGenerated_revoker sOnHypothesis;
-    SpeechContinuousRecognitionSession::ResultGenerated_revoker sOnResult;
-    SpeechContinuousRecognitionSession::Completed_revoker sOnCompleted;
 
     // The same clock as the Mac's.
     const double PAUSE_ENDS  = 1.8;
@@ -96,6 +104,13 @@ namespace
     const char* MIC_REFUSED =
         "Lumen could not use the microphone. Check that one is connected, and that "
         "Settings > Privacy & security > Microphone lets desktop apps use it.";
+    const char* NOTHING_HEARD =
+        "Nothing was heard. Windows listens with its default microphone, which is chosen "
+        "in Settings > System > Sound > Input.";
+    const char* NO_ENGLISH =
+        "Windows cannot take dictation in its own language, and has no English to fall "
+        "back on. Adding English in Settings > Time & language > Language & region lets "
+        "the mic listen in English.";
 
     std::string fromError(const hresult_error& e)
     {
@@ -125,7 +140,7 @@ namespace
             return "The sound was too quiet or too noisy to make out.";
         case SpeechRecognitionResultStatus::TimeoutExceeded:
         case SpeechRecognitionResultStatus::PauseLimitExceeded:
-            return "Nothing was heard.";
+            return NOTHING_HEARD;
         default:
             return "Speech recognition stopped.";
         }
@@ -144,6 +159,7 @@ namespace
         sHeard.silence = false;
         sHeard.started = false;
         sHeard.start_error.clear();
+        sHeard.note.clear();
     }
 
     /** Everything heard so far; caller holds the lock. */
@@ -154,22 +170,12 @@ namespace
         return sHeard.committed + " " + sHeard.hypothesis;
     }
 
-    void teardown()
+    void failStart(int generation, const std::string& why)
     {
-        sOnHypothesis.revoke();
-        sOnResult.revoke();
-        sOnCompleted.revoke();
-        if (sRecognizer)
-        {
-            try { sRecognizer.Close(); } catch (...) {}
-        }
-        sRecognizer = nullptr;
+        if (generation != sGeneration.load()) return;
+        std::lock_guard<std::mutex> lock(sHeard.m);
+        if (sHeard.start_error.empty()) sHeard.start_error = why;
     }
-
-    // Said once, the first time the mic listens in English instead of the
-    // language Windows is set to. Empty when there is nothing to say.
-    std::string sLanguageNote;
-    bool        sLanguageNoted = false;
 
     bool sameTag(const std::string& a, const std::string& b)
     {
@@ -187,8 +193,9 @@ namespace
      * speech language; else English -- the author, 2026-10-02: "if it isn't
      * supported", default to English. Dictation is offered in a short list of
      * languages and Danish is not on it. Null when not even English is there.
+     * `note` is set, once ever, when English stands in.
      */
-    Language pickLanguage(const std::string& wanted)
+    Language pickLanguage(const std::string& wanted, std::string& note, bool& noted)
     {
         const auto offered = SpeechRecognizer::SupportedTopicLanguages();
         auto find = [&offered](const std::string& tag) -> Language
@@ -221,77 +228,103 @@ namespace
                 if (tag.size() >= 2 && sameTag(tag.substr(0, 2), "en")) { english = l; break; }
             }
         }
-        if (english && !sLanguageNoted)
+        if (english && !noted)
         {
             const std::string name = own ? to_string(own.DisplayName()) : std::string("this language");
-            sLanguageNote = "Windows cannot take dictation in " + name
-                + ", so the mic listens in English.";
+            note = "Windows cannot take dictation in " + name + ", so the mic listens in English.";
+            noted = true;
         }
         return english;
     }
 
-    void failStart(int generation, const std::string& why)
+    // ------------------------------------------------------------------
+    // The worker. Only this thread ever touches a speech object.
+    // ------------------------------------------------------------------
+
+    struct Command
     {
-        if (generation != sGeneration.load()) return;
-        std::lock_guard<std::mutex> lock(sHeard.m);
-        if (sHeard.start_error.empty()) sHeard.start_error = why;
+        enum Kind { START, STOP, CANCEL };
+        Kind        kind = CANCEL;
+        int         generation = 0;
+        std::string language;
+    };
+
+    struct Worker
+    {
+        std::mutex              m;
+        std::condition_variable cv;
+        std::deque<Command>     queue;
+
+        SpeechRecognizer recognizer{ nullptr };
+        SpeechRecognizer::HypothesisGenerated_revoker onHypothesis;
+        SpeechContinuousRecognitionSession::ResultGenerated_revoker onResult;
+        SpeechContinuousRecognitionSession::Completed_revoker onCompleted;
+        bool languageNoted = false;
+    };
+    // Made once and never destroyed: the worker may still be waiting on its
+    // lock when the viewer exits, and must not find the lock already gone.
+    Worker* sWorker = nullptr;
+
+    void release(Worker& w)
+    {
+        w.onHypothesis.revoke();
+        w.onResult.revoke();
+        w.onCompleted.revoke();
+        if (w.recognizer)
+        {
+            try { w.recognizer.Close(); } catch (...) {}
+        }
+        w.recognizer = nullptr;
     }
-}
 
-bool LumenAISpeech::supported()
-{
-    return true;
-}
-
-bool LumenAISpeech::listening()
-{
-    return sPhase != IDLE;
-}
-
-bool LumenAISpeech::start(const std::string& language, std::string& why)
-{
-    if (sPhase != IDLE) return true;
-    resetHeard();
-    // No apartment set-up here: the viewer's main thread is already a COM
-    // single-threaded apartment (llappviewerwin32.cpp, at start-up), and the
-    // speech objects are agile, so Windows' threads may call them directly.
-    const int generation = ++sGeneration;
-
-    try
+    void doStart(Worker& w, const Command& c)
     {
-        Language lang = pickLanguage(language);
+        release(w);   // anything left of a session before
+        const int generation = c.generation;
+        if (generation != sGeneration.load()) return;   // cancelled before it began
+
+        std::string note;
+        Language lang = pickLanguage(c.language, note, w.languageNoted);
         if (!lang)
         {
-            why = "Windows cannot take dictation in its own language, and has no English to "
-                  "fall back on. Adding English in Settings > Time & language > Language & "
-                  "region lets the mic listen in English.";
-            return false;
+            LL_WARNS("LumenAISpeech") << "No language Windows can take dictation in" << LL_ENDL;
+            failStart(generation, NO_ENGLISH);
+            return;
         }
-        sRecognizer = SpeechRecognizer(lang);
-        sRecognizer.Constraints().Append(
+        LL_INFOS("LumenAISpeech") << "Listening in " << to_string(lang.LanguageTag())
+                                  << (c.language.empty() ? std::string(" (Windows' own)")
+                                                         : " (asked for " + c.language + ")")
+                                  << LL_ENDL;
+
+        w.recognizer = SpeechRecognizer(lang);
+        w.recognizer.Constraints().Append(
             SpeechRecognitionTopicConstraint(SpeechRecognitionScenario::Dictation, L"dictation"));
 
-        sOnHypothesis = sRecognizer.HypothesisGenerated(auto_revoke,
+        w.onHypothesis = w.recognizer.HypothesisGenerated(auto_revoke,
             [generation](const SpeechRecognizer&, const SpeechRecognitionHypothesisGeneratedEventArgs& args)
             {
                 if (generation != sGeneration.load()) return;
                 try
                 {
                     const std::string said = to_string(args.Hypothesis().Text());
-                    std::lock_guard<std::mutex> lock(sHeard.m);
-                    if (said != sHeard.hypothesis)
+                    bool first = false;
                     {
-                        sHeard.hypothesis = said;
-                        sHeard.changed = true;
-                        sHeard.last_change = now();
-                        if (!said.empty()) sHeard.any = true;
+                        std::lock_guard<std::mutex> lock(sHeard.m);
+                        if (said != sHeard.hypothesis)
+                        {
+                            sHeard.hypothesis = said;
+                            sHeard.changed = true;
+                            sHeard.last_change = now();
+                            if (!said.empty() && !sHeard.any) { sHeard.any = true; first = true; }
+                        }
                     }
+                    if (first) LL_INFOS("LumenAISpeech") << "First words heard" << LL_ENDL;
                 }
                 catch (...) {}
             });
 
-        SpeechContinuousRecognitionSession session = sRecognizer.ContinuousRecognitionSession();
-        sOnResult = session.ResultGenerated(auto_revoke,
+        SpeechContinuousRecognitionSession session = w.recognizer.ContinuousRecognitionSession();
+        w.onResult = session.ResultGenerated(auto_revoke,
             [generation](const SpeechContinuousRecognitionSession&,
                          const SpeechContinuousRecognitionResultGeneratedEventArgs& args)
             {
@@ -318,7 +351,7 @@ bool LumenAISpeech::start(const std::string& language, std::string& why)
                 catch (...) {}
             });
 
-        sOnCompleted = session.Completed(auto_revoke,
+        w.onCompleted = session.Completed(auto_revoke,
             [generation](const SpeechContinuousRecognitionSession&,
                          const SpeechContinuousRecognitionCompletedEventArgs& args)
             {
@@ -326,6 +359,7 @@ bool LumenAISpeech::start(const std::string& language, std::string& why)
                 try
                 {
                     const SpeechRecognitionResultStatus status = args.Status();
+                    LL_INFOS("LumenAISpeech") << "Session ended, status " << static_cast<int>(status) << LL_ENDL;
                     std::lock_guard<std::mutex> lock(sHeard.m);
                     // Words beat a complaint: with something heard, the end of
                     // the session just means it is over.
@@ -348,57 +382,127 @@ bool LumenAISpeech::start(const std::string& language, std::string& why)
                 catch (...) {}
             });
 
-        // Compile the dictation grammar, then start listening -- both answer
-        // later, on Windows' threads, and poll() picks the outcome up.
-        // The handler keeps its own reference: sRecognizer belongs to the
-        // main thread, and this runs on one of Windows'.
-        SpeechRecognizer recognizer = sRecognizer;
-        sRecognizer.CompileConstraintsAsync().Completed(
-            [generation, recognizer](const IAsyncOperation<SpeechRecognitionCompilationResult>& op, AsyncStatus)
-            {
-                if (generation != sGeneration.load()) return;
-                try
-                {
-                    const SpeechRecognitionCompilationResult compiled = op.GetResults();
-                    if (compiled.Status() != SpeechRecognitionResultStatus::Success)
-                    {
-                        failStart(generation, fromStatus(compiled.Status()));
-                        return;
-                    }
-                    // Cancelled meanwhile: the generation check above, or a
-                    // closed recognizer throwing below, catches it.
-                    recognizer.ContinuousRecognitionSession().StartAsync().Completed(
-                        [generation](const IAsyncAction& start, AsyncStatus)
-                        {
-                            if (generation != sGeneration.load()) return;
-                            try
-                            {
-                                start.GetResults();
-                                std::lock_guard<std::mutex> lock(sHeard.m);
-                                sHeard.started = true;
-                                sHeard.last_change = now();
-                            }
-                            catch (const hresult_error& e) { failStart(generation, fromError(e)); }
-                            catch (...) { failStart(generation, "Speech recognition could not start."); }
-                        });
-                }
-                catch (const hresult_error& e) { failStart(generation, fromError(e)); }
-                catch (...) { failStart(generation, "Speech recognition could not start."); }
-            });
-    }
-    catch (const hresult_error& e)
-    {
-        why = fromError(e);
-        teardown();
-        return false;
-    }
-    catch (...)
-    {
-        why = "Speech recognition could not start.";
-        teardown();
-        return false;
+        // On this thread, in the multi-threaded apartment, waiting is allowed.
+        const SpeechRecognitionCompilationResult compiled = w.recognizer.CompileConstraintsAsync().get();
+        LL_INFOS("LumenAISpeech") << "Dictation prepared, status " << static_cast<int>(compiled.Status()) << LL_ENDL;
+        if (compiled.Status() != SpeechRecognitionResultStatus::Success)
+        {
+            failStart(generation, fromStatus(compiled.Status()));
+            release(w);
+            return;
+        }
+        if (generation != sGeneration.load())
+        {
+            release(w);
+            return;
+        }
+        session.StartAsync().get();
+        LL_INFOS("LumenAISpeech") << "Listening" << LL_ENDL;
+        std::lock_guard<std::mutex> lock(sHeard.m);
+        sHeard.started = true;
+        sHeard.last_change = now();
+        if (!note.empty()) sHeard.note = note;
     }
 
+    void doStop(Worker& w, const Command& c)
+    {
+        if (!w.recognizer || c.generation != sGeneration.load()) return;
+        // The words still being heard come back as one last result, then
+        // the session's Completed -- poll() waits a little for both.
+        w.recognizer.ContinuousRecognitionSession().StopAsync().get();
+    }
+
+    void doCancel(Worker& w)
+    {
+        if (w.recognizer)
+        {
+            try { w.recognizer.ContinuousRecognitionSession().CancelAsync().get(); } catch (...) {}
+        }
+        release(w);
+    }
+
+    void run(Worker* w)
+    {
+        try
+        {
+            init_apartment(apartment_type::multi_threaded);
+        }
+        catch (const hresult_error& e)
+        {
+            LL_WARNS("LumenAISpeech") << "Speech thread got no apartment: " << to_string(e.message()) << LL_ENDL;
+        }
+        for (;;)
+        {
+            Command c;
+            {
+                std::unique_lock<std::mutex> lock(w->m);
+                w->cv.wait(lock, [w] { return !w->queue.empty(); });
+                c = w->queue.front();
+                w->queue.pop_front();
+            }
+            try
+            {
+                switch (c.kind)
+                {
+                case Command::START:  doStart(*w, c); break;
+                case Command::STOP:   doStop(*w, c);  break;
+                case Command::CANCEL: doCancel(*w);   break;
+                }
+            }
+            catch (const hresult_error& e)
+            {
+                LL_WARNS("LumenAISpeech") << "Speech failed: 0x" << std::hex
+                                          << static_cast<uint32_t>(static_cast<int32_t>(e.code())) << std::dec
+                                          << " " << to_string(e.message()) << LL_ENDL;
+                if (c.kind == Command::START) failStart(c.generation, fromError(e));
+                release(*w);
+            }
+            catch (...)
+            {
+                LL_WARNS("LumenAISpeech") << "Speech failed" << LL_ENDL;
+                if (c.kind == Command::START) failStart(c.generation, "Speech recognition could not start.");
+                release(*w);
+            }
+        }
+    }
+
+    void post(Command::Kind kind, int generation, const std::string& language = std::string())
+    {
+        if (!sWorker)
+        {
+            sWorker = new Worker();
+            std::thread(run, sWorker).detach();
+        }
+        {
+            std::lock_guard<std::mutex> lock(sWorker->m);
+            Command c;
+            c.kind = kind;
+            c.generation = generation;
+            c.language = language;
+            sWorker->queue.push_back(c);
+        }
+        sWorker->cv.notify_one();
+    }
+}
+
+bool LumenAISpeech::supported()
+{
+    return true;
+}
+
+bool LumenAISpeech::listening()
+{
+    return sPhase != IDLE;
+}
+
+bool LumenAISpeech::start(const std::string& language, std::string& why)
+{
+    if (sPhase != IDLE) return true;
+    resetHeard();
+    const int generation = ++sGeneration;
+    post(Command::START, generation, language);
+    // Whatever goes wrong now arrives through poll(), from the worker.
+    why.clear();
     sPhase = STARTING;
     sStarted = now();
     return true;
@@ -412,13 +516,7 @@ void LumenAISpeech::stop()
         return;
     }
     if (sPhase != LISTENING) return;
-    try
-    {
-        // The words still being heard come back as one last result, then
-        // the session's Completed -- poll() waits a little for both.
-        if (sRecognizer) sRecognizer.ContinuousRecognitionSession().StopAsync();
-    }
-    catch (...) {}
+    post(Command::STOP, sGeneration.load());
     sPhase = STOPPING;
     sStoppedAt = now();
 }
@@ -426,12 +524,7 @@ void LumenAISpeech::stop()
 void LumenAISpeech::cancel()
 {
     ++sGeneration;   // nothing still on its way is wanted now
-    try
-    {
-        if (sRecognizer && sPhase != STARTING) sRecognizer.ContinuousRecognitionSession().CancelAsync();
-    }
-    catch (...) {}
-    teardown();
+    post(Command::CANCEL, sGeneration.load());
     sPhase = IDLE;
     resetHeard();
 }
@@ -449,11 +542,17 @@ LumenAISpeech::Update LumenAISpeech::poll()
             std::lock_guard<std::mutex> lock(sHeard.m);
             why = sHeard.start_error;
             started = sHeard.started;
+            if (started && !sHeard.note.empty())
+            {
+                u.note = sHeard.note;   // once, the first time it is so
+                sHeard.note.clear();
+            }
         }
         if (!why.empty())
         {
+            LL_INFOS("LumenAISpeech") << "Could not start: " << why << LL_ENDL;
             ++sGeneration;
-            teardown();
+            post(Command::CANCEL, sGeneration.load());
             sPhase = IDLE;
             u.finished = true;
             u.error = why;
@@ -461,12 +560,13 @@ LumenAISpeech::Update LumenAISpeech::poll()
         }
         if (!started)
         {
-            // Compiling the grammar and opening the microphone takes a moment;
+            // Preparing dictation and opening the microphone takes a moment;
             // if Windows never answers, give up rather than wait for ever.
             if (now() - sStarted > FIRST_WORD)
             {
+                LL_WARNS("LumenAISpeech") << "Windows never said it was listening" << LL_ENDL;
                 ++sGeneration;
-                teardown();
+                post(Command::CANCEL, sGeneration.load());
                 sPhase = IDLE;
                 u.finished = true;
                 u.error = "Windows' speech recognition did not start.";
@@ -475,15 +575,11 @@ LumenAISpeech::Update LumenAISpeech::poll()
         }
         sPhase = LISTENING;
         sStarted = now();
-        if (!sLanguageNote.empty() && !sLanguageNoted)
-        {
-            u.note = sLanguageNote;   // once, the first time it is so
-            sLanguageNoted = true;
-        }
         return u;   // listening now
     }
 
     bool final_result = false;
+    const char* why_ended = nullptr;
     {
         std::lock_guard<std::mutex> lock(sHeard.m);
         u.changed = sHeard.changed;
@@ -500,17 +596,16 @@ LumenAISpeech::Update LumenAISpeech::poll()
         if (sPhase == LISTENING && !final_result)
         {
             const double t = now();
-            if (!((sHeard.any && t - sHeard.last_change > PAUSE_ENDS)
-                  || t - sStarted > LONGEST
-                  || (!sHeard.any && t - sStarted > FIRST_WORD)))
-            {
-                return u;
-            }
+            if (sHeard.any && t - sHeard.last_change > PAUSE_ENDS) why_ended = "a pause";
+            else if (t - sStarted > LONGEST)                       why_ended = "the longest take";
+            else if (!sHeard.any && t - sStarted > FIRST_WORD)     why_ended = "no first word";
+            else return u;
         }
     }
 
     if (sPhase == LISTENING && !final_result)
     {
+        LL_INFOS("LumenAISpeech") << "Stopping after " << why_ended << LL_ENDL;
         stop();   // takes no lock
         return u;
     }
@@ -520,11 +615,13 @@ LumenAISpeech::Update LumenAISpeech::poll()
     }
 
     // Done: the last word is in, or it is not coming.
+    LL_INFOS("LumenAISpeech") << "Done listening, " << (u.text.empty() ? "no words" : "words heard") << LL_ENDL;
     ++sGeneration;
-    teardown();
+    post(Command::CANCEL, sGeneration.load());
     sPhase = IDLE;
     u.finished = true;
     if (!u.text.empty()) u.error.clear();   // words beat a late complaint
+    else if (u.error.empty()) u.error = NOTHING_HEARD;
     return u;
 }
 
