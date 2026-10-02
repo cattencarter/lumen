@@ -1988,6 +1988,7 @@ void LumenAIChatFloater::draw()
     if (mListening)
     {
         const LumenAISpeech::Update u = LumenAISpeech::poll();
+        if (!u.note.empty()) sayNote(u.note);
         if (mInput && (u.changed || (u.finished && !u.text.empty())))
         {
             mInput->setText(mSpokenPrefix + u.text);

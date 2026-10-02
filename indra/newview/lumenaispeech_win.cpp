@@ -29,6 +29,7 @@
 #include <winrt/Windows.Media.SpeechRecognition.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -164,17 +165,68 @@ namespace
         sRecognizer = nullptr;
     }
 
-    /** The language asked for, if Windows can dictate in it; otherwise Windows' own. */
+    // Said once, the first time the mic listens in English instead of the
+    // language Windows is set to. Empty when there is nothing to say.
+    std::string sLanguageNote;
+    bool        sLanguageNoted = false;
+
+    bool sameTag(const std::string& a, const std::string& b)
+    {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            if (std::tolower(static_cast<unsigned char>(a[i]))
+                != std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        }
+        return true;
+    }
+
+    /**
+     * The language asked for, if Windows can dictate in it; else Windows' own
+     * speech language; else English -- the author, 2026-10-02: "if it isn't
+     * supported", default to English. Dictation is offered in a short list of
+     * languages and Danish is not on it. Null when not even English is there.
+     */
     Language pickLanguage(const std::string& wanted)
     {
+        const auto offered = SpeechRecognizer::SupportedTopicLanguages();
+        auto find = [&offered](const std::string& tag) -> Language
+        {
+            for (const Language& l : offered)
+            {
+                if (sameTag(to_string(l.LanguageTag()), tag)) return l;
+            }
+            return nullptr;
+        };
+
         if (!wanted.empty())
         {
-            for (const Language& l : SpeechRecognizer::SupportedTopicLanguages())
+            if (Language l = find(wanted)) return l;
+        }
+        Language own = SpeechRecognizer::SystemSpeechLanguage();
+        if (own)
+        {
+            if (Language l = find(to_string(own.LanguageTag()))) return l;
+        }
+
+        // Not offered: English instead, the nearest one first.
+        Language english = find("en-US");
+        if (!english) english = find("en-GB");
+        if (!english)
+        {
+            for (const Language& l : offered)
             {
-                if (to_string(l.LanguageTag()) == wanted) return l;
+                const std::string tag = to_string(l.LanguageTag());
+                if (tag.size() >= 2 && sameTag(tag.substr(0, 2), "en")) { english = l; break; }
             }
         }
-        return SpeechRecognizer::SystemSpeechLanguage();
+        if (english && !sLanguageNoted)
+        {
+            const std::string name = own ? to_string(own.DisplayName()) : std::string("this language");
+            sLanguageNote = "Windows cannot take dictation in " + name
+                + ", so the mic listens in English.";
+        }
+        return english;
     }
 
     void failStart(int generation, const std::string& why)
@@ -209,8 +261,9 @@ bool LumenAISpeech::start(const std::string& language, std::string& why)
         Language lang = pickLanguage(language);
         if (!lang)
         {
-            why = "Windows has no speech language set up. You can add one in Settings > "
-                  "Time & language > Speech.";
+            why = "Windows cannot take dictation in its own language, and has no English to "
+                  "fall back on. Adding English in Settings > Time & language > Language & "
+                  "region lets the mic listen in English.";
             return false;
         }
         sRecognizer = SpeechRecognizer(lang);
@@ -421,6 +474,11 @@ LumenAISpeech::Update LumenAISpeech::poll()
         }
         sPhase = LISTENING;
         sStarted = now();
+        if (!sLanguageNote.empty() && !sLanguageNoted)
+        {
+            u.note = sLanguageNote;   // once, the first time it is so
+            sLanguageNoted = true;
+        }
         return u;   // listening now
     }
 

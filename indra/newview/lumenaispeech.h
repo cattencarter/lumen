@@ -20,7 +20,8 @@
  * Windows: Windows.Media.SpeechRecognition (lumenaispeech_win.cpp), continuous
  * dictation on Microsoft's servers -- it needs "Online speech recognition" on
  * in Settings > Privacy & security > Speech, and listens in Windows' own speech
- * language. It does not offer Danish (the author's laptop, 2026-10-02).
+ * language -- or in English when dictation does not offer that one, which is
+ * the case for Danish (the author's laptop, 2026-10-02).
  *
  * Everything here is called on the main thread. The framework answers on its
  * own threads; those answers are kept behind a lock and handed over by poll(),
@@ -41,6 +42,7 @@ namespace LumenAISpeech
         bool        finished = false;   // listening has ended; text is the last word
         std::string error;              // why it ended badly, in plain words; empty when not
         bool        nothing_heard = false;   // finished with no words, nobody's fault (silence)
+        std::string note;               // something to tell the person once, not an error
     };
 
 #if LL_DARWIN || LL_WINDOWS
