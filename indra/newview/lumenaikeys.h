@@ -218,7 +218,7 @@ private:
      * first is what makes the display honest.
      */
     void syncModelCombo(LLComboBox* combo, const std::string& setting);
-    void fillSpeechLanguages();   // <Lumen> the mic's "Listen in" list
+    void fillSpeechLanguages();   // <Lumen> the mic's Language list
 
     /** See draw(). Seeded by refresh(), so switching provider never trips it. */
     LLFrameTimer mWatch;

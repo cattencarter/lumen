@@ -2073,7 +2073,7 @@ void LumenAIChatFloater::onMic()
 }
 
 // <Lumen> Which language the mic listens in -- the author, 2026-10-02: the
-// "Listen in" choice when there is one; else the viewer's own language when it
+// Language choice (Talking instead of typing) when there is one; else the viewer's own language when it
 // was picked on purpose (not "default") and speech offers it; else the
 // computer's own, which is what an empty answer means. The speech code then
 // falls back to English when even that is not offered, and says so.

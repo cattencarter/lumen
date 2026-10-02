@@ -534,7 +534,7 @@
            Mac or Windows does not have; the first item is the computer's own. -->
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="370" width="70" height="16">
-          Listen in
+          Language
       </text>
 
       <combo_box control_name="LumenAISpeechLanguage" follows="left|top" layout="topleft"
