@@ -531,7 +531,10 @@ namespace
         const unsigned threads = (std::max)(2u, (std::min)(8u, hw / 2));
         std::wstring args = L"-m ";
         args += MODEL_FILE;
-        args += L" -f take.wav -l en -nt -np -sns -ng -t " + std::to_wstring(threads) + L" -otxt -of take";
+        // -bs 1: one guess at the sentence rather than five side by side,
+        // which whisper-cli does by default and which made the bigger model
+        // slow on a laptop, for a difference in accuracy that is small.
+        args += L" -f take.wav -l en -nt -np -sns -ng -bs 1 -t " + std::to_wstring(threads) + L" -otxt -of take";
 
         const double began = now();
         DWORD error = 0;
@@ -647,8 +650,15 @@ namespace
         int loudRun = 0;
         long long firstVoice = -1, lastVoiceAt = -1;
         bool anyNonZero = false;
+        int peakSeen = 0;
         bool cancelled = false;
 
+        // Buffers come back in the order they were handed over, and are read
+        // in that order -- NOT by scanning 0..7 each time, which put the
+        // last buffer of a round after the first of the next whenever both
+        // were done by one wake-up, and scrambled what was said in 100 ms
+        // pieces (the first Whisper build; the author: "not that good").
+        int next = 0;
         for (bool stopping = false; !stopping; )
         {
             WaitForSingleObject(ready, 50);
@@ -657,12 +667,11 @@ namespace
                 stopping = take->stop || take->cancel;
                 cancelled = take->cancel;
             }
-            for (int i = 0; i < BUFFERS; ++i)
+            while (headers[next].dwFlags & WHDR_DONE)
             {
-                WAVEHDR& h = headers[i];
-                if (!(h.dwFlags & WHDR_DONE)) continue;
+                WAVEHDR& h = headers[next];
                 const int got = (int)(h.dwBytesRecorded / sizeof(int16_t));
-                const int16_t* s = data[i].data();
+                const int16_t* s = data[next].data();
                 for (int f = 0; f + FRAME <= got; f += FRAME)
                 {
                     double sum = 0.0;
@@ -671,16 +680,22 @@ namespace
                         const double v = s[f + k];
                         sum += v * v;
                         if (s[f + k] != 0) anyNonZero = true;
+                        peakSeen = (std::max)(peakSeen, std::abs((int)s[f + k]));
                     }
                     const double rms = std::sqrt(sum / FRAME);
+                    // The room is the quietest so far, and only QUIET frames
+                    // may raise it -- the first version let speech itself
+                    // raise it, so in a longer sentence the room climbed
+                    // until the speaker counted as silence, and the take
+                    // ended in the middle of what they were saying.
+                    const bool loud = floorLevel >= 0.0 && rms > (std::max)(floorLevel * 3.0, 60.0);
                     if (floorLevel < 0.0 || rms < floorLevel) floorLevel = rms;
-                    else floorLevel += (rms - floorLevel) * 0.002;
-                    const bool loud = rms > (std::max)(floorLevel * 3.0, 60.0);
+                    else if (!loud) floorLevel += (rms - floorLevel) * 0.005;
                     loudRun = loud ? loudRun + 1 : 0;
                     const long long at = (long long)pcm.size() + f;
                     if (loudRun >= 3)   // 60 ms of it, not a click
                     {
-                        if (firstVoice < 0) firstVoice = at;
+                        if (firstVoice < 0) firstVoice = at - 2 * FRAME;
                         lastVoiceAt = at;
                         std::lock_guard<std::mutex> lock(take->m);
                         take->any = true;
@@ -690,6 +705,7 @@ namespace
                 pcm.insert(pcm.end(), s, s + got);
                 h.dwFlags &= ~WHDR_DONE;
                 if (!stopping) waveInAddBuffer(in, &h, sizeof(h));
+                next = (next + 1) % BUFFERS;
             }
         }
         waveInReset(in);
@@ -717,6 +733,11 @@ namespace
         // From a little before the first word to a little after the last.
         const long long from = (std::max)(0LL, firstVoice - RATE * 3 / 10);
         const long long to = (std::min)((long long)pcm.size(), lastVoiceAt + RATE / 2);
+        // The shape of the take, never its content: enough to tell a cut-off
+        // or a too-quiet recording from Whisper mishearing.
+        LL_INFOS("LumenAISpeech") << "Take " << pcm.size() / (RATE / 10) / 10.0 << " s, speech "
+                                  << firstVoice / (RATE / 10) / 10.0 << "-" << lastVoiceAt / (RATE / 10) / 10.0
+                                  << " s, room " << (int)floorLevel << ", peak " << peakSeen << LL_ENDL;
         std::vector<int16_t> spoken(pcm.begin() + from, pcm.begin() + to);
         transcribe(take, spoken);
     }

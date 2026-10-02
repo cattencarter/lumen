@@ -2066,6 +2066,7 @@ void LumenAIChatFloater::onMic()
     // let them say no. On a Mac it is always ready and this does nothing.
     {
         const LumenAISpeech::SetupState st = LumenAISpeech::setupState();
+        LL_INFOS("LumenAISpeech") << "Mic clicked; speech setup state " << (int)st.state << LL_ENDL;
         if (st.state != LumenAISpeech::Setup::Ready)
         {
             if (mMicBtn) mMicBtn->setToggleState(false);
@@ -2111,6 +2112,7 @@ void LumenAIChatFloater::offerSpeechSetup(const std::string& last_error)
     if (!last_error.empty()) sayNote("The last download did not finish: " + last_error);
     LLSD args;
     args["SIZE"] = LumenAISpeech::setupSize();
+    LL_INFOS("LumenAISpeech") << "Asking whether to download speech recognition" << LL_ENDL;
     LLHandle<LLFloater> handle = getHandle();
     LLNotificationsUtil::add("LumenSetupSpeech", args, LLSD(),
         [handle](const LLSD& notification, const LLSD& response)
@@ -2422,7 +2424,11 @@ static std::string shortModel(const std::string& m)
 void LumenAIChatFloater::refreshTitle()
 {
     const std::string provider = gSavedSettings.getString("LumenAIProvider");
-    const std::string model = gSavedSettings.getString(modelSetting(provider));
+    // None has no model: modelSetting() falls back to Anthropic's, which put
+    // "Sonnet" in the title of a viewer with no AI chosen (the author, on a
+    // fresh Windows install, 2026-10-02).
+    const std::string model = (provider.empty() || provider == LumenAIKeys::NONE)
+        ? std::string() : gSavedSettings.getString(modelSetting(provider));
     setTitle(model.empty() ? std::string("Assistant")
                            : "Assistant \xc2\xb7 " + shortModel(model));
 }
