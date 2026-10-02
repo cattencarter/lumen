@@ -53,7 +53,8 @@ namespace LumenAISpeech
 
     /**
      * Start listening. `language` is a locale such as "da-DK", or empty for the
-     * computer's own language. The first time, macOS asks the user about the
+     * computer's own language. One the computer cannot listen in falls back to
+     * the computer's own, and that to English, with a note saying so. The first time, macOS asks the user about the
      * microphone and speech recognition; the answer arrives later, so a true
      * return means "started or asking", and poll() says what happened. Windows
      * asks nothing, but starts later too, with the same true return.
@@ -78,6 +79,9 @@ namespace LumenAISpeech
      * LumenAISpeechLanguage holds; empty there means the computer's own.
      */
     std::vector<std::pair<std::string, std::string>> languages();
+
+    /** The computer's own language as a tag ("en_DK", "en-US"), or empty. */
+    std::string ownLanguage();
 #else
     inline bool supported() { return false; }
     inline bool start(const std::string&, std::string& why)
@@ -90,6 +94,7 @@ namespace LumenAISpeech
     inline bool listening() { return false; }
     inline Update poll() { return Update(); }
     inline std::vector<std::pair<std::string, std::string>> languages() { return {}; }
+    inline std::string ownLanguage() { return std::string(); }
 #endif
 }
 

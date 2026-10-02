@@ -43,6 +43,10 @@ namespace
     double      sStarted = 0.0;
     double      sStoppedAt = 0.0;
     std::string sLanguage;
+    // Said once, the first time the mic listens in English instead of the
+    // language it was meant to; handed over by poll().
+    std::string sPendingNote;
+    bool        sLanguageNoted = false;
 
     // Set by the permission callbacks, which run on their own threads:
     // 0 waiting, 1 both granted, -1 speech refused, -2 microphone refused.
@@ -107,14 +111,37 @@ namespace
     /** Both permissions are in place: open the microphone and start hearing. */
     bool begin(std::string& why)
     {
-        NSLocale* locale = sLanguage.empty()
+        // The language asked for; else the Mac's own; else English (the
+        // author, 2026-10-02: "Default to english if neither is supported").
+        NSLocale* wanted = sLanguage.empty()
             ? [NSLocale currentLocale]
             : [NSLocale localeWithLocaleIdentifier:[NSString stringWithUTF8String:sLanguage.c_str()]];
+        NSLocale* locale = wanted;
         sRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:locale];
+        if (!sRecognizer && !sLanguage.empty())
+        {
+            locale = [NSLocale currentLocale];
+            sRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:locale];
+        }
+        for (NSString* english in @[ @"en-US", @"en-GB" ])
+        {
+            if (sRecognizer) break;
+            locale = [NSLocale localeWithLocaleIdentifier:english];
+            sRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:locale];
+            if (sRecognizer && !sLanguageNoted)
+            {
+                NSString* name = [[NSLocale currentLocale]
+                    localizedStringForLocaleIdentifier:wanted.localeIdentifier];
+                sPendingNote = "Speech recognition does not understand "
+                    + std::string(name ? name.UTF8String : wanted.localeIdentifier.UTF8String)
+                    + ", so the mic listens in English.";
+                sLanguageNoted = true;
+            }
+        }
         if (!sRecognizer)
         {
             why = "Speech recognition does not understand this language: "
-                + std::string(locale.localeIdentifier.UTF8String) + ".";
+                + std::string(wanted.localeIdentifier.UTF8String) + ".";
             return false;
         }
         if (!sRecognizer.isAvailable)
@@ -292,6 +319,11 @@ LumenAISpeech::Update LumenAISpeech::poll()
 {
     Update u;
     if (sPhase == IDLE) return u;
+    if (!sPendingNote.empty())
+    {
+        u.note = sPendingNote;
+        sPendingNote.clear();
+    }
 
     if (sPhase == ASKING)
     {
@@ -374,4 +406,10 @@ std::vector<std::pair<std::string, std::string>> LumenAISpeech::languages()
     std::sort(out.begin(), out.end(),
               [](const auto& a, const auto& b) { return a.second < b.second; });
     return out;
+}
+
+std::string LumenAISpeech::ownLanguage()
+{
+    NSString* tag = [NSLocale currentLocale].localeIdentifier;
+    return tag ? std::string(tag.UTF8String) : std::string();
 }

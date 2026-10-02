@@ -543,3 +543,14 @@ std::vector<std::pair<std::string, std::string>> LumenAISpeech::languages()
               [](const auto& a, const auto& b) { return a.second < b.second; });
     return out;
 }
+
+std::string LumenAISpeech::ownLanguage()
+{
+    try
+    {
+        if (Language own = SpeechRecognizer::SystemSpeechLanguage())
+            return to_string(own.LanguageTag());
+    }
+    catch (...) {}
+    return std::string();
+}

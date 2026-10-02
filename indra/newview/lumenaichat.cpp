@@ -2072,10 +2072,55 @@ void LumenAIChatFloater::onMic()
     if (mMicBtn) mMicBtn->setToggleState(true);
 }
 
+// <Lumen> Which language the mic listens in -- the author, 2026-10-02: the
+// "Listen in" choice when there is one; else the viewer's own language when it
+// was picked on purpose (not "default") and speech offers it; else the
+// computer's own, which is what an empty answer means. The speech code then
+// falls back to English when even that is not offered, and says so.
+static std::string speechLanguage()
+{
+    const std::string chosen = gSavedSettings.getString("LumenAISpeechLanguage");
+    if (!chosen.empty()) return chosen;
+
+    std::string viewer = gSavedSettings.getString("Language");
+    LLStringUtil::toLower(viewer);
+    if (viewer.empty() || viewer == "default") return std::string();
+
+    auto prefix = [](const std::string& tag)
+    {
+        std::string p = tag.substr(0, tag.find_first_of("-_"));
+        LLStringUtil::toLower(p);
+        return p;
+    };
+    // The computer already speaks the viewer's language: keep its own variant.
+    if (prefix(LumenAISpeech::ownLanguage()) == viewer) return std::string();
+
+    // The usual country for each language the viewer offers, so "pt" means
+    // Brazilian Portuguese and "en" American English unless nothing else fits.
+    static const std::map<std::string, std::string> usual = {
+        { "en", "en-us" }, { "da", "da-dk" }, { "de", "de-de" }, { "es", "es-es" },
+        { "fr", "fr-fr" }, { "it", "it-it" }, { "pl", "pl-pl" }, { "pt", "pt-br" },
+        { "ru", "ru-ru" }, { "tr", "tr-tr" }, { "ja", "ja-jp" }, { "zh", "zh-cn" },
+        { "az", "az-az" } };
+    const auto it = usual.find(viewer);
+    std::string first;
+    for (const auto& lang : LumenAISpeech::languages())
+    {
+        if (prefix(lang.first) != viewer) continue;
+        std::string tag = lang.first;
+        LLStringUtil::toLower(tag);
+        LLStringUtil::replaceChar(tag, '_', '-');
+        if (it != usual.end() && tag == it->second) return lang.first;
+        if (first.empty()) first = lang.first;
+    }
+    return first;   // empty: speech has nothing in the viewer's language
+}
+// </Lumen>
+
 bool LumenAIChatFloater::startListening()
 {
     std::string why;
-    if (!LumenAISpeech::start(gSavedSettings.getString("LumenAISpeechLanguage"), why))
+    if (!LumenAISpeech::start(speechLanguage(), why))
     {
         sayNote(why);
         return false;
