@@ -642,11 +642,16 @@ namespace
 
         std::vector<int16_t> pcm;
         pcm.reserve(RATE * 60);
-        // Loudness, in 20 ms frames: the quietest so far is the room, and
-        // speech is clearly above it. The floor rises slowly, so a fan that
-        // starts does not read as somebody talking forever.
+        // Loudness, in 20 ms frames: speech is three times the room's level
+        // or more, and the room's level follows the room (see below), so a
+        // fan that starts does not read as somebody talking for ever.
         const int FRAME = RATE / 50;
         double floorLevel = -1.0;
+        const size_t RECENT = 150;           // three seconds of frames
+        std::vector<double> recent, sorted;
+        recent.reserve(RECENT);
+        sorted.reserve(RECENT);
+        size_t recentAt = 0;
         int loudRun = 0;
         long long firstVoice = -1, lastVoiceAt = -1;
         bool anyNonZero = false;
@@ -683,14 +688,25 @@ namespace
                         peakSeen = (std::max)(peakSeen, std::abs((int)s[f + k]));
                     }
                     const double rms = std::sqrt(sum / FRAME);
-                    // The room is the quietest so far, and only QUIET frames
-                    // may raise it -- the first version let speech itself
-                    // raise it, so in a longer sentence the room climbed
-                    // until the speaker counted as silence, and the take
-                    // ended in the middle of what they were saying.
+                    // The room's level is the quietest tenth of the last three
+                    // seconds, not the quietest moment ever. Both earlier
+                    // versions anchored on a minimum: a blink of digital
+                    // silence as the microphone opens set it near zero, after
+                    // which ordinary room noise counted as speech and the take
+                    // never ended on a pause (the author, 2026-10-02: "this
+                    // one didn't" stop). The first also let speech raise it,
+                    // so a long sentence came to count as silence. Exact
+                    // silence is not the room and is left out.
+                    if (rms >= 1.0)
+                    {
+                        if (recent.size() < RECENT) recent.push_back(rms);
+                        else { recent[recentAt] = rms; recentAt = (recentAt + 1) % RECENT; }
+                        sorted.assign(recent.begin(), recent.end());
+                        const size_t tenth = sorted.size() / 10;
+                        std::nth_element(sorted.begin(), sorted.begin() + tenth, sorted.end());
+                        floorLevel = sorted[tenth];
+                    }
                     const bool loud = floorLevel >= 0.0 && rms > (std::max)(floorLevel * 3.0, 60.0);
-                    if (floorLevel < 0.0 || rms < floorLevel) floorLevel = rms;
-                    else if (!loud) floorLevel += (rms - floorLevel) * 0.005;
                     loudRun = loud ? loudRun + 1 : 0;
                     const long long at = (long long)pcm.size() + f;
                     if (loudRun >= 3)   // 60 ms of it, not a click
