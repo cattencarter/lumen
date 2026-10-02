@@ -116,7 +116,7 @@ namespace LumenAISpeech
     /** Delete the downloaded model; the mic asks again next time. */
     void removeSetup();
 
-    /** How big the download is, in words ("148 MB"). */
+    /** How big the download is, in words ("190 MB"). */
     std::string setupSize();
 #else
     inline SetupState setupState() { return SetupState(); }

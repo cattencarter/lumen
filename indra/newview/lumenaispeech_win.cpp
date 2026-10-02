@@ -30,13 +30,14 @@
  *
  * THE MODEL is a one-time download the person agrees to first: the author,
  * 2026-10-02, *"the installation must be easy and painless, guide the user
- * through, and give the option to say no."* English only (ggml-base.en, 148
- * MB), because Windows was never going to listen in Danish anyway and the
- * English-only model is the better one at that size. It is fetched by
+ * through, and give the option to say no."* English only (ggml-small.en,
+ * quantised, 190 MB): Windows was never going to listen in Danish anyway, the
+ * English-only model is the better one at that size, and base.en at 148 MB
+ * did not understand the author well enough. It is fetched by
  * Windows' own curl.exe from Hugging Face, pinned to one revision, and
  * checked against its SHA-256 before it is used. It lives in
  * %LOCALAPPDATA%\Lumen\whisper -- local, not roaming, so a company's roaming
- * profile does not carry 148 MB around -- and Preferences can remove it.
+ * profile does not carry 190 MB around -- and Preferences can remove it.
  *
  * Every program is started with its working folder set to that folder and
  * given only plain ASCII file names, because whisper-cli reads its arguments in
@@ -74,14 +75,22 @@ namespace
     // Pinned to one revision of the repository, and checked against its own
     // SHA-256 (Hugging Face's LFS record), so nothing else can arrive under
     // this name.
-    const wchar_t* const MODEL_FILE = L"ggml-base.en.bin";
-    const wchar_t* const MODEL_PART = L"ggml-base.en.bin.part";
+    //
+    // small.en, quantised to 5 bits: the author tried base.en (148 MB) first,
+    // 2026-10-02, and *"it doesn't understand me well enough and I speak
+    // pretty good english. the longer time is something we'll have to live
+    // with."* So the next size up, at nearly its full accuracy in a third of
+    // its 488 MB.
+    const wchar_t* const MODEL_FILE = L"ggml-small.en-q5_1.bin";
+    const wchar_t* const MODEL_PART = L"ggml-small.en-q5_1.bin.part";
     const wchar_t* const MODEL_URL =
         L"https://huggingface.co/ggerganov/whisper.cpp/resolve/"
-        L"5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin";
-    const long long MODEL_BYTES = 147964211LL;
+        L"5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en-q5_1.bin";
+    const long long MODEL_BYTES = 190098681LL;
     const char* const MODEL_SHA256 =
-        "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+        "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30";
+    // The first model this used, removed once the new one is in place.
+    const wchar_t* const OLD_MODEL_FILE = L"ggml-base.en.bin";
 
     // ---- the same clock as the Mac's --------------------------------------
 
@@ -380,6 +389,7 @@ namespace
         }
         DeleteFileW((dir + L"\\download.log").c_str());
         DeleteFileW((dir + L"\\download-out.log").c_str());
+        DeleteFileW((dir + L"\\" + OLD_MODEL_FILE).c_str());
         LL_INFOS("LumenAISpeech") << "Speech model downloaded and checked" << LL_ENDL;
         std::lock_guard<std::mutex> lock(sDownload->m);
         sDownload->running = false;
@@ -746,6 +756,7 @@ bool LumenAISpeech::start(const std::string& /*language: English only here*/, st
         why = "Speech recognition is not set up yet. Click the mic to set it up.";
         return false;
     }
+    DeleteFileW(inData(OLD_MODEL_FILE).c_str());   // the first model, if a test left it
     sTake = std::make_shared<Take>();
     std::thread(record, sTake).detach();
     sPhase = LISTENING;
@@ -923,6 +934,7 @@ void LumenAISpeech::removeSetup()
     if (sPhase != IDLE) cancel();
     DeleteFileW(inData(MODEL_FILE).c_str());
     DeleteFileW(inData(MODEL_PART).c_str());
+    DeleteFileW(inData(OLD_MODEL_FILE).c_str());
     std::lock_guard<std::mutex> lock(sDownload->m);
     sDownload->error.clear();
     LL_INFOS("LumenAISpeech") << "Speech model removed" << LL_ENDL;
@@ -930,5 +942,5 @@ void LumenAISpeech::removeSetup()
 
 std::string LumenAISpeech::setupSize()
 {
-    return "148 MB";
+    return "190 MB";
 }
