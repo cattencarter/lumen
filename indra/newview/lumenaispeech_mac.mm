@@ -18,6 +18,7 @@
 
 #include "lumenaispeech.h"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -357,4 +358,20 @@ LumenAISpeech::Update LumenAISpeech::poll()
     u.finished = true;
     if (!u.text.empty()) u.error.clear();   // words beat a late complaint
     return u;
+}
+
+std::vector<std::pair<std::string, std::string>> LumenAISpeech::languages()
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    NSLocale* here = [NSLocale currentLocale];
+    for (NSLocale* l in [SFSpeechRecognizer supportedLocales])
+    {
+        NSString* tag = l.localeIdentifier;
+        if (!tag) continue;
+        NSString* name = [here localizedStringForLocaleIdentifier:tag];
+        out.emplace_back(tag.UTF8String, name ? std::string(name.UTF8String) : std::string(tag.UTF8String));
+    }
+    std::sort(out.begin(), out.end(),
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+    return out;
 }

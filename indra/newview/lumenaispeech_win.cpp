@@ -28,6 +28,7 @@
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Media.SpeechRecognition.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -525,4 +526,20 @@ LumenAISpeech::Update LumenAISpeech::poll()
     u.finished = true;
     if (!u.text.empty()) u.error.clear();   // words beat a late complaint
     return u;
+}
+
+std::vector<std::pair<std::string, std::string>> LumenAISpeech::languages()
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    try
+    {
+        for (const Language& l : SpeechRecognizer::SupportedTopicLanguages())
+        {
+            out.emplace_back(to_string(l.LanguageTag()), to_string(l.DisplayName()));
+        }
+    }
+    catch (...) {}
+    std::sort(out.begin(), out.end(),
+              [](const auto& a, const auto& b) { return a.second < b.second; });
+    return out;
 }

@@ -35,6 +35,7 @@
 #include "lumenaiclaude.h"
 #include "lumenaicodex.h"
 #include "lumenaivibe.h"     // <Lumen>
+#include "lumenaispeech.h"   // <Lumen> the mic's languages
 #include "llsdjson.h"
 #include "llcoros.h"
 #include "lleventcoro.h"
@@ -452,6 +453,7 @@ bool LumenPanelPreferenceAIKeys::postBuild()
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
     syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
     syncModelCombo(findChild<LLComboBox>("model_vibe"),      "LumenAIVibeModel");   // <Lumen>
+    fillSpeechLanguages();   // <Lumen>
 
     // Copy the command rather than ask somebody to retype a curl line with a
     // pipe in it. Read from the panel, not from codexStatus(), so the button
@@ -809,9 +811,48 @@ void LumenPanelPreferenceAIKeys::onOpen(const LLSD& key)
     syncModelCombo(findChild<LLComboBox>("model_codex"),     "LumenAICodexModel");
     syncModelCombo(findChild<LLComboBox>("model_claude"),    "LumenAIClaudeCodeModel");
     syncModelCombo(findChild<LLComboBox>("model_vibe"),      "LumenAIVibeModel");   // <Lumen>
+    fillSpeechLanguages();   // <Lumen>
 
     refresh();
 }
+
+// <Lumen> The languages the mic can listen in, from the computer itself (the
+// author, 2026-10-02: "what if a german user wants to speak in english").
+// First the computer's own, which is what an empty setting means; then every
+// language this Mac or Windows offers. A saved language this computer does not
+// offer -- set on another machine -- is kept and shown, not silently replaced.
+void LumenPanelPreferenceAIKeys::fillSpeechLanguages()
+{
+    LLComboBox* combo = findChild<LLComboBox>("speech_language");
+    if (!combo) return;
+
+    const auto offered = LumenAISpeech::languages();
+    if (offered.empty())
+    {
+        combo->setEnabled(false);   // no speech engine here
+        return;
+    }
+    combo->removeall();
+    combo->add("Same as the computer", LLSD(std::string()), ADD_BOTTOM);
+    for (const auto& lang : offered)
+    {
+        combo->add(lang.second, LLSD(lang.first), ADD_BOTTOM);
+    }
+
+    const std::string value = gSavedSettings.getString("LumenAISpeechLanguage");
+    if (value.empty())
+    {
+        combo->selectFirstItem();
+        return;
+    }
+    combo->setValue(LLSD(value));
+    if (combo->getValue().asString() != value)
+    {
+        combo->add(value, LLSD(value), ADD_BOTTOM);
+        combo->setValue(LLSD(value));
+    }
+}
+// </Lumen>
 
 /**
  * What Codex's state on this machine actually IS, checked rather than assumed.

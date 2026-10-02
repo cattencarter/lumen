@@ -32,6 +32,8 @@
 #define LUMEN_AISPEECH_H
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace LumenAISpeech
 {
@@ -69,6 +71,13 @@ namespace LumenAISpeech
 
     /** Called every frame while listening. Also ends a pause or a long take. */
     Update poll();
+
+    /**
+     * The languages this computer can listen in, as {tag, name}, sorted by
+     * name -- for the choice in Preferences > AI > Assistant. The tag is what
+     * LumenAISpeechLanguage holds; empty there means the computer's own.
+     */
+    std::vector<std::pair<std::string, std::string>> languages();
 #else
     inline bool supported() { return false; }
     inline bool start(const std::string&, std::string& why)
@@ -80,6 +89,7 @@ namespace LumenAISpeech
     inline void cancel() {}
     inline bool listening() { return false; }
     inline Update poll() { return Update(); }
+    inline std::vector<std::pair<std::string, std::string>> languages() { return {}; }
 #endif
 }
 

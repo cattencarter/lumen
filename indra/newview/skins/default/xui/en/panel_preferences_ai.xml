@@ -525,9 +525,21 @@
       </text>
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="388" width="480" height="14" font="SansSerifBold">
+       left="20" top="388" width="200" height="14" font="SansSerifBold">
           Talking instead of typing
       </text>
+
+      <!-- <Lumen> Filled in C++ from what this computer can listen in
+           (LumenAISpeech::languages), so it never offers a language the
+           Mac or Windows does not have; the first item is the computer's own. -->
+      <text type="string" follows="left|top" layout="topleft"
+       left="232" top="388" width="64" height="16">
+          Listen in
+      </text>
+
+      <combo_box control_name="LumenAISpeechLanguage" follows="left|top" layout="topleft"
+       left="300" top="384" width="200" height="22"
+       name="speech_language" />
 
       <check_box control_name="LumenAISpeechAutoSend" follows="left|top" layout="topleft"
        left="20" top="408" width="480" height="16"
