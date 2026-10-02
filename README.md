@@ -14,9 +14,14 @@ it is based on.
 
 > ### A proof of concept, delivered as is
 >
-> There is no support for this. It is made in spare time, it has rough edges,
-> and it may simply stop working. Use it if it is useful to you — that is the
-> whole of what it asks.
+> **This software is not provided or supported by Linden Lab, the makers of
+> Second Life.** Lumen is not affiliated with Linden Lab or the Firestorm
+> project. There is no customer support. What it sends where, and what it does
+> that other viewers do not, is on the
+> [privacy page](https://needfulsl.com/lumen/privacy.html).
+>
+> It is made in spare time, it has rough edges, and it may simply stop working.
+> Use it if it is useful to you — that is the whole of what it asks.
 >
 > **Please do not contact Firestorm about it.** The Phoenix Firestorm Project
 > has no affiliation with Lumen beyond having written the excellent source base
@@ -94,4 +99,4 @@ viewer arrived under one and our own tooling was written under another; the
 boundary is the `lumen/` directory and nothing else.
 
 Second Life is a trademark of Linden Research, Inc. Lumen is not affiliated
-with Linden Research or with the Phoenix Firestorm Project.
+with Linden Lab or the Firestorm project.
