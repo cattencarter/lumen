@@ -14,9 +14,13 @@
  * own button. The one thing the system shows, and nothing can stop it, is the
  * first-time permission question and the menu-bar microphone dot.
  *
- * macOS only for now (Apple's Speech framework, lumenaispeech_mac.mm). On a Mac
- * English is recognised on the machine; Danish goes to Apple's servers (checked
- * on the Mac Studio: supportsOnDeviceRecognition false for da-DK).
+ * macOS: Apple's Speech framework (lumenaispeech_mac.mm). English is recognised
+ * on the machine; Danish goes to Apple's servers (checked on the Mac Studio:
+ * supportsOnDeviceRecognition false for da-DK).
+ * Windows: Windows.Media.SpeechRecognition (lumenaispeech_win.cpp), continuous
+ * dictation on Microsoft's servers -- it needs "Online speech recognition" on
+ * in Settings > Privacy & security > Speech, and listens in Windows' own speech
+ * language. It does not offer Danish (the author's laptop, 2026-10-02).
  *
  * Everything here is called on the main thread. The framework answers on its
  * own threads; those answers are kept behind a lock and handed over by poll(),
@@ -39,7 +43,7 @@ namespace LumenAISpeech
         bool        nothing_heard = false;   // finished with no words, nobody's fault (silence)
     };
 
-#if LL_DARWIN
+#if LL_DARWIN || LL_WINDOWS
     /** This platform can do it at all. */
     bool supported();
 
@@ -47,7 +51,8 @@ namespace LumenAISpeech
      * Start listening. `language` is a locale such as "da-DK", or empty for the
      * computer's own language. The first time, macOS asks the user about the
      * microphone and speech recognition; the answer arrives later, so a true
-     * return means "started or asking", and poll() says what happened.
+     * return means "started or asking", and poll() says what happened. Windows
+     * asks nothing, but starts later too, with the same true return.
      * False with `why` when it cannot even begin.
      */
     bool start(const std::string& language, std::string& why);

@@ -2022,6 +2022,17 @@ if (WINDOWS)
          llvelopack.cpp
          llwindebug.cpp
          )
+
+    # <Lumen> Talking to the assistant: Windows.Media.SpeechRecognition through
+    # C++/WinRT. No precompiled header, so windows.h and its macros never stand
+    # in front of the WinRT headers.
+    list(APPEND viewer_SOURCE_FILES lumenaispeech_win.cpp)
+    set_source_files_properties(
+      lumenaispeech_win.cpp
+      PROPERTIES
+      SKIP_PRECOMPILE_HEADERS TRUE
+      )
+    # </Lumen>
     set_source_files_properties(
       llappviewerwin32.cpp
       llvelopack.cpp
@@ -2667,10 +2678,14 @@ if (WINDOWS)
 endif (WINDOWS)
 # </Lumen>
 
-# <Lumen> The Assistant's mic button (lumenaispeech_mac.mm).
+# <Lumen> The Assistant's mic button (lumenaispeech_mac.mm, lumenaispeech_win.cpp).
 if (DARWIN)
     target_link_libraries(${VIEWER_BINARY_NAME} "-framework Speech" "-framework AVFoundation")
 endif (DARWIN)
+if (WINDOWS)
+    # The WinRT umbrella library: activation of Windows' own runtime classes.
+    target_link_libraries(${VIEWER_BINARY_NAME} windowsapp)
+endif (WINDOWS)
 # </Lumen>
 
 target_link_libraries(${VIEWER_BINARY_NAME}
