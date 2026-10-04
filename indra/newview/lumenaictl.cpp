@@ -223,6 +223,8 @@ namespace
         std::set<LLUUID> mBefore;
     };
     std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
+    // <Lumen> What a watched script arrived as, by prim: see scriptWatchSettled.
+    std::map<LLUUID, std::string> sArrivedScriptName;
 
     /**
      * What edit_script last wrote into each object's script window, by the
@@ -377,6 +379,10 @@ namespace
             arrived = *h && (*h)->getType() == LLAssetType::AT_LSL_TEXT
                    && lname.rfind(sw->second->mName, 0) == 0
                    && !sw->second->mBefore.count((*h)->getUUID());
+            // <Lumen> The name it really arrived under: a second "New Script"
+            // in one prim is listed as "New Script 1", and opening it by the
+            // name asked for found every one of them.
+            if (arrived) sArrivedScriptName[obj->getID()] = (*h)->getName();
         }
         const F64 now = LLTimer::getTotalSeconds();
         if (arrived || now > sw->second->mUntil)
@@ -15456,6 +15462,15 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     return waiting("the region has not listed it yet.");
                 }
                 sOpenedScriptWindow = LLHandle<LLFloater>();
+                // <Lumen> By the name it arrived under (scriptWatchSettled).
+                std::map<LLUUID, std::string>::iterator arrived_as = sArrivedScriptName.find(j.object);
+                if (arrived_as != sArrivedScriptName.end())
+                {
+                    j.name = arrived_as->second;
+                    r["created"] = j.name;
+                    sArrivedScriptName.erase(arrived_as);
+                }
+                // </Lumen>
                 LLSD op;
                 op["object_id"] = j.object;
                 op["name"] = j.name;
@@ -15901,6 +15916,15 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         {
             if (asked.empty() || names[i].find(asked) != std::string::npos) want.push_back(i);
         }
+        // <Lumen> A name that is exactly one of them means that one: "New
+        // Script" is not also "New Script 1" and "New Script 2".
+        if (!asked.empty() && want.size() > 1)
+        {
+            std::vector<size_t> exact;
+            for (size_t i : want) if (names[i] == asked) exact.push_back(i);
+            if (!exact.empty()) want.swap(exact);
+        }
+        // </Lumen>
 
         if (want.empty() && waiting > 0)
         {
