@@ -4226,25 +4226,34 @@ namespace
             "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
             "\"delete the folders that are empty now\". **Off until the user switches it on** in "
             "Preferences > AI > Permissions; while it is off the answer says so -- tell them where, "
-            "and do not work round it one item at a time unless they ask. `steps` is a short list "
+            "and do not work round it one item at a time. `steps` is a short list "
             "(at most 20), done in order; each is a selection and what to do with it. A selection "
-            "is `find`: `name` (words, each a whole word of the item's OWN name -- \"pumpkin\" finds "
-            "\"Pumpkins\", not \"Pumpkinhead\", and not things that are only in a Pumpkin "
+            "is `find`, and it picks ITEMS -- or, with `folders`: true, FOLDERS. **In Second Life a "
+            "product is usually a folder** (\"Pumpkin Spice Sweater\") holding things named only "
+            "for what they are, so \"put my pumpkin things in Halloween\" usually means those "
+            "folders: select them with `folders`: true and each is moved, or deleted, WHOLE, with "
+            "what is in it -- never emptied item by item into one pile. `name` (words, each a "
+            "whole word of the item's -- or, with `folders`, the folder's -- OWN name: \"pumpkin\" "
+            "finds \"Pumpkins\", not \"Pumpkinhead\", and not things that are only in a Pumpkin "
             "folder; add `match`: \"loose\" to match as search does, in the folder too, inside "
             "longer words and with spelling repaired, and the plan counts those apart), `type` "
-            "(a kind, as search takes it), `creator`, and `in` (a folder and everything inside "
+            "(a kind, as search takes it), `creator` (an avatar id, or a name that is one maker's "
+            "name in full), and `in` (a folder and everything inside "
             "it, by id or by path as search gives it in `folder`) -- at least one of name, "
-            "creator or in. Anything in a folder the user protected is left alone, and the plan "
-            "says so. `do` is one of: `move`, with `to` (a folder by id or path, "
+            "creator or in; with `folders`, only name and in. Anything in a folder the user "
+            "protected is left alone, and the plan says so. `do` is one of: `move`, with `to` (a "
+            "folder by id or path, "
             "or one a new_folder step earlier in the list makes); `rename`, with `replace` and "
             "`with` (that text in each name, ignoring case, becomes `with`; empty takes it out); "
-            "`delete` (to the Trash; never anything worn); `new_folder`, with `name` and `in` "
+            "`delete` (to the Trash; never anything worn, and a folder only when nothing in it is "
+            "worn, locked or protected); `new_folder`, with `name` and `in` "
             "(where; the top of the inventory without it; one of that name already there is used "
             "instead); `delete_empty_folders`, with `in` (folders inside it that hold nothing at "
             "all once the earlier steps have run go to the Trash -- never one holding anything). "
-            "Each thing is acted on once: when two steps pick the same item, the first has it. "
-            "Example: [{\"find\": {\"name\": \"pumpkin\"}, \"do\": \"move\", \"to\": "
-            "\"Halloween\"}, {\"find\": {\"in\": \"Products\", \"type\": \"script\", "
+            "Each thing is acted on once: when two steps pick the same item, the first has it, and "
+            "what is in a folder taken whole goes with it. "
+            "Example: [{\"find\": {\"name\": \"pumpkin\", \"folders\": true}, \"do\": \"move\", "
+            "\"to\": \"Halloween\"}, {\"find\": {\"in\": \"Products\", \"type\": \"script\", "
             "\"name\": \"unpack\"}, \"do\": \"delete\"}, {\"in\": \"Products\", \"do\": "
             "\"delete_empty_folders\"}].\n"
             "  **Plan first, then run the plan.** A call with `steps` changes nothing: it answers "
@@ -4336,31 +4345,47 @@ namespace
         {
             LLSD str; str["type"] = "string";
             LLSD bfind; bfind["type"] = "object";
-            bfind["description"] = "move, rename, delete: which items. At least one of name, "
-                                   "creator or in.";
+            bfind["description"] = "move, rename, delete: which items -- or, with `folders`: true, "
+                                   "which folders. At least one of name, creator or in.";
             LLSD bfind_props;
             LLSD bf_name = str; bf_name["description"] = "Words, each a whole word of the item's own "
-                                                         "name (a plural counts). See `match`.";
+                                                         "name -- or the folder's, with `folders` -- (a "
+                                                         "plural counts). See `match`.";
             LLSD bf_type = str; bf_type["description"] = "One kind, as search takes it: object, "
                                                          "clothing, notecard, landmark, script, ...";
             LLSD bf_creator = str; bf_creator["description"] = "Only things this person made: an "
-                                                               "avatar id, or a name.";
+                                                               "avatar id, or a name that is ONE maker's "
+                                                               "name in full -- two of that name, or none, "
+                                                               "and the plan asks for the id. The plan "
+                                                               "says which maker it took.";
             LLSD bf_in = str; bf_in["description"] = "Only inside this folder, at any depth: an id "
                                                      "or a path as search gives it in `folder`.";
             // <Lumen> How `name` matches: whole words by default, search's way when asked.
             LLSD bf_match = str;
             bf_match["description"] = "\"words\" (the default): each word of `name` a whole word of "
                                       "the item's own name. \"loose\": as search matches -- in the "
-                                      "folder too, inside longer words, spelling repaired; the plan "
+                                      "folder too, inside longer words, spelling repaired (with "
+                                      "`folders`: inside longer words of the folder's name); the plan "
                                       "and the question count those apart. Use loose only when the "
-                                      "user means it, or after a plan's `left_out` shows they do.";
+                                      "user means it. When a plan's `left_out` shows the words are in "
+                                      "the FOLDERS' names, select the folders (`folders`: true) "
+                                      "rather than pulling the items out of them loosely.";
             LLSD bf_match_enum = LLSD::emptyArray();
             bf_match_enum.append("words");
             bf_match_enum.append("loose");
             bf_match["enum"] = bf_match_enum;
+            // <Lumen> Folders, by their own names, taken whole.
+            LLSD bf_folders; bf_folders["type"] = "boolean";
+            bf_folders["description"] = "true: pick FOLDERS, not items -- by `name` (whole words of the "
+                                        "folder's own name) and/or `in` -- and move or delete each one "
+                                        "WHOLE, with everything in it. A product is usually a folder: "
+                                        "use this to move or delete products, never to empty them item "
+                                        "by item. Only with move and delete; leave out `type` and "
+                                        "`creator`. A folder is deleted only when nothing in it is worn, "
+                                        "locked or protected.";
             bfind_props["name"] = bf_name; bfind_props["type"] = bf_type;
             bfind_props["creator"] = bf_creator; bfind_props["in"] = bf_in;
-            bfind_props["match"] = bf_match;
+            bfind_props["match"] = bf_match; bfind_props["folders"] = bf_folders;
             bfind["properties"] = bfind_props;
 
             LLSD bdo = str;
@@ -10785,6 +10810,9 @@ namespace
     const size_t BULK_EXAMPLES     = 6;       // names shown per step in a plan
     const S32    BULK_LIST_CAP     = 25;      // refusals listed per step; the count is whole
     const F64    BULK_FOLDER_WAIT  = 30.0;    // how long a run waits for a folder it makes
+    // <Lumen> How many renames wait for Second Life's answer at once: each is
+    // a request in the same small pool the inventory's own loading uses.
+    const S32    BULK_RENAMES_IN_FLIGHT = 40;
 
     bool bulkAllowed()
     {
@@ -10812,7 +10840,10 @@ namespace
 
     struct BulkOp
     {
-        enum Kind { MOVE, RENAME, TRASH, NEW_FOLDER, TRASH_FOLDER };
+        // <Lumen> MOVE_FOLDER and TRASH_TREE: a folder selected by name,
+        // moved or put in the Trash whole, with all it holds. TRASH_FOLDER is
+        // delete_empty_folders', only ever an empty one.
+        enum Kind { MOVE, RENAME, TRASH, NEW_FOLDER, TRASH_FOLDER, MOVE_FOLDER, TRASH_TREE };
         Kind        kind = MOVE;
         S32         step = 0;        // the step it came from, from 0
         LLUUID      id;              // the item or folder; NEW_FOLDER: none until made
@@ -10834,13 +10865,15 @@ namespace
         S32  left_alone = 0;         // changed after the plan, so not touched
         S32  left_protected = 0;     // <Lumen> ...of those, in a folder protected since
         S32  folders_pending = 0;    // folders asked for, not answered yet
+        S32  renames_pending = 0;    // <Lumen> renames sent, not answered yet
+        bool renames_gave_up = false;   // <Lumen> ...and the run stopped waiting for them
         bool trashed_any = false;
         std::vector<S32> step_done, step_failed, step_left;
         LLSD failed_list = LLSD::emptyArray();
         LLSD left_list = LLSD::emptyArray();
         std::map<S32, LLUUID> made;  // NEW_FOLDER op -> its id; null when refused
         bool finished = false;
-        bool stopped = false;        // logged out or quitting part way
+        bool stopped = false;        // logged out, disconnected or quitting part way
         bool stopped_by_user = false;   // <Lumen> Clear, or Stop in the history window
         bool told_in_reply = false;  // a reply carried the whole outcome
     };
@@ -10859,6 +10892,25 @@ namespace
     };
 
     std::map<std::string, BulkPlan> sBulkPlans;
+    // <Lumen> What became of a plan that is gone, by its id, for a while: "no
+    // such plan" after a No, or after it ran, read as "make a new one" -- the
+    // workaround the No forbids, or the same run done twice.
+    struct BulkGone { F64 at = 0.0; std::string what; };
+    std::map<std::string, BulkGone> sBulkGone;
+    const F64 BULK_GONE_KEEPS = 7200.0;
+    void bulkForget(const std::string& plan_id, const std::string& what)
+    {
+        BulkGone& g = sBulkGone[plan_id];
+        g.at = LLTimer::getTotalSeconds();
+        g.what = what;
+    }
+    std::string bulkExpired(const std::string& plan_id)
+    {
+        return "Plan \"" + plan_id + "\" was not run: it was more than ten minutes old, and the "
+               "inventory may have moved on since. Nothing was changed. If the user still wants it, "
+               "make a new plan with the same `steps` and run that.";
+    }
+    // </Lumen>
     std::shared_ptr<BulkRun> sBulkActive;     // the run in progress, if any
     std::map<std::string, S32> sTrashAsked;   // empty_trash: the count the question showed
     // <Lumen> empty_trash: when it first asked for the Trash to be loaded, and
@@ -10880,7 +10932,17 @@ namespace
             const bool drop = p.run
                 ? (p.run->finished && now - p.run->started > BULK_RUN_KEEPS)
                 : (now - p.made_at > BULK_PLAN_KEEPS + (p.asked ? ASK_ABANDONED : 0.0));
-            if (drop) it = sBulkPlans.erase(it); else ++it;
+            if (!drop) { ++it; continue; }
+            // <Lumen> Remembered as what became of it.
+            bulkForget(it->first, p.run
+                ? llformat("Plan \"%s\" already ran, as change set %lld -- inventory / history shows "
+                           "it. Nothing was done again.", it->first.c_str(), (long long)p.run->change_set)
+                : bulkExpired(it->first));
+            it = sBulkPlans.erase(it);
+        }
+        for (std::map<std::string, BulkGone>::iterator it = sBulkGone.begin(); it != sBulkGone.end(); )
+        {
+            if (now - it->second.at > BULK_GONE_KEEPS) it = sBulkGone.erase(it); else ++it;
         }
     }
 
@@ -10967,6 +11029,33 @@ namespace
         list.append(e);
     }
 
+    // <Lumen>
+    /**
+     * Something worn among these, or empty: its name. Links do not count --
+     * putting a link in the Trash leaves the thing itself worn -- as in the
+     * viewer's own check for deleting a folder.
+     */
+    std::string bulkWornIn(const LLInventoryModel::item_array_t& items)
+    {
+        for (const LLPointer<LLViewerInventoryItem>& i : items)
+        {
+            if (i && !i->getIsLinkType() && get_is_item_worn(i->getUUID())) return i->getName();
+        }
+        return std::string();
+    }
+
+    /** A folder loaded whole, with every folder in it: what it holds can be counted and checked. */
+    bool bulkWhole(const LLUUID& id, const LLInventoryModel::cat_array_t& cats)
+    {
+        if (!gInventory.isCategoryComplete(id)) return false;
+        for (const LLPointer<LLViewerInventoryCategory>& c : cats)
+        {
+            if (c && !gInventory.isCategoryComplete(c->getUUID())) return false;
+        }
+        return true;
+    }
+    // </Lumen>
+
     /**
      * Turn the caller's steps into a plan of single changes, or say which step
      * is wrong. Nothing is changed here.
@@ -11021,12 +11110,59 @@ namespace
             return f->second;
         };
         S32 n_kept = 0;   // left alone in a protected folder, in all steps
+        // <Lumen> Where a move goes: a folder an earlier new_folder step makes
+        // (by its name or path), or one there now, by id or path.
+        auto destOf = [&](const std::string& to, LLUUID& dest, S32& dest_made, std::string& dest_path,
+                          LLSD& err) -> bool
+        {
+            for (const Planned& p : planned)
+            {
+                if (lowered(to) == lowered(p.name) || lowered(to) == lowered(p.path))
+                {
+                    dest = p.id; dest_made = p.id.isNull() ? p.op : -1; dest_path = p.path;
+                    break;
+                }
+            }
+            if (dest.isNull() && dest_made < 0)
+            {
+                LLSD ferr;
+                dest = bulkFolder(to, ferr);
+                if (dest.isNull())
+                {
+                    err = ferr;
+                    err["message"] = ferr["message"].asString()
+                                   + " To make it, put a new_folder step before this one.";
+                    return false;
+                }
+                dest_path = pathOf(dest);
+            }
+            if (dest.notNull())
+            {
+                err = LLSD();
+                if (bulkWithin(dest, trash))
+                {
+                    err["message"] = "moving into the Trash is deleting -- use `do: delete`.";
+                    return false;
+                }
+                const std::string why = heldIn(dest);
+                if (!why.empty())
+                {
+                    err["message"] = "not into that folder: " + why + ".";
+                    return false;
+                }
+            }
+            return true;
+        };
         // </Lumen>
 
         LLSD shown_steps = LLSD::emptyArray();
         std::vector<std::string> lines;
         S32 n_move = 0, n_rename = 0, n_trash = 0, n_new = 0, n_folders = 0;
         S32 n_move_loose = 0, n_rename_loose = 0, n_trash_loose = 0;   // <Lumen> of those, matched loosely
+        // <Lumen> Folders selected by name, moved or put in the Trash whole,
+        // and what they carry with them.
+        S32 n_move_dirs = 0, n_move_dir_items = 0, n_move_dirs_loose = 0;
+        S32 n_trash_dirs = 0, n_trash_dir_items = 0, n_trash_dirs_loose = 0;
 
         for (size_t n = 0; n < steps.size(); ++n)
         {
@@ -11139,6 +11275,10 @@ namespace
                 const LLUUID scope = bulkFolder(in_given, ferr);
                 if (scope.isNull())
                     return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
+                // <Lumen> By id too: the top of the inventory is all of it.
+                if (scope == root)
+                    return fail(n, "delete_empty_folders never runs over the whole inventory: give a "
+                                   "folder below the top as `in`.");
                 {
                     const std::string why = heldIn(scope);
                     if (!why.empty()) return fail(n, "not there: " + why + ".");
@@ -11153,11 +11293,13 @@ namespace
                     switch (op.kind)
                     {
                     case BulkOp::MOVE:
+                    case BulkOp::MOVE_FOLDER:   // <Lumen>
                         --delta[op.parent_then];
                         if (op.dest.notNull()) ++delta[op.dest];
                         break;
                     case BulkOp::TRASH:
                     case BulkOp::TRASH_FOLDER:
+                    case BulkOp::TRASH_TREE:    // <Lumen>
                         --delta[op.parent_then];
                         break;
                     case BulkOp::NEW_FOLDER:
@@ -11244,6 +11386,13 @@ namespace
                     --delta[op.parent_then];   // its parent may be empty now too
                     names.push_back(pathOf(id));
                     ++count;
+                    // <Lumen> The same cap as every other kind of change.
+                    if (plan.ops.size() > BULK_MAX_CHANGES)
+                    {
+                        return fail(n, llformat("this comes to more than %d changes in one batch. "
+                                                "Narrow it to a folder further down.",
+                                                (S32)BULK_MAX_CHANGES));
+                    }
                 }
                 n_folders += count;
                 shown["count"] = count;
@@ -11254,6 +11403,275 @@ namespace
                                     + bulkNames(names, names.size()));
                 }
             }
+            // <Lumen> FOLDERS, by their own names, moved or put in the Trash
+            // WHOLE with everything in them. In Second Life a product is a
+            // folder -- "Pumpkin Spice Sweater" -- holding things named only for
+            // what they are, so "put everything named pumpkin into Halloween"
+            // means those folders. Selecting items instead pulled each thing
+            // out of its product folder into one flat pile. The same matching
+            // as items: each word whole in the folder's own name, unless
+            // `match` is loose, which also takes it inside longer words.
+            else if ((what == "move" || what == "rename" || what == "delete")
+                     && step.has("find") && step["find"].isMap() && pick["folders"].asBoolean())
+            {
+                if (what == "rename")
+                    return fail(n, "`folders` picks folders to move or delete whole; rename takes items. "
+                                   "Rename a folder with inventory / rename.");
+                if (!pick["type"].asString().empty() || !pick["kind"].asString().empty()
+                    || !pick["creator"].asString().empty())
+                    return fail(n, "with `folders`, leave out `type` and `creator`: they pick items, and "
+                                   "a folder has neither.");
+                const std::string words = pick.has("name") ? pick["name"].asString()
+                                        : pick.has("query") ? pick["query"].asString() : std::string();
+                std::vector<std::string> typed;
+                {
+                    std::istringstream ss(lowered(words));
+                    std::string w;
+                    while (ss >> w) typed.push_back(w);
+                }
+                const std::string match_word = lowered(pick.has("match") ? pick["match"].asString()
+                                                                          : step["match"].asString());
+                const bool loose = match_word == "loose";
+                if (!match_word.empty() && !loose && match_word != "words")
+                    return fail(n, "`match` is \"words\" (the default: whole words of the folder's own "
+                                   "name) or \"loose\".");
+                LLUUID scope = root;
+                if (!in_given.empty())
+                {
+                    LLSD ferr;
+                    scope = bulkFolder(in_given, ferr);
+                    if (scope.isNull())
+                        return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
+                    shown["in"] = safeUtf8(pathOf(scope));
+                }
+                if (typed.empty() && scope == root)
+                    return fail(n, "a folder selection must say which: `name` words, or a folder `in` "
+                                   "below the top -- never every folder in the inventory.");
+                shown["folders"] = true;
+
+                LLUUID dest;
+                S32 dest_made = -1;
+                std::string dest_path;
+                if (what == "move")
+                {
+                    const std::string to = step["to"].asString();
+                    if (to.empty()) return fail(n, "move needs `to`: the folder, by id or path.");
+                    LLSD derr;
+                    if (!destOf(to, dest, dest_made, dest_path, derr))
+                        return fail(n, derr["message"].asString(), derr.has("data") ? derr["data"] : LLSD());
+                    shown["to"] = safeUtf8(dest_path);
+                }
+
+                // Every folder inside the scope, at any depth -- never the
+                // scope itself, never the Trash -- shallowest first, so a
+                // folder taken whole carries the matching ones inside it.
+                std::vector<std::pair<S32, LLViewerInventoryCategory*>> found;
+                {
+                    std::vector<std::pair<LLUUID, S32>> todo;
+                    todo.emplace_back(scope, 0);
+                    while (!todo.empty())
+                    {
+                        const std::pair<LLUUID, S32> at = todo.back();
+                        todo.pop_back();
+                        LLInventoryModel::cat_array_t* cats = NULL;
+                        LLInventoryModel::item_array_t* items = NULL;
+                        gInventory.getDirectDescendentsOf(at.first, cats, items);
+                        if (!cats) continue;
+                        for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
+                        {
+                            if (!c || c->getUUID() == trash) continue;
+                            found.emplace_back(at.second + 1, c.get());
+                            todo.emplace_back(c->getUUID(), at.second + 1);
+                        }
+                    }
+                }
+                std::stable_sort(found.begin(), found.end(),
+                                 [](const auto& a, const auto& b) { return a.first < b.first; });
+
+                S32 matched = 0, already = 0, count = 0, carried_items = 0, carried_folders = 0;
+                S32 loose_count = 0, left_out = 0;
+                std::vector<std::string> loose_names, left_out_names;
+                for (const auto& f : found)
+                {
+                    LLViewerInventoryCategory* c = f.second;
+                    const LLUUID id = c->getUUID();
+                    // Inside a folder this step takes whole: it goes with it.
+                    std::map<LLUUID, S32>::const_iterator mine = claimed_by.find(id);
+                    if (mine != claimed_by.end() && mine->second == (S32)n) continue;
+                    const std::string lname = lowered(c->getName());
+                    bool named = true, inside = true;
+                    for (const std::string& w : typed)
+                    {
+                        if (!LumenAIIndex::wholeWord(lname, w)) named = false;
+                        if (lname.find(w) == std::string::npos) inside = false;
+                    }
+                    if (!named && !inside) continue;
+                    const bool by_loose = !named;
+                    if (by_loose && !loose)
+                    {
+                        ++left_out;
+                        if (left_out_names.size() < BULK_EXAMPLES) left_out_names.push_back(pathOf(id));
+                        continue;
+                    }
+                    if (id == dest) continue;   // where they go, not one of them
+                    ++matched;
+                    if (claimed.count(id))
+                    {
+                        ++earlier;
+                        earlier_steps.insert(claimed_by[id] + 1);
+                        continue;
+                    }
+                    if (what == "move" && dest.notNull() && c->getParentUUID() == dest) { ++already; continue; }
+                    // The shared rules, for the folder and all it carries: the
+                    // Library, Current Outfit, the bridge's, the AO's and the
+                    // favourites' folders, Marketplace, the viewer's own
+                    // folders, RLV locks -- and a folder the user protected,
+                    // which leaves it alone, counted, never refused.
+                    std::string why = heldIn(id);
+                    LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                    if (why.empty())
+                    {
+                        if (what == "delete")
+                            why = LumenInventoryRules::notDelete(id, true, &rule);
+                        else if (dest.notNull())
+                            why = LumenInventoryRules::notMove(id, true, dest, &rule);
+                        else
+                        {
+                            why = LumenInventoryRules::held(id, true, &rule);
+                            if (why.empty()) why = LumenInventoryRules::inProtected(id, true, &rule);
+                        }
+                    }
+                    if (rule == LumenInventoryRules::PROTECTED_FOLDER)
+                    {
+                        ++kept_count;
+                        LLUUID kept = keptIn(id);
+                        if (kept.isNull())   // it holds one
+                        {
+                            for (const LLUUID& k : gInventory.getProtectedCategories())
+                            {
+                                if (k != id && bulkWithin(k, id)) { kept = k; break; }
+                            }
+                        }
+                        if (kept.notNull()) kept_folders.insert(kept);
+                        continue;
+                    }
+                    LLInventoryModel::cat_array_t cats;
+                    LLInventoryModel::item_array_t items;
+                    if (why.empty())
+                    {
+                        gInventory.collectDescendents(id, cats, items, LLInventoryModel::EXCLUDE_TRASH);
+                        // Counted for the question, and checked for what is worn:
+                        // only what the viewer has loaded can be.
+                        if (!bulkWhole(id, cats))
+                        {
+                            LLInventoryModelBackgroundFetch::instance().start(id, true);
+                            why = "the viewer has not loaded all of it from Second Life yet, so what it "
+                                  "holds cannot be counted or checked -- it is loading it now";
+                        }
+                    }
+                    if (why.empty() && what == "delete")
+                    {
+                        const std::string worn = bulkWornIn(items);
+                        if (!worn.empty())
+                            why = "it holds \"" + worn + "\", which is being worn";
+                        else if (!get_is_category_and_children_removable(&gInventory, id, true))
+                            why = "the viewer does not allow removing it";
+                    }
+                    if (!why.empty())
+                    {
+                        ++refused_count;
+                        bulkCapped(refused, c->getName(), why);
+                        continue;
+                    }
+
+                    BulkOp op;
+                    op.step = (S32)n;
+                    op.id = id;
+                    op.parent_then = c->getParentUUID();
+                    op.name_then = c->getName();
+                    op.kind = what == "move" ? BulkOp::MOVE_FOLDER : BulkOp::TRASH_TREE;
+                    op.dest = dest;
+                    op.dest_made = dest_made;
+                    plan.ops.push_back(op);
+                    // It and everything in it: acted on once, by this step.
+                    claimed.insert(id);
+                    claimed_by[id] = (S32)n;
+                    for (const LLPointer<LLViewerInventoryCategory>& sub : cats)
+                    {
+                        if (!sub || claimed.count(sub->getUUID())) continue;
+                        claimed.insert(sub->getUUID());
+                        claimed_by[sub->getUUID()] = (S32)n;
+                    }
+                    for (const LLPointer<LLViewerInventoryItem>& i : items)
+                    {
+                        if (!i || claimed.count(i->getUUID())) continue;
+                        claimed.insert(i->getUUID());
+                        claimed_by[i->getUUID()] = (S32)n;
+                    }
+                    ++count;
+                    carried_items += (S32)items.size();
+                    carried_folders += (S32)cats.size();
+                    names.push_back(pathOf(id));
+                    if (by_loose)
+                    {
+                        ++loose_count;
+                        if (loose_names.size() < BULK_EXAMPLES) loose_names.push_back(pathOf(id));
+                    }
+                    if (plan.ops.size() > BULK_MAX_CHANGES)
+                    {
+                        return fail(n, llformat("this comes to more than %d changes in one batch. "
+                                                "Narrow the selection, or split it.",
+                                                (S32)BULK_MAX_CHANGES));
+                    }
+                }
+                shown["matched"] = matched;
+                shown["count"] = count;
+                shown["items_carried"] = carried_items;
+                shown["folders_carried"] = carried_folders;
+                shown["carried_note"] = "`count` folders, each moved or put in the Trash whole: "
+                                        "`items_carried` items and `folders_carried` folders go with "
+                                        "them, as they are. Say both numbers.";
+                if (what == "move" && already) shown["already_there"] = already;
+                if (loose_count)
+                {
+                    LLSD ex = LLSD::emptyArray();
+                    for (const std::string& one : loose_names) ex.append(safeUtf8(one));
+                    shown["matched_loosely"] = loose_count;
+                    shown["loose_examples"] = ex;
+                    shown["loose_note"] = "Of `count`, these folders are in only by the loose match: the "
+                                          "words are inside longer words of their names. Say how many.";
+                }
+                if (left_out)
+                {
+                    LLSD ex = LLSD::emptyArray();
+                    for (const std::string& one : left_out_names) ex.append(safeUtf8(one));
+                    shown["left_out"] = left_out;
+                    shown["left_out_examples"] = ex;
+                    shown["left_out_note"] = "NOT included: these folders have the words only inside "
+                                             "longer words of their names. If the user means them too, "
+                                             "plan again with \"match\": \"loose\" in `find`, and say so.";
+                }
+                if (count > 0)
+                {
+                    if (what == "move")
+                    {
+                        n_move_dirs += count;
+                        n_move_dir_items += carried_items;
+                        n_move_dirs_loose += loose_count;
+                        lines.push_back(llformat("Move %d folders to ", count) + bulkShort(dest_path) + ": "
+                                        + bulkNames(names, names.size()));
+                    }
+                    else
+                    {
+                        n_trash_dirs += count;
+                        n_trash_dir_items += carried_items;
+                        n_trash_dirs_loose += loose_count;
+                        lines.push_back(llformat("Move %d folders to the Trash: ", count)
+                                        + bulkNames(names, names.size()));
+                    }
+                }
+            }
+            // </Lumen>
             else if (what == "move" || what == "rename" || what == "delete")
             {
                 // ---- the selection, as search makes it ----------------------
@@ -11299,13 +11717,17 @@ namespace
                     scope = bulkFolder(in_given, ferr);
                     if (scope.isNull())
                         return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
-                    shown["in"] = safeUtf8(pathOf(scope));
-                }
-                NameAndKind by_maker(std::string(), LLAssetType::AT_NONE);
-                if (!creator.empty())
-                {
-                    const LLUUID maybe(creator);
-                    by_maker.requireCreator(maybe, maybe.notNull() ? std::string() : creator);
+                    // <Lumen> The top of the inventory, by id, is no folder at
+                    // all: with nothing else to go on it is everything of a kind.
+                    if (scope == root)
+                    {
+                        if (lowered(words).find_first_not_of(" \t") == std::string::npos && creator.empty())
+                            return fail(n, "`in` is the top of the inventory, which is all of it -- a "
+                                           "selection must say which: `name` words, a `creator`, or a "
+                                           "folder below the top.");
+                        scope.setNull();   // with words or a maker: the same as no `in`
+                    }
+                    shown["in"] = safeUtf8(pathOf(scope.notNull() ? scope : root));
                 }
 
                 // ---- what each one is done to -------------------------------
@@ -11317,33 +11739,9 @@ namespace
                 {
                     const std::string to = step["to"].asString();
                     if (to.empty()) return fail(n, "move needs `to`: the folder, by id or path.");
-                    for (const Planned& p : planned)
-                    {
-                        if (lowered(to) == lowered(p.name) || lowered(to) == lowered(p.path))
-                        {
-                            dest = p.id; dest_made = p.id.isNull() ? p.op : -1; dest_path = p.path;
-                            break;
-                        }
-                    }
-                    if (dest.isNull() && dest_made < 0)
-                    {
-                        LLSD ferr;
-                        dest = bulkFolder(to, ferr);
-                        if (dest.isNull())
-                        {
-                            return fail(n, ferr["message"].asString()
-                                         + " To make it, put a new_folder step before this one.",
-                                        ferr.has("data") ? ferr["data"] : LLSD());
-                        }
-                        dest_path = pathOf(dest);
-                    }
-                    if (dest.notNull())
-                    {
-                        if (bulkWithin(dest, trash))
-                            return fail(n, "moving into the Trash is deleting -- use `do: delete`.");
-                        const std::string why = heldIn(dest);
-                        if (!why.empty()) return fail(n, "not into that folder: " + why + ".");
-                    }
+                    LLSD derr;   // <Lumen> shared with a folder selection
+                    if (!destOf(to, dest, dest_made, dest_path, derr))
+                        return fail(n, derr["message"].asString(), derr.has("data") ? derr["data"] : LLSD());
                     shown["to"] = safeUtf8(dest_path);
                 }
                 else if (what == "rename")
@@ -11371,6 +11769,100 @@ namespace
                 std::vector<std::string> loose_names, left_out_names;
                 // </Lumen>
                 std::map<LLUUID, bool> in_scope;
+                auto inScope = [&in_scope, &scope](const LLUUID& parent) -> bool
+                {
+                    if (scope.isNull()) return true;
+                    std::map<LLUUID, bool>::iterator f = in_scope.find(parent);
+                    if (f == in_scope.end()) f = in_scope.emplace(parent, bulkWithin(parent, scope)).first;
+                    return f->second;
+                };
+                // <Lumen> `creator`: an avatar id is exact. A name must be ONE
+                // maker's name in full -- username, display name, first name --
+                // among the makers of what this selection covers whose names
+                // the viewer has. "Ann" took Joanne, Hannah and Shannon, and
+                // display names are chosen and not unique; the question shows
+                // only counts, so nobody saw it. Two makers of that name, or
+                // none, and nothing is planned: the model asks who is meant.
+                LLUUID maker;
+                bool maker_by_name = false;
+                S32 makers_unknown = 0;   // things here by makers the viewer has no name for
+                if (!creator.empty())
+                {
+                    std::string want = lowered(creator);
+                    LLStringUtil::trim(want);
+                    if (LLUUID::validate(want)) maker.set(want);
+                    if (maker.isNull())
+                    {
+                        maker_by_name = true;
+                        std::set<LLUUID> seen, exact, close_ones;
+                        S32 unknown_makers = 0;
+                        for (const auto& hit : hits)
+                        {
+                            if (hit.second && !loose) continue;
+                            const LumenAIIndex::Match& m = *hit.first;
+                            if (!inScope(m.parent) || !seen.insert(m.creator).second) continue;
+                            LLAvatarName av;
+                            if (!LLAvatarNameCache::get(m.creator, &av)) { ++unknown_makers; continue; }
+                            if (personNameIsExactly(m.creator, want)) exact.insert(m.creator);
+                            else if (lowered(av.getUserName()).find(want) != std::string::npos
+                                     || lowered(av.getDisplayName()).find(want) != std::string::npos)
+                                close_ones.insert(m.creator);
+                        }
+                        auto who = [](const std::set<LLUUID>& ids, LLSD& data) -> std::string
+                        {
+                            std::string out;
+                            for (const LLUUID& id : ids)
+                            {
+                                LLAvatarName av;
+                                if (!LLAvatarNameCache::get(id, &av)) continue;
+                                LLSD one;
+                                one["agent_id"] = id;
+                                one["name"] = av.getUserName();
+                                if (av.getDisplayName() != av.getUserName()) one["display_name"] = av.getDisplayName();
+                                if (data.size() < (size_t)BULK_LIST_CAP)
+                                {
+                                    data.append(one);
+                                    out += (out.empty() ? "" : ", ") + av.getDisplayName() + " ("
+                                         + av.getUserName() + ", " + id.asString() + ")";
+                                }
+                            }
+                            return out;
+                        };
+                        if (exact.size() == 1)
+                        {
+                            maker = *exact.begin();
+                        }
+                        else if (exact.size() > 1)
+                        {
+                            LLSD data = LLSD::emptyArray();
+                            const std::string them = who(exact, data);
+                            return fail(n, "more than one maker of what this selection covers is called \""
+                                           + creator + "\": " + them + ". Ask the user which one, then "
+                                           "give `creator` as that avatar id.", data);
+                        }
+                        else
+                        {
+                            LLSD data = LLSD::emptyArray();
+                            const std::string similar = who(close_ones, data);
+                            std::string msg = "no maker of what this selection covers is called exactly \""
+                                            + creator + "\"";
+                            if (!similar.empty()) msg += " -- names that contain it: " + similar;
+                            if (unknown_makers > 0)
+                            {
+                                msg += llformat(" (%d makers here have names the viewer has not loaded, so "
+                                                "they could not be checked)", unknown_makers);
+                            }
+                            return fail(n, msg + ". Ask the user who they mean, then give `creator` as "
+                                                 "that avatar id.", data);
+                        }
+                    }
+                    LLAvatarName av;
+                    LLSD made_by;
+                    made_by["agent_id"] = maker;
+                    if (LLAvatarNameCache::get(maker, &av)) made_by["name"] = av.getUserName();
+                    shown["creator"] = made_by;
+                }
+                // </Lumen>
                 S32 matched = 0, already = 0, unchanged = 0, no_copy = 0, count = 0;
                 for (const auto& hit : hits)
                 {
@@ -11378,15 +11870,19 @@ namespace
                     const bool by_loose = hit.second;   // <Lumen>
                     LLViewerInventoryItem* item = gInventory.getItem(m.id);
                     if (!item || item->getIsLinkType()) continue;
-                    if (scope.notNull())
+                    if (!inScope(item->getParentUUID())) continue;
+                    // <Lumen> By the maker's id, whatever the name cache holds.
+                    if (maker.notNull())
                     {
-                        const LLUUID& parent = item->getParentUUID();
-                        std::map<LLUUID, bool>::iterator f = in_scope.find(parent);
-                        if (f == in_scope.end())
-                            f = in_scope.emplace(parent, bulkWithin(parent, scope)).first;
-                        if (!f->second) continue;
+                        const LLUUID made = item->getPermissions().getCreator();
+                        if (made != maker)
+                        {
+                            LLAvatarName av;
+                            if (maker_by_name && (loose || !by_loose) && !LLAvatarNameCache::get(made, &av))
+                                ++makers_unknown;
+                            continue;
+                        }
                     }
-                    if (!creator.empty() && !by_maker(NULL, item)) continue;
                     // <Lumen> Found only loosely, and not asked for: counted, not taken.
                     if (by_loose && !loose)
                     {
@@ -11523,14 +12019,29 @@ namespace
                     for (const std::string& one : left_out_names) ex.append(safeUtf8(one));
                     shown["left_out"] = left_out;
                     shown["left_out_examples"] = ex;
+                    // <Lumen> Not "plan again loose" first: loose takes each of
+                    // them OUT of its product folder into one pile.
                     shown["left_out_note"] = "NOT included: these match only through their folder, inside "
-                                             "a longer word, or by a repaired spelling. If the user means "
-                                             "them too, plan again with \"match\": \"loose\" in `find`, "
-                                             "and say so.";
+                                             "a longer word, or by a repaired spelling. A selection picks "
+                                             "ITEMS. When the words are in the FOLDER's name -- a product "
+                                             "is usually a folder -- and the user means those folders, "
+                                             "plan the step with \"folders\": true in `find`: each folder "
+                                             "is moved or deleted whole, with what is in it. \"match\": "
+                                             "\"loose\" takes the items themselves out of their folders; "
+                                             "use it only when that is what the user wants, and say so.";
                 }
                 if (what == "move")   n_move_loose += loose_count;
                 if (what == "delete") n_trash_loose += loose_count;
                 if (what == "rename") n_rename_loose += loose_count;
+                // <Lumen> The maker was found by name: what could not be checked against it.
+                if (makers_unknown > 0)
+                {
+                    shown["creators_unknown"] = makers_unknown;
+                    shown["creators_unknown_note"] = "These many things in the selection were made by "
+                        "people whose names the viewer has not loaded, so they were not checked against "
+                        "the name, and none was taken: `creator` is the maker shown. If the user means "
+                        "somebody else by that name, ask, and give `creator` as their avatar id.";
+                }
                 // </Lumen>
                 if (what == "move" && already) shown["already_there"] = already;
                 if (what == "rename" && unchanged) shown["name_unchanged"] = unchanged;
@@ -11608,19 +12119,32 @@ namespace
         // <Lumen> What only a loose match picked is counted apart, in the line.
         auto loosely = [](S32 k) { return k ? llformat(" (%d by a loose match)", k) : std::string(); };
         std::vector<std::string> asked;
+        // <Lumen> Folders taken whole, with what they carry: "move 3 folders (120 items)".
+        auto whole = [](const char* verb, S32 dirs, S32 items, S32 by_loose, const char* tail)
+        {
+            std::string t = llformat("%s %d folder%s (%d item%s", verb, dirs, dirs == 1 ? "" : "s",
+                                     items, items == 1 ? "" : "s");
+            if (by_loose) t += llformat("; %d folder%s by a loose match", by_loose, by_loose == 1 ? "" : "s");
+            return t + ")" + tail;
+        };
+        if (n_move_dirs)  asked.push_back(whole("move", n_move_dirs, n_move_dir_items, n_move_dirs_loose, ""));
         if (n_move)    asked.push_back(llformat("move %d", n_move) + loosely(n_move_loose));
         if (n_rename)  asked.push_back(llformat("rename %d", n_rename) + loosely(n_rename_loose));
+        if (n_trash_dirs) asked.push_back(whole("put", n_trash_dirs, n_trash_dir_items, n_trash_dirs_loose,
+                                                " in the Trash"));
         if (n_trash)   asked.push_back(llformat("put %d in the Trash", n_trash) + loosely(n_trash_loose));
         if (n_new)     asked.push_back(llformat("make %d folder%s", n_new, n_new == 1 ? "" : "s"));
         if (n_folders) asked.push_back(llformat("remove %d empty folder%s", n_folders, n_folders == 1 ? "" : "s"));
         std::string summary;
         for (size_t i = 0; i < asked.size(); ++i) summary += (i ? ", " : "") + asked[i];
         plan.summary = summary;
-        plan.deletes = n_trash > 0 || n_folders > 0;
+        plan.deletes = n_trash > 0 || n_folders > 0 || n_trash_dirs > 0;
 
         std::vector<std::string> parts;
+        if (n_move_dirs)  parts.push_back(llformat("%d folders moved whole", n_move_dirs));   // <Lumen>
         if (n_move)    parts.push_back(llformat("%d moved", n_move));
         if (n_rename)  parts.push_back(llformat("%d renamed", n_rename));
+        if (n_trash_dirs) parts.push_back(llformat("%d folders to the Trash whole", n_trash_dirs));   // <Lumen>
         if (n_trash)   parts.push_back(llformat("%d to the Trash", n_trash));
         if (n_folders) parts.push_back(llformat("%d empty folder%s removed", n_folders, n_folders == 1 ? "" : "s"));
         if (n_new)     parts.push_back(llformat("%d new folder%s", n_new, n_new == 1 ? "" : "s"));
@@ -11642,6 +12166,16 @@ namespace
                                            "(`left_alone_in_protected_folder`, the folders in "
                                            "`protected_folders`). Tell them, naming the folder: "
                                            "right-click > Unprotect on it changes that.";
+        }
+        // <Lumen> Planned while the inventory is still arriving: it only ever
+        // leaves things out, and "all of them" would be false.
+        if (inventoryStillLoading())
+        {
+            plan.shown["inventory_still_loading"] = true;
+            plan.shown["inventory_still_loading_note"] =
+                "The inventory is still arriving from Second Life after login, so this plan holds only "
+                "what has arrived: more may match once it has all loaded. Say so -- never tell the user "
+                "it is all of them.";
         }
         return true;
     }
@@ -11718,6 +12252,73 @@ namespace
             return;
         }
 
+        // <Lumen> A folder selected by name, moved or put in the Trash whole.
+        // The same checks as an item's, asked again now: where it is, its
+        // name, the shared rules for it and all it carries, and -- going to
+        // the Trash -- nothing in it worn.
+        if (op.kind == BulkOp::MOVE_FOLDER || op.kind == BulkOp::TRASH_TREE)
+        {
+            LLViewerInventoryCategory* cat = gInventory.getCategory(op.id);
+            if (!cat) { failed("it is no longer in inventory"); return; }
+            if (cat->getParentUUID() != op.parent_then)
+            {
+                leave("moved after the plan; it is in " + folderPath(cat->getParentUUID()));
+                return;
+            }
+            if (cat->getName() != op.name_then)
+            {
+                leave("renamed after the plan; it is called \"" + safeUtf8(cat->getName()) + "\"");
+                return;
+            }
+            LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+            if (op.kind == BulkOp::MOVE_FOLDER)
+            {
+                LLUUID dest = op.dest;
+                if (op.dest_made >= 0)
+                {
+                    std::map<S32, LLUUID>::const_iterator f = run->made.find(op.dest_made);
+                    dest = (f != run->made.end()) ? f->second : LLUUID::null;
+                    if (dest.isNull()) { failed("the folder it was to go in could not be made"); return; }
+                }
+                if (!gInventory.getCategory(dest) || bulkWithin(dest, trash))
+                {
+                    failed("the folder it was to go in is gone");
+                    return;
+                }
+                const std::string why = LumenInventoryRules::notMove(op.id, true, dest, &rule);
+                if (!why.empty()) { refuse(why, rule); return; }
+                gInventory.changeCategoryParent(cat, dest, false);
+                const LLViewerInventoryCategory* now = gInventory.getCategory(op.id);
+                if (!now || now->getParentUUID() != dest) { failed("the viewer did not move it"); return; }
+                LumenAIUndo::instance().recordMove(op.id, true, op.parent_then, dest, run->change_set);
+                done();
+                return;
+            }
+            const std::string why = LumenInventoryRules::notDelete(op.id, true, &rule);
+            if (!why.empty()) { refuse(why, rule); return; }
+            {
+                LLInventoryModel::cat_array_t cats;
+                LLInventoryModel::item_array_t items;
+                gInventory.collectDescendents(op.id, cats, items, LLInventoryModel::EXCLUDE_TRASH);
+                const std::string worn = bulkWornIn(items);
+                if (!worn.empty()) { failed("it holds \"" + safeUtf8(worn) + "\", which is being worn now"); return; }
+            }
+            if (!get_is_category_and_children_removable(&gInventory, op.id, true))
+            {
+                failed("the viewer does not allow removing it now");
+                return;
+            }
+            // As delete_empty_folders does: the Trash-is-full check once, at the end.
+            gInventory.changeCategoryParent(cat, trash, true);
+            const LLViewerInventoryCategory* now = gInventory.getCategory(op.id);
+            if (!now || now->getParentUUID() != trash) { failed("the viewer did not move it to the Trash"); return; }
+            LumenAIUndo::instance().recordTrash(op.id, true, op.parent_then, run->change_set);
+            run->trashed_any = true;
+            done();
+            return;
+        }
+        // </Lumen>
+
         LLViewerInventoryItem* item = gInventory.getItem(op.id);
         if (!item) { failed("it is no longer in inventory"); return; }
         if (item->getParentUUID() != op.parent_then)
@@ -11769,11 +12370,45 @@ namespace
                 const std::string why = LumenInventoryRules::notRename(op.id, false, &rule);
                 if (!why.empty()) { refuse(why, rule); return; }
             }
-            LumenAIUndo::instance().recordRename(op.id, false, op.name_then, op.new_name, run->change_set);
+            // <Lumen> Counted, and recorded, when Second Life answers -- as the
+            // name the item then has. Under AIS a rename only queues a request
+            // and the viewer's copy changes with the answer; counted on
+            // sending, a run of thousands said "done" with most still queued,
+            // an undo straight after read the old names as "renamed again
+            // since", and a refused rename was recorded as done.
+            ++run->renames_pending;
+            LumenAIUndo::instance().renameSent(op.id);
+            std::shared_ptr<BulkRun> keep = run;
+            const BulkOp one = op;
+            LLPointer<LLInventoryCallback> answered = new LLBoostFuncInventoryCallback(
+                [keep, one](const LLUUID&)
+                {
+                    if (!LumenAIUndo::instanceExists()) return;
+                    LumenAIUndo& u = LumenAIUndo::instance();
+                    u.renameAnswered(one.id);
+                    const LLViewerInventoryItem* now = gInventory.getItem(one.id);
+                    const bool took = now && now->getName() == one.new_name;
+                    // Recorded whenever it lands, even after the run stopped
+                    // waiting: it happened, and undo has to find it.
+                    if (took) u.recordRename(one.id, false, one.name_then, one.new_name, keep->change_set);
+                    if (keep->renames_gave_up) return;   // counted already, as not confirmed
+                    --keep->renames_pending;
+                    if (took)
+                    {
+                        ++keep->done;
+                        ++keep->step_done[one.step];
+                    }
+                    else
+                    {
+                        ++keep->failed;
+                        ++keep->step_failed[one.step];
+                        bulkCapped(keep->failed_list, one.name_then, "Second Life did not take the new name");
+                    }
+                });
             LLSD updates; updates["name"] = op.new_name;
-            update_inventory_item(op.id, updates, NULL);
-            done();
+            update_inventory_item(op.id, updates, answered);
             return;
+            // </Lumen>
         }
         case BulkOp::TRASH:
         {
@@ -11817,9 +12452,9 @@ namespace
         std::string line = run->stopped_by_user   // <Lumen>
             ? "Inventory changes stopped, as asked: " + bulkCount(run->done) + " of "
               + bulkCount(run->total) + " done."
-            : run->stopped
-            ? "Inventory changes stopped part way, when the inventory went away (logging out or "
-              "quitting): " + bulkCount(run->done) + " of " + bulkCount(run->total) + " done."
+            : run->stopped   // <Lumen> logged out, disconnected or quitting
+            ? "Inventory changes stopped part way, when the viewer was logged out: "
+              + bulkCount(run->done) + " of " + bulkCount(run->total) + " done."
             : "Inventory changes finished: " + bulkCount(run->done) + " of " + bulkCount(run->total)
               + " done.";
         if (run->failed) line += " " + bulkCount(run->failed) + " could not be done.";
@@ -11888,7 +12523,13 @@ namespace
             S32 in_beat = 0;
             for (size_t i = 0; i < ops->size(); ++i)
             {
-                if (LLApp::isExiting() || !gInventory.isInventoryUsable())
+                // <Lumen> Disconnected too -- the same avatar logged in
+                // elsewhere, or the region gone -- with the viewer still open
+                // behind its message: a move then changes only the viewer's
+                // own copy and the message is dropped, yet it passed every
+                // check and was recorded as done. What is left is not done.
+                if (LLApp::isExiting() || !gInventory.isInventoryUsable()
+                    || gDisconnected || !gAgent.getRegion())
                 {
                     run->stopped = true;
                     break;
@@ -11957,10 +12598,31 @@ namespace
                     continue;
                 }
 
-                if (op.kind == BulkOp::MOVE && op.dest_made >= 0)   // <Lumen>
+                if ((op.kind == BulkOp::MOVE || op.kind == BulkOp::MOVE_FOLDER) && op.dest_made >= 0)   // <Lumen>
                 {
                     madeFolder(op.dest_made);
                     if (stopAsked())   // asked while it waited for the folder
+                    {
+                        run->stopped_by_user = true;
+                        break;
+                    }
+                }
+                // <Lumen> Renames wait for their answers a few dozen at a time.
+                if (op.kind == BulkOp::RENAME && run->renames_pending >= BULK_RENAMES_IN_FLIGHT)
+                {
+                    F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                    S32 last = run->renames_pending;
+                    while (run->renames_pending >= BULK_RENAMES_IN_FLIGHT && !stopAsked()
+                           && LLTimer::getTotalSeconds() < give_up)
+                    {
+                        llcoro::suspendUntilTimeout(0.1f);
+                        if (run->renames_pending < last)
+                        {
+                            last = run->renames_pending;
+                            give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                        }
+                    }
+                    if (stopAsked())
                     {
                         run->stopped_by_user = true;
                         break;
@@ -11977,9 +12639,34 @@ namespace
                 }
             }
             // Folders still on their way are part of the outcome.
-            const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
-            while (run->folders_pending > 0 && LLTimer::getTotalSeconds() < give_up)
-                llcoro::suspendUntilTimeout(0.1f);
+            // <Lumen> So are renames waiting for Second Life to confirm them:
+            // the run is not finished -- and not undoable -- until they are,
+            // or until a while passes with no answer at all.
+            {
+                F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                S32 last = run->folders_pending + run->renames_pending;
+                while ((run->folders_pending > 0 || run->renames_pending > 0)
+                       && LLTimer::getTotalSeconds() < give_up)
+                {
+                    llcoro::suspendUntilTimeout(0.1f);
+                    const S32 left = run->folders_pending + run->renames_pending;
+                    if (left < last)
+                    {
+                        last = left;
+                        give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                    }
+                }
+                if (run->renames_pending > 0)
+                {
+                    LL_WARNS("AICtl") << "batch_inventory: " << run->renames_pending << " renames not "
+                                      << "confirmed by Second Life when the run ended" << LL_ENDL;
+                    run->renames_gave_up = true;
+                    run->failed += run->renames_pending;
+                    bulkCapped(run->failed_list, llformat("%d renames", run->renames_pending),
+                               "Second Life had not confirmed the new name when the run ended");
+                    run->renames_pending = 0;
+                }
+            }
 
             run->finished = true;
             if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().endBatch(run->change_set);
@@ -12067,8 +12754,9 @@ namespace
             r["note"] = std::string(run->stopped_by_user   // <Lumen>
                 ? "The user stopped it part way (Clear, or Stop in the history window); what was "
                   "done stays. "
-                : run->stopped
-                ? "It stopped part way, because the inventory went away (logging out or quitting). "
+                : run->stopped   // <Lumen>
+                ? "It stopped part way, because the viewer was logged out or disconnected from Second "
+                  "Life (or is quitting); the rest was not done. "
                 : "Done. ")
                 + "Tell the user briefly what was done, and what could not be done or was left "
                   "alone and why -- never say it all went if `could_not` or `left_alone` is above "
@@ -19845,13 +20533,37 @@ if (method == "camera")
                 // </Lumen>
                 result["was_named"] = result["name"];
                 LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
-                LumenAIUndo::instance().recordRename(id, folder, result["name"].asString(), new_name);
-                if (folder) rename_category(&m, id, new_name);
-                else
+                // <Lumen> Recorded when Second Life confirms it, as the name
+                // the item then has: under AIS the viewer's copy changes only
+                // with the answer, and a refused rename is never recorded.
+                // The set is the one this request writes to, fixed now.
+                const S64 undo_set = LumenAIUndo::instance().setForLater();
+                const std::string before = folder ? (cat ? cat->getName() : std::string())
+                                                  : (item ? item->getName() : std::string());
+                if (before != new_name)   // the viewer sends nothing for the same name
                 {
-                    LLSD updates; updates["name"] = new_name;
-                    update_inventory_item(id, updates, NULL);
+                    LumenAIUndo::instance().renameSent(id);
+                    LLPointer<LLInventoryCallback> answered = new LLBoostFuncInventoryCallback(
+                        [id, folder, before, new_name, undo_set](const LLUUID&)
+                        {
+                            if (!LumenAIUndo::instanceExists()) return;
+                            LumenAIUndo& u = LumenAIUndo::instance();
+                            u.renameAnswered(id);
+                            const LLInventoryObject* now = gInventory.getObject(id);
+                            if (now && now->getName() == new_name)
+                                u.recordRename(id, folder, before, new_name, undo_set);
+                            else
+                                LL_INFOS("AICtl") << "rename_item: Second Life did not take the new name for "
+                                                  << id << LL_ENDL;
+                        });
+                    if (folder) rename_category(&m, id, new_name, answered);
+                    else
+                    {
+                        LLSD updates; updates["name"] = new_name;
+                        update_inventory_item(id, updates, answered);
+                    }
                 }
+                // </Lumen>
                 result["renamed_to"] = safeUtf8(new_name);
                 result["note"] = "Renamed. inventory / undo puts back everything this request "
                                  "changed, if the user asks.";
@@ -19954,13 +20666,24 @@ if (method == "camera")
             e["message"] = "Give `snapshot`: one of the snapshots inventory / history lists.";
             LLSD w; w["__error"] = e; return w;
         }
-        LLSD preview = undo.previewRestore(snap, 12);
+        // <Lumen> The call that collects the answer to a question asks about
+        // the plan the question was built from, not a fresh one -- and the
+        // Yes runs that same plan, each step checking the thing is still as it
+        // was. A preview, or a first ask, plans afresh.
+        const bool preview_only = params.has("preview") && params["preview"].asBoolean();
+        const bool answering = !preview_only && mAsks.count(fingerprintOf(method, params)) > 0;
+        LLSD preview = undo.previewRestore(snap, 12, answering);
         if (preview.has("error"))
         {
             LLSD e; e["code"] = -32000; e["message"] = preview["error"].asString();
             LLSD w; w["__error"] = e; return w;
         }
-        if (params.has("preview") && params["preview"].asBoolean())
+        // <Lumen> Not loaded yet is not gone: said so, never as gone.
+        const std::string not_yet_note = preview["not_yet_count"].asInteger() > 0
+            ? std::string(" Some things in the snapshot are not loaded from Second Life yet (`not_yet`), "
+                          "so they are left where they are -- say so, and never call them gone.")
+            : std::string();
+        if (preview_only)
         {
             preview["note"] = std::string("Nothing has been changed. Tell the user what restoring would do; "
                               "restore without preview does it, and the viewer asks them first.")
@@ -19970,12 +20693,13 @@ if (method == "camera")
                                  "loaded, so it may not have everything in it." : "")
                             + (preview["refused_count"].asInteger() > 0
                                ? " Some things stay where they are by the rules the assistant follows "
-                                 "(`refused`, with why); say so." : "");
+                                 "(`refused`, with why); say so." : "")
+                            + not_yet_note;
             return preview;
         }
         if (preview["nothing_to_do"].asBoolean())
         {
-            preview["note"] = "Nothing differs from that snapshot, so nothing was changed.";
+            preview["note"] = "Nothing differs from that snapshot, so nothing was changed." + not_yet_note;
             return preview;
         }
         {
@@ -19992,10 +20716,12 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
             LLSD w; w["__error"] = e; return w;
         }
-        result["note"] = (result.has("paced") && result["paced"].asBoolean())
+        result["note"] = ((result.has("paced") && result["paced"].asBoolean())
             ? std::string("Started, a little at a time; the viewer tells the user itself when it "
                           "has finished. End the reply.")
-            : std::string("Tell the user what was put back and what could not be.");
+            : std::string("Tell the user what was put back and what could not be."))
+            + not_yet_note   // <Lumen>
+            + (result.has("waiting_note") ? " " + result["waiting_note"].asString() : std::string());
         LLSD summary; summary["action"] = "restore"; summary["snapshot"] = (LLSD::Integer)snap;
         recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
         return result;
@@ -20010,6 +20736,14 @@ if (method == "camera")
         if (!gInventory.isInventoryUsable())
         {
             return bulkError(-32000, "Inventory is not loaded yet.");
+        }
+        // <Lumen> Logged out -- or disconnected, the viewer still open behind
+        // its message: a move would change only the viewer's own copy, and be
+        // recorded as done.
+        if (gDisconnected || !gAgent.getRegion())
+        {
+            return bulkError(-32000, "The viewer is not connected to Second Life (logged out), so "
+                                     "nothing was done. Tell the user.");
         }
         if (!bulkAllowed())
         {
@@ -20172,6 +20906,15 @@ if (method == "camera")
         // ---- batch: a plan, or the run of one --------------------------------
         const std::string plan_id = params.has("plan_id") ? params["plan_id"].asString()
                                                          : std::string();
+        // <Lumen> Both: running the old plan would quietly ignore the new
+        // steps -- "leave the landmarks out" and the landmarks went.
+        if (!plan_id.empty() && params.has("steps"))
+        {
+            return bulkError(-32602, "Give `steps` (to plan) or `plan_id` (to run a plan already made), "
+                                     "never both. Nothing was planned or run. If what the user wants has "
+                                     "changed, plan again with only `steps`, tell them, and run that "
+                                     "plan.");
+        }
         if (plan_id.empty())
         {
             if (!params.has("steps") || !params["steps"].isArray() || params["steps"].size() == 0)
@@ -20218,17 +20961,25 @@ if (method == "camera")
         std::map<std::string, BulkPlan>::iterator found = sBulkPlans.find(plan_id);
         if (found == sBulkPlans.end())
         {
-            return bulkError(-32602, "There is no plan \"" + plan_id + "\" -- a plan lasts ten "
-                                     "minutes, and one the user said no to is gone. Make a new one "
-                                     "with `steps`; nothing was changed.");
+            // <Lumen> What became of it, when that is known.
+            std::map<std::string, BulkGone>::const_iterator gone = sBulkGone.find(plan_id);
+            if (gone != sBulkGone.end()) return bulkError(-32000, gone->second.what);
+            return bulkError(-32602, "There is no plan \"" + plan_id + "\", so nothing was changed. A "
+                                     "plan comes from a batch call with `steps`.");
         }
         BulkPlan& plan = found->second;
         const F64 now = LLTimer::getTotalSeconds();
         bool settling = false;
         if (!plan.run)
         {
-            if (!plan.asked && now - plan.made_at > BULK_PLAN_KEEPS)
+            // <Lumen> Too old -- unless its question is still up or answered.
+            // One taken down unanswered is not asked again: its Yes could
+            // only be refused.
+            sweepAsks();
+            if (now - plan.made_at > BULK_PLAN_KEEPS
+                && !(plan.asked && mAsks.count("batch_inventory\n" + plan_id)))
             {
+                bulkForget(plan_id, bulkExpired(plan_id));
                 sBulkPlans.erase(found);
                 return bulkError(-32000, "That plan is more than ten minutes old, so it was not run "
                                          "and nothing was changed: the inventory may have moved on "
@@ -20271,7 +21022,11 @@ if (method == "camera")
                     if (ask.has("__error") && ask["__error"].has("data")
                         && ask["__error"]["data"]["user_said"].asString() == "no")
                     {
-                        sBulkPlans.erase(found);   // a No ends the plan: it is not asked again
+                        // a No ends the plan: it is not asked again
+                        bulkForget(plan_id, "The user said no to plan \"" + plan_id + "\", so it was not "
+                                            "run and nothing was changed. Do not plan it again unless "
+                                            "they ask for it again.");
+                        sBulkPlans.erase(found);
                     }
                     return ask;
                 }
@@ -20282,6 +21037,7 @@ if (method == "camera")
             // only ever stops a slow answer -- and the Yes is spent with it.
             if (LLTimer::getTotalSeconds() - plan.made_at > BULK_PLAN_KEEPS + BULK_ANSWER_GRACE)
             {
+                bulkForget(plan_id, bulkExpired(plan_id));   // <Lumen>
                 sBulkPlans.erase(found);
                 return bulkError(-32000, "The user said yes, but the plan was made more than ten minutes "
                                          "before that, so it was not run and nothing was changed: the "
@@ -21539,7 +22295,7 @@ if (method == "camera")
             result["back_where_it_was"] = back_where_it_was;   // <Lumen>
             result["note"] = back_where_it_was
                 ? "Taken out of the Trash, back into " + folderPath(parent)
-                  + ", the folder it was in before. Tell the user."
+                  + ", the folder it was in when the assistant deleted it. Tell the user."   // <Lumen>
                 : !not_back.empty()   // <Lumen>
                 ? "Taken out of the Trash into " + folderPath(parent)
                   + ", the default folder for its type -- not the folder it was in before, because "

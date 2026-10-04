@@ -1186,6 +1186,12 @@ namespace
     }
 }
 
+// static
+bool LumenAIIndex::wholeWord(const std::string& lname, const std::string& word)
+{
+    return wholeWordIn(lname, word);
+}
+
 std::vector<LumenAIIndex::Match> LumenAIIndex::matchWords(
     const std::string& query,
     LLAssetType::EType kind,

@@ -173,6 +173,13 @@ public:
                                   std::vector<std::pair<std::string, std::string> >* corrections = NULL);
 
     /**
+     * <Lumen> matchWords()' rule for one word, for a caller matching names the
+     * index does not hold -- a batch selecting FOLDERS by their own names:
+     * @a word whole in @a lname, or with a plural ending on it. Both lowercased.
+     */
+    static bool wholeWord(const std::string& lname, const std::string& word);
+
+    /**
      * The body-fit token in a name -- "larax", "maitreya", "legacy" -- or "".
      *
      * Public because the caller works out which fit the avatar is wearing by

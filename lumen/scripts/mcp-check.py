@@ -243,6 +243,15 @@ def main():
         # go_back with nothing else walks or teleports them back to where they
         # were. A `how` that is neither walk nor teleport is refused first.
         ("movement", "go_back"):        {"how": "__check_only__"},
+
+        # undo with nothing else undoes the newest change set for real, asking
+        # nothing -- every run of this sweep undid one more of the user's sets
+        # and printed "pass". A change set that cannot exist is refused before
+        # anything is planned. The other record actions are harmless as they
+        # are: history only reads, restore with no snapshot and batch with no
+        # steps (or with the switch off) are refused, and save_script above
+        # names a window nothing has.
+        ("inventory", "undo"):          {"change_set": -1},
     }
 
     # And the ones with no refusing argument at all, which are NOT called.
@@ -256,6 +265,11 @@ def main():
             "writes a new picture to the Desktop on every run",
         ("movement", "stop_walking"):
             "stops a walk or a follow under way, and status cannot say whether one is",
+        # With the bulk switch on and the Trash loaded and not empty, this puts
+        # the real "empty your Trash" question on screen -- and the reply is
+        # held for the answer longer than this script waits, so it died there.
+        ("inventory", "empty_trash"):
+            "with the switch on, it asks the user to empty their Trash for real",
     }
 
     # And a net, because the table above is hand-written and the next action
