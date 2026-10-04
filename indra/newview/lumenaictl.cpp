@@ -19601,6 +19601,14 @@ if (method == "camera")
                                          "the viewer says in the Assistant window when the change "
                                          "has finished, and they can ask again then.");
             }
+            // <Lumen> An undo or a restore may be taking things OUT of the
+            // Trash right now; emptying it would purge them on the way.
+            if (LumenAIUndo::instance().puttingBack())
+            {
+                return bulkError(-32000, "An undo or a restore is still taking things out of the "
+                                         "Trash, so it was not emptied. Tell the user; they can ask "
+                                         "again once it has finished.");
+            }
             LLInventoryModel::cat_array_t cats;
             LLInventoryModel::item_array_t items;
             gInventory.collectDescendents(trash, cats, items, LLInventoryModel::INCLUDE_TRASH);

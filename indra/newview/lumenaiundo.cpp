@@ -343,6 +343,31 @@ std::string LumenInventoryRules::offLimits(const LLUUID& id, const char* it, Rul
     if (within(id, AOEngine::instance().getAOFolder()))
         return refused(rule, ANIMATION_OVERRIDER, s + " belongs to their animation overrider, which finds "
                                                       "things by where they are");
+    // <Lumen> The viewer's own folders inside #Lumen and #Firestorm (#AO,
+    // #LSL Bridge, #Wearable Favorites ...) are found by NAME, and the ones a
+    // feature is not using today -- a leftover #AO under the root that is not
+    // the shared one -- are found again the day it is. All of them, in use or
+    // not, and what is in them.
+    {
+        LLUUID walk = id;
+        for (S32 guard = 0; guard < 64 && walk.notNull(); ++guard)
+        {
+            LLViewerInventoryCategory* c = gInventory.getCategory(walk);
+            const LLUUID up = c ? c->getParentUUID() : parentOf(walk);
+            if (c && !c->getName().empty() && c->getName()[0] == '#')
+            {
+                LLViewerInventoryCategory* p = gInventory.getCategory(up);
+                if (p && (p->getName() == LumenFolders::FIRESTORM_FOLDER
+                          || p->getName() == LumenFolders::LUMEN_FOLDER))
+                {
+                    return refused(rule, NAMED_FOLDER, s + " is in " + p->getName() + "/" + c->getName()
+                                                       + ", one of the viewer's own folders, which it "
+                                                         "finds by name");
+                }
+            }
+            walk = up;
+        }
+    }
     // Moving something listed out of Marketplace unlists it, and moving
     // something in changes what is for sale: neither is the assistant's.
     if (depth_nesting_in_marketplace(id) >= 0)
@@ -847,10 +872,24 @@ namespace
     }
 }
 
+// <Lumen> How many undos and restores are still putting things back. Emptying
+// the Trash waits for none: it would purge what they are taking out of it.
+namespace { S32 sPuttingBack = 0; }
+
+bool LumenAIUndo::puttingBack() const
+{
+    return sPuttingBack > 0;
+}
+
 LLSD LumenAIUndo::run(Plan& plan, const Finished& finished)
 {
     std::shared_ptr<RunState> st = std::make_shared<RunState>();
-    st->finished = finished;
+    ++sPuttingBack;
+    st->finished = [finished](const LLSD& s, const std::vector<S64>& rows, bool later)
+    {
+        if (sPuttingBack > 0) --sPuttingBack;
+        if (finished) finished(s, rows, later);
+    };
     st->left_alone = plan.left_alone;
     st->left_alone_count = plan.left_alone_count;
 
@@ -1934,7 +1973,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
     if (!flush())
     {
         error = "The record is still being written (a snapshot of a large inventory), so nothing was "
-                "undone yet. Try again in a moment.";
+                "undone. The user can ask again in a little while.";
         return plan;
     }
     // </Lumen>
@@ -2238,7 +2277,7 @@ LumenAIUndo::Plan LumenAIUndo::planRestore(S64 snap_id, LLSD& error)
     if (!flush())
     {
         error = "The record is still being written (a snapshot of a large inventory), so nothing was "
-                "changed yet. Try again in a moment.";
+                "changed. The user can ask again in a little while.";
         return plan;
     }
     // On the main thread, and the biggest read there is: said in the log, so

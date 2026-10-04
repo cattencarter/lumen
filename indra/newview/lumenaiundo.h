@@ -237,6 +237,8 @@ public:
     LLSD previewRestore(S64 snap_id, S32 sample);
     /** Put the inventory back as the snapshot has it, as far as possible. */
     LLSD restore(S64 snap_id);
+    /** An undo or a restore is still putting things back. */
+    bool puttingBack() const;
 
     bool available();
     /** <Lumen> Why available() is false, in words for the person; empty if it is not. */
