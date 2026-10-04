@@ -54,7 +54,7 @@ const std::string APP_NAME = "Lumen";
 // every 0.1.1 install was then told at each login that 0.1.1 was available.
 // lumen/scripts/actions-check.py now fails when this is behind the newest
 // release tag, because a note here would not have survived.
-const std::string LUMEN_VERSION = "0.1.5";
+const std::string LUMEN_VERSION = "0.1.6";
 // </Lumen>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;
