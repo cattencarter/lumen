@@ -215,8 +215,26 @@ public:
     // passes the set beginBatch() gave it.
     void recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
                     S64 set_id = 0);
+    /**
+     * <Lumen> Call when Second Life has CONFIRMED the new name, with the set
+     * setForLater() gave when it was sent. Under AIS a rename only queues a
+     * request: the viewer's own copy of the name changes when the answer
+     * comes, and a refused one never changes it. Recorded on sending, an undo
+     * straight after a big rename run read the old name as "renamed again
+     * since", and a refused rename stayed in the record as done.
+     */
     void recordRename(const LLUUID& id, bool folder, const std::string& before,
                       const std::string& after, S64 set_id = 0);
+    /** <Lumen> The set a change Second Life answers for later goes in: fixed now. */
+    S64  setForLater();
+    /**
+     * <Lumen> A rename sent and not answered yet. Undo reads a thing carrying
+     * its name from before as "not confirmed yet" while one is, rather than
+     * as changed since.
+     */
+    void renameSent(const LLUUID& id);
+    void renameAnswered(const LLUUID& id);
+    bool renamePending(const LLUUID& id) const { return mRenamesInFlight.count(id) > 0; }
     /** Call AFTER it is in the Trash: where it is now is recorded too. */
     void recordTrash(const LLUUID& id, bool folder, const LLUUID& from, S64 set_id = 0);
     void recordUntrash(const LLUUID& id, bool folder, const LLUUID& to);
@@ -251,8 +269,13 @@ public:
      * Ask every bulk run to stop after the change in hand -- Clear in the
      * Assistant window, or Stop in the history window. What it did stays one
      * change set, undoable. True when a run was going.
+     * <Lumen> And an undo or a restore still putting things back a few at a
+     * time: what it put back stays put back, and an undo's set stays not
+     * undone, so undoing it again does the rest.
      */
     bool stopBulk();
+    /** <Lumen> Something Stop can stop: a bulk run, or an undo or restore still going. */
+    bool stoppable() const { return bulkRunning() || puttingBack(); }
     /** Has this run been asked to stop? The run asks between changes. */
     bool stopAsked(S64 set_id) const { return mStopAsked.count(set_id) > 0; }
     // </Lumen>
@@ -279,9 +302,19 @@ public:
      * named again: only those are tried.
      */
     LLSD undo(S64 set_id);
-    /** What restoring a snapshot would change, with up to `sample` examples of each. */
-    LLSD previewRestore(S64 snap_id, S32 sample);
-    /** Put the inventory back as the snapshot has it, as far as possible. */
+    /**
+     * What restoring a snapshot would change, with up to `sample` examples of
+     * each. <Lumen> Planned afresh, unless `reuse` and this snapshot was
+     * planned a short while ago: the call collecting the answer to a question
+     * asks about the plan the question was built from.
+     */
+    LLSD previewRestore(S64 snap_id, S32 sample, bool reuse = false);
+    /**
+     * Put the inventory back as the snapshot has it, as far as possible.
+     * <Lumen> Runs the plan the last preview of it made, when that is recent
+     * -- the one the person was asked about -- and each step leaves alone
+     * what has changed since.
+     */
     LLSD restore(S64 snap_id);
     /** An undo or a restore is still putting things back. */
     bool puttingBack() const;
@@ -336,7 +369,9 @@ private:
     bool readSnapshot(S64 snap_id, std::vector<Node>& out, bool* partial = nullptr);
 
     Plan planUndo(S64 set_id, LLSD& error);
-    Plan planRestore(S64 snap_id, LLSD& error);
+    Plan planRestore(S64 snap_id, LLSD& error, bool reuse);
+    /** <Lumen> Why nothing may be put back now (logged out, another one going), or empty. */
+    std::string notNow(const char* what) const;
     LLSD run(Plan& plan, const Finished& finished);
 
     sqlite3*    mRead = nullptr;     // main thread: reads only
@@ -368,6 +403,7 @@ private:
     std::set<S64> mRunning;          // bulk runs still writing to these
     std::set<S64> mStopAsked;        // ...and the ones asked to stop
     std::map<S64, S64> mLateSets;    // closed set -> where what arrives for it late goes
+    std::map<LLUUID, S32> mRenamesInFlight;   // sent, not answered yet: how many
 
     // <Lumen> Shared with the writer thread, under mStateMutex.
     struct PendingTrash { LLUUID parent; std::string chain; S32 seq = 0; };
@@ -375,9 +411,11 @@ private:
     std::unordered_map<LLUUID, PendingTrash> mPendingTrash;   // recorded, not on disk yet
     std::map<S64, SnapState> mSnapStates;   // snapshots taken this login, and how their write went
 
-    // <Lumen> previewRestore() and restore() in one call plan once.
+    // <Lumen> A restore is planned once -- for the preview the question was
+    // built from -- and that plan is what the Yes runs, each step checking
+    // the thing is still as the plan saw it. Kept a while, not one frame.
     S64         mPlannedSnap = 0;
-    U32         mPlannedFrame = 0;
+    F64         mPlannedAt = 0.0;
     std::shared_ptr<Plan> mPlanned;
 };
 

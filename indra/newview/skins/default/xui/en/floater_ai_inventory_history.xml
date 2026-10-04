@@ -33,11 +33,11 @@
      left="12" top="198" width="120" height="22"
      label="Undo this" name="undo_btn"
      tool_tip="Put back what this request changed. Anything changed again since is left alone." />
-    <!-- <Lumen> Enabled only while a bulk change is running. -->
+    <!-- <Lumen> Enabled only while a bulk change, an undo or a restore is running. -->
     <button follows="left|top" layout="topleft"
      left="140" top="198" width="80" height="22"
      label="Stop" name="stop_btn"
-     tool_tip="Stop the bulk change that is running. What it has done so far stays, and can be undone." />
+     tool_tip="Stop the change that is running: a bulk change, an undo or a restore. What it has done so far stays." />
 
     <text type="string" follows="left|top|right" layout="topleft"
      left="12" top="232" width="576" height="16" name="snaps_label">
