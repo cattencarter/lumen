@@ -15709,6 +15709,42 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
         }
 
+        // <Lumen> What is in it already has to be KNOWN before a script is
+        // added: the new one is told apart from the old ones by not being among
+        // them (ScriptArrivalWatch::mBefore). Right after a login an object's
+        // contents have not been fetched, the list of what was there was
+        // empty, and an old script of the same name was taken for the new one
+        // and written into -- overwriting it.
+        {
+            static std::map<LLUUID, F64> s_reading_since;
+            if (object->isInventoryPending() || !object->getInventoryRoot())
+            {
+                contentsStillToCome(object);   // asks the region, once a second
+                F64& since = s_reading_since[object->getID()];
+                if (since == 0.0) since = now;
+                if (now - since < CONTENTS_WAIT)
+                {
+                    mSettle = 1.0;
+                    LLSD w;
+                    w["pending"] = true;
+                    w["settling"] = true;
+                    w["note"] = "Reading what is already in that object first, so the new script "
+                                "is not mistaken for one there. The reply waits for it; if you "
+                                "are reading this, the region is slow -- the same new_script call "
+                                "made again carries on, and nothing has been added yet.";
+                    return w;
+                }
+                s_reading_since.erase(object->getID());
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The region did not say what is already in that object, so no "
+                               "script was added -- one could be mistaken for a script already "
+                               "there. Tell the user; they can ask again.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            s_reading_since.erase(object->getID());
+        }
+        // </Lumen>
+
         // <Lumen> A script that is running the moment it exists, in an object
         // other people can touch.
         {
@@ -24608,12 +24644,16 @@ if (method == "camera")
             LLFloater* win = j.window.get();
             LLSD r;
             r["script"] = j.script;
-            r["saved"] = true;
+            // <Lumen> "saved" only once the compiler has answered: until then
+            // it was SENT, and an upload that failed on the way (object gone,
+            // region change) leaves no answer at all -- the window's own save
+            // does not report that.
+            r["sent"] = true;
             if (!win)
             {
-                r["note"] = "It was saved, but its window was closed before the compiler "
-                            "answered, so whether it compiled is not known. Tell them that; do "
-                            "not say it works.";
+                r["note"] = "It was sent to be saved, but its window was closed before an "
+                            "answer came, so whether it was saved and compiled is not known. "
+                            "Tell them that; do not say it works.";
                 return finish(at, r, "unknown");
             }
             // A call after a gap, before "not answered yet" was said, comes
@@ -24635,6 +24675,7 @@ if (method == "camera")
             const bool live = dynamic_cast<LLLiveLSLEditor*>(win) != NULL;
             if (compiled)
             {
+                r["saved"] = true;
                 r["compiled"] = true;
                 bool running = true;
                 if (live)
@@ -24671,6 +24712,7 @@ if (method == "camera")
             }
             if (!compiling && errors.size())
             {
+                r["saved"] = true;
                 r["compiled"] = false;
                 r["compile_errors"] = errors;
                 const LLSD unknown = lslUnknownNames(j.text);
@@ -24685,9 +24727,9 @@ if (method == "camera")
             if (!compiling)
             {
                 // The spinner stopped with neither answer in the window.
-                r["note"] = "It was saved, but the window shows no answer from the compiler, so "
-                            "whether it compiled is not known. Tell them that; do not say it "
-                            "works.";
+                r["note"] = "It was sent to be saved, but the window shows no answer, so "
+                            "whether it was saved and compiled is not known -- the upload may "
+                            "have failed. Tell them that; do not say it works.";
                 return finish(at, r, "unknown");
             }
             r["pending"] = true;
@@ -24698,9 +24740,9 @@ if (method == "camera")
                 // says "not answered yet" -- is still inside the hold.
                 mSettle = llmax(0.5, j.until - now + 1.0);
                 r["settling"] = true;
-                r["note"] = "Saved, and waiting for the compiler. The reply waits for its "
-                            "answer; if you are reading this, it is slow -- make this same call "
-                            "once more to collect it, and do not say it works until then.";
+                r["note"] = "Sent to be saved, and waiting for the answer. The reply waits for "
+                            "it; if you are reading this, it is slow -- make this same call "
+                            "once more to collect it, and do not say it is saved until then.";
                 return r;
             }
             if (!j.told_not_yet)
@@ -24710,14 +24752,13 @@ if (method == "camera")
                 j.keep = now + 120.0;
                 // Not recorded for request_id replay: replayed after the job
                 // has gone, it would invite the same call for ever.
-                r["note"] = "Saved, but the compiler has not answered yet. Make this same call "
-                            "once more to collect its answer, and do not say it works until "
-                            "then.";
+                r["note"] = "Sent to be saved, but no answer has come yet. Make this same call "
+                            "once more to collect it, and do not say it is saved until then.";
                 return r;
             }
-            r["note"] = "Saved, but the compiler has still not answered, so whether it compiled "
-                        "is not known. Do not call again: tell them it is saved, and that its "
-                        "window shows the compiler's answer when it comes.";
+            r["note"] = "Sent to be saved, but still no answer, so whether it was saved and "
+                        "compiled is not known. Do not call again: tell them that, and that its "
+                        "window shows the answer if one comes.";
             return finish(at, r, "unknown");
         };
 

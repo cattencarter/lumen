@@ -15645,7 +15645,7 @@ The assistant wants to empty your Trash ([COUNT] items). Once emptied, they are 
    type="alertmodal">
 The assistant will be able to move, rename and delete many items at once, and empty the Trash. It can misunderstand you, so a run may catch things you wanted kept.
 
-Every run is shown to you first and can be undone afterwards. Anything emptied from the Trash is gone for good.
+Each run is asked about first (anything that deletes, always), and can be undone afterwards. Anything emptied from the Trash is gone for good.
     <tag>confirm</tag>
     <form name="form">
       <button
@@ -15670,7 +15670,7 @@ Every run is shown to you first and can be undone afterwards. Anything emptied f
    type="alertmodal">
 The assistant will be able to save the scripts it writes, so they run at once in their object. A script can act in the world: chat, move things, give items away and ask you for permissions.
 
-Every save is shown to you first. A mistake keeps running until the script is stopped or deleted.
+Each save is asked about first, unless you choose Always allow. A mistake keeps running until the script is stopped or deleted.
     <tag>confirm</tag>
     <form name="form">
       <button
