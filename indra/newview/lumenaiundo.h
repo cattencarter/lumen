@@ -120,6 +120,18 @@ namespace LumenInventoryRules
     std::string notRename(const LLUUID& id, bool folder, Rule* rule = nullptr);
     /** <Lumen> Why this may not be put in the Trash. Worn things are the caller's to ask about. */
     std::string notDelete(const LLUUID& id, bool folder, Rule* rule = nullptr);
+    /**
+     * <Lumen> Why a folder -- made, or renamed -- may not be given this NAME
+     * inside `parent`. The rules above ask about names folders have now; this
+     * asks about the one being given. #Firestorm, #Lumen and #RLV at the top
+     * of the inventory, and any #-name directly inside a #Firestorm or #Lumen
+     * folder, are names the viewer and RLV find their own folders by: a second
+     * one could be taken for theirs, and the assistant could not take it back
+     * (held() refuses such a folder by its name). `parent_name` stands in for
+     * a parent not made yet (a null `parent`), which is never the top.
+     */
+    std::string notNamed(const LLUUID& parent, const std::string& name, Rule* rule = nullptr,
+                         const std::string& parent_name = std::string());
 }
 // </Lumen>
 

@@ -32,6 +32,7 @@
 #include "llfloaterpreference.h"
 #include "llframetimer.h"
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -202,6 +203,9 @@ private:
     void buildOptIns();
     void loadOptIns();
     void saveOptIns();
+    // <Lumen> The boxes whose warning was answered "Turn it on" since they were
+    // last loaded. Only those are written ON.
+    std::set<std::string> mOptInConfirmed;
 
     struct Row
     {
