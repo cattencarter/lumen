@@ -15509,9 +15509,7 @@ The outfit's old contents are overwritten and cannot be brought back. Nothing yo
    label="Restore the inventory?"
    name="LumenAskRestore"
    type="alertmodal">
-The assistant wants to put your inventory back as a snapshot had it: [MOVES] moved back, [TRASH] taken out of the Trash and [RENAMES] renamed back.
-
-Nothing is deleted. A snapshot of how it is now is taken first, so this can be undone the same way.
+The assistant wants to put your inventory back as a snapshot had it: [MOVES] moved back, [TRASH] out of the Trash, [RENAMES] renamed back. This can be undone too.
     <tag>confirm</tag>
     <form name="form">
       <ignore name="ignore"
@@ -15535,9 +15533,7 @@ Nothing is deleted. A snapshot of how it is now is taken first, so this can be u
    label="Restore the inventory?"
    name="LumenConfirmRestore"
    type="alertmodal">
-Put your inventory back as this snapshot had it: [MOVES] moved back, [TRASH] taken out of the Trash and [RENAMES] renamed back?
-
-Nothing is deleted. A snapshot of how it is now is taken first, so this can be undone the same way.
+Put your inventory back as this snapshot had it: [MOVES] moved back, [TRASH] out of the Trash, [RENAMES] renamed back? This can be undone too.
     <tag>confirm</tag>
     <usetemplate
      name="okcancelbuttons"
@@ -15580,11 +15576,11 @@ The assistant wants to move [ITEM] to the Trash.
    label="Tidy the inventory?"
    name="LumenAskBatch"
    type="alertmodal">
-The assistant wants to tidy your inventory in one go:
+The assistant wants to tidy your inventory:
 
 [SUMMARY]
 
-Nothing is deleted, and the whole run can be undone afterwards: ask the assistant to undo it, or use Comm &gt; Assistant Inventory History.
+This can be undone afterwards.
     <tag>confirm</tag>
     <form name="form">
       <ignore name="ignore"
@@ -15608,13 +15604,11 @@ Nothing is deleted, and the whole run can be undone afterwards: ask the assistan
    label="Delete many items at once?"
    name="LumenAskBatchDelete"
    type="alertmodal">
-The assistant wants to tidy your inventory in one go, and this deletes things:
+The assistant wants to tidy your inventory, deleting some things:
 
 [SUMMARY]
 
-Deleted items go to the Trash. The whole run can be undone afterwards, as long as the Trash has not been emptied: ask the assistant to undo it, or use Comm &gt; Assistant Inventory History.
-
-Anything that deletes is asked every time.
+Deleted items go to the Trash, and the run can be undone until the Trash is emptied.
     <tag>confirm</tag>
     <form name="form">
       <button
@@ -15633,13 +15627,7 @@ Anything that deletes is asked every time.
    label="Empty the Trash?"
    name="LumenAskEmptyTrash"
    type="alertmodal">
-The assistant wants to empty your Trash.
-
-Items in the Trash: [COUNT]
-
-Once the Trash is emptied, they are gone for good. Neither Lumen nor anyone else can bring them back, and the assistant's record of changes cannot undo them any more.
-
-This is asked every time.
+The assistant wants to empty your Trash ([COUNT] items). Once emptied, they are gone for good.
     <tag>confirm</tag>
     <form name="form">
       <button
@@ -15654,7 +15642,7 @@ This is asked every time.
     </form>
   </notification>
   <!-- <Lumen> Shown when the user ticks Preferences > AI > Permissions >
-       "Let the assistant tidy many inventory items at once". Leave it off is
+       "Let the assistant tidy many items at once". Leave it off is
        the default button, so Enter never turns it on. A LumenConfirm name:
        the assistant may not answer it. Calm on purpose (the author,
        2026-10-04): explain the risk, do not frighten. -->
@@ -15663,18 +15651,9 @@ This is asked every time.
    label="Let the assistant tidy many items at once?"
    name="LumenConfirmBulkInventory"
    type="alertmodal">
-With this on, the assistant can move, rename and delete many inventory items in one go, hundreds at a time if that is what you ask for. It can also empty the Trash.
+The assistant will be able to move, rename and delete many items at once, and empty the Trash. It can misunderstand you, so a run may catch things you wanted kept.
 
-It can get it wrong. A model can take a request more widely than you meant, and the mic can mishear a word, so a run may catch items you wanted left alone.
-
-What Lumen does so it can be put right:
-- The viewer shows you each run before it starts. A run that only moves or renames things can be set to go ahead without asking; one that deletes asks every time.
-- Before each run, a snapshot is taken of how your inventory is arranged.
-- Every change is recorded and can be undone: ask the assistant to "undo that", or use Comm &gt; Assistant Inventory History.
-
-Where that stops: anything emptied from the Trash is gone for good, and neither Lumen nor anyone else can bring it back. Emptying the Trash asks you every time.
-
-You can turn this off again here whenever you like.
+Every run is shown to you first and can be undone afterwards. Anything emptied from the Trash is gone for good.
     <tag>confirm</tag>
     <form name="form">
       <button

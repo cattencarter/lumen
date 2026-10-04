@@ -600,8 +600,7 @@
       <check_box follows="left|top" layout="topleft"
        left="20" top="34" width="490" height="16"
        name="allow_bulk_inventory"
-       label="Let the assistant tidy many inventory items at once, and empty the Trash"
-       tool_tip="It can then move, rename and delete many items in one go. The viewer still asks before each run, and anything that deletes asks every time." />
+       label="Let the assistant tidy many items at once and empty the Trash" />
 
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="66" width="330" height="14" font="SansSerifBold">
