@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lumenaiundo.h"
+#include "lumenaichat.h"   // <Lumen> where a long undo says it finished
 
 #include "aoengine.h"           // <Lumen> the AO folder, for the shared rules
 #include "fslslbridge.h"        // <Lumen> the LSL bridge's folder, likewise
@@ -869,6 +870,31 @@ namespace
         }
         }
         st->couldNot(s.label, why);
+    }
+}
+
+// <Lumen> A long undo or restore says it has finished where the person asked
+// for it: in the Assistant window, once the turn that started it has ended (a
+// note in the middle of the assistant's own reply would read as part of it),
+// as a bulk run does. A notice when that window is not on screen.
+namespace
+{
+    void announce(const std::string& line)
+    {
+        LLCoros::instance().launch("LumenAIUndoSays", [line]()
+        {
+            const F64 give_up = LLTimer::getTotalSeconds() + 60.0;
+            while (LumenAIChatFloater::turnRunning() && LLTimer::getTotalSeconds() < give_up)
+            {
+                if (LLApp::isExiting()) return;
+                llcoro::suspendUntilTimeout(0.5f);
+            }
+            if (!LumenAIChatFloater::postFromViewer(std::string(), line))
+            {
+                LLSD args; args["MESSAGE"] = line;
+                LLNotificationsUtil::add("SystemMessageTip", args);
+            }
+        });
     }
 }
 
@@ -2224,8 +2250,7 @@ LLSD LumenAIUndo::undo(S64 set_id)
                 message += llformat(" Undoing change set %lld again tries those, once whatever stopped "
                                     "them is gone.", (long long)id);
             }
-            LLSD args; args["MESSAGE"] = message;
-            LLNotificationsUtil::add("SystemMessageTip", args);
+            announce(message);
         }
         changed();
     });
@@ -2514,10 +2539,8 @@ LLSD LumenAIUndo::restore(S64 snap_id)
     {
         if (later)
         {
-            LLSD args;
-            args["MESSAGE"] = llformat("Inventory restore finished: %d put back, %d could not be.",
-                                       s["put_back"].asInteger(), s["could_not"].asInteger());
-            LLNotificationsUtil::add("SystemMessageTip", args);
+            announce(llformat("Inventory restore finished: %d put back, %d could not be.",
+                              s["put_back"].asInteger(), s["could_not"].asInteger()));
         }
         changed();
     });
