@@ -11308,18 +11308,18 @@ namespace
         }
 
         // ---- the plan as shown, the question, the line for the record -------
+        // <Lumen> The question shows counts only, in one line. Names went in
+        // first and a big run filled the screen (the author, 2026-10-04); the
+        // assistant names things in the conversation, from the plan.
+        (void)lines;
+        std::vector<std::string> asked;
+        if (n_move)    asked.push_back(llformat("move %d", n_move));
+        if (n_rename)  asked.push_back(llformat("rename %d", n_rename));
+        if (n_trash)   asked.push_back(llformat("put %d in the Trash", n_trash));
+        if (n_new)     asked.push_back(llformat("make %d folder%s", n_new, n_new == 1 ? "" : "s"));
+        if (n_folders) asked.push_back(llformat("remove %d empty folder%s", n_folders, n_folders == 1 ? "" : "s"));
         std::string summary;
-        for (const std::string& l : lines)
-        {
-            if (!summary.empty()) summary += "\n";
-            summary += l;
-        }
-        if (summary.size() > 1200)
-        {
-            size_t cut = 1200;
-            while (cut > 0 && (((unsigned char)summary[cut]) & 0xC0) == 0x80) --cut;
-            summary = summary.substr(0, cut) + "...";
-        }
+        for (size_t i = 0; i < asked.size(); ++i) summary += (i ? ", " : "") + asked[i];
         plan.summary = summary;
         plan.deletes = n_trash > 0 || n_folders > 0;
 
@@ -11329,7 +11329,7 @@ namespace
         if (n_trash)   parts.push_back(llformat("%d to the Trash", n_trash));
         if (n_folders) parts.push_back(llformat("%d empty folder%s removed", n_folders, n_folders == 1 ? "" : "s"));
         if (n_new)     parts.push_back(llformat("%d new folder%s", n_new, n_new == 1 ? "" : "s"));
-        std::string what_line = "bulk tidy:";
+        std::string what_line = "bulk change:";
         for (size_t i = 0; i < parts.size(); ++i) what_line += (i ? ", " : " ") + parts[i];
         plan.what = what_line;
 
@@ -19698,6 +19698,7 @@ if (method == "camera")
             {
                 LLSD subs;
                 subs["SUMMARY"] = plan.summary;
+                subs["COUNT"] = (LLSD::Integer)plan.ops.size();   // <Lumen>
                 LLSD ask;
                 plan.asked = true;
                 if (!askUser(plan.deletes ? "LumenAskBatchDelete" : "LumenAskBatch", subs,

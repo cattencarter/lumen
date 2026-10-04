@@ -15566,26 +15566,22 @@ The assistant wants to move [ITEM] to the Trash.
        text="No"/>
     </form>
   </notification>
-  <!-- <Lumen> Bulk inventory tidying: one question per run, showing what the
+  <!-- <Lumen> Bulk inventory changes: one question per run, showing what the
        run will do. A run that only moves, renames or makes folders may be
        remembered like any other question. One that deletes, and emptying the
        Trash, ask every time: no ignore element, so no "Always choose this
        option" (the author, 2026-10-04). -->
   <notification
    icon="alert.tga"
-   label="Tidy the inventory?"
+   label="Change many items?"
    name="LumenAskBatch"
    type="alertmodal">
-The assistant wants to tidy your inventory:
-
-[SUMMARY]
-
-This can be undone afterwards.
+The assistant wants to change [COUNT] items in your inventory: [SUMMARY]. It can be undone afterwards.
     <tag>confirm</tag>
     <form name="form">
       <ignore name="ignore"
        save_option="true"
-       text="When the assistant wants to tidy many items at once without deleting"/>
+       text="When the assistant wants to change many items at once without deleting"/>
       <button
        ignore="Always allow"
        index="0"
@@ -15601,14 +15597,10 @@ This can be undone afterwards.
   </notification>
   <notification
    icon="alert.tga"
-   label="Delete many items at once?"
+   label="Change and delete many items?"
    name="LumenAskBatchDelete"
    type="alertmodal">
-The assistant wants to tidy your inventory, deleting some things:
-
-[SUMMARY]
-
-Deleted items go to the Trash, and the run can be undone until the Trash is emptied.
+The assistant wants to change [COUNT] items in your inventory: [SUMMARY]. It can be undone until the Trash is emptied.
     <tag>confirm</tag>
     <form name="form">
       <button
@@ -15642,13 +15634,13 @@ The assistant wants to empty your Trash ([COUNT] items). Once emptied, they are 
     </form>
   </notification>
   <!-- <Lumen> Shown when the user ticks Preferences > AI > Permissions >
-       "Let the assistant tidy many items at once". Leave it off is
+       "Let the assistant change many items at once". Leave it off is
        the default button, so Enter never turns it on. A LumenConfirm name:
        the assistant may not answer it. Calm on purpose (the author,
        2026-10-04): explain the risk, do not frighten. -->
   <notification
    icon="alert.tga"
-   label="Let the assistant tidy many items at once?"
+   label="Let the assistant change many items at once?"
    name="LumenConfirmBulkInventory"
    type="alertmodal">
 The assistant will be able to move, rename and delete many items at once, and empty the Trash. It can misunderstand you, so a run may catch things you wanted kept.

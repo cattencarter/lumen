@@ -600,7 +600,7 @@
       <check_box follows="left|top" layout="topleft"
        left="20" top="34" width="490" height="16"
        name="allow_bulk_inventory"
-       label="Let the assistant tidy many items at once and empty the Trash" />
+       label="Let the assistant change many items at once and empty the Trash" />
 
       <text type="string" follows="left|top" layout="topleft"
        left="20" top="66" width="330" height="14" font="SansSerifBold">
