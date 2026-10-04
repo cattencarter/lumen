@@ -4034,8 +4034,8 @@ namespace
     // <Lumen> The viewer asking whether to save the changes in one of its own
     // windows as it closes -- a script, a notecard, a gesture and the
     // experience profile all ask "SaveChanges"; the appearance editor, the
-    // material editor and a profile have their own (two spelt "Usaved" by
-    // Linden Lab, kept so). Never the assistant's to answer, whichever
+    // material editor, the environment editors and a profile (and its
+    // classifieds) have their own (two spelt "Usaved" by Linden Lab, kept so). Never the assistant's to answer, whichever
     // button: Save saves whatever is in the window, the person's own unsaved
     // typing included -- and for a script, past the switch that keeps saving
     // theirs to allow (save_script) -- while Don't Save throws their typing
@@ -4045,7 +4045,8 @@ namespace
         const std::string& kind = n->getName();
         return kind == "SaveChanges" || kind == "SaveClothingBodyChanges"
             || kind == "ProfileUnsavedChanges"
-            || kind == "UsavedWearableChanges" || kind == "UsavedMaterialChanges";   // <Lumen>
+            || kind == "UsavedWearableChanges" || kind == "UsavedMaterialChanges"     // <Lumen>
+            || kind == "ProfileUnpublishedClassified" || kind == "SettingsConfirmLoss";
     }
 
     LLSD permissionsAsked(const LLNotificationPtr& n)
@@ -11186,11 +11187,21 @@ namespace
      * putting a link in the Trash leaves the thing itself worn -- as in the
      * viewer's own check for deleting a folder.
      */
+    /**
+     * What keeps a folder out of the Trash because of what is on: "\"Hat\",
+     * which is being worn", or empty. <Lumen> The viewer counts an active
+     * gesture as worn and will not delete a folder holding one either; said
+     * as what it is, with the way out.
+     */
     std::string bulkWornIn(const LLInventoryModel::item_array_t& items)
     {
         for (const LLPointer<LLViewerInventoryItem>& i : items)
         {
-            if (i && !i->getIsLinkType() && get_is_item_worn(i->getUUID())) return i->getName();
+            if (!i || i->getIsLinkType() || !get_is_item_worn(i->getUUID())) continue;
+            if (i->getType() == LLAssetType::AT_GESTURE)
+                return "\"" + safeUtf8(i->getName()) + "\", a gesture that is switched on (the Gestures "
+                       "window turns it off)";
+            return "\"" + safeUtf8(i->getName()) + "\", which is being worn";
         }
         return std::string();
     }
@@ -11237,8 +11248,16 @@ namespace
         std::set<LLUUID> claimed;              // an item or folder is acted on once per run
         std::map<LLUUID, S32> claimed_by;      // ...and which step had it first
         // Folders a new_folder step makes, or finds already there, for later steps.
-        struct Planned { S32 op = -1; LLUUID id; std::string name, path; };
+        // <Lumen> `base`: the folder there now that a folder this run makes
+        // goes in, at the end of any chain of made folders -- for the checks a
+        // move into it needs before it exists.
+        struct Planned { S32 op = -1; LLUUID id; std::string name, path; LLUUID base; };
         std::vector<Planned> planned;
+        auto baseOf = [&planned](S32 made_op) -> LLUUID
+        {
+            for (const Planned& q : planned) if (q.op == made_op) return q.base;
+            return LLUUID::null;
+        };
         std::map<LLUUID, std::string> held_cache;
         auto heldIn = [&held_cache](const LLUUID& folder) -> const std::string&
         {
@@ -11404,6 +11423,7 @@ namespace
                 Planned p;
                 p.name = name;
                 p.path = (parent == root && parent_made < 0) ? name : parent_path + "/" + name;
+                p.base = parent_made < 0 ? parent : baseOf(parent_made);   // <Lumen>
                 shown["name"] = safeUtf8(name);
                 shown["in"] = safeUtf8(parent_path);
                 if (existing.notNull())
@@ -11731,6 +11751,10 @@ namespace
                             why = LumenInventoryRules::notDelete(id, true, &rule);
                         else if (dest.notNull())
                             why = LumenInventoryRules::notMove(id, true, dest, &rule);
+                        // <Lumen> Into a folder this run makes: asked of where that
+                        // goes, so "inside itself" and RLV count in the plan too.
+                        else if (baseOf(dest_made).notNull())
+                            why = LumenInventoryRules::notMove(id, true, baseOf(dest_made), &rule);
                         else
                         {
                             why = LumenInventoryRules::held(id, true, &rule);
@@ -11770,7 +11794,7 @@ namespace
                     {
                         const std::string worn = bulkWornIn(items);
                         if (!worn.empty())
-                            why = "it holds \"" + worn + "\", which is being worn";
+                            why = "it holds " + worn;
                         else if (!get_is_category_and_children_removable(&gInventory, id, true))
                             why = "the viewer does not allow removing it";
                     }
@@ -12119,14 +12143,18 @@ namespace
                         if (dest.notNull() && item->getParentUUID() == dest) { ++already; continue; }
                         if (!get_is_item_removable(&gInventory, m.id, false))
                             why = "a lock in the viewer holds it where it is (a protected folder, or RLV)";
-                        else if (RlvActions::isRlvEnabled() && dest.notNull()
-                                 && !RlvFolderLocks::instance().canMoveItem(m.id, dest))
+                        else if (RlvActions::isRlvEnabled()
+                                 && (dest.notNull() || baseOf(dest_made).notNull())   // <Lumen>
+                                 && !RlvFolderLocks::instance().canMoveItem(
+                                        m.id, dest.notNull() ? dest : baseOf(dest_made)))
                             why = "an RLV lock the user is wearing holds it where it is";
                     }
                     else if (why.empty() && what == "delete")
                     {
                         if (get_is_item_worn(m.id))
-                            why = "it is being worn";
+                            why = item->getType() == LLAssetType::AT_GESTURE   // <Lumen>
+                                ? "it is a gesture that is switched on (the Gestures window turns it off)"
+                                : "it is being worn";
                         else if (!get_is_item_removable(&gInventory, m.id, true))
                             why = "the viewer does not allow deleting it (a protected folder, or RLV)";
                     }
@@ -12539,21 +12567,11 @@ namespace
                 LLInventoryModel::item_array_t items;
                 gInventory.collectDescendents(op.id, cats, items, LLInventoryModel::EXCLUDE_TRASH);
                 const std::string worn = bulkWornIn(items);
-                if (!worn.empty()) { failed("it holds \"" + safeUtf8(worn) + "\", which is being worn now"); return; }
+                if (!worn.empty()) { failed("it holds " + worn); return; }
                 if (!get_is_category_and_children_removable(&gInventory, op.id, true))
                 {
                     failed("the viewer does not allow removing it now");
                     return;
-                }
-                // <Lumen> As the viewer's own removeCategory does: a gesture
-                // going to the Trash with its folder stops being active.
-                for (const LLPointer<LLViewerInventoryItem>& item : items)
-                {
-                    if (item && item->getType() == LLAssetType::AT_GESTURE && !item->getIsLinkType()
-                        && LLGestureMgr::instance().isGestureActive(item->getUUID()))
-                    {
-                        LLGestureMgr::instance().deactivateGesture(item->getUUID());
-                    }
                 }
             }
             // As delete_empty_folders does: the Trash-is-full check once, at the end.
@@ -17842,7 +17860,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 kept = true;
             }
         }
-        if (!kept) target->closeFloater();
+        // <Lumen> As its own X does, not closeFloater(): some windows ask
+        // about unsaved changes only there -- the profile, the environment
+        // editors, the material editor -- and closeFloater() threw their
+        // typing away and said "Closed". Their question is the person's.
+        if (!kept) LLFloater::onClickClose(target, false);
         // Asked again rather than trusted: a script window with changes asks
         // "Save Changes?" and stays, and a closed floater may be gone.
         LLFloater* after = LLFloaterReg::findInstance(inst, key);
