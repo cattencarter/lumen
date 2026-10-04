@@ -148,5 +148,15 @@ CLAUDE.md
 docs/
 docs
 
+# What an AI agent keeps beside the work -- settings, instructions, tasks --
+# at any depth. None of it is part of the viewer.
+.claude/
+.codex/
+.vibe/
+CLAUDE.local.md
+AGENTS.md
+.mcp.json
+tasks/
+
 # Built disk images. 400+ MB; they belong on a release, never in git.
 *.dmg
