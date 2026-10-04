@@ -757,7 +757,7 @@ namespace
             if (action == "history")          return "Checking what it changed";   // <Lumen>
             if (action == "undo")             return "Putting things back";
             if (action == "restore")          return "Restoring the inventory";
-            if (action == "batch")            return "Tidying the inventory";   // <Lumen>
+            if (action == "batch")            return "Changing the inventory";  // <Lumen>
             if (action == "empty_trash")      return "Emptying the Trash";      // <Lumen>
         }
         else if (group == "chat")

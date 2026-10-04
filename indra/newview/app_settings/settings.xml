@@ -14795,7 +14795,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>LumenAIAllowBulkInventory</key>
     <map>
       <key>Comment</key>
-      <string>Let the assistant tidy the inventory in bulk -- many items moved, renamed or deleted to the Trash in one run -- and empty the Trash. Off until the person turns it on in Preferences &gt; AI &gt; Permissions, after a warning. The viewer still asks before each run; anything that deletes asks every time. The assistant cannot change it.</string>
+      <string>Let the assistant change the inventory in bulk -- many items moved, renamed or deleted to the Trash in one run -- and empty the Trash. Off until the person turns it on in Preferences &gt; AI &gt; Permissions, after a warning. The viewer still asks before each run; anything that deletes asks every time. The assistant cannot change it.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>

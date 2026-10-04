@@ -4146,7 +4146,7 @@ namespace
             "the request that changed things is not in the record any more. `preview: true` "
             "says what it would change, and changes nothing; tell them before restoring. The "
             "viewer asks them itself before it starts.\n"
-            "- batch: tidy many things in one go -- \"put everything named pumpkin into "
+            "- batch: change many things in one go -- \"put everything named pumpkin into "
             "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
             "\"delete the folders that are empty now\". **Off until the user switches it on** in "
             "Preferences > AI > Permissions; while it is off the answer says so -- tell them where, "
@@ -11008,11 +11008,13 @@ namespace
                               "things it cannot see";
                     else if (c->getPreferredType() != LLFolderType::FT_NONE)
                         why = "it is a folder of a special kind, not one of their own";
-                    else if (c->getName() == ROOT_FIRESTORM_FOLDER || c->getName() == RLV_ROOT_FOLDER)
-                        why = "it is a folder the viewer and RLV look for by name";
                     else
                     {
                         why = heldIn(id);
+                        // <Lumen> The shared rules for a folder: #Firestorm, #Lumen and #RLV
+                        // by name (only one of the first two was asked here before), a
+                        // folder protected in the viewer, the bridge's and the AO's.
+                        if (why.empty()) why = LumenInventoryRules::held(id, true);
                         if (why.empty() && !get_is_category_removable(&gInventory, id))
                             why = "the viewer does not allow removing it (protected, or locked by RLV)";
                     }
@@ -11372,6 +11374,12 @@ namespace
                 leave("it is not empty now, so it stays");
                 return;
             }
+            // <Lumen> The shared rules, asked again now, as a move asks them:
+            // its folder listed in Marketplace since the plan, or protected.
+            {
+                const std::string why = LumenInventoryRules::held(op.id, true);
+                if (!why.empty()) { failed(why); return; }
+            }
             if (!get_is_category_removable(&gInventory, op.id))
             {
                 failed("the viewer does not allow removing it");
@@ -11446,6 +11454,12 @@ namespace
         case BulkOp::TRASH:
         {
             if (get_is_item_worn(op.id)) { failed("it is being worn now"); return; }
+            // <Lumen> The shared rules, asked again now: a folder listed in
+            // Marketplace since the plan.
+            {
+                const std::string why = LumenInventoryRules::offLimits(op.id);
+                if (!why.empty()) { failed(why); return; }
+            }
             if (!get_is_item_removable(&gInventory, op.id, true))
             {
                 failed("the viewer does not allow deleting it now");
@@ -11476,9 +11490,9 @@ namespace
     void bulkFinalLine(const std::shared_ptr<BulkRun>& run)
     {
         std::string line = run->stopped
-            ? "Inventory tidy stopped part way, when the inventory went away (logging out or "
+            ? "Inventory changes stopped part way, when the inventory went away (logging out or "
               "quitting): " + bulkCount(run->done) + " of " + bulkCount(run->total) + " done."
-            : "Inventory tidy finished: " + bulkCount(run->done) + " of " + bulkCount(run->total)
+            : "Inventory changes finished: " + bulkCount(run->done) + " of " + bulkCount(run->total)
               + " done.";
         if (run->failed) line += " " + bulkCount(run->failed) + " could not be done.";
         if (run->left_alone) line += " " + bulkCount(run->left_alone) + " left alone because they "
@@ -11519,6 +11533,21 @@ namespace
         // before the call that started it answers.
         LLCoros::instance().launch("LumenAIBulkRun", [run, ops]()
         {
+            // <Lumen> A folder this run makes, once Second Life has answered for
+            // it -- or null. Waited for once: when the wait runs out the folder
+            // counts as not made for every later step too, which each waited
+            // the whole while again before, so one folder never answered for
+            // held the run (and with it every other run and empty_trash) half
+            // a minute per item. An answer arriving later still counts.
+            auto madeFolder = [&run](S32 index) -> LLUUID
+            {
+                const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                while (!run->made.count(index) && LLTimer::getTotalSeconds() < give_up)
+                    llcoro::suspendUntilTimeout(0.1f);
+                std::map<S32, LLUUID>::iterator f = run->made.find(index);
+                if (f == run->made.end()) f = run->made.emplace(index, LLUUID::null).first;
+                return f->second;
+            };
             S32 in_beat = 0;
             for (size_t i = 0; i < ops->size(); ++i)
             {
@@ -11534,22 +11563,24 @@ namespace
                 if (op.kind == BulkOp::NEW_FOLDER)
                 {
                     LLUUID parent = op.dest;
-                    if (op.dest_made >= 0)
-                    {
-                        const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
-                        while (!run->made.count(op.dest_made) && LLTimer::getTotalSeconds() < give_up)
-                            llcoro::suspendUntilTimeout(0.1f);
-                        std::map<S32, LLUUID>::const_iterator f = run->made.find(op.dest_made);
-                        parent = (f != run->made.end()) ? f->second : LLUUID::null;
-                    }
+                    if (op.dest_made >= 0) parent = madeFolder(op.dest_made);   // <Lumen>
+                    // <Lumen> And somewhere a folder may go, asked again now: the
+                    // Trash (an earlier step of this run may have put it there),
+                    // or Marketplace listings since the plan.
+                    std::string not_there;
                     if (parent.isNull() || !gInventory.getCategory(parent))
+                        not_there = "the folder it was to go in could not be made";
+                    else
+                        not_there = LumenInventoryRules::notInto(parent);
+                    if (!not_there.empty())
                     {
                         run->made[(S32)i] = LLUUID::null;
                         ++run->failed;
                         ++run->step_failed[op.step];
-                        bulkCapped(run->failed_list, op.new_name, "the folder it was to go in could not be made");
+                        bulkCapped(run->failed_list, op.new_name, not_there);
                         continue;
                     }
+                    // </Lumen>
                     ++run->folders_pending;
                     const S32 index = (S32)i;
                     const S32 step = op.step;
@@ -11576,18 +11607,13 @@ namespace
                     continue;
                 }
 
-                if (op.kind == BulkOp::MOVE && op.dest_made >= 0)
-                {
-                    const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
-                    while (!run->made.count(op.dest_made) && LLTimer::getTotalSeconds() < give_up)
-                        llcoro::suspendUntilTimeout(0.1f);
-                }
+                if (op.kind == BulkOp::MOVE && op.dest_made >= 0) madeFolder(op.dest_made);   // <Lumen>
 
                 bulkDo(op, run);
                 if (++in_beat >= BULK_PER_BEAT)
                 {
                     in_beat = 0;
-                    LumenAIChatFloater::postFromViewer("Tidying the inventory: "
+                    LumenAIChatFloater::postFromViewer("Changing the inventory: "
                         + bulkCount((S32)i + 1) + " of " + bulkCount(run->total), std::string());
                     llcoro::suspendUntilTimeout(BULK_BEAT_SECONDS);
                 }
@@ -19570,9 +19596,9 @@ if (method == "camera")
             if (trash.isNull()) return bulkError(-32000, "No Trash folder was found.");
             if (bulkBusy())
             {
-                return bulkError(-32000, "A bulk tidy is still running and may still be putting "
+                return bulkError(-32000, "A bulk change is still running and may still be putting "
                                          "things in the Trash, so it was not emptied. Tell the user; "
-                                         "the viewer says in the Assistant window when the tidy "
+                                         "the viewer says in the Assistant window when the change "
                                          "has finished, and they can ask again then.");
             }
             LLInventoryModel::cat_array_t cats;
@@ -19592,7 +19618,11 @@ if (method == "camera")
             // Asked every time, never remembered (the template has no box for
             // it). What the question showed is kept, so a Trash that grew
             // while they read it is not emptied on a Yes to fewer things.
-            if (!sTrashAsked.count(print)) sTrashAsked[print] = count;
+            // <Lumen> Kept only while that question is still up or its answer
+            // uncollected: one taken down unanswered left its count behind, and
+            // the next question showed that old number instead of today's.
+            sweepAsks();
+            if (!mAsks.count(print) || !sTrashAsked.count(print)) sTrashAsked[print] = count;
             {
                 LLSD subs;
                 subs["COUNT"] = sTrashAsked[print];
@@ -19704,7 +19734,7 @@ if (method == "camera")
             }
             if (bulkBusy())
             {
-                return bulkError(-32000, "Another bulk tidy is still running, so this one was not "
+                return bulkError(-32000, "Another bulk change is still running, so this one was not "
                                          "started and nothing was changed. Tell the user; the viewer "
                                          "says in the Assistant window when the other has finished, "
                                          "and they can ask again then.");

@@ -1925,7 +1925,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
     // older, unrelated change in its place.
     if (set_id == 0 && !mRunning.empty())
     {
-        error = llformat("The newest change is a bulk tidy (change set %lld) that is still running, so "
+        error = llformat("The newest change is a bulk change (change set %lld) that is still running, so "
                          "nothing was undone. It can be undone once it has finished; the viewer says "
                          "so in the Assistant window.", (long long)*mRunning.rbegin());
         return plan;
@@ -1958,7 +1958,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
     // <Lumen>
     if (mRunning.count(set_id))
     {
-        error = llformat("Change set %lld is a bulk tidy that is still running, so nothing was undone. "
+        error = llformat("Change set %lld is a bulk change that is still running, so nothing was undone. "
                          "It can be undone once it has finished; the viewer says so in the Assistant "
                          "window.", (long long)set_id);
         return plan;
