@@ -41,6 +41,7 @@
 #include "lleventcoro.h"
 
 #include "llbutton.h"
+#include "llcheckboxctrl.h"   // <Lumen> the switches on Permissions
 #include "llclipboard.h"
 #include "llcombobox.h"
 #include "llfloaterreg.h"
@@ -321,6 +322,79 @@ namespace
         }
         LL_INFOS("LumenAI") << "permission " << name << " set to " << state << LL_ENDL;
     }
+
+    // <Lumen> Things the assistant cannot do at all until the person turns
+    // them on: the check box on Permissions, the setting it stands for, and
+    // the warning shown when it is ticked. A LumenConfirm name, which the
+    // assistant may not answer, and the setting is a LumenAI one, which it may
+    // not set. Off by default; unticking needs no warning. A new switch is a
+    // line here and a check_box in panel_preferences_ai.xml.
+    struct OptIn
+    {
+        const char* checkbox;
+        const char* setting;
+        const char* warning;
+    };
+    const OptIn OPT_INS[] =
+    {
+        { "allow_bulk_inventory", "LumenAIAllowBulkInventory", "LumenConfirmBulkInventory" },
+    };
+}
+
+void LumenPanelPreferenceAIKeys::buildOptIns()
+{
+    for (const OptIn& o : OPT_INS)
+    {
+        LLCheckBoxCtrl* box = findChild<LLCheckBoxCtrl>(o.checkbox);
+        if (!box) continue;
+        const std::string checkbox = o.checkbox;
+        const std::string warning  = o.warning;
+        box->setCommitCallback([this, checkbox, warning](LLUICtrl* ctrl, const LLSD&)
+        {
+            if (!ctrl->getValue().asBoolean()) return;   // turning it off is always safe
+            // Ticked: say what it means. Anything but "Turn it on" -- Leave it
+            // off, the close box -- unticks it again. Nothing is written
+            // either way until OK, like the questions below it.
+            LLHandle<LLPanel> h = getHandle();
+            LLNotificationsUtil::add(warning, LLSD(), LLSD(),
+                [h, checkbox](const LLSD& notification, const LLSD& response)
+            {
+                if (LLNotificationsUtil::getSelectedOption(notification, response) == 0) return;
+                LLPanel* p = h.get();
+                if (!p) return;
+                if (LLCheckBoxCtrl* b = p->findChild<LLCheckBoxCtrl>(checkbox)) b->set(false);
+            });
+        });
+    }
+}
+
+void LumenPanelPreferenceAIKeys::loadOptIns()
+{
+    for (const OptIn& o : OPT_INS)
+    {
+        if (LLCheckBoxCtrl* box = findChild<LLCheckBoxCtrl>(o.checkbox))
+        {
+            box->set(gSavedSettings.getBOOL(o.setting));
+        }
+    }
+}
+
+void LumenPanelPreferenceAIKeys::saveOptIns()
+{
+    // Not bound to the settings on purpose: a bound check box writes the
+    // setting the moment it is clicked, so the switch would be on while its
+    // warning was still on the screen. And the settings are not in the
+    // snapshot Preferences takes on OK and puts back on close, because no
+    // control is bound to them, so what is written here stays.
+    for (const OptIn& o : OPT_INS)
+    {
+        LLCheckBoxCtrl* box = findChild<LLCheckBoxCtrl>(o.checkbox);
+        if (!box) continue;
+        const bool want = box->get();
+        if (want == gSavedSettings.getBOOL(o.setting)) continue;
+        gSavedSettings.setBOOL(o.setting, want);
+        LL_INFOS("LumenAI") << "switch " << o.setting << " turned " << (want ? "on" : "off") << LL_ENDL;
+    }
 }
 
 void LumenPanelPreferenceAIKeys::buildPermissionRows()
@@ -329,16 +403,26 @@ void LumenPanelPreferenceAIKeys::buildPermissionRows()
     if (!list) return;
 
     // Label, then name, so sorting orders the rows as they read.
-    std::vector<std::pair<std::string, std::string>> found;
+    std::vector<std::pair<std::string, std::string>> found, fixed;
     for (auto it = LLNotifications::instance().templatesBegin();
          it != LLNotifications::instance().templatesEnd(); ++it)
     {
         const std::string& name = it->first;
         if (name.compare(0, strlen(PERM_PREFIX), PERM_PREFIX) != 0) continue;
         LLNotificationTemplatePtr t = it->second;
-        if (!t || !t->mForm || t->mForm->getIgnoreType() == LLNotificationForm::IGNORE_NO)
+        if (!t || !t->mForm) continue;
+        // <Lumen> A question that cannot be remembered (no ignore element:
+        // deleting in bulk, emptying the Trash) still gets a row, saying it
+        // asks every time -- left out, the list would suggest the assistant
+        // does those without asking. Its label is the window title
+        // without the question mark, since it has no "When the assistant
+        // wants to..." text to borrow.
+        if (t->mForm->getIgnoreType() == LLNotificationForm::IGNORE_NO)
         {
-            continue;   // a question that cannot be remembered has no row to set
+            std::string label = t->mLabel;
+            while (!label.empty() && (label.back() == '?' || label.back() == ' ')) label.pop_back();
+            fixed.emplace_back(label.empty() ? name : label, name);
+            continue;
         }
         std::string label = t->mForm->getIgnoreMessage();
         if (label.compare(0, strlen(PERM_LEAD), PERM_LEAD) == 0) label = label.substr(strlen(PERM_LEAD));
@@ -346,21 +430,34 @@ void LumenPanelPreferenceAIKeys::buildPermissionRows()
         found.emplace_back(label.empty() ? name : label, name);
     }
     std::sort(found.begin(), found.end());
+    // The ones that always ask go last, so the choices stay together.
+    std::sort(fixed.begin(), fixed.end());
+    const size_t settable = found.size();
+    found.insert(found.end(), fixed.begin(), fixed.end());
 
     // Made first, placed after: the list is sized to hold every row, and the
     // scroll container around it (perm_scroll) scrolls when that is taller
     // than the tab. It used to be a fixed panel, and with nineteen questions
     // the last five ran over the note below it and off the bottom.
-    std::vector<std::pair<LLPanel*, std::string>> rows;
+    std::vector<std::pair<LLPanel*, std::string>> rows;   // name empty: always asks
     S32 total = 4;
-    for (const auto& f : found)
+    for (size_t i = 0; i < found.size(); ++i)
     {
+        const auto& f = found[i];
         LLPanel* row = LLUICtrlFactory::getInstance()->createFromFile<LLPanel>(
             "panel_lumen_permission_row.xml", NULL, LLPanel::child_registry_t::instance());
         if (!row) continue;
         row->getChild<LLTextBox>("question")->setText(f.first);
         row->getChild<LLTextBox>("question")->setToolTip(f.first);
         total += row->getRect().getHeight();
+        if (i >= settable)
+        {
+            // <Lumen> No choices to offer, and nothing for OK to write.
+            row->getChild<LLRadioGroup>("choice")->setVisible(false);
+            row->getChild<LLTextBox>("always_asks")->setVisible(true);
+            rows.emplace_back(row, std::string());
+            continue;
+        }
         rows.emplace_back(row, f.second);
     }
     const S32 width = list->getRect().getWidth();
@@ -372,6 +469,7 @@ void LumenPanelPreferenceAIKeys::buildPermissionRows()
         r.first->setRect(LLRect(0, top, width, top - h));
         list->addChild(r.first);
         top -= h;
+        if (r.second.empty()) continue;   // <Lumen> always asks: not a PermRow
         mPermRows.push_back({ r.second, r.first->getChild<LLRadioGroup>("choice") });
     }
 
@@ -423,6 +521,7 @@ bool LumenPanelPreferenceAIKeys::postBuild()
 
     LLPanelPreference::postBuild();
     buildPermissionRows();   // <Lumen> Preferences > AI > Permissions
+    buildOptIns();           // <Lumen> and the switches above them
 
     mRows.clear();
     for (const std::string& provider : LumenAIKeys::providers())
@@ -793,6 +892,7 @@ void LumenPanelPreferenceAIKeys::onOpen(const LLSD& key)
 {
     LLPanelPreference::onOpen(key);
     loadPermissionStates();   // <Lumen> what is remembered NOW, not at last open
+    loadOptIns();             // <Lumen>
 
     // Reopening the panel must not carry a half-typed key or an unapplied
     // Clear across from last time.
@@ -1389,6 +1489,7 @@ void LumenPanelPreferenceAIKeys::apply()
             prefs->saveIgnoredNotifications();
         }
     }
+    saveOptIns();   // <Lumen> see there for why this is not undone by the close
 
     for (Row& row : mRows)
     {
@@ -1484,6 +1585,7 @@ void LumenPanelPreferenceAIKeys::cancel(const std::vector<std::string> settings_
 {
     LLPanelPreference::cancel(settings_to_skip);
     loadPermissionStates();   // <Lumen> nothing was written; show what is stored
+    loadOptIns();             // <Lumen> the same; after OK, what OK just wrote
 
     // Cancel is the undo for both a typed key and a pending Clear, because
     // neither has touched the store yet.

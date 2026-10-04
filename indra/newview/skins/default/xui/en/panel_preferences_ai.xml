@@ -585,16 +585,33 @@
      label="Permissions"
      name="tab-permissions" >
 
+      <!-- <Lumen> Things the assistant cannot do at all until the person
+           ticks them here. Not bound to their settings: each is read when
+           Preferences opens and written on OK, like the questions below, and
+           ticking one shows its warning first (LumenConfirm..., which the
+           assistant may not answer); Leave it off unticks it again. The C++
+           side is a table in lumenaikeys.cpp (OPT_INS). Adding a switch: one
+           check_box here, one line there, and 22 more on every top below. -->
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="14" width="330" height="14" font="SansSerifBold">
+       left="20" top="14" width="490" height="14" font="SansSerifBold">
+          Off until you turn them on
+      </text>
+
+      <check_box follows="left|top" layout="topleft"
+       left="20" top="34" width="490" height="16"
+       name="allow_bulk_inventory"
+       label="Let the assistant tidy many items at once and empty the Trash" />
+
+      <text type="string" follows="left|top" layout="topleft"
+       left="20" top="66" width="330" height="14" font="SansSerifBold">
           What the assistant may do
       </text>
 
       <button follows="left|top" layout="topleft" name="perm_ask_all"
-       left="370" top="10" width="140" height="22" label="Ask for everything" />
+       left="370" top="62" width="140" height="22" label="Ask for everything" />
 
       <text type="string" follows="left|top" layout="topleft"
-       left="20" top="36" width="490" height="28" word_wrap="true">
+       left="20" top="88" width="490" height="28" word_wrap="true">
           Before the assistant does any of these, the viewer asks you. Always allow and Always refuse answer for you without asking. Changes take effect when you press OK.
       </text>
 
@@ -602,7 +619,7 @@
            grows with every new kind of act. perm_list is sized in C++ to the
            rows it holds. -->
       <scroll_container follows="all" layout="topleft" name="perm_scroll"
-       left="10" top="68" right="-10" bottom="-26"
+       left="10" top="120" right="-10" bottom="-26"
        border_visible="false" is_opaque="false" reserve_scroll_corner="false">
         <panel follows="left|top|right" layout="topleft" name="perm_list"
          left="0" top="0" width="498" height="24" background_visible="false" />
