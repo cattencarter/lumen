@@ -406,7 +406,19 @@ namespace
         // runs in a coroutine, so it simply waits for their answer and then
         // makes the very same call again, which goes ahead or is refused. The
         // model never sees "waiting" at all -- only what happened.
-        if (still_wanted)
+        //
+        // And an answer a round trip to the region away -- a new script
+        // arriving in an object, an object's details -- is waited for the same
+        // way: the same call again, a quarter second apart, as the endpoint's
+        // socket does for a caller from outside. The handler stops settling
+        // by itself when its own wait runs out; the cap here is a backstop.
+        //
+        // The two take turns until the reply is neither: a call can settle
+        // and then ask -- new_script reads the object first, then asks whether
+        // to add the script, then waits for the region to list it -- and a
+        // question met after settling went to the model as "waiting", for it
+        // to make the call again.
+        for (bool turn = true; turn && still_wanted; )
         {
             for (;;)
             {
@@ -432,14 +444,6 @@ namespace
                 }
                 reply = rpc("tools/call", params);
             }
-        }
-        // An answer a round trip to the region away -- a new script arriving
-        // in an object, an object's details -- is waited for the same way:
-        // the same call again, a quarter second apart, as the endpoint's
-        // socket does for Codex and Claude Code. The handler stops settling
-        // by itself when its own wait runs out; the cap here is a backstop.
-        if (still_wanted)
-        {
             const F64 give_up = LLTimer::getTotalSeconds() + 15.0;
             for (;;)
             {
@@ -455,6 +459,8 @@ namespace
                 }
                 reply = rpc("tools/call", params);
             }
+            const LLSD sc = reply["result"]["structuredContent"];
+            turn = sc.isMap() && sc["waiting_for_user"].asBoolean();
         }
         // </Lumen>
 

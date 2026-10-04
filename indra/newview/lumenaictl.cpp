@@ -224,7 +224,47 @@ namespace
     };
     std::map<LLUUID, ScriptArrivalWatch*> sScriptWatches;
     // <Lumen> What a watched script arrived as, by prim: see scriptWatchSettled.
-    std::map<LLUUID, std::string> sArrivedScriptName;
+    // Its item id as well as its name, and new_script opens it by the id: by
+    // name, once the wait had run out with nothing seen arriving, it opened an
+    // OLDER script of the name asked for and wrote `text` into that.
+    struct ArrivedScript
+    {
+        LLUUID      item;
+        std::string name;
+    };
+    std::map<LLUUID, ArrivedScript> sArrivedScripts;
+
+    /**
+     * new_script reading what is already in an object before it adds one: a
+     * listener for as long as the read lasts. A list marked stale -- the
+     * object's contents changed since it was fetched -- is kept as it was
+     * while nobody listens, and requestInventory() hands back that old list
+     * rather than fetching ("if it is dirty, leave it this way in case we
+     * gain a listener"); with a listener, the stale list is dropped and
+     * fetched again. Read from the stale list, a script somebody added since
+     * was not among the ones already there, and could be taken for the new
+     * one as it arrived.
+     */
+    class ContentsRead : public LLVOInventoryListener
+    {
+    public:
+        explicit ContentsRead(LLViewerObject* obj) : mSince(LLTimer::getTotalSeconds())
+        {
+            registerVOInventoryListener(obj, NULL);
+        }
+        void inventoryChanged(LLViewerObject*, LLInventoryObject::object_list_t*,
+                              S32, void*) override {}
+        F64 mSince;   // when this read began
+    };
+    std::map<LLUUID, ContentsRead*> sContentsReads;
+
+    void forgetContentsRead(const LLUUID& id)
+    {
+        std::map<LLUUID, ContentsRead*>::iterator it = sContentsReads.find(id);
+        if (it == sContentsReads.end()) return;
+        delete it->second;          // the base destructor unregisters it
+        sContentsReads.erase(it);
+    }
 
     /**
      * What edit_script last wrote into each object's script window, by the
@@ -332,6 +372,13 @@ namespace
         bool                opened = false;
         LLHandle<LLFloater> window;
         S32                 reopens = 0;   // <Lumen> windows that could not load it
+        // <Lumen> The script itself once the region has listed it, opened by
+        // this and never by name; the scripts listed before it was added, to
+        // watch for it again; and whether its wait ran out before it was
+        // listed, so the same call made again watches again.
+        LLUUID              item;
+        std::set<LLUUID>    before;
+        bool                unlisted = false;
     };
     std::map<std::string, NewScriptJob> sNewScripts;
     // <Lumen> 30, not 10: on the beta grid, 2026-09-30, the region took longer
@@ -381,8 +428,14 @@ namespace
                    && !sw->second->mBefore.count((*h)->getUUID());
             // <Lumen> The name it really arrived under: a second "New Script"
             // in one prim is listed as "New Script 1", and opening it by the
-            // name asked for found every one of them.
-            if (arrived) sArrivedScriptName[obj->getID()] = (*h)->getName();
+            // name asked for found every one of them. And its item id, which
+            // is what new_script opens it by.
+            if (arrived)
+            {
+                ArrivedScript& as = sArrivedScripts[obj->getID()];
+                as.item = (*h)->getUUID();
+                as.name = (*h)->getName();
+            }
         }
         const F64 now = LLTimer::getTotalSeconds();
         if (arrived || now > sw->second->mUntil)
@@ -1271,10 +1324,13 @@ F64 LumenAIControl::takeSettle()
 void LumenAIControl::holdToSettle(LLHTTPNode::ResponsePtr response, const std::string& body,
                                   const std::string& reply, F64 seconds)
 {
-    // Inside the chain's own processing, as for holdForAnswer.
+    // Inside the chain's own processing, as for holdForAnswer. <Lumen> Long
+    // enough for a person's answer too: a call that settles can go on to ask
+    // them (new_script reads the object first, then asks), and is then held
+    // for the answer -- and this chain's clock cannot be moved from there.
     if (mPump)
     {
-        mPump->setTimeoutSeconds((F32)(seconds + 30.0));
+        mPump->setTimeoutSeconds((F32)(llmax(seconds, ASK_HOLD + 5.0) + 30.0));
     }
     const F64 now = LLTimer::getTotalSeconds();
     HeldReply held;
@@ -1330,10 +1386,21 @@ void LumenAIControl::serviceHeldReplies()
                 mHeld.push_back(h);
                 continue;
             }
-            // Done, out of time, or it went on to ask the user -- whose
-            // "waiting" reply tells the caller to call again, which is the
-            // right answer from here: this chain's clock was not moved for a
-            // person's fifty seconds.
+            // <Lumen> It went on to ask the user: held for their answer like
+            // any question, inside the time this hold began with (holdToSettle
+            // gave the chain that long). Sent out as "waiting", it cost the
+            // caller a second call that the question alone never did.
+            if (asking.notNull() && now - h.since < ASK_HOLD)
+            {
+                h.waiting_reply = again;
+                h.ask_id        = asking;
+                h.settle_until  = 0.0;
+                mHeld.push_back(h);
+                continue;
+            }
+            // </Lumen>
+            // Done, or out of time -- or asking with the hold's own time
+            // spent, whose "waiting" reply tells the caller to call again.
             h.response->extendedResult(HTTP_OK, again, jsonHeaders());
             continue;
         }
@@ -3964,6 +4031,21 @@ namespace
             || kind == "ScriptQuestionExperience";
     }
 
+    // <Lumen> The viewer asking whether to save the changes in one of its own
+    // windows as it closes -- a script, a notecard, a gesture and the
+    // experience profile all ask "SaveChanges"; the appearance editor and a
+    // profile have their own. Never the assistant's to answer, whichever
+    // button: Save saves whatever is in the window, the person's own unsaved
+    // typing included -- and for a script, past the switch that keeps saving
+    // theirs to allow (save_script) -- while Don't Save throws their typing
+    // away. A quit asks it for every such window.
+    bool asksToSaveChanges(const LLNotificationPtr& n)
+    {
+        const std::string& kind = n->getName();
+        return kind == "SaveChanges" || kind == "SaveClothingBodyChanges"
+            || kind == "ProfileUnsavedChanges";
+    }
+
     LLSD permissionsAsked(const LLNotificationPtr& n)
     {
         LLSD out = LLSD::emptyArray();
@@ -4012,6 +4094,14 @@ namespace
                     one["note"] = "A script asking for permissions. Only the user answers these, "
                                   "in the viewer's own window -- say what it asks for and from "
                                   "which object, and leave the choice to them.";
+                }
+                else if (asksToSaveChanges(n))   // <Lumen>
+                {
+                    one["assistant_may_answer"] = false;
+                    one["note"] = "The viewer asking whether to save the changes in one of its "
+                                  "windows. Only the user answers this: Save would save what is "
+                                  "in it, their own typing included, and Don't Save would throw "
+                                  "that away. Tell them it is waiting for them.";
                 }
 
                 // The buttons, so the assistant can say what the choices are
@@ -5049,9 +5139,10 @@ namespace
             "\n- open_script: **opens a script that lives INSIDE an object**, so they do not "
             "have to find and open it first. Leave `object_id` out and it uses what they have "
             "selected; `name` picks one when there are several, and without it the reply lists "
-            "every script in the linkset with the link each sits in. Fetching an object's "
-            "contents is a round trip; the reply waits for it. It refuses plainly when the object "
-            "is no-modify. **It does NOT save.** "
+            "every script in the linkset with the link each sits in and its `item_id` -- pass "
+            "that `item_id` instead of `name` to open one of two with the same name. Fetching an "
+            "object's contents is a round trip; the reply waits for it. It refuses plainly when "
+            "the object is no-modify. **It does NOT save.** "
             "Opening, reading with read_scripts and writing with edit_script are all yours; "
             "pressing Save is theirs, and nothing compiles or runs until they do -- unless they "
             "have switched saving on for you (save_script). Say what you changed and let them "
@@ -5134,8 +5225,11 @@ namespace
             "animating them, their controls, attaching, teleporting them) is never yours to "
             "answer, either way**: read_dialogues marks it `assistant_may_answer: false` and "
             "says what it asks for -- tell them that and which object, and they answer it in "
-            "the viewer's own window. The viewer's own questions about what YOU want to do "
-            "never appear here and cannot be answered by you.";
+            "the viewer's own window. The viewer's \"Save Changes?\" as one of its windows "
+            "closes -- a script, a notecard -- is marked the same way and is theirs too: Save "
+            "would save their own unsaved typing, Don't Save would lose it. The viewer's own "
+            "questions about what YOU want to do never appear here and cannot be answered by "
+            "you.";
         LLSD view_props;
         LLSD vsc; vsc["type"]="string";
             vsc["description"]="edit_script: which open script window to write into, by title. "
@@ -5287,7 +5381,9 @@ namespace
             // item_id", which this tool did not declare.
             LLSD lii; lii["type"]="string";
                 lii["description"]="lighting: a saved environment setting's item_id, from "
-                                   "inventory / search or from the candidates a refusal lists.";
+                                   "inventory / search or from the candidates a refusal lists. "
+                                   "open_script: which script, by the item_id its list gives -- "
+                                   "for two with the same name.";
             view_props["item_id"]=lii;
 
             // <Lumen> set_setting's value, which was missing.
@@ -7855,6 +7951,30 @@ static LLSD scriptWindowErrors(LLFloater* f)
         }
     }
     return errors;
+}
+
+// <Lumen> Why the upload of a save failed, or "" when the window's errors
+// are the compiler's. An inventory script's failed upload puts "File upload
+// failed: <reason>" into the same list as the compiler's errors
+// (LLPreviewLSL::failedLSLUpload), and was read as a script that did not
+// compile -- when nothing had been saved and there was nothing to fix. The
+// text is built here as the viewer builds it, placeholder and all.
+static std::string scriptUploadFailure(const LLSD& errors)
+{
+    const std::string whole = safeUtf8(LLTrans::getString("UploadFailed"));
+    const size_t cut = whole.find("[REASON]");
+    const std::string lead = cut == std::string::npos ? whole : whole.substr(0, cut);
+    for (LLSD::array_const_iterator it = errors.beginArray(); it != errors.endArray(); ++it)
+    {
+        const std::string row = it->asString();
+        std::string reason;
+        if (row.compare(0, whole.size(), whole) == 0)     reason = row.substr(whole.size());
+        else if (!lead.empty() && row.compare(0, lead.size(), lead) == 0) reason = row.substr(lead.size());
+        else continue;
+        LLStringUtil::trim(reason);
+        return reason.empty() ? std::string("no reason was given") : reason;
+    }
+    return std::string();
 }
 
 // <Lumen> Whether a script window is waiting for the compiler: its own
@@ -15423,6 +15543,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             sNewScripts.erase(job);   // nobody came back for it; this is a new request
             job = sNewScripts.end();
         }
+        // <Lumen> The same call again for a script the region had not listed
+        // when its wait ran out: it is watched for again, as it was the first
+        // time, rather than a second one added or an older one opened.
+        if (job != sNewScripts.end() && job->second.unlisted)
+        {
+            NewScriptJob& j = job->second;
+            j.unlisted = false;
+            j.until = now + NEW_SCRIPT_WAIT;
+            LLViewerObject* holder = gObjectList.findObject(j.object);
+            if (holder && j.item.isNull())
+            {
+                forgetScriptWatch(j.object);
+                sArrivedScripts.erase(j.object);
+                sScriptWatches[j.object] = new ScriptArrivalWatch(holder, lowered(j.name));
+                sScriptWatches[j.object]->mBefore = j.before;
+            }
+        }
+        // </Lumen>
         // ---- carried on by the same call again, until it is done ---------
         auto carryOn = [&](std::map<std::string, NewScriptJob>::iterator at) -> LLSD
         {
@@ -15455,46 +15593,66 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
             // It arrives, and is opened -- by open_script itself, so the window is
             // the one it would open.
+            bool unlisted = false;   // <Lumen> out of time, and still not listed
             if (stopped.empty() && !j.opened)
             {
-                if (!scriptWatchSettled(holder) && !out_of_time)
+                // <Lumen> The one it saw arrive, by its item id
+                // (scriptWatchSettled) -- never by the name asked for. Once
+                // the wait had run out with no arrival seen, that opened the
+                // OLDER script of the name, which the exact-name rule then
+                // preferred, and `text` went into it as the new script.
+                if (j.item.isNull())
                 {
-                    return waiting("the region has not listed it yet.");
+                    if (!scriptWatchSettled(holder) && !out_of_time)
+                    {
+                        return waiting("the region has not listed it yet.");
+                    }
+                    std::map<LLUUID, ArrivedScript>::iterator arrived = sArrivedScripts.find(j.object);
+                    if (arrived != sArrivedScripts.end())
+                    {
+                        j.item = arrived->second.item;
+                        j.name = arrived->second.name;
+                        r["created"] = j.name;
+                        sArrivedScripts.erase(arrived);
+                    }
                 }
-                sOpenedScriptWindow = LLHandle<LLFloater>();
-                // <Lumen> By the name it arrived under (scriptWatchSettled).
-                std::map<LLUUID, std::string>::iterator arrived_as = sArrivedScriptName.find(j.object);
-                if (arrived_as != sArrivedScriptName.end())
+                if (j.item.isNull())
                 {
-                    j.name = arrived_as->second;
-                    r["created"] = j.name;
-                    sArrivedScriptName.erase(arrived_as);
-                }
-                // </Lumen>
-                LLSD op;
-                op["object_id"] = j.object;
-                op["name"] = j.name;
-                const LLSD opened = dispatch("open_script", op);
-                mSettle = 0.0;   // this call decides whether it waits, not the one inside it
-                if (opened.has("pending") && opened["pending"].asBoolean() && !out_of_time)
-                {
-                    return waiting("its contents are still coming from the region.");
-                }
-                if (opened.has("opened") && opened["opened"].asBoolean() && sOpenedScriptWindow.get())
-                {
-                    j.opened = true;
-                    j.window = sOpenedScriptWindow;
-                }
-                else if (opened.has("__error"))
-                {
-                    stopped = "it could not be opened: " + opened["__error"]["message"].asString();
+                    unlisted = true;
                 }
                 else
                 {
-                    stopped = "it was not opened: the region has not listed it, or more than one "
-                              "script in the object has that name";
-                    if (opened.has("scripts")) r["scripts"] = opened["scripts"];
+                    sOpenedScriptWindow = LLHandle<LLFloater>();
+                    LLSD op;
+                    op["object_id"] = j.object;
+                    op["item_id"] = j.item;
+                    const LLSD opened = dispatch("open_script", op);
+                    mSettle = 0.0;   // this call decides whether it waits, not the one inside it
+                    if (opened.has("pending") && opened["pending"].asBoolean())
+                    {
+                        if (!out_of_time)
+                        {
+                            return waiting("its contents are still coming from the region.");
+                        }
+                        unlisted = true;
+                    }
+                    else if (opened.has("opened") && opened["opened"].asBoolean()
+                             && sOpenedScriptWindow.get())
+                    {
+                        j.opened = true;
+                        j.window = sOpenedScriptWindow;
+                    }
+                    else if (opened.has("__error"))
+                    {
+                        stopped = "it could not be opened: " + opened["__error"]["message"].asString();
+                    }
+                    else
+                    {
+                        stopped = "it was not opened: the object's contents no longer list it";
+                        if (opened.has("scripts")) r["scripts"] = opened["scripts"];
+                    }
                 }
+                // </Lumen>
             }
 
             // `text` goes in, through edit_script's own path, once the window has
@@ -15578,6 +15736,27 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                   "Save. Until they do, Linden Lab's default script is what runs "
                                   "in it, and it greets anyone who touches the object."));
             }
+            else if (unlisted)
+            {
+                // <Lumen> Nothing opened by name and nothing written: kept, so
+                // the same call made again watches for THIS script again.
+                // open_script by name is not offered -- the region names it
+                // after the one already there ("New Script 1"), and the name
+                // asked for is the older script's.
+                r["listed"] = false;
+                r["note"] = made + ", but the region has not listed it yet, so it was not opened"
+                          + (text.empty() ? std::string()
+                                          : std::string(" and your `text` is not in it"))
+                          + ". It holds Linden Lab's default script, which is ALREADY RUNNING -- "
+                            "say so, and that the script is on its way. Do not open it by name "
+                            "with open_script: an older script of that name may be in the object. "
+                            "If they ask for it again within two minutes, this same new_script "
+                            "call carries on with THIS script and adds no second one.";
+                j.unlisted = true;
+                recordAction(request_id, job_key, "new_script", "unlisted", r, briefOf(r));
+                return r;
+                // </Lumen>
+            }
             else if (stopped.empty())
             {
                 r["note"] = made + " and opened. Nothing of yours is in it yet: it holds Linden Lab's "
@@ -15592,9 +15771,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 r["note"] = made + ", but " + stopped + ". It holds Linden Lab's default script, which "
                             "is ALREADY RUNNING -- say so."
                           + (text.empty() ? std::string()
-                                          : std::string(" Your `text` is not in it."))
-                          + (j.opened ? std::string()
-                                      : std::string(" open_script opens it once the region lists it."));
+                                          : std::string(" Your `text` is not in it."));
             }
             sNewScripts.erase(at);
             recordAction(request_id, job_key, "new_script", "ok", r, briefOf(r));
@@ -15715,16 +15892,44 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // contents have not been fetched, the list of what was there was
         // empty, and an old script of the same name was taken for the new one
         // and written into -- overwriting it.
+        // <Lumen> A list marked stale is read again too, with a listener so
+        // that asking really fetches it: see ContentsRead.
         {
-            static std::map<LLUUID, F64> s_reading_since;
-            if (object->isInventoryPending() || !object->getInventoryRoot())
+            // A read nobody came back for -- the caller walked away -- is not
+            // a later call's: that one starts again rather than counting as
+            // run out at once. And it stops listening.
+            for (std::map<LLUUID, ContentsRead*>::iterator it = sContentsReads.begin();
+                 it != sContentsReads.end(); )
             {
-                contentsStillToCome(object);   // asks the region, once a second
-                F64& since = s_reading_since[object->getID()];
-                if (since == 0.0) since = now;
+                if (now - it->second->mSince > CONTENTS_WAIT + 5.0)
+                {
+                    delete it->second;
+                    it = sContentsReads.erase(it);
+                }
+                else ++it;
+            }
+            std::map<LLUUID, ContentsRead*>::iterator rd = sContentsReads.find(object->getID());
+            if (object->isInventoryPending() || !object->getInventoryRoot()
+                || object->isInventoryDirty())
+            {
+                if (rd == sContentsReads.end())
+                {
+                    rd = sContentsReads.insert(
+                        std::make_pair(object->getID(), new ContentsRead(object))).first;
+                    object->requestInventory();   // listened to now, so a stale list is fetched
+                }
+                else
+                {
+                    contentsStillToCome(object);   // asks the region, once a second
+                }
+                const F64 since = rd->second->mSince;
                 if (now - since < CONTENTS_WAIT)
                 {
-                    mSettle = 1.0;
+                    // Held for the whole read, and a second past it, so the
+                    // try that answers is still inside the hold. Held for one
+                    // second, a caller over the socket was sent "pending" by
+                    // every fetch slower than that, and called again.
+                    mSettle = llmax(0.5, since + CONTENTS_WAIT - now + 1.0);
                     LLSD w;
                     w["pending"] = true;
                     w["settling"] = true;
@@ -15734,14 +15939,14 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                 "made again carries on, and nothing has been added yet.";
                     return w;
                 }
-                s_reading_since.erase(object->getID());
+                forgetContentsRead(object->getID());
                 LLSD e; e["code"] = -32000;
                 e["message"] = "The region did not say what is already in that object, so no "
                                "script was added -- one could be mistaken for a script already "
                                "there. Tell the user; they can ask again.";
                 LLSD w; w["__error"] = e; return w;
             }
-            s_reading_since.erase(object->getID());
+            forgetContentsRead(object->getID());
         }
         // </Lumen>
 
@@ -15792,6 +15997,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // <Lumen> See ScriptArrivalWatch: without it open_script cannot see
         // the script until the object is selected.
         forgetScriptWatch(object->getID());
+        sArrivedScripts.erase(object->getID());   // <Lumen> an earlier script's arrival is not this one's
         sScriptWatches[object->getID()] = new ScriptArrivalWatch(object, lowered(name));
         sScriptWatches[object->getID()]->mBefore = listed_before;
         for (std::map<LLUUID, F64>::iterator it = sScriptAddedTo.begin(); it != sScriptAddedTo.end(); )
@@ -15805,6 +16011,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         fresh.object = object->getID();
         fresh.name   = name;
         fresh.until  = now + NEW_SCRIPT_WAIT;
+        fresh.before = listed_before;   // <Lumen> to watch for it again, if it comes to that
         job = sNewScripts.insert(std::make_pair(job_key, fresh)).first;
         return carryOn(job);
     }
@@ -15919,6 +16126,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 LLSD one;
                 one["name"] = safeUtf8((*it)->getName());
                 one["link"] = (S32)i + 1;
+                one["item_id"] = (*it)->getUUID();   // <Lumen> to pick one of two the same name
                 found.append(one);
                 openable.push_back(std::make_pair(chain[i]->getID(), (*it)->getUUID()));
                 names.push_back(lowered((*it)->getName()));
@@ -15948,13 +16156,23 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         std::vector<size_t> want;
         const std::string asked = params.has("name") ? lowered(params["name"].asString())
                                                      : std::string();
+        // <Lumen> Or by the script's own item id, which names exactly one:
+        // new_script opening the script it saw arrive, and a choice between
+        // two of the same name in different links.
+        const bool by_item = params.has("item_id") && !params["item_id"].asString().empty();
+        const LLUUID asked_item = by_item ? params["item_id"].asUUID() : LLUUID::null;
         for (size_t i = 0; i < names.size(); ++i)
         {
-            if (asked.empty() || names[i].find(asked) != std::string::npos) want.push_back(i);
+            if (by_item)
+            {
+                if (asked_item.notNull() && openable[i].second == asked_item) want.push_back(i);
+            }
+            else if (asked.empty() || names[i].find(asked) != std::string::npos) want.push_back(i);
         }
+        // </Lumen>
         // <Lumen> A name that is exactly one of them means that one: "New
         // Script" is not also "New Script 1" and "New Script 2".
-        if (!asked.empty() && want.size() > 1)
+        if (!by_item && !asked.empty() && want.size() > 1)
         {
             std::vector<size_t> exact;
             for (size_t i : want) if (names[i] == asked) exact.push_back(i);
@@ -15992,8 +16210,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                                             && LLTimer::getTotalSeconds() - added->second < 120.0);
             }
             r["note"] = found.size()
-                ? "No script in that object matches that name. `scripts` lists what IS in it, "
-                  "with the link each one sits in -- offer those rather than guessing."
+                ? std::string(by_item ? "No script in that object has that item_id. "
+                                                   : "No script in that object matches that name. ")
+                  + "`scripts` lists what IS in it, with the link each one sits in -- offer "
+                    "those rather than guessing."
                 : (just_added
                    ? "The script new_script put in this object has not been listed by the "
                      "region yet, so there is nothing to open. Say it is on its way."
@@ -16008,7 +16228,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD r;
             r["scripts"] = found;
             r["note"] = "More than one script matches. `scripts` lists them with the link each is "
-                        "in -- ask which, rather than opening one of them.";
+                        "in -- ask which, rather than opening one of them, then open that one by "
+                        "its `item_id`.";
             recordAction(request_id, fingerprintOf(method, params), "open_script", "ok", r,
                          briefOf(r));
             return r;
@@ -24467,12 +24688,17 @@ if (method == "camera")
             }
         }
 
-        // <Lumen> A passage replaced in a window holding changes of theirs that
-        // nobody has saved carries those changes along: the window is not only
-        // the assistant's any more, so save_script must not save it nor a
-        // remove close it. A whole `text` leaves nothing of theirs in it.
-        const bool theirs_unsaved = params.has("replace") && !ed->isPristine()
-                                  && !scriptWindowHoldsYours(target);
+        // <Lumen> A write into a window holding changes of theirs that nobody
+        // has saved leaves it not only the assistant's, so save_script must not
+        // save it nor a remove close it. A passage replaced carries their
+        // changes along; so, as often as not, does a whole `text` -- written
+        // from read_scripts, which hands over their half-edit with the rest --
+        // and one that drops it would have it saved away, then the window
+        // closed with its undo. Only a window still as it was loaded
+        // (new_script's own) or holding exactly what the assistant last wrote
+        // has nothing of theirs in it.
+        const bool theirs_unsaved = !ed->isPristine() && !scriptWindowHoldsYours(target);
+        if (theirs_unsaved) result["held_their_unsaved_changes"] = true;
         // </Lumen>
         if (params.has("replace"))
         {
@@ -24561,16 +24787,21 @@ if (method == "camera")
         }
         result["window_in_front"] = true;
         result["note"] = (saveScriptsAllowed() && !theirs_unsaved)   // <Lumen> theirs: they save
-            ? "Written into the script window, not saved yet. Saving is switched on for you: "
-              "save it with save_script -- the viewer asks them first -- and tell them whether "
-              "it compiled. Ctrl-Z undoes the change if they would rather not."
-            : "Written into the script window and NOT saved. The window is now in "
-              "front for them. Tell them to read it and press Save -- nothing runs "
-              "until they do, and Ctrl-Z undoes it if they would rather not. "
-              "`last_save_result`, if there is one, is from the save BEFORE this "
-              "change. When they say they have saved, read_scripts shows the answer "
-              "for this one: `saved` true, and then `compile_errors`, or "
-              "`last_save_result` saying it compiled.";
+            ? std::string("Written into the script window, not saved yet. Saving is switched on "
+                          "for you: save it with save_script -- the viewer asks them first -- and "
+                          "tell them whether it compiled. Ctrl-Z undoes the change if they would "
+                          "rather not.")
+            : std::string(theirs_unsaved
+                          ? "It held changes of theirs that nobody had saved, so it is theirs to "
+                            "save, not yours: save_script will not save it. "
+                          : "")
+              + "Written into the script window and NOT saved. The window is now in "
+                "front for them. Tell them to read it and press Save -- nothing runs "
+                "until they do, and Ctrl-Z undoes it if they would rather not. "
+                "`last_save_result`, if there is one, is from the save BEFORE this "
+                "change. When they say they have saved, read_scripts shows the answer "
+                "for this one: `saved` true, and then `compile_errors`, or "
+                "`last_save_result` saying it compiled.";
         // </Lumen>
         return result;
     }
@@ -24710,6 +24941,21 @@ if (method == "camera")
                 if (closing) win->closeFloater();
                 return finish(at, r, "ok");
             }
+            // <Lumen> The upload itself failed (an inventory script's window
+            // says so in its error list): nothing was saved, and there is
+            // nothing in the script to fix.
+            const std::string upload_failed = compiling ? std::string()
+                                                        : scriptUploadFailure(errors);
+            if (!upload_failed.empty())
+            {
+                r["saved"] = false;
+                r["upload_failed"] = upload_failed;
+                r["window_closed"] = false;
+                r["note"] = "The upload failed: " + upload_failed + "; nothing was saved, and the "
+                            "script is as it was before. Tell them that -- never that it works.";
+                return finish(at, r, "failed");
+            }
+            // </Lumen>
             if (!compiling && errors.size())
             {
                 r["saved"] = true;
@@ -24792,13 +25038,59 @@ if (method == "camera")
             {
                 if (!scriptWindowHoldsYours(jw))
                 {
+                    // <Lumen> Said "saved" whether or not the compiler had
+                    // answered: what the window shows is the answer, if any.
                     LLSD r;
                     r["script"] = job->second.script;
-                    r["saved"] = true;
-                    r["note"] = "What you wrote was saved, but it has been changed in its window "
-                                "since -- that change is theirs, and was not saved. The compiler's "
-                                "answer to your save is in that window. Tell them.";
+                    r["sent"] = true;
+                    std::string said;
+                    if (jed && jed->isPristine())
+                    {
+                        said = "They have since changed it and saved it themselves, so what the "
+                               "window shows is the answer to their save, not yours.";
+                    }
+                    else if (scriptWindowCompiling(jw))
+                    {
+                        r["compile_answer_pending"] = true;
+                        said = "No answer to your save has come, so whether it was saved is not "
+                               "known; the window shows it if one comes.";
+                    }
+                    else
+                    {
+                        const LLSD errors = scriptWindowErrors(jw);
+                        const std::string failed = scriptUploadFailure(errors);
+                        if (!failed.empty())
+                        {
+                            r["saved"] = false;
+                            r["upload_failed"] = failed;
+                            said = "Your save's upload failed: " + failed + "; nothing of it was saved.";
+                        }
+                        else if (scriptSaveResult(jw).find(LLTrans::getString("CompileSuccessful"))
+                                 != std::string::npos)
+                        {
+                            r["saved"] = true;
+                            r["compiled"] = true;
+                            said = "What you wrote was saved and compiled.";
+                        }
+                        else if (errors.size())
+                        {
+                            r["saved"] = true;
+                            r["compiled"] = false;
+                            r["compile_errors"] = errors;
+                            said = "What you wrote was saved, but did NOT compile -- "
+                                   "`compile_errors` is the compiler's answer.";
+                        }
+                        else
+                        {
+                            said = "The window shows no answer to your save, so whether it was "
+                                   "saved is not known.";
+                        }
+                    }
+                    r["note"] = said + " It has been changed in its window since -- that change "
+                                "is theirs, and save_script will not save it. Tell them; never "
+                                "say it works unless it compiled.";
                     return finish(job, r, "changed");
+                    // </Lumen>
                 }
                 sSaveScripts.erase(job);   // written again since: this is a new save
             }
@@ -24891,8 +25183,11 @@ if (method == "camera")
             return refuse(sAssistantScriptText.count(scriptWindowKey(target))
                 ? "Not saved: \"" + title + "\" has been changed since you wrote into it, so "
                   "what is in it now is theirs to save. Tell them; do not write over their change."
-                : "Not saved: nothing you wrote is in \"" + title + "\", and save_script saves "
-                  "only a script you wrote. Saving their own script is theirs -- they press Save.");
+                : "Not saved: \"" + title + "\" does not hold a script you wrote -- you never "
+                  "wrote into it, or it held changes of theirs nobody had saved when you did -- "
+                  "and save_script saves only a script you wrote. Saving it is theirs: they press "
+                  "Save. Do not write the script over it again to make it yours: that would save "
+                  "their unsaved change, or throw it away, without them deciding.");
         }
         {
             const std::string why = scriptWindowRefusal(target);
@@ -24901,19 +25196,73 @@ if (method == "camera")
         if (ed->isPristine())
         {
             // Saved already -- by an earlier save_script, or by them.
+            // <Lumen> Or SENT: the window's Save makes it pristine when the
+            // save starts, not when it succeeds, so "saved" is said only on
+            // what the window shows -- the compiler's answer, or a window
+            // freshly loaded with exactly this from Second Life.
             LLSD r;
             r["script"] = title;
-            r["saved"] = true;
             r["changed"] = false;
             const LLSD errors = scriptWindowErrors(target);
-            if (errors.size()) r["compile_errors"] = errors;
             const std::string said = scriptSaveResult(target);
             if (!said.empty()) r["last_save_result"] = safeUtf8(said);
-            if (scriptWindowCompiling(target)) r["compile_answer_pending"] = true;
-            r["note"] = "Nothing to save: what you wrote in it is already saved. `compile_errors` "
-                        "or `last_save_result`, when there, is the compiler's answer to that save.";
+            const std::string failed = scriptUploadFailure(errors);
+            if (scriptWindowCompiling(target))
+            {
+                r["sent"] = true;
+                r["compile_answer_pending"] = true;
+                r["note"] = "Nothing new to save: what you wrote in it was sent to be saved, and "
+                            "no answer has come, so whether it was saved is not known. Do not "
+                            "say it is saved; its window shows the answer if one comes.";
+            }
+            else if (!failed.empty())
+            {
+                r["saved"] = false;
+                r["upload_failed"] = failed;
+                r["note"] = "Not saved: the last save of what you wrote failed on the way -- "
+                            + failed + " -- so nothing was saved, though the window no longer "
+                            "shows it as changed. Tell them; never that it works.";
+            }
+            else if (errors.size())
+            {
+                r["saved"] = true;
+                r["compiled"] = false;
+                r["compile_errors"] = errors;
+                r["note"] = "Nothing to save: what you wrote in it is already saved, but it did "
+                            "NOT compile -- `compile_errors` is the compiler's answer. Fix it with "
+                            "edit_script and save again; never tell them it works.";
+            }
+            else if (said.find(LLTrans::getString("CompileSuccessful")) != std::string::npos)
+            {
+                r["saved"] = true;
+                r["compiled"] = true;
+                r["note"] = "Nothing to save: what you wrote in it is already saved, and it "
+                            "compiled.";
+            }
+            else
+            {
+                r["saved"] = true;
+                r["note"] = "Nothing to save: the window holds what you wrote exactly as it was "
+                            "loaded from Second Life, so that is what is saved there. Whether it "
+                            "compiled is not shown in the window.";
+            }
             return r;
+            // </Lumen>
         }
+
+        // <Lumen> An earlier save of this window still unanswered. A second
+        // one now would empty the window's answer and then take the first
+        // one's as its own -- the answer finds the window by its script, not
+        // by the save -- and a good compile of the first closed the window
+        // before the second's errors arrived.
+        if (scriptWindowCompiling(target))
+        {
+            return refuse("Not saved: an earlier save of \"" + title + "\" has had no answer from "
+                          "the compiler yet, and a second save now would be taken for it. Tell "
+                          "them it is waiting for that answer, which its window shows when it "
+                          "comes.");
+        }
+        // </Lumen>
 
         // ---- the checks the window's own Save would fail on, quietly ----------
         // Each of these makes the viewer's Save return early, or its upload
@@ -25046,6 +25395,22 @@ if (method == "camera")
             LLSD e; e["code"] = -32000;
             e["message"] = "That is the viewer asking the USER whether you may do something. "
                            "Only they can answer it. Nothing was answered.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // </Lumen>
+        // <Lumen> "Save Changes?" from one of the viewer's windows, refused
+        // whichever button, as a permission request is: see asksToSaveChanges.
+        // Answered from here, Save saved a script with saving switched off,
+        // and saved the person's own typing, which save_script refuses.
+        if (asksToSaveChanges(n))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That is the viewer asking whether to save the changes in one of its "
+                           "windows, and only the user answers it: Save would save what is in "
+                           "it, their own typing included, and Don't Save would throw that away. "
+                           "Nothing was answered. Tell them it is waiting for them. A script you "
+                           "wrote is saved with save_script, never through this.";
+            LL_INFOS("AICtl") << "answer_dialogue: refused " << n->getName() << LL_ENDL;
             LLSD w; w["__error"] = e; return w;
         }
         // </Lumen>
@@ -25182,6 +25547,15 @@ if (method == "camera")
             "Answered. What follows depends on what it was -- an accepted offer arrives in "
             "inventory, an accepted teleport moves the avatar. Check with inventory / search or "
             "viewer / status rather than assuming.";
+        // <Lumen> Quitting closes every window, and one holding unsaved
+        // changes asks "Save Changes?" -- which is theirs (asksToSaveChanges).
+        if (kind == "ConfirmQuit")
+        {
+            result["note"] = "If a window still holds unsaved changes -- a script, a notecard -- "
+                             "the viewer now asks them whether to save it, and the quit waits "
+                             "for their answer. That question is theirs, not yours.";
+        }
+        // </Lumen>
 
         // The text is kept here, unlike most of the log: a permission the
         // assistant granted on someone's behalf is exactly the thing they need
