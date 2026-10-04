@@ -243,15 +243,6 @@ def main():
         # go_back with nothing else walks or teleports them back to where they
         # were. A `how` that is neither walk nor teleport is refused first.
         ("movement", "go_back"):        {"how": "__check_only__"},
-
-        # undo with nothing else undoes the newest change set for real, asking
-        # nothing -- every run of this sweep undid one more of the user's sets
-        # and printed "pass". A change set that cannot exist is refused before
-        # anything is planned. The other record actions are harmless as they
-        # are: history only reads, restore with no snapshot and batch with no
-        # steps (or with the switch off) are refused, and save_script above
-        # names a window nothing has.
-        ("inventory", "undo"):          {"change_set": -1},
     }
 
     # And the ones with no refusing argument at all, which are NOT called.
@@ -270,6 +261,14 @@ def main():
         # held for the answer longer than this script waits, so it died there.
         ("inventory", "empty_trash"):
             "with the switch on, it asks the user to empty their Trash for real",
+        # Undo and redo take no argument: they are about the newest step, and
+        # with one in the list they put the real Undo question on screen --
+        # once an earlier sweep undid a real change every run. history only
+        # reads, and batch with no steps (or the switch off) is refused.
+        ("inventory", "undo"):
+            "with a step in the list, it asks the user to undo it for real",
+        ("inventory", "redo"):
+            "with a step undone, it asks the user to redo it for real",
     }
 
     # And a net, because the table above is hand-written and the next action

@@ -1,6 +1,6 @@
 /**
  * @file lumenaiundo.h
- * @brief What the assistant changed in the inventory, and how to put it back.
+ * @brief Undo and redo for the inventory, this login: the assistant's changes and the person's.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
  * Lumen Viewer Source Code
@@ -28,36 +28,28 @@
 #ifndef LUMEN_AIUNDO_H
 #define LUMEN_AIUNDO_H
 
-#include "llfloater.h"
 #include "llsingleton.h"
 #include "llsd.h"
 #include "lluuid.h"
 
-#include <atomic>
-#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-struct sqlite3;
-class LLButton;   // <Lumen>
-class LLScrollListCtrl;
-class LLTextEditor;
+class LLInventoryObserver;
 
 // <Lumen>
 /**
  * What the assistant may do to something in the inventory: ONE set of rules
  * for every path that moves it, renames it, deletes it or puts something into
  * a folder -- move_item, rename_item, delete_item, new_folder, a batch, undo,
- * restore and undelete.
+ * redo and undelete.
  * Before there was one, undo and restore had a shorter list than move_item,
  * and could pull a listed item out of Marketplace or put the LSL bridge's
  * folder somewhere else.
@@ -136,44 +128,45 @@ namespace LumenInventoryRules
 // </Lumen>
 
 /**
- * A record of every inventory change the assistant makes, and the means to
- * undo it -- as far as Second Life allows.
+ * Undo and redo for the inventory, for this login only -- like Ctrl-Z and
+ * Ctrl-Y in any program. The author, 2026-10-04: what matters is the
+ * assistant reading a request wrong and making a mess of the inventory, and
+ * catching that soon after it happened.
  *
- * Asked for so the assistant could tidy an inventory in bulk without that
- * being a leap of faith: "put everything named pumpkin into the Halloween
- * folder" is one sentence, and a misheard word in it moves hundreds of things.
- * The guard comes before the tool that needs it.
+ * **One list of steps, newest last, at most thirty.** A step is one whole
+ * action, named for what was done and who did it: "Assistant: moved 885 items
+ * to Halloween" (an Assistant turn, or a bulk run, is one step), "You: deleted
+ * 3 items" (the person's own drag, delete, rename or new folder in the viewer
+ * -- grouped when close together, so one drag of twenty items is one step).
+ * Undo reverses the newest; redo puts it back; any new change after an undo
+ * clears what could be redone.
  *
- * Two layers, both on disk in the account's own folder (so per avatar and per
- * grid), and neither leaves the computer:
+ * **Nothing is kept on disk.** The list starts empty at login and is gone at
+ * logout. Only one viewer can be logged in to an account at a time, so for
+ * the whole of a login every change goes through this one -- which is what
+ * lets undo be sure of what it is putting back. (Snapshots and their restore
+ * went with the file they lived in: see Decisions.)
  *
- *  - **Change sets.** Every move, rename, delete to the Trash and new folder,
- *    with what it was before, grouped by the request that caused it and kept
- *    with the person's own words. inventory / undo reverses one, and leaves
- *    alone -- and lists -- anything changed by hand since.
- *  - **Snapshots** of the STRUCTURE: every folder and item, its name and
- *    where it is, no contents. Taken before the first assistant change of a
- *    login and before any bulk operation, so a change can be put right after
- *    the conversation that made it is gone. Stored as differences from the
- *    snapshot before, so a snapshot of an unchanged inventory costs nothing.
+ * **The person's own changes** are picked up by an inventory observer and
+ * compared with Lumen's own copy of where each thing sits and what it is
+ * called, so "before" is known. The assistant's changes are announced by the
+ * tools that make them, and claimed, so the observer does not take them for
+ * the person's; undo and redo claim theirs the same way. Nothing the viewer
+ * does for itself is a step: Current Outfit, the bridge, the AO, the
+ * favourites, Marketplace -- the places the shared rules keep the assistant
+ * out of -- and nothing that merely arrives (deliveries, the inventory
+ * loading). The person's changes are watched once the whole inventory has
+ * loaded: before that, a folder arriving from Second Life can look like a
+ * move.
  *
- * **This is not a cache.** A cache can be thrown away and fetched again; this
- * cannot. A file that fails its check is set aside under another name, never
- * deleted, and a fresh one started -- and only a file SQLite says is damaged:
- * a busy, full or read-only disk is not a reason to start again.
+ * **Undo and redo are always asked first** -- a LumenAsk question, never
+ * remembered, so the assistant cannot answer it -- showing what will change.
+ * The plan is made when the question opens and made again on Accept; a thing
+ * changed since is left alone and said. A toast says what was done.
  *
- * <Lumen> One viewer at a time: a second Lumen logged in as the same avatar
- * on the same computer finds the record held, says so, and asks again now
- * and then -- a viewer that was logged out by the second login is often
- * still open, showing its message.
- *
- * Where it stops, said everywhere it matters: anything emptied from the Trash
- * is gone, and so is a no-copy item given away or rezzed. Nothing here claims
- * a restore it did not see happen.
- *
- * Writes go through one worker thread with its own connection, so a snapshot
- * of a quarter of a million items never holds up a frame -- or a change being
- * recorded behind it.
+ * Where it stops: anything emptied from the Trash, given away or rezzed
+ * cannot come back. Emptying the Trash drops the steps that were only about
+ * what was in it, and the rest say what is gone.
  */
 class LumenAIUndo : public LLSingleton<LumenAIUndo>
 {
@@ -181,274 +174,172 @@ class LumenAIUndo : public LLSingleton<LumenAIUndo>
     ~LumenAIUndo();
 
 public:
-    /** One step of an undo or a restore, and the whole list of them. */
+    /** One step of an undo or a redo as it runs, and the whole list of them. */
     struct Step;
     struct Plan;
 
-    /** One step back towards how things were. */
+    /** Where a folder sat, by id and by name, so it can be made again. */
     struct Chain
     {
-        /** Folders from the top of the inventory down to the parent: id and name. */
+        /** Folders from the top of the inventory down to the folder: id and name. */
         std::vector<std::pair<LLUUID, std::string>> folders;
-        std::string serialise() const;
-        static Chain parse(const std::string& text);
         static Chain of(const LLUUID& folder_id);
     };
 
+    /**
+     * Undo and Redo in the inventory window's gear menu, and the watching of
+     * the inventory. At start-up, before any inventory window is built.
+     */
+    static void registerMenu();
+
     // ---- the request in progress -------------------------------------------
     /**
-     * An Assistant turn starts: what it changes from now on is ONE change set,
-     * kept with these words. Outside a turn -- a host application calling the
-     * endpoint directly -- every change is a set of its own.
+     * An Assistant turn starts: what it changes from now on is ONE step, kept
+     * with these words. Outside a turn -- a host application, or a test,
+     * calling the endpoint directly -- nothing is listed (the debug setting
+     * LumenAIUndoEndpointCalls lists each change as a step of its own).
      */
     void beginRequest(const std::string& words);
     void endRequest();
 
-    // ---- recording -----------------------------------------------------------
-    /**
-     * Call BEFORE changing anything. The first change of a login is preceded by
-     * a snapshot, and it has to see the inventory as it was.
-     */
-    void prepare();
-
-    // <Lumen> `set_id` 0 is the request in progress, as always; a bulk run
-    // passes the set beginBatch() gave it.
-    void recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
+    // ---- the assistant's changes ----------------------------------------------
+    // `set_id` 0 is the step the request in progress writes to; a bulk run
+    // passes the one beginBatch() gave it, and a change answered later the one
+    // setForLater() gave when it was sent. A step undone since is not added
+    // to: what arrives for it goes in the step in progress.
+    // Each says whether the change went into the list (false outside a turn).
+    bool recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
                     S64 set_id = 0);
     /**
-     * <Lumen> Call when Second Life has CONFIRMED the new name, with the set
-     * setForLater() gave when it was sent. Under AIS a rename only queues a
-     * request: the viewer's own copy of the name changes when the answer
-     * comes, and a refused one never changes it. Recorded on sending, an undo
-     * straight after a big rename run read the old name as "renamed again
-     * since", and a refused rename stayed in the record as done.
+     * Call when the rename is SENT. Under AIS the viewer's own copy of the name
+     * changes only when Second Life answers; recorded now, an undo straight
+     * after it finds this step rather than an older one, and reads the old
+     * name as "not confirmed yet" while renamePending(). Two renames of one
+     * thing in one step are one: from the first name to the last.
      */
-    void recordRename(const LLUUID& id, bool folder, const std::string& before,
+    bool recordRename(const LLUUID& id, bool folder, const std::string& before,
                       const std::string& after, S64 set_id = 0);
-    /** <Lumen> The set a change Second Life answers for later goes in: fixed now. */
+    /** The step a change Second Life answers for later goes in: fixed now. */
     S64  setForLater();
-    /**
-     * <Lumen> A rename sent and not answered yet. Undo reads a thing carrying
-     * its name from before as "not confirmed yet" while one is, rather than
-     * as changed since.
-     */
     void renameSent(const LLUUID& id);
     void renameAnswered(const LLUUID& id);
     bool renamePending(const LLUUID& id) const { return mRenamesInFlight.count(id) > 0; }
-    /** Call AFTER it is in the Trash: where it is now is recorded too. */
+    /** Call AFTER it is in the Trash. */
     void recordTrash(const LLUUID& id, bool folder, const LLUUID& from, S64 set_id = 0);
     void recordUntrash(const LLUUID& id, bool folder, const LLUUID& to);
-    /** A folder being made: the set it joins is fixed now, its id arrives later. */
+    /** A folder being made: the step it joins is fixed now, its id arrives later. */
     S64  setForNewFolder();
     void recordNewFolder(S64 set_id, const LLUUID& id, const LLUUID& parent);
 
-    /**
-     * A snapshot now, for a bulk operation. Returns its id, or 0. <Lumen> It
-     * is written on the record's own thread a moment later, whole or not at
-     * all: snapshotState() says which, and only a WRITTEN one may be named
-     * to anybody as there.
-     */
-    S64  snapshotBefore(const std::string& reason);
-    enum SnapState { SNAP_UNKNOWN, SNAP_PENDING, SNAP_WRITTEN, SNAP_FAILED };   // <Lumen>
-    SnapState snapshotState(S64 snap_id);                                     // <Lumen>
+    /** Undo and redo say they will change these: what the observer then sees is not the person's. */
+    void claimParent(const LLUUID& id, const LLUUID& parent);
+    void claimName(const LLUUID& id, const std::string& name);
 
-    // <Lumen> ---- a bulk run (inventory / batch) ------------------------------
+    // ---- a bulk run (inventory / batch) ----------------------------------------
     /**
-     * A bulk run is ONE change set of its own, whatever Assistant turn starts
-     * or ends while it is still going -- a run of thousands is paced and
-     * outlasts the turn that asked for it. Every change it makes is recorded
-     * under the set this returns (0: the record is not available). `what` is
-     * kept with it, after the person's own words when a turn is in progress.
-     * Until endBatch(), the set cannot be undone: it is still being written.
+     * A bulk run is ONE step of its own, whatever Assistant turn starts or
+     * ends while it is still going. `what` is kept with it, after the
+     * person's own words when a turn is in progress. Until endBatch() it is
+     * not undone: it is still being made.
      */
     S64  beginBatch(const std::string& what);
-    void endBatch(S64 set_id);
-    /** A bulk run is still going. Undo and restore wait for it. */
+    void endBatch(S64 set_id, bool stopped = false);
     bool bulkRunning() const { return !mRunning.empty(); }
     /**
-     * Ask every bulk run to stop after the change in hand -- Clear in the
-     * Assistant window, or Stop in the history window. What it did stays one
-     * change set, undoable. True when a run was going.
-     * <Lumen> And an undo or a restore still putting things back a few at a
-     * time: what it put back stays put back, and an undo's set stays not
-     * undone, so undoing it again does the rest.
+     * Ask every bulk run, undo and redo to stop after the change in hand --
+     * Clear in the Assistant window. What it did stays done. True when
+     * something was going.
      */
     bool stopBulk();
-    /** <Lumen> Something Stop can stop: a bulk run, or an undo or restore still going. */
     bool stoppable() const { return bulkRunning() || puttingBack(); }
-    /** Has this run been asked to stop? The run asks between changes. */
     bool stopAsked(S64 set_id) const { return mStopAsked.count(set_id) > 0; }
-    // </Lumen>
 
-    /**
-     * Where this item was before the assistant last put it in the Trash.
-     * <Lumen> Never waits for the record to be written: what is still on its
-     * way to the file is answered from memory.
-     */
-    bool lastTrashedFrom(const LLUUID& id, LLUUID& parent_out, Chain& chain_out);
+    /** Where this was before it was last put in the Trash this login -- by the assistant or by hand. */
+    bool lastTrashedFrom(const LLUUID& id, LLUUID& parent_out) const;
 
-    // ---- reading and putting back ---------------------------------------------
+    // ---- the list, undo and redo ---------------------------------------------
+    /** The steps that can be undone, newest first, and those that can be redone. */
+    LLSD list() const;
+    /** "Undo: assistant moved 885 items to Halloween", or plain "Undo" when there is none. */
+    std::string menuLabel(bool redo) const;
+    bool canUndo(bool redo) const;
     /**
-     * <Lumen> `settled`: wait (briefly) for what is still being written, so
-     * a change made a moment ago is in the answer. The window passes false
-     * and reads what is on disk -- it reads again when more arrives -- so a
-     * snapshot being written never holds up a frame.
+     * What undoing (or redoing) the newest step would change now, for the
+     * question: `step` is the one it is about, `text` the lines it shows.
+     * An error when there is nothing, or something is still running.
      */
-    LLSD history(S32 limit, bool settled = true);
-    LLSD snapshots(bool settled = true);
+    LLSD preview(bool redo);
     /**
-     * Undo one change set; 0 is the newest one not yet undone. <Lumen> A set
-     * undone before, with things that could not be put back then, may be
-     * named again: only those are tried.
+     * Do it -- for `step` only, which must still be the newest: the question
+     * was about that one. Planned again now; what changed since is left alone.
+     * The toast says how it went; the answer says it too.
      */
-    LLSD undo(S64 set_id);
-    /**
-     * What restoring a snapshot would change, with up to `sample` examples of
-     * each. <Lumen> Planned afresh, unless `reuse` and this snapshot was
-     * planned a short while ago: the call collecting the answer to a question
-     * asks about the plan the question was built from.
-     */
-    LLSD previewRestore(S64 snap_id, S32 sample, bool reuse = false);
-    /**
-     * Put the inventory back as the snapshot has it, as far as possible.
-     * <Lumen> Runs the plan the last preview of it made, when that is recent
-     * -- the one the person was asked about -- and each step leaves alone
-     * what has changed since.
-     */
-    LLSD restore(S64 snap_id);
-    /** An undo or a restore is still putting things back. */
+    LLSD perform(bool redo, S64 step);
+    /** An undo or a redo is still putting things back. */
     bool puttingBack() const;
+    /** Why nothing may be put back now (logged out, something running), or empty. */
+    std::string notNow(const char* what) const;
 
-    bool available();
-    /** <Lumen> Why available() is false, in words for the person; empty if it is not. */
-    std::string unavailableWhy() const { return mWhyUnavailable; }
-    std::string path() const { return mPath; }
-
-    /** Called by the writer thread and the runner: the window should read again. */
-    void changed();
-    bool takeDirty() { return mDirty.exchange(false); }
-
-    /**
-     * <Lumen> The end of a run: what it did, the change rows it put back,
-     * and whether it ended after run() had already answered.
-     */
+    /** The end of a run: what it did, the changes it did, and whether it ended after run() had answered. */
     typedef std::function<void(const LLSD& summary, const std::vector<S64>& rows, bool later)> Finished;
 
+    // ---- the observer and the frame ------------------------------------------
+    void observed(const std::set<LLUUID>& ids);
+    void tick();
+
 private:
-    struct Node
+    struct Change;
+    struct Entry;
+    struct Known
     {
-        LLUUID id, parent;
+        LLUUID parent;
         std::string name;
-        bool folder = false;
     };
-    // <Lumen> How opening the file went. Only BAD_FILE sets it aside.
-    enum OpenResult { OPENED, BAD_FILE, NOT_NOW, TOO_NEW };
-    bool open();
-    OpenResult openFile();
-    void setAside();
-    bool lockRecord();
-    void unlockRecord();
-    // </Lumen>
-    void close();
-    bool ensureOpen();
-    void startWorker();
-    void stopWorker();
-    void post(std::function<void(sqlite3*)> job);
-    /** Wait until everything posted so far is on disk. Bounded: false if it is not. */
-    bool flush();
+    struct Claim
+    {
+        LLUUID parent;
+        std::string name;
+        bool has_parent = false;
+        bool has_name = false;
+        F64 until = 0.0;
+    };
 
-    S64  currentSet();
-    S64  liveSet(S64 wanted);   // <Lumen>
-    void addSet(S64 id, const std::string& words, const std::string& source);   // <Lumen>
-    void addChange(S64 set_id, const std::string& kind, const LLUUID& id, bool folder,
-                   const std::string& name_before, const std::string& name_after,
-                   const LLUUID& parent_before, const LLUUID& parent_after,
-                   const std::string& chain);
-    S64  takeSnapshot(const std::string& reason);
-    std::vector<Node> captureTree() const;
-    bool readSnapshot(S64 snap_id, std::vector<Node>& out, bool* partial = nullptr);
+    Entry* entryFor(S64 wanted);
+    Entry* findEntry(S64 id);
+    Entry& pushEntry(bool assistant, const std::string& words);
+    void addChange(Entry& e, const Change& c);
+    void personChange(const Change& c);
+    void purged(const std::set<LLUUID>& ids);
+    std::string describe(const Entry& e) const;
+    bool housekeeping(const LLUUID& folder) const;
+    void startWatching();
 
-    Plan planUndo(S64 set_id, LLSD& error);
-    Plan planRestore(S64 snap_id, LLSD& error, bool reuse);
-    /** <Lumen> Why nothing may be put back now (logged out, another one going), or empty. */
-    std::string notNow(const char* what) const;
+    bool planFor(Entry& e, bool redo, Plan& plan, LLSD& error);
     LLSD run(Plan& plan, const Finished& finished);
 
-    sqlite3*    mRead = nullptr;     // main thread: reads only
-    sqlite3*    mLock = nullptr;     // <Lumen> holds the lock file while the record is ours
-    std::string mPath;
-    bool        mTried = false;
-    F64         mRetryAt = 0.0;      // <Lumen> held by another viewer: ask again after this
-    std::string mWhyUnavailable;     // <Lumen>
-
-    std::thread mWorker;
-    std::mutex  mMutex;
-    std::condition_variable mWake, mIdle;
-    std::deque<std::function<void(sqlite3*)>> mJobs;
-    bool        mStop = false;
-    bool        mWorking = false;
-
-    S64         mNextSet = 1;
-    S64         mNextSnap = 1;
-    S64         mRequestSet = 0;     // the set the turn in progress writes to, once it has one
+    std::deque<std::shared_ptr<Entry>> mUndo;   // oldest first; the newest is at the back
+    std::deque<std::shared_ptr<Entry>> mRedo;   // the next to redo is at the back
+    std::shared_ptr<Entry> mBusy;               // being undone or redone right now
+    S64         mNextId = 1;
+    S64         mRequestStep = 0;   // the step the turn in progress writes to, once it has one
     bool        mInRequest = false;
     std::string mWords;
-    bool        mSnapshotThisLogin = false;
-    S32         mSeq = 0;
-    std::atomic<bool> mDirty{ false };
+    U64         mPushes = 0;        // steps added, ever: a run checks nobody added one meanwhile
 
-    // <Lumen> Main thread only.
-    std::set<S64> mClosed;           // undone, or being undone: nothing more is added to them
-    std::set<S64> mUndoing;          // an undo of these is still going
-    std::set<S64> mRunning;          // bulk runs still writing to these
+    std::set<S64> mRunning;          // bulk runs still adding to these
+    std::set<S64> mUnlisted;         // ...of those, runs outside a turn: not in the list
     std::set<S64> mStopAsked;        // ...and the ones asked to stop
-    std::map<S64, S64> mLateSets;    // closed set -> where what arrives for it late goes
     std::map<LLUUID, S32> mRenamesInFlight;   // sent, not answered yet: how many
 
-    // <Lumen> Shared with the writer thread, under mStateMutex.
-    struct PendingTrash { LLUUID parent; std::string chain; S32 seq = 0; };
-    std::mutex  mStateMutex;
-    std::unordered_map<LLUUID, PendingTrash> mPendingTrash;   // recorded, not on disk yet
-    std::map<S64, SnapState> mSnapStates;   // snapshots taken this login, and how their write went
-
-    // <Lumen> A restore is planned once -- for the preview the question was
-    // built from -- and that plan is what the Yes runs, each step checking
-    // the thing is still as the plan saw it. Kept a while, not one frame.
-    S64         mPlannedSnap = 0;
-    F64         mPlannedAt = 0.0;
-    std::shared_ptr<Plan> mPlanned;
-};
-
-/**
- * Comm > Assistant Inventory History: what the assistant changed, each with
- * Undo, and the snapshots, each with a preview and Restore.
- *
- * The window exists for the day the conversation is gone -- cleared, another
- * provider, a restart -- and something is still not where it was.
- */
-class LumenAIUndoFloater : public LLFloater
-{
-public:
-    LumenAIUndoFloater(const LLSD& key);
-    bool postBuild() override;
-    void onOpen(const LLSD& key) override;
-    void draw() override;
-
-    void reload();
-
-private:
-    void onUndo();
-    void onStop();      // <Lumen> a bulk run
-    void onPreview();
-    void onRestore();
-    S64  selected(LLScrollListCtrl* list) const;
-    void show(const std::string& text);
-
-    LLScrollListCtrl* mSets = nullptr;
-    LLScrollListCtrl* mSnaps = nullptr;
-    LLTextEditor*     mText = nullptr;
-    LLButton*         mStopBtn = nullptr;   // <Lumen>
-    F64               mLastReload = 0.0;   // <Lumen> read again at most once a second
+    // Lumen's own copy of the inventory: where each thing sits and its name.
+    std::unordered_map<LLUUID, Known> mKnown;
+    std::unordered_map<LLUUID, Claim> mClaims;
+    std::unordered_map<LLUUID, LLUUID> mTrashedFrom;
+    std::set<LLUUID> mPending;       // changed, not looked at yet
+    LLInventoryObserver* mObserver = nullptr;
+    bool        mWatching = false;   // the observer is on and the copy made
+    bool        mPersonToo = false;  // the whole inventory has loaded: the person's changes count
+    F64         mNextSweep = 0.0;
 };
 
 #endif // LUMEN_AIUNDO_H

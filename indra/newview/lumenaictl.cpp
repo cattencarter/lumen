@@ -3880,7 +3880,7 @@ namespace
             if (action == "rename")          return "rename_item";  // <Lumen>
             if (action == "history")         return "change_history";    // <Lumen>
             if (action == "undo")            return "undo_changes";      // <Lumen>
-            if (action == "restore")         return "restore_snapshot";  // <Lumen>
+            if (action == "redo")            return "redo_changes";      // <Lumen>
             if (action == "batch")           return "batch_inventory";   // <Lumen>
             if (action == "empty_trash")     return "empty_trash";       // <Lumen>
             return "";
@@ -4180,7 +4180,7 @@ namespace
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
               "save_outfit", "show", "open", "save_image", "new_folder", "move", "rename",
-              "history", "undo", "restore", "batch", "empty_trash" };
+              "history", "undo", "redo", "batch", "empty_trash" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -4253,8 +4253,8 @@ namespace
             "off whatever hangs on the new item's attachment point, which can be the body, the "
             "head or the hair, not the old garment.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete takes it back "
-            "out, to the folder it was in when the record knows, otherwise the default folder "
-            "for its type (Objects, Clothing and so on); emptying the Trash -- empty_trash, which "
+            "out, to the folder it was in when it was deleted this login, otherwise the default "
+            "folder for its type (Objects, Clothing and so on); emptying the Trash -- empty_trash, which "
             "asks them every time, or they themselves -- is what destroys. Say so that "
             "way: \"moved to Trash\", not \"deleted\". The viewer asks the user itself first, in "
             "a window of its own with Yes and No -- do not ask them for permission as well, just "
@@ -4300,22 +4300,19 @@ namespace
             "it was, so it can be put back.\n"
             "- rename: give an item (`item_id`) or a folder (`folder_id`) a new name, `new_name`. "
             "Only what they may modify, and not Second Life's own folders.\n"
-            "- history: what you have changed in their inventory -- every move, rename, delete "
-            "and new folder, grouped by the request that caused it, with their own words -- and "
-            "the snapshots of how the inventory was arranged. For \"what did you change\" and "
-            "before undo or restore when it is not the last request.\n"
-            "- undo: put back one change set: things moved go back, renamed things get their "
-            "names back, deleted things come out of the Trash into the folder they were in (made "
-            "again if it is gone), folders you made are removed when empty. Without `change_set` "
-            "it undoes the newest one not already undone -- \"undo that\", \"put it back\". "
-            "Anything changed since by hand is left alone and listed; say which. Something "
-            "emptied from the Trash is gone for good, and the answer says so -- never claim it "
-            "came back.\n"
-            "- restore: put the WHOLE inventory's arrangement back as a `snapshot` from history "
-            "had it, never for one item from the Trash -- that is undelete. For when "
-            "the request that changed things is not in the record any more. `preview: true` "
-            "says what it would change, and changes nothing; tell them before restoring. The "
-            "viewer asks them itself before it starts.\n"
+            "- history: the steps that can be undone this login, newest first -- yours, and the "
+            "user's own moves, renames, deletes and new folders in the viewer -- each named for "
+            "what was done, with their words for yours; and what can be redone. For \"what did "
+            "you change?\" and \"what can you undo?\".\n"
+            "- undo: undo the NEWEST step, whoever made it -- \"undo that\", \"put it back\" -- "
+            "the same as Undo in the inventory window's gear menu: things moved go back, renamed "
+            "things get their names back, deleted things come out of the Trash, folders made are "
+            "removed when empty. Only the newest, and only this login. The viewer shows the user "
+            "what will change and asks them, Accept or Cancel, before anything happens -- do not "
+            "ask in the conversation as well. What changed since is left alone and said; anything "
+            "emptied from the Trash, given away or rezzed cannot come back -- never claim it did.\n"
+            "- redo: put back what the last undo took away -- \"redo that\", \"no, do it after "
+            "all\" -- asked the same way. After a new change nothing can be redone.\n"
             "- batch: change many things in one go -- \"put everything named pumpkin into "
             "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
             "\"delete the folders that are empty now\". **Off until the user switches it on** in "
@@ -4360,8 +4357,8 @@ namespace
             "The viewer asks the user itself before it runs, in a window of its own -- do not ask "
             "them in the conversation as well. A long run belongs to the viewer: the answer says "
             "how far it got, and the viewer writes in the Assistant window when it has finished, "
-            "so end your reply then -- there is nothing to check. The whole run is ONE change set: "
-            "undo with its `change_set` puts all of it back.\n"
+            "so end your reply then -- there is nothing to check. The whole run is ONE step: undo "
+            "puts all of it back.\n"
             "- empty_trash: empty the Trash, for good. Also off until the user switches it on, "
             "and its own action, never a batch step. The viewer asks them every time. Once it is "
             "emptied nothing in it can be brought back -- by Lumen or anyone -- and undo cannot "
@@ -4427,14 +4424,6 @@ namespace
                                "search result gives it in `folder`.";
         LLSD inn; inn["type"]="string"; inn["description"]="rename: the new name.";
         inv_props["to_folder"]=ito; inv_props["new_name"]=inn;
-        LLSD ics; ics["type"]="integer";
-            ics["description"]="undo: which change set, from history. Leave it out for the "
-                               "newest one not yet undone.";
-        LLSD isn; isn["type"]="integer";
-            isn["description"]="restore: which snapshot, from history.";
-        LLSD ipv; ipv["type"]="boolean";
-            ipv["description"]="restore: true only says what it would change.";
-        inv_props["change_set"]=ics; inv_props["snapshot"]=isn; inv_props["preview"]=ipv;
         // <Lumen> batch: the steps, and the plan they became. `items` is not
         // optional: OpenAI refuses a schema with an array that does not say
         // what is in it.
@@ -6061,6 +6050,10 @@ void LumenAIControl::onNearbyChat(const LLSD& data)
 
 bool LumenAIControl::start()
 {
+    // <Lumen> Undo and Redo in the inventory's gear menu, and the watching of
+    // the inventory they need: whether or not the endpoint itself starts, and
+    // before any inventory window is built.
+    LumenAIUndo::registerMenu();
     try
     {
         return startInternal();
@@ -10922,8 +10915,8 @@ namespace
 // never on something changed by hand in between, which is left alone and said.
 //
 // Off until the user turns it on (LumenAIAllowBulkInventory, Preferences > AI >
-// Permissions), one question from the viewer per run, one change set in the
-// inventory record per run, with a snapshot before it.
+// Permissions), one question from the viewer per run, and one step in the
+// undo list per run.
 namespace
 {
     const char* const BULK_SWITCH = "LumenAIAllowBulkInventory";
@@ -10988,7 +10981,6 @@ namespace
     struct BulkRun
     {
         S64  change_set = 0;
-        S64  snapshot = 0;
         F64  started = 0.0;
         S32  total = 0;
         S32  done = 0;
@@ -11005,7 +10997,7 @@ namespace
         std::map<S32, LLUUID> made;  // NEW_FOLDER op -> its id; null when refused
         bool finished = false;
         bool stopped = false;        // logged out, disconnected or quitting part way
-        bool stopped_by_user = false;   // <Lumen> Clear, or Stop in the history window
+        bool stopped_by_user = false;   // <Lumen> Clear in the Assistant window
         bool told_in_reply = false;  // a reply carried the whole outcome
     };
 
@@ -11016,7 +11008,7 @@ namespace
         std::vector<std::string> step_do;   // each step's `do`
         LLSD shown;                  // the plan as the caller was shown it
         std::string summary;         // what the viewer's question shows
-        std::string what;            // a line for the change set and the snapshot
+        std::string what;            // a line for its step in the undo list
         bool deletes = false;
         bool asked = false;
         std::shared_ptr<BulkRun> run;
@@ -11066,8 +11058,8 @@ namespace
             if (!drop) { ++it; continue; }
             // <Lumen> Remembered as what became of it.
             bulkForget(it->first, p.run
-                ? llformat("Plan \"%s\" already ran, as change set %lld -- inventory / history shows "
-                           "it. Nothing was done again.", it->first.c_str(), (long long)p.run->change_set)
+                ? llformat("Plan \"%s\" already ran -- inventory / history lists it as a step, "
+                           "unless it has been undone. Nothing was done again.", it->first.c_str())
                 : bulkExpired(it->first));
             it = sBulkPlans.erase(it);
         }
@@ -12626,14 +12618,16 @@ namespace
                 const std::string why = LumenInventoryRules::notRename(op.id, false, &rule);
                 if (!why.empty()) { refuse(why, rule); return; }
             }
-            // <Lumen> Counted, and recorded, when Second Life answers -- as the
-            // name the item then has. Under AIS a rename only queues a request
-            // and the viewer's copy changes with the answer; counted on
-            // sending, a run of thousands said "done" with most still queued,
-            // an undo straight after read the old names as "renamed again
-            // since", and a refused rename was recorded as done.
+            // <Lumen> Counted when Second Life answers -- as the name the item
+            // then has. Under AIS a rename only queues a request and the
+            // viewer's copy changes with the answer; counted on sending, a run
+            // of thousands said "done" with most still queued. Recorded for
+            // undo now, so an undo straight after finds this step; undo reads
+            // a name not confirmed yet as that, and one refused as already
+            // back.
             ++run->renames_pending;
             LumenAIUndo::instance().renameSent(op.id);
+            LumenAIUndo::instance().recordRename(op.id, false, op.name_then, op.new_name, run->change_set);
             std::shared_ptr<BulkRun> keep = run;
             const BulkOp one = op;
             LLPointer<LLInventoryCallback> answered = new LLBoostFuncInventoryCallback(
@@ -12644,9 +12638,6 @@ namespace
                     u.renameAnswered(one.id);
                     const LLViewerInventoryItem* now = gInventory.getItem(one.id);
                     const bool took = now && now->getName() == one.new_name;
-                    // Recorded whenever it lands, even after the run stopped
-                    // waiting: it happened, and undo has to find it.
-                    if (took) u.recordRename(one.id, false, one.name_then, one.new_name, keep->change_set);
                     if (keep->renames_gave_up) return;   // counted already, as not confirmed
                     --keep->renames_pending;
                     if (took)
@@ -12722,8 +12713,8 @@ namespace
                                              "folder you protected.";
         if (run->done)
         {
-            line += " To put it all back, ask the assistant to undo it, or use Comm > Assistant "
-                    "Inventory History.";
+            line += " To put it all back: Undo in the inventory window's gear menu, or ask the "
+                    "assistant to undo it.";
         }
         if (!LumenAIChatFloater::postFromViewer(std::string(), line))
         {
@@ -12732,12 +12723,11 @@ namespace
         }
     }
 
-    /** Start a planned run: the snapshot, its change set, and the paced work. */
+    /** Start a planned run: its step in the undo list, and the paced work. */
     void bulkStart(BulkPlan& plan)
     {
         std::shared_ptr<BulkRun> run = std::make_shared<BulkRun>();
         LumenAIUndo& undo = LumenAIUndo::instance();
-        run->snapshot = undo.snapshotBefore("before a " + plan.what);
         run->change_set = undo.beginBatch(plan.what);
         run->started = LLTimer::getTotalSeconds();
         run->total = (S32)plan.ops.size();
@@ -12762,7 +12752,7 @@ namespace
             // the whole while again before, so one folder never answered for
             // held the run (and with it every other run and empty_trash) half
             // a minute per item. An answer arriving later still counts.
-            // <Lumen> Asked to stop: Clear in the Assistant, or Stop in the history window.
+            // <Lumen> Asked to stop: Clear in the Assistant window.
             auto stopAsked = [&run]() -> bool
             {
                 return LumenAIUndo::instanceExists() && LumenAIUndo::instance().stopAsked(run->change_set);
@@ -12925,7 +12915,8 @@ namespace
             }
 
             run->finished = true;
-            if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().endBatch(run->change_set);
+            if (LumenAIUndo::instanceExists())
+                LumenAIUndo::instance().endBatch(run->change_set, run->stopped || run->stopped_by_user);
             if (run->trashed_any && gInventory.isInventoryUsable()) gInventory.checkTrashOverflow();
             LL_INFOS("AICtl") << "batch_inventory: finished, " << run->done << " done, "
                               << run->failed << " could not, " << run->left_alone
@@ -12961,21 +12952,6 @@ namespace
         const F64 now = LLTimer::getTotalSeconds();
         LLSD r;
         r["plan_id"] = plan_id;
-        r["change_set"] = (LLSD::Integer)run->change_set;
-        // <Lumen> A snapshot is named only once it is on disk: one still being
-        // written may yet fail, and one rolled back (a full disk) does not
-        // exist. The change set undoes the run either way.
-        if (run->snapshot)
-        {
-            const LumenAIUndo::SnapState snap = LumenAIUndo::instance().snapshotState(run->snapshot);
-            if (snap == LumenAIUndo::SNAP_WRITTEN)
-                r["snapshot"] = (LLSD::Integer)run->snapshot;
-            else if (snap == LumenAIUndo::SNAP_FAILED)
-                r["snapshot_failed"] = "The snapshot before this run could not be written; undo with "
-                                       "its change_set still puts back what the run changed.";
-            else
-                r["snapshot_pending"] = "The snapshot before this run is still being written.";
-        }
         r["total"] = run->total;
         r["done"] = run->done;
         r["could_not"] = run->failed;
@@ -12998,18 +12974,18 @@ namespace
         r["steps"] = steps;
         if (run->failed) r["could_not_list"] = run->failed_list;
         if (run->left_alone) r["left_alone_list"] = run->left_list;
-        r["undo"] = llformat("inventory / undo with change_set %lld puts back everything this run "
-                             "changed: moved things go back, renames are reversed, and what went "
-                             "to the Trash comes back out -- unless the Trash is emptied first.",
-                             (long long)run->change_set);
+        r["undo"] = "The whole run is one step: Undo in the inventory window's gear menu, or "
+                    "inventory / undo, puts back everything it changed -- moved things go back, "
+                    "renames are reversed, and what went to the Trash comes back out, unless the "
+                    "Trash is emptied first. The viewer asks the user before it does.";
 
         settling = false;
         if (run->finished)
         {
             run->told_in_reply = true;
             r["note"] = std::string(run->stopped_by_user   // <Lumen>
-                ? "The user stopped it part way (Clear, or Stop in the history window); what was "
-                  "done stays. "
+                ? "The user stopped it part way (Clear in the Assistant window); what was done "
+                  "stays. "
                 : run->stopped   // <Lumen>
                 ? "It stopped part way, because the viewer was logged out or disconnected from Second "
                   "Life (or is quitting); the rest was not done. "
@@ -13029,8 +13005,8 @@ namespace
                     "it is done, and how to undo it. End the reply there -- there is nothing for "
                     "you to check or wait for.";
         // <Lumen> And how the user stops it: undo is refused while it runs.
-        r["stop"] = "Clear in the Assistant window, or Stop in Comm > Assistant Inventory History, "
-                    "stops it after the change in hand. What was done stays, one change set to undo.";
+        r["stop"] = "Clear in the Assistant window stops it after the change in hand. What was done "
+                    "stays, one step to undo.";
         return r;
     }
 }
@@ -20795,8 +20771,7 @@ if (method == "camera")
             making.at = LLTimer::getTotalSeconds();
             making.first = result;
             sMaking[key] = making;
-            // <Lumen> inventory undo: the set is fixed now, the id arrives later.
-            LumenAIUndo::instance().prepare();
+            // <Lumen> inventory undo: the step is fixed now, the id arrives later.
             const S64 undo_set = LumenAIUndo::instance().setForNewFolder();
             m.createNewCategory(parent, LLFolderType::FT_NONE, name,
                                 [key, undo_set, parent](const LLUUID& new_id)
@@ -20881,26 +20856,22 @@ if (method == "camera")
                     LLSD e; e["code"] = -32000; e["message"] = no + " Nothing was moved.";
                     LLSD w; w["__error"] = e; return w;
                 }
-                LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
                 if (folder) m.changeCategoryParent(cat, dest, false);
                 else        change_item_parent(id, dest);
                 const LLUUID now_in = folder ? (cat ? cat->getParentUUID() : LLUUID::null)
                                              : (m.getItem(id) ? m.getItem(id)->getParentUUID()
                                                               : LLUUID::null);
+                bool listed = false;
                 if (now_in == dest)
                 {
-                    LumenAIUndo::instance().recordMove(id, folder, parent_now, dest);
+                    listed = LumenAIUndo::instance().recordMove(id, folder, parent_now, dest);
                 }
                 result["moved_to"] = folderPath(dest);
-                result["note"] = "Moved. inventory / undo puts back everything this request "
-                                 "changed, if the user asks.";
-                // <Lumen> Unless nothing was recorded: say so rather than promise an undo.
-                if (!LumenAIUndo::instance().available())
-                {
-                    result["note"] = "Moved -- but the record of changes is not available ("
-                                   + LumenAIUndo::instance().unavailableWhy() + "), so undo cannot put "
-                                     "this back. Say so if they may want it back.";
-                }
+                // <Lumen> Outside a conversation nothing is listed for undo.
+                result["note"] = listed ? "Moved. Undo puts back everything this request changed, if "
+                                          "the user asks."
+                                        : "Moved. Made outside an Assistant conversation, so it is not "
+                                          "in the undo list.";
             }
             else   // rename_item
             {
@@ -20925,27 +20896,25 @@ if (method == "camera")
                 }
                 // </Lumen>
                 result["was_named"] = result["name"];
-                LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
-                // <Lumen> Recorded when Second Life confirms it, as the name
-                // the item then has: under AIS the viewer's copy changes only
-                // with the answer, and a refused rename is never recorded.
-                // The set is the one this request writes to, fixed now.
-                const S64 undo_set = LumenAIUndo::instance().setForLater();
+                // <Lumen> Recorded for undo as it is sent, so an undo straight
+                // after finds this step: under AIS the viewer's copy of the
+                // name changes only with Second Life's answer, and undo reads
+                // the old name as "not confirmed yet" until then -- or, once
+                // answered, a refused rename as nothing to put back.
                 const std::string before = folder ? (cat ? cat->getName() : std::string())
                                                   : (item ? item->getName() : std::string());
+                bool listed = false;
                 if (before != new_name)   // the viewer sends nothing for the same name
                 {
                     LumenAIUndo::instance().renameSent(id);
+                    listed = LumenAIUndo::instance().recordRename(id, folder, before, new_name);
                     LLPointer<LLInventoryCallback> answered = new LLBoostFuncInventoryCallback(
-                        [id, folder, before, new_name, undo_set](const LLUUID&)
+                        [id, new_name](const LLUUID&)
                         {
                             if (!LumenAIUndo::instanceExists()) return;
-                            LumenAIUndo& u = LumenAIUndo::instance();
-                            u.renameAnswered(id);
+                            LumenAIUndo::instance().renameAnswered(id);
                             const LLInventoryObject* now = gInventory.getObject(id);
-                            if (now && now->getName() == new_name)
-                                u.recordRename(id, folder, before, new_name, undo_set);
-                            else
+                            if (!now || now->getName() != new_name)
                                 LL_INFOS("AICtl") << "rename_item: Second Life did not take the new name for "
                                                   << id << LL_ENDL;
                         });
@@ -20958,15 +20927,10 @@ if (method == "camera")
                 }
                 // </Lumen>
                 result["renamed_to"] = safeUtf8(new_name);
-                result["note"] = "Renamed. inventory / undo puts back everything this request "
-                                 "changed, if the user asks.";
-                // <Lumen> Unless nothing was recorded.
-                if (!LumenAIUndo::instance().available())
-                {
-                    result["note"] = "Renamed -- but the record of changes is not available ("
-                                   + LumenAIUndo::instance().unavailableWhy() + "), so undo cannot put "
-                                     "the old name back. Say so if they may want it back.";
-                }
+                result["note"] = listed ? "Renamed. Undo puts back everything this request changed, if "
+                                          "the user asks."
+                                        : "Renamed. Made outside an Assistant conversation, so it is "
+                                          "not in the undo list.";
             }
         }
         LLSD summary; summary["action"] = method; summary["result"] = result;
@@ -20976,9 +20940,10 @@ if (method == "camera")
     // </Lumen>
 
 
-    // <Lumen> inventory / history, undo and restore: the record LumenAIUndo
-    // keeps of what the assistant changed, and the snapshots beside it.
-    if (method == "change_history" || method == "undo_changes" || method == "restore_snapshot")
+    // <Lumen> inventory / history, undo and redo: the steps of this login --
+    // the same list, and the same question, as Undo and Redo in the inventory
+    // window's gear menu.
+    if (method == "change_history" || method == "undo_changes" || method == "redo_changes")
     {
         if (!gInventory.isInventoryUsable())
         {
@@ -20986,155 +20951,95 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
         LumenAIUndo& undo = LumenAIUndo::instance();
-        if (!undo.available())
-        {
-            LLSD e; e["code"] = -32000;
-            // <Lumen> And why: another Lumen holding it is something they can fix.
-            const std::string why = undo.unavailableWhy();
-            e["message"] = "The record of inventory changes could not be opened"
-                         + (why.empty() ? std::string() : " -- " + why) + ", so there is nothing to "
-                           "undo from. Say so.";
-            LLSD w; w["__error"] = e; return w;
-        }
         if (method == "change_history")
         {
-            S32 limit = params.has("limit") ? params["limit"].asInteger() : 10;
-            LLSD result;
-            result["change_sets"] = undo.history(limit);
-            result["snapshots"] = undo.snapshots();
-            result["note"] = "change_sets are newest first, with what the user asked for each. "
-                             "undo takes a change_set; restore takes a snapshot. Only changes "
-                             "made through the assistant are in the record.";
+            LLSD result = undo.list();
+            result["note"] = "Newest first. `undo` is what can be undone -- `did` names each step as "
+                             "the inventory's gear menu does, `who` made it, `asked` holds the user's "
+                             "words for yours -- and `redo` what undo took away. Only the newest of "
+                             "each can be undone or redone, and only this login's are here.";
             return result;
         }
 
+        const bool redo = (method == "redo_changes");
         const std::string request_id = params.has("request_id") ? params["request_id"].asString()
                                                                : std::string();
         LLSD replay;
-        if (!request_id.empty() && recallAction(request_id, replay))
+        if (recallAction(request_id, replay))
         {
             replay["replayed"] = true;
-            replay["note"] = "This request_id was already carried out; nothing was done again.";
+            replay["note"] = "This request_id was already carried out; nothing was done a second time.";
             return replay;
         }
-
-        if (method == "undo_changes")
-        {
-            const S64 set = params.has("change_set") ? (S64)params["change_set"].asInteger() : 0;
-            LLSD result = undo.undo(set);
-            if (result.has("error"))
-            {
-                LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
-                LLSD w; w["__error"] = e; return w;
-            }
-            // <Lumen> A long undo is paced, and its reply comes before any of it
-            // has run: it opens with that, as restore's does, so a model does
-            // not report as put back what has only been started.
-            const bool paced = result.has("paced") && result["paced"].asBoolean();
-            std::string note;
-            if (paced)
-            {
-                note = llformat("Started: %d to put back, a few at a time -- nothing is confirmed yet; "
-                                "say it has started", (S32)result["steps"].asInteger());
-                if (result["left_alone_count"].asInteger() > 0)
-                    note += ", what is left alone and why (each one in left_alone)";
-                if (result["cannot_count"].asInteger() > 0)
-                    note += ", and what cannot be brought back -- never say it will all come back";
-                note += ". The viewer says when it is finished. End the reply.";
-            }
-            else
-            {
-                note = "Tell the user what was put back";
-                if (result["left_alone_count"].asInteger() > 0)
-                    note += ", what was left alone and why (each one in left_alone)";
-                if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
-                    note += ", and what could not be brought back -- never say it all came back";
-                note += ".";
-                if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
-                    note += " Some things wait for the folder they were in to be made again; the "
-                            "viewer tells the user itself when that is done. End the reply.";
-                if (result.has("waiting_note")) note += " " + result["waiting_note"].asString();
-            }
-            // </Lumen>
-            // <Lumen> What could not be put back can be tried again.
-            if (result.has("try_again")) note += " " + result["try_again"].asString();
-            if (result["again"].asBoolean())
-                note += paced ? " This set was undone before; only what that undo could not put back "
-                                "is being tried now."
-                              : " This set was undone before; only what that undo could not put back "
-                                "was tried now.";
-            result["note"] = note;
-            LLSD summary; summary["action"] = "undo"; summary["change_set"] = result["change_set"];
-            summary["put_back"] = result["put_back"];
-            recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
-            return result;
-        }
-
-        // ---- restore_snapshot ----
-        const S64 snap = params.has("snapshot") ? (S64)params["snapshot"].asInteger() : 0;
-        if (snap <= 0)
-        {
-            LLSD e; e["code"] = -32602;
-            e["message"] = "Give `snapshot`: one of the snapshots inventory / history lists.";
-            LLSD w; w["__error"] = e; return w;
-        }
-        // <Lumen> The call that collects the answer to a question asks about
-        // the plan the question was built from, not a fresh one -- and the
-        // Yes runs that same plan, each step checking the thing is still as it
-        // was. A preview, or a first ask, plans afresh.
-        const bool preview_only = params.has("preview") && params["preview"].asBoolean();
-        const bool answering = !preview_only && mAsks.count(fingerprintOf(method, params)) > 0;
-        LLSD preview = undo.previewRestore(snap, 12, answering);
+        LLSD preview = undo.preview(redo);
         if (preview.has("error"))
         {
-            LLSD e; e["code"] = -32000; e["message"] = preview["error"].asString();
+            LLSD e; e["code"] = -32000;
+            e["message"] = preview["error"].asString() + " Say so.";
             LLSD w; w["__error"] = e; return w;
         }
-        // <Lumen> Not loaded yet is not gone: said so, never as gone.
-        const std::string not_yet_note = preview["not_yet_count"].asInteger() > 0
-            ? std::string(" Some things in the snapshot are not loaded from Second Life yet (`not_yet`), "
-                          "so they are left where they are -- say so, and never call them gone.")
-            : std::string();
-        if (preview_only)
+        if (preview["nothing"].asBoolean())
         {
-            preview["note"] = std::string("Nothing has been changed. Tell the user what restoring would do; "
-                              "restore without preview does it, and the viewer asks them first.")
-                            // <Lumen>
-                            + (preview["partial"].asBoolean()
-                               ? " Say too that this snapshot was taken before the whole inventory had "
-                                 "loaded, so it may not have everything in it." : "")
-                            + (preview["refused_count"].asInteger() > 0
-                               ? " Some things stay where they are by the rules the assistant follows "
-                                 "(`refused`, with why); say so." : "")
-                            + not_yet_note;
-            return preview;
+            // Nothing in it can be done: it comes off the list, unasked --
+            // that changes nothing in the inventory.
+            LLSD r = undo.perform(redo, preview["step"].asInteger());
+            r["did"] = preview["did"];
+            r["note"] = std::string("Nothing in that step can be ") + (redo ? "redone" : "undone")
+                      + " now -- `left_alone` and `cannot` say why -- so nothing was changed, and it "
+                        "is off the list. Tell the user in a sentence.";
+            return r;
         }
-        if (preview["nothing_to_do"].asBoolean())
-        {
-            preview["note"] = "Nothing differs from that snapshot, so nothing was changed." + not_yet_note;
-            return preview;
-        }
+        // The question: the user sees what will change, and accepts or not.
         {
             LLSD subs;
-            subs["MOVES"] = preview["moves"].asInteger();
-            subs["TRASH"] = preview["out_of_trash"].asInteger();
-            subs["RENAMES"] = preview["renames"].asInteger();
+            subs["STEP"] = preview["name"];
+            subs["TEXT"] = preview["text"];
             LLSD ask;
-            if (!askUser("LumenAskRestore", subs, fingerprintOf(method, params), ask)) return ask;
+            if (!askUser(redo ? "LumenAskRedo" : "LumenAskUndo", subs,
+                         fingerprintOf(method, params) + "\n" + preview["step"].asString(), ask))
+            {
+                return ask;
+            }
         }
-        LLSD result = undo.restore(snap);
+        LLSD result = undo.perform(redo, preview["step"].asInteger());
         if (result.has("error"))
         {
-            LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
+            LLSD e; e["code"] = -32000; e["message"] = result["error"].asString() + " Say so.";
             LLSD w; w["__error"] = e; return w;
         }
-        result["note"] = ((result.has("paced") && result["paced"].asBoolean())
-            ? std::string("Started, a little at a time; the viewer tells the user itself when it "
-                          "has finished. End the reply.")
-            : std::string("Tell the user what was put back and what could not be."))
-            + not_yet_note   // <Lumen>
-            + (result.has("waiting_note") ? " " + result["waiting_note"].asString() : std::string());
-        LLSD summary; summary["action"] = "restore"; summary["snapshot"] = (LLSD::Integer)snap;
+        const char* put = redo ? "through" : "back";
+        const bool paced = result.has("paced") && result["paced"].asBoolean();
+        std::string note;
+        if (paced)
+        {
+            // A long one: its reply comes before any of it has run.
+            note = llformat("Started: %d to put %s, a few at a time -- nothing is confirmed yet; "
+                            "say it has started", (S32)result["steps"].asInteger(), put);
+            if (result["left_alone_count"].asInteger() > 0)
+                note += ", what is left alone and why (each one in left_alone)";
+            if (result["cannot_count"].asInteger() > 0)
+                note += ", and what cannot be -- never say it will all come back";
+            note += ". The viewer tells the user when it is finished. End the reply.";
+        }
+        else
+        {
+            note = std::string("Tell the user what was put ") + put;
+            if (result["left_alone_count"].asInteger() > 0)
+                note += ", what was left alone and why (each one in left_alone)";
+            if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
+                note += ", and what could not be -- never say it all came back";
+            note += ".";
+            if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
+                note += " Some things wait for the folder they were in to be made again; the "
+                        "viewer tells the user itself when that is done.";
+            if (result.has("waiting_note")) note += " " + result["waiting_note"].asString();
+        }
+        if (result.has("not_yet_count"))
+            note += " Some names are not confirmed by Second Life yet (`not_yet`): they were not put "
+                    "back; asking again in a moment does it.";
+        result["note"] = note;
+        LLSD summary; summary["action"] = redo ? "redo" : "undo"; summary["step"] = result["step"];
+        summary["put_back"] = result["put_back"];
         recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
         return result;
     }
@@ -21184,11 +21089,11 @@ if (method == "camera")
                                          "the viewer says in the Assistant window when the change "
                                          "has finished, and they can ask again then.");
             }
-            // <Lumen> An undo or a restore may be taking things OUT of the
+            // <Lumen> An undo or a redo may be taking things OUT of the
             // Trash right now; emptying it would purge them on the way.
             if (LumenAIUndo::instance().puttingBack())
             {
-                return bulkError(-32000, "An undo or a restore is still taking things out of the "
+                return bulkError(-32000, "An undo or a redo is still taking things out of the "
                                          "Trash, so it was not emptied. Tell the user; they can ask "
                                          "again once it has finished.");
             }
@@ -21441,21 +21346,13 @@ if (method == "camera")
                                          "says in the Assistant window when the other has finished, "
                                          "and they can ask again then.");
             }
-            // <Lumen> Nor while an undo or a restore is putting things back:
+            // <Lumen> Nor while an undo or a redo is putting things back:
             // the two would get in each other's way.
             if (LumenAIUndo::instance().puttingBack())
             {
-                return bulkError(-32000, "An undo or a restore is still putting things back, so this was "
+                return bulkError(-32000, "An undo or a redo is still putting things back, so this was "
                                          "not started and nothing was changed. Tell the user; the viewer "
                                          "says when that has finished, and they can ask again then.");
-            }
-            if (!LumenAIUndo::instance().available())
-            {
-                // <Lumen> And why.
-                const std::string why = LumenAIUndo::instance().unavailableWhy();
-                return bulkError(-32000, "The record that makes a bulk change undoable could not be "
-                                         "opened" + (why.empty() ? std::string() : " -- " + why)
-                                         + ", so nothing was done. Say so.");
             }
             // One question per run. Moving, renaming and making folders may be
             // remembered; anything that puts things in the Trash asks every time.
@@ -21532,7 +21429,6 @@ if (method == "camera")
         LLSD summary;
         summary["action"] = "batch_inventory";
         summary["plan_id"] = plan_id;
-        summary["change_set"] = result["change_set"];
         summary["total"] = result["total"];
         summary["done"] = result["done"];
         summary["finished"] = result["finished"];
@@ -22718,8 +22614,8 @@ if (method == "camera")
                 result["note"] = "That item is not in the Trash, so there was nothing to undo.";
                 return result;
             }
-            // <Lumen> Back where it was deleted from, when the inventory record
-            // knows and that folder is still there. Otherwise the viewer's own
+            // <Lumen> Back where it was deleted from, when that is known (this
+            // login: by the assistant or by hand) and that folder is still there. Otherwise the viewer's own
             // Restore Item exactly (LLItemBridge::restoreItem): the default
             // folder for the type, a photo to the Photo Album, and no restamp.
             LLUUID parent;
@@ -22727,8 +22623,7 @@ if (method == "camera")
             std::string not_back;   // <Lumen> why not the folder it was in, when the rules say no
             {
                 LLUUID was;
-                LumenAIUndo::Chain chain;
-                if (LumenAIUndo::instance().lastTrashedFrom(id, was, chain)
+                if (LumenAIUndo::instance().lastTrashedFrom(id, was)
                     && was.notNull() && gInventory.getCategory(was)
                     && !gInventory.isObjectDescendentOf(was, trash))
                 {
@@ -22768,7 +22663,6 @@ if (method == "camera")
                 }
             }
             // </Lumen>
-            LumenAIUndo::instance().prepare();
             gInventory.changeItemParent(item, parent, false);
             if (item->getParentUUID() == parent)
             {
@@ -22786,14 +22680,14 @@ if (method == "camera")
             result["back_where_it_was"] = back_where_it_was;   // <Lumen>
             result["note"] = back_where_it_was
                 ? "Taken out of the Trash, back into " + folderPath(parent)
-                  + ", the folder it was in when the assistant deleted it. Tell the user."   // <Lumen>
+                  + ", the folder it was in when it was deleted. Tell the user."   // <Lumen>
                 : !not_back.empty()   // <Lumen>
                 ? "Taken out of the Trash into " + folderPath(parent)
                   + ", the default folder for its type -- not the folder it was in before, because "
                   + not_back + ". Tell the user which folder it is in now, and why."
                 : "Taken out of the Trash into " + folderPath(parent)
                   + ", the default folder for its type -- not necessarily where it was "
-                    "before: it was not deleted through the assistant, or that folder is gone. "
+                    "before: it was not deleted this login, or that folder is gone. "
                     "Tell the user which folder it is in now.";
             result["confirm_with"] = "Call inventory / search for it to confirm it is back.";
             LLSD summary;
@@ -22915,7 +22809,6 @@ if (method == "camera")
         // Moves to Trash. Nothing here purges. <Lumen> Emptying the Trash is
         // empty_trash's alone, behind its switch and asked every time.
         const LLUUID deleted_from = item->getParentUUID();   // <Lumen> inventory undo
-        LumenAIUndo::instance().prepare();
         gInventory.removeItem(id);
 
         // <Lumen> Checked rather than assumed: the local move is immediate
@@ -22939,17 +22832,12 @@ if (method == "camera")
         result["name"] = item_name;
         result["moved_to_trash"] = true;
         result["recoverable"] = true;
-        // <Lumen> Where undelete puts it is the record's to know; without the
-        // record, the default folder for its type -- said, as move says it.
-        result["confirm_with"] = LumenAIUndo::instance().available()
-            ? std::string("It is in the Trash, not destroyed. inventory / undelete takes it back "
-                          "out, to the folder it was in when the record knows, otherwise the default "
-                          "folder for its type. Tell the user it was moved to Trash rather than "
-                          "saying it was deleted.")
-            : "It is in the Trash, not destroyed. inventory / undelete takes it back out, but into "
-              "the default folder for its type: the record of changes is not available ("
-              + LumenAIUndo::instance().unavailableWhy() + "), so where it was is not kept. Tell "
-              "the user it was moved to Trash rather than saying it was deleted.";
+        // <Lumen> Where undelete puts it: the folder it was in, known for
+        // this login; after that the default folder for its type.
+        result["confirm_with"] = "It is in the Trash, not destroyed. inventory / undelete takes it "
+                                 "back out, to the folder it was in (this login), otherwise the "
+                                 "default folder for its type. Tell the user it was moved to Trash "
+                                 "rather than saying it was deleted.";
         if (is_link)
         {
             result["removed_link_only"] = true;

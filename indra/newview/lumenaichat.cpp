@@ -760,9 +760,9 @@ namespace
             if (action == "new_folder")       return "Making a folder";   // <Lumen>
             if (action == "move")             return "Moving it";
             if (action == "rename")           return "Renaming it";
-            if (action == "history")          return "Checking what it changed";   // <Lumen>
-            if (action == "undo")             return "Putting things back";
-            if (action == "restore")          return "Restoring the inventory";
+            if (action == "history")          return "Checking what can be undone";   // <Lumen>
+            if (action == "undo")             return "Undoing";
+            if (action == "redo")             return "Redoing";
             if (action == "batch")            return "Changing the inventory";  // <Lumen>
             if (action == "empty_trash")      return "Emptying the Trash";      // <Lumen>
         }
@@ -2499,7 +2499,7 @@ void LumenAIChatFloater::onClear()
     // A bulk inventory change outlasts the turn that asked for it, and Clear
     // is the stop people reach for: it stops after the change in hand, and
     // says how far it got in the new conversation. What it did stays, one
-    // change set to undo.
+    // step to undo. An undo or a redo still going stops the same way.
     if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().stopBulk();
     // </Lumen>
     mMessages = LLSD::emptyArray();

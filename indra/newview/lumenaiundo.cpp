@@ -1,6 +1,6 @@
 /**
  * @file lumenaiundo.cpp
- * @brief What the assistant changed in the inventory, and how to put it back.
+ * @brief Undo and redo for the inventory, this login: the assistant's changes and the person's.
  *
  * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
  * Lumen Viewer Source Code
@@ -29,7 +29,6 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lumenaiundo.h"
-#include "lumenaichat.h"   // <Lumen> where a long undo says it finished
 
 #include "aoengine.h"           // <Lumen> the AO folder, for the shared rules
 #include "fsfloaterwearablefavorites.h"   // <Lumen> the wearable favourites folder, likewise
@@ -37,31 +36,29 @@
 #include "llagent.h"
 #include "llapp.h"
 #include "llappviewer.h"        // <Lumen> gDisconnected: logged out, the viewer still open
-#include "llbutton.h"
+#include "llcallbacklist.h"     // <Lumen> the frame: what the observer saw is looked at there
 #include "llcoros.h"
-#include "lldir.h"
-#include "llfile.h"
 #include "lleventcoro.h"
-#include "llfloaterreg.h"
 #include "llframetimer.h"
 #include "llinventoryfunctions.h"
 #include "llinventorymodel.h"
-#include "llinventorymodelbackgroundfetch.h"   // <Lumen> is a snapshot whole?
+#include "llinventorymodelbackgroundfetch.h"   // <Lumen> the person's changes count once it has all loaded
+#include "llinventoryobserver.h"
+#include "llmenugl.h"           // <Lumen> the gear menu's Undo and Redo name themselves
 #include "llnotificationsutil.h"
-#include "llscrolllistctrl.h"
-#include "lltexteditor.h"
+#include "llstartup.h"
 #include "lltimer.h"
+#include "lltrans.h"
+#include "lluictrl.h"
+#include "llviewercontrol.h"
+#include "llviewerfoldertype.h"   // <Lumen> "New Folder"
 #include "llviewerinventory.h"
 #include "lumenfolders.h"
 #include "rlvactions.h"
 #include "rlvdefines.h"
 #include "rlvlocks.h"
 
-#include <sqlite3.h>
-
 #include <algorithm>
-#include <chrono>
-#include <cstdio>
 #include <ctime>
 #include <map>
 #include <memory>
@@ -71,48 +68,23 @@
 
 namespace
 {
-    const char* UNDO_FILE = "inventory_undo.db";
-    const char* LOCK_FILE = "inventory_undo.lock";   // <Lumen> one viewer at a time
+    // At most this many steps: one is a whole action, so thirty covers a long
+    // tidying session -- and ten could be used up by single moves before a
+    // bad batch was noticed. The oldest drops off the end. (The author,
+    // 2026-10-04.)
+    const size_t MAX_STEPS = 30;
 
-    // Not a cache, so there is no "rebuild on mismatch": a newer shape must
-    // migrate. Bump only with a migration beside it.
-    // <Lumen> 2: changes.undone_at (which steps an undo really did, so a later
-    // undo tries only the rest) and snapshots.partial (taken before the whole
-    // inventory had loaded). The migration is in openFile().
-    const int SCHEMA_VERSION = 2;
+    // The person's changes this close together, of the same kind and to the
+    // same place, are one step: one drag of twenty items, one delete of a
+    // multiple selection.
+    const F64 GROUP_SECONDS = 2.0;
+    // A folder the person has just made, renamed within this long, is one
+    // step: "New Folder" and then its name.
+    const F64 NAMED_SOON = 120.0;
 
-    const char* SCHEMA =
-        "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS sets ("
-        "  id INTEGER PRIMARY KEY, at INTEGER NOT NULL, words TEXT NOT NULL,"
-        "  source TEXT NOT NULL, undone_at INTEGER, undo_note TEXT);"
-        "CREATE TABLE IF NOT EXISTS changes ("
-        "  set_id INTEGER NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,"
-        "  object_id TEXT NOT NULL, folder INTEGER NOT NULL,"
-        "  name_before TEXT NOT NULL, name_after TEXT NOT NULL,"
-        "  parent_before TEXT NOT NULL, parent_after TEXT NOT NULL, chain TEXT NOT NULL,"
-        "  undone_at INTEGER);"
-        "CREATE INDEX IF NOT EXISTS changes_set ON changes(set_id);"
-        "CREATE INDEX IF NOT EXISTS changes_object ON changes(object_id);"
-        "CREATE TABLE IF NOT EXISTS snapshots ("
-        "  id INTEGER PRIMARY KEY, at INTEGER NOT NULL, reason TEXT NOT NULL,"
-        "  items INTEGER NOT NULL, folders INTEGER NOT NULL,"
-        "  capture_ms INTEGER NOT NULL, write_ms INTEGER NOT NULL,"
-        "  partial INTEGER NOT NULL DEFAULT 0);"
-        // One row per object per stretch of snapshots in which it did not
-        // change: valid for from_snap <= S < to_snap (to_snap NULL = still).
-        // An unchanged inventory therefore costs one snapshots row.
-        "CREATE TABLE IF NOT EXISTS nodes ("
-        "  id TEXT NOT NULL, folder INTEGER NOT NULL, parent TEXT NOT NULL,"
-        "  name TEXT NOT NULL, from_snap INTEGER NOT NULL, to_snap INTEGER);"
-        "CREATE INDEX IF NOT EXISTS nodes_open ON nodes(to_snap);";
-
-    // Kept: a week of snapshots, at most ten, and never fewer than the three
-    // newest whatever their age. Change sets: thirty days.
-    const S64 SNAP_KEEP_SECONDS = 7 * 24 * 3600;
-    const int SNAP_KEEP_MAX = 10;
-    const int SNAP_KEEP_MIN = 3;
-    const S64 SET_KEEP_SECONDS = 30 * 24 * 3600;
+    // How long a claim waits for the change it announced. A rename under
+    // load can take a while to come back.
+    const F64 CLAIM_KEEPS = 300.0;
 
     // Above this many steps a run is paced in a coroutine rather than done in
     // the call: thousands of moves in one frame are thousands of requests to
@@ -122,123 +94,12 @@ namespace
     // A reply carries at most this many names per list, with the full count.
     const S32 LIST_CAP = 30;
 
+    // How many things the question names, and how many it leaves to "and N more".
+    const S32 SHOWN = 5;
+
     // <Lumen> How long an undo waits for a folder it asked Second Life to make
     // again before it reports without it; the same as a bulk run waits.
     const F64 FOLDER_WAIT = 30.0;
-
-    // <Lumen> How long a restore's plan is the one its Yes runs: a question
-    // stays up ten minutes, and its Yes is kept two more.
-    const F64 PLAN_KEEPS = 12.0 * 60.0;
-
-    // <Lumen> How long a reply waits for the record to be written before it
-    // says so instead. A snapshot of 65,000 items is written in under a tenth
-    // of a second; this is for a slow disk, not the usual case.
-    const F32 FLUSH_SECONDS = 2.f;
-
-    // <Lumen> Held by another viewer: ask again this often.
-    const F64 LOCK_RETRY = 15.0;
-
-    std::string whenText(S64 t)
-    {
-        if (t <= 0) return std::string();
-        time_t tt = (time_t)t;
-        std::tm lt{};
-#if LL_WINDOWS
-        localtime_s(&lt, &tt);
-#else
-        localtime_r(&tt, &lt);
-#endif
-        char buf[32];
-        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &lt);
-        return buf;
-    }
-
-    std::string col(sqlite3_stmt* st, int i)
-    {
-        const unsigned char* t = sqlite3_column_text(st, i);
-        return t ? std::string(reinterpret_cast<const char*>(t)) : std::string();
-    }
-
-    void bindText(sqlite3_stmt* st, int i, const std::string& s)
-    {
-        sqlite3_bind_text(st, i, s.c_str(), (int)s.size(), SQLITE_TRANSIENT);
-    }
-
-    /**
-     * Run a prepared statement one step; say so in the log when it fails.
-     * <Lumen> And say so to the caller: a write that is not checked is how a
-     * failed insert once went unnoticed, and how a snapshot could be
-     * committed half written.
-     */
-    bool stepDone(sqlite3* db, sqlite3_stmt* st, const char* what)
-    {
-        const int rc = sqlite3_step(st);
-        if (rc != SQLITE_DONE && rc != SQLITE_ROW)
-        {
-            LL_WARNS("LumenAIUndo") << what << " failed: " << sqlite3_errmsg(db) << LL_ENDL;
-            return false;
-        }
-        return true;
-    }
-
-    bool prepared(sqlite3* db, const char* sql, sqlite3_stmt** st)
-    {
-        if (sqlite3_prepare_v2(db, sql, -1, st, nullptr) == SQLITE_OK) return true;
-        LL_WARNS("LumenAIUndo") << "cannot prepare: " << sqlite3_errmsg(db) << " -- " << sql << LL_ENDL;
-        *st = nullptr;
-        return false;
-    }
-
-    bool execOn(sqlite3* db, const char* sql)
-    {
-        char* err = nullptr;
-        if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK)
-        {
-            LL_WARNS("LumenAIUndo") << "SQL failed: " << (err ? err : "(no message)") << LL_ENDL;
-            if (err) sqlite3_free(err);
-            return false;
-        }
-        return true;
-    }
-
-    // <Lumen>
-    /**
-     * End a transaction: COMMIT when everything in it went, ROLLBACK when
-     * anything did not -- or when the COMMIT itself fails, which leaves the
-     * transaction open, so that every later write would have gone into it and
-     * been lost with it. Never left open either way.
-     */
-    bool finishTransaction(sqlite3* db, bool ok, const char* what)
-    {
-        if (ok) ok = execOn(db, "COMMIT;");
-        if (!ok)
-        {
-            LL_WARNS("LumenAIUndo") << what << ": not written, rolled back" << LL_ENDL;
-            if (!sqlite3_get_autocommit(db)) execOn(db, "ROLLBACK;");
-        }
-        return ok;
-    }
-
-    /** Does this error say the FILE is damaged -- not busy, full or read-only? */
-    bool corruptCode(int rc)
-    {
-        rc &= 0xff;   // the primary code, from an extended one
-        return rc == SQLITE_CORRUPT || rc == SQLITE_NOTADB;
-    }
-
-    bool hasColumn(sqlite3* db, const char* table, const char* column)
-    {
-        bool found = false;
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db, llformat("PRAGMA table_info(%s);", table).c_str(), -1, &st, nullptr)
-            == SQLITE_OK)
-        {
-            while (!found && sqlite3_step(st) == SQLITE_ROW) found = col(st, 1) == column;
-            sqlite3_finalize(st);
-        }
-        return found;
-    }
-    // </Lumen>
 
     // ---- the inventory as it is now -----------------------------------------
 
@@ -266,7 +127,7 @@ namespace
         // <Lumen> Once a frame: the viewer finds it by scanning the top of the
         // inventory, and a plan asks for every thing it looks at -- with
         // thousands of product folders delivered to the top, that was most of
-        // a restore's plan.
+        // an undo's plan.
         static LLUUID trash;
         static U32 frame = 0;
         const U32 now = LLFrameTimer::getFrameCount();
@@ -332,48 +193,6 @@ namespace
     }
 
     // <Lumen>
-    /**
-     * Something the record names is not in the inventory: is it gone, or not
-     * loaded yet? The viewer only knows what it has loaded, and a folder whose
-     * cached copy is out of date is EMPTY until it is fetched again -- after a
-     * crash that is the Trash, exactly when somebody asks to undo a delete.
-     * Gone only when everything has been fetched and the folder it should be in
-     * is whole; while either is still arriving it is not loaded yet, and that
-     * folder is asked for. A folder still not whole once its load has settled
-     * is said as not known, never as gone.
-     */
-    enum Missing { GONE, NOT_LOADED, NOT_KNOWN };
-    const F64 FETCH_SETTLE = 20.0;    // how long a folder's load may take before it is said
-    const F64 FETCH_ASK_AGAIN = 300.0;
-    std::map<LLUUID, F64> sFetchAsked;   // folder -> when its load was asked for
-
-    Missing whyMissing(const LLUUID& where)
-    {
-        LLInventoryModelBackgroundFetch& fetch = LLInventoryModelBackgroundFetch::instance();
-        const bool everything = fetch.isEverythingFetched();
-        const bool whole = where.isNull() || !gInventory.getCategory(where)
-                        || gInventory.isCategoryComplete(where);
-        if (everything && whole) return GONE;
-        if (whole) return NOT_LOADED;   // the inventory is still arriving: it may be elsewhere
-        const F64 now = LLTimer::getTotalSeconds();
-        F64& asked = sFetchAsked[where];
-        if (asked == 0.0 || now - asked > FETCH_ASK_AGAIN)
-        {
-            asked = now;
-            fetch.start(where, true);
-            return NOT_LOADED;
-        }
-        if (!everything || now - asked < FETCH_SETTLE || fetch.folderFetchActive()) return NOT_LOADED;
-        return NOT_KNOWN;
-    }
-
-    const char* const NOT_LOADED_YET =
-        "not loaded yet -- the viewer is still loading the inventory from Second Life, so it was "
-        "not put back";
-    const char* const NOT_KNOWN_IF_THERE =
-        "the viewer could not load the folder it should be in from Second Life, so whether it is "
-        "still there is not known";
-
     /** Logged out -- or disconnected, the viewer still open behind its message. */
     bool offline()
     {
@@ -381,6 +200,7 @@ namespace
     }
     // </Lumen>
 }
+
 
 // =============================================================================
 // <Lumen> The rules: what the assistant may move, rename, or put somewhere.
@@ -641,36 +461,6 @@ std::string LumenInventoryRules::notNamed(const LLUUID& parent, const std::strin
 // Chain: where a folder sat, by id and by name, so it can be made again.
 // =============================================================================
 
-std::string LumenAIUndo::Chain::serialise() const
-{
-    std::string out;
-    for (const auto& f : folders)
-    {
-        std::string n = f.second;
-        for (char& ch : n) if (ch == '\t' || ch == '\n') ch = ' ';
-        out += f.first.asString() + "\t" + n + "\n";
-    }
-    return out;
-}
-
-LumenAIUndo::Chain LumenAIUndo::Chain::parse(const std::string& text)
-{
-    Chain c;
-    size_t start = 0;
-    while (start < text.size())
-    {
-        size_t end = text.find('\n', start);
-        if (end == std::string::npos) end = text.size();
-        const std::string line = text.substr(start, end - start);
-        const size_t tab = line.find('\t');
-        if (tab != std::string::npos)
-        {
-            c.folders.emplace_back(LLUUID(line.substr(0, tab)), line.substr(tab + 1));
-        }
-        start = end + 1;
-    }
-    return c;
-}
 
 LumenAIUndo::Chain LumenAIUndo::Chain::of(const LLUUID& folder_id)
 {
@@ -687,6 +477,7 @@ LumenAIUndo::Chain LumenAIUndo::Chain::of(const LLUUID& folder_id)
     std::reverse(c.folders.begin(), c.folders.end());
     return c;
 }
+
 
 // =============================================================================
 // Making a folder again, when the one something came from is gone.
@@ -777,7 +568,7 @@ struct LumenAIUndo::Step
     Chain chain;           // MOVE: how to make it again if not
     std::string name;      // RENAME: the name it gets back
     std::string label;     // its name as the person knows it
-    S64 row = 0;           // <Lumen> undo: the change it reverses, marked once done
+    S64 row = 0;           // <Lumen> the change it reverses (its index + 1), marked once done
     // <Lumen> How the plan saw it: where it was, for a step that moves it,
     // and its name, for a rename. Changed by the time the step comes -- by
     // hand, or by move_item while a long one is still going -- and it is left
@@ -785,6 +576,10 @@ struct LumenAIUndo::Step
     // changes, so a rename and a move of one thing never trip each other.
     LLUUID expect_parent;
     std::string expect_name;
+    // <Lumen> TRASH of a folder made then: only if it is empty by the time
+    // everything else has moved out of it. A folder the person deleted,
+    // deleted again by a redo, goes whole.
+    bool only_empty = false;
 };
 
 struct LumenAIUndo::Plan
@@ -792,17 +587,13 @@ struct LumenAIUndo::Plan
     std::vector<Step> steps;
     LLSD left_alone = LLSD::emptyArray();
     LLSD cannot = LLSD::emptyArray();
-    LLSD refused = LLSD::emptyArray();   // <Lumen> restore: held where it is by the rules
-    LLSD not_yet = LLSD::emptyArray();   // <Lumen> not loaded yet, or a rename not confirmed yet
+    LLSD not_yet = LLSD::emptyArray();   // <Lumen> a rename Second Life has not confirmed yet
     S32 left_alone_count = 0;
     S32 cannot_count = 0;
-    S32 refused_count = 0;               // <Lumen>
-    S32 not_yet_count = 0;               // <Lumen> while above 0 an undo's set is not marked
-    S32 earlier = 0;                     // <Lumen> undo: put back by an earlier undo of the set
-    bool again = false;                  // <Lumen> undo: the set was undone before
-    bool partial = false;                // <Lumen> restore: not a snapshot of all of it
-    S64 set_id = 0;
-    S64 snap_id = 0;
+    S32 not_yet_count = 0;
+    std::vector<S64> already;            // changes already as they would be put: done, nothing to do
+    S64 step_id = 0;
+    bool redo = false;
 };
 
 namespace
@@ -822,7 +613,7 @@ namespace
         bool reported = false;
         bool in_call = false;  // <Lumen> run() has not answered yet
         bool gave_up = false;  // <Lumen> stopped waiting for folders to be made again
-        // <Lumen> Stop in the history window, or Clear: asked between steps.
+        // <Lumen> Clear in the Assistant window: asked between steps.
         bool stop = false;
         bool stopped_by_user = false;
         bool stopped = false;  // <Lumen> logged out part way
@@ -968,6 +759,7 @@ namespace
         // <Lumen> The rules every path shares: move_item's, a batch's, this.
         why = LumenInventoryRules::notMove(id, folder, target, rule);
         if (!why.empty()) return false;
+        LumenAIUndo::instance().claimParent(id, target);   // <Lumen> not the person's
         if (folder)
         {
             LLViewerInventoryCategory* c = gInventory.getCategory(id);
@@ -1018,6 +810,7 @@ namespace
             ++st->outstanding;
             ++st->renames_waiting;
             LumenAIUndo::instance().renameSent(s.id);
+            LumenAIUndo::instance().claimName(s.id, s.name);   // <Lumen> not the person's
             std::shared_ptr<RunState> keep = st;
             const LumenAIUndo::Step step = s;
             LLPointer<LLInventoryCallback> answered = new LLBoostFuncInventoryCallback(
@@ -1056,7 +849,7 @@ namespace
             // <Lumen> The shared rules for anything going to the Trash.
             why = LumenInventoryRules::notDelete(s.id, s.folder, &rule);
             if (!why.empty()) break;
-            if (s.folder)
+            if (s.folder && s.only_empty)
             {
                 // <Lumen> Checked again now, on the viewer's own model, after
                 // every move out of it has finished. The plan counted it
@@ -1078,11 +871,15 @@ namespace
                     return;
                 }
                 // </Lumen>
+            }
+            if (s.folder)
+            {
                 if (!get_is_category_removable(&gInventory, s.id))
                 {
                     why = "the viewer does not allow removing that folder";
                     break;
                 }
+                LumenAIUndo::instance().claimParent(s.id, trashId());   // <Lumen> not the person's
                 gInventory.removeCategory(s.id);
             }
             else
@@ -1092,11 +889,12 @@ namespace
                     why = "the viewer does not allow removing it";
                     break;
                 }
+                LumenAIUndo::instance().claimParent(s.id, trashId());   // <Lumen> not the person's
                 gInventory.removeItem(s.id);
             }
             if (!inTrash(s.id)) { why = "the viewer did not move it to the Trash"; break; }
-            st->didIt(s, s.folder ? "the folder it made, now empty, moved to the Trash"
-                                  : "moved back to the Trash");
+            st->didIt(s, s.only_empty ? "the folder made then, now empty, moved to the Trash"
+                                      : "moved to the Trash");
             return;
         }
         case LumenAIUndo::Step::MOVE:
@@ -1166,32 +964,7 @@ namespace
     }
 }
 
-// <Lumen> A long undo or restore says it has finished where the person asked
-// for it: in the Assistant window, once the turn that started it has ended (a
-// note in the middle of the assistant's own reply would read as part of it),
-// as a bulk run does. A notice when that window is not on screen.
-namespace
-{
-    void announce(const std::string& line)
-    {
-        LLCoros::instance().launch("LumenAIUndoSays", [line]()
-        {
-            const F64 give_up = LLTimer::getTotalSeconds() + 60.0;
-            while (LumenAIChatFloater::turnRunning() && LLTimer::getTotalSeconds() < give_up)
-            {
-                if (LLApp::isExiting()) return;
-                llcoro::suspendUntilTimeout(0.5f);
-            }
-            if (!LumenAIChatFloater::postFromViewer(std::string(), line))
-            {
-                LLSD args; args["MESSAGE"] = line;
-                LLNotificationsUtil::add("SystemMessageTip", args);
-            }
-        });
-    }
-}
-
-// <Lumen> How many undos and restores are still putting things back. Emptying
+// <Lumen> How many undos and redos are still putting things back. Emptying
 // the Trash waits for none: it would purge what they are taking out of it.
 // <Lumen> And the runs themselves, for Stop and Clear to reach.
 namespace
@@ -1233,18 +1006,13 @@ LLSD LumenAIUndo::run(Plan& plan, const Finished& finished)
     steps.reserve(plan.steps.size());
     for (const Step& s : plan.steps)
     {
-        if (s.kind == Step::TRASH && s.folder) st->folder_steps.push_back(s);
+        if (s.kind == Step::TRASH && s.folder && s.only_empty) st->folder_steps.push_back(s);
         else steps.push_back(s);
     }
 
     LLSD out;
     out["cannot"] = plan.cannot;
     out["cannot_count"] = plan.cannot_count;
-    if (plan.refused_count > 0)
-    {
-        out["refused"] = plan.refused;
-        out["refused_count"] = plan.refused_count;
-    }
     out["steps"] = (S32)plan.steps.size();
 
     if (steps.size() <= RUN_NOW_LIMIT)
@@ -1327,9 +1095,94 @@ LLSD LumenAIUndo::run(Plan& plan, const Finished& finished)
     return out;
 }
 
+
 // =============================================================================
-// The file, and the thread that writes it
+// The list: steps, and the changes in each
 // =============================================================================
+
+struct LumenAIUndo::Change
+{
+    enum Kind { MOVE, RENAME, TRASH, NEW_FOLDER } kind = MOVE;
+    LLUUID id;
+    bool folder = false;
+    LLUUID parent_before, parent_after;
+    std::string name_before, name_after;
+    Chain chain_before, chain_after;   // where those folders sat, to make one again
+    bool undone = false;   // put back by the last undo of its step: a redo does these
+    bool gone = false;     // emptied from the Trash, given away or rezzed
+};
+
+struct LumenAIUndo::Entry
+{
+    S64 id = 0;
+    bool assistant = false;
+    std::string words;     // the person's request, for the assistant's
+    std::string what;      // a bulk run's own line
+    std::vector<Change> changes;
+    std::unordered_map<LLUUID, size_t> last;   // each thing's latest change here
+    F64 when = 0.0;        // its latest change
+    bool stopped = false;  // a bulk run that stopped part way
+};
+
+namespace
+{
+    // The inventory's own news, looked at once a frame rather than inside
+    // the notification: by then the tool that made a change has said so.
+    class UndoObserver : public LLInventoryObserver
+    {
+    public:
+        void changed(U32 mask) override
+        {
+            if (LumenAIUndo::instanceExists())
+                LumenAIUndo::instance().observed(gInventory.getChangedIDs());
+        }
+    };
+
+    void undoIdle(void*)
+    {
+        if (LLApp::isExiting()) return;
+        if (LLStartUp::getStartupState() < STATE_STARTED) return;
+        LumenAIUndo::instance().tick();
+    }
+
+    void toast(const std::string& line)
+    {
+        LLSD args;
+        args["MESSAGE"] = line;
+        LLNotificationsUtil::add("LumenUndoDone", args);
+    }
+
+    std::string countOf(S32 items, S32 folders)
+    {
+        auto one = [](S32 n, const char* what) -> std::string
+        {
+            return n == 1 ? llformat("1 %s", what) : llformat("%d %ss", n, what);
+        };
+        if (folders == 0) return one(items, "item");
+        if (items == 0) return one(folders, "folder");
+        return one(items, "item") + " and " + one(folders, "folder");
+    }
+
+    /** A folder as the question names it: its own name, short. */
+    std::string folderName(const LLUUID& id)
+    {
+        if (id.isNull()) return "?";
+        if (id == gInventory.getRootFolderID()) return "the top of the inventory";
+        if (id == trashId()) return "Trash";
+        const std::string n = nameOf(id);
+        return n.empty() ? std::string("a folder that is gone") : n;
+    }
+
+    std::string lastName(const LumenAIUndo::Chain& chain, const LLUUID& id)
+    {
+        if (!chain.folders.empty() && chain.folders.back().first == id) return chain.folders.back().second;
+        return folderName(id);
+    }
+
+    std::string quoted(const std::string& s) { return "\"" + s + "\""; }
+
+    const S32 MENU_LABEL_MAX = 64;
+}
 
 LumenAIUndo::LumenAIUndo()
 {
@@ -1337,521 +1190,468 @@ LumenAIUndo::LumenAIUndo()
 
 LumenAIUndo::~LumenAIUndo()
 {
-    stopWorker();
-    close();
-    unlockRecord();
-}
-
-void LumenAIUndo::close()
-{
-    if (mRead)
+    if (mObserver)
     {
-        sqlite3_close(mRead);
-        mRead = nullptr;
+        if (gInventory.containsObserver(mObserver)) gInventory.removeObserver(mObserver);
+        delete mObserver;
+        mObserver = nullptr;
     }
 }
 
-bool LumenAIUndo::available()
+// static
+void LumenAIUndo::registerMenu()
 {
-    return ensureOpen();
-}
+    static bool done = false;
+    if (done) return;
+    done = true;
 
-bool LumenAIUndo::ensureOpen()
-{
-    if (mRead) return true;
-    // <Lumen> Tried once a login -- except when it could not be had for now
-    // (another viewer holding it, a busy disk), which is asked again now and
-    // then: that viewer may have been closed since.
-    if (mTried && (mRetryAt <= 0.0 || LLTimer::getTotalSeconds() < mRetryAt)) return false;
-    // The account's own folder is set at login; before that there is nobody
-    // whose inventory this would be.
-    if (gDirUtilp->getLindenUserDir().empty() || !gInventory.isInventoryUsable())
+    auto ask = [](bool redo)
     {
-        mWhyUnavailable = "the inventory has not loaded yet";
-        return false;
-    }
-    mTried = true;
-    mRetryAt = 0.0;
-    mWhyUnavailable.clear();
-    return open();
-}
-
-// <Lumen>
-bool LumenAIUndo::lockRecord()
-{
-    if (mLock) return true;
-    const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, LOCK_FILE);
-    if (sqlite3_open_v2(path.c_str(), &mLock, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK)
-    {
-        LL_WARNS("LumenAIUndo") << "cannot open " << path << ": "
-                                << (mLock ? sqlite3_errmsg(mLock) : "?") << LL_ENDL;
-        unlockRecord();
-        mWhyUnavailable = "its lock file could not be opened";
-        return false;
-    }
-    // Two viewers on one account would both number their change sets from
-    // the same MAX(id), and each undo the other's. So the record is held: an
-    // exclusive transaction on a file of its own, never committed. The
-    // operating system keeps that lock while this connection is open and lets
-    // go when the viewer quits or dies, so a crash leaves nothing stale
-    // behind. Nothing is written, so no journal. A second viewer is told
-    // SQLITE_BUSY at once -- there is no busy timeout on this connection.
-    char* err = nullptr;
-    const int rc = sqlite3_exec(mLock, "PRAGMA journal_mode=OFF; BEGIN EXCLUSIVE;", nullptr, nullptr, &err);
-    if (rc != SQLITE_OK)
-    {
-        const int code = rc & 0xff;
-        LL_WARNS("LumenAIUndo") << "the inventory record is not ours to use: "
-                                << (err ? err : "(no message)") << LL_ENDL;
-        if (err) sqlite3_free(err);
-        unlockRecord();
-        if (code == SQLITE_BUSY || code == SQLITE_LOCKED)
+        if (!LumenAIUndo::instanceExists()) return;
+        LumenAIUndo& u = LumenAIUndo::instance();
+        LLSD pv = u.preview(redo);
+        if (pv.has("error"))
         {
-            mWhyUnavailable = "another Lumen on this computer, logged in as this avatar, is using it "
-                              "-- it is free again once that one is closed";
-            mRetryAt = LLTimer::getTotalSeconds() + LOCK_RETRY;
+            toast(pv["error"].asString());
+            return;
         }
-        else
+        if (pv["nothing"].asBoolean())
         {
-            mWhyUnavailable = "its lock file could not be used";
+            // Nothing in it can be put back: it is not offered again.
+            u.perform(redo, pv["step"].asInteger());
+            return;
         }
-        return false;
-    }
-    return true;
-}
-
-void LumenAIUndo::unlockRecord()
-{
-    if (mLock)
-    {
-        sqlite3_close(mLock);   // the open transaction is rolled back, and the lock goes with it
-        mLock = nullptr;
-    }
-}
-
-LumenAIUndo::OpenResult LumenAIUndo::openFile()
-{
-    // Only an error that says the FILE is damaged sets it aside. Busy, full,
-    // read-only or an I/O error is the computer's state, not the record's:
-    // the record is left where it is and asked for again later.
-    auto failed = [this](const char* what, int code) -> OpenResult
-    {
-        LL_WARNS("LumenAIUndo") << what << " failed on " << mPath << ": "
-                                << (mRead ? sqlite3_errmsg(mRead) : "?") << LL_ENDL;
-        return corruptCode(code) ? BAD_FILE : NOT_NOW;
+        LLSD subs;
+        subs["STEP"] = pv["name"];
+        subs["TEXT"] = pv["text"];
+        LLSD payload;
+        payload["step"] = pv["step"];
+        payload["redo"] = redo;
+        LLNotificationsUtil::add(redo ? "LumenAskRedo" : "LumenAskUndo", subs, payload,
+            [](const LLSD& n, const LLSD& r)
+            {
+                if (LLNotificationsUtil::getSelectedOption(n, r) != 0) return;
+                if (!LumenAIUndo::instanceExists()) return;
+                const LLSD out = LumenAIUndo::instance().perform(n["payload"]["redo"].asBoolean(),
+                                                                 n["payload"]["step"].asInteger());
+                if (out.has("error")) toast(out["error"].asString());
+            });
     };
-
-    const int rc = sqlite3_open_v2(mPath.c_str(), &mRead, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
-    if (rc != SQLITE_OK)
+    auto label = [](LLUICtrl* ctrl, bool redo) -> bool
     {
-        const OpenResult r = failed("opening the record", rc);
-        close();
-        return r;
-    }
-    sqlite3_busy_timeout(mRead, 3000);
-
-    // The whole file is read, once a login, here on the main thread. Measured
-    // at 8 ms for a record of 65,000 items (8.4 MB). It stays here because the
-    // writer thread could only check it after this thread had already read
-    // and changed the file -- the WAL switch, the schema, the migration --
-    // and a damaged file found that late would leave the first changes of
-    // the login half in one file and half in the next.
-    {
-        LLTimer t;
-        sqlite3_stmt* st = nullptr;
-        int step = sqlite3_prepare_v2(mRead, "PRAGMA quick_check;", -1, &st, nullptr);
-        std::string verdict;
-        if (step == SQLITE_OK)
-        {
-            step = sqlite3_step(st);
-            if (step == SQLITE_ROW) verdict = col(st, 0);
-            sqlite3_finalize(st);
-        }
-        if (step != SQLITE_ROW) return failed("checking the record", step);
-        LL_INFOS("LumenAIUndo") << "record checked in " << (S32)(t.getElapsedTimeF32() * 1000.f)
-                                << " ms" << LL_ENDL;
-        if (verdict != "ok")
-        {
-            LL_WARNS("LumenAIUndo") << "the record failed its check: " << verdict << LL_ENDL;
-            return BAD_FILE;
-        }
-    }
-    if (!execOn(mRead, "PRAGMA journal_mode=WAL;")) return failed("WAL", sqlite3_errcode(mRead));
-
-    // Is this file from a shape we know? Asked before anything in it changes.
-    S32 version = 0;
-    {
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(mRead, "SELECT v FROM meta WHERE k='schema';", -1, &st, nullptr) == SQLITE_OK)
-        {
-            if (sqlite3_step(st) == SQLITE_ROW) version = atoi(col(st, 0).c_str());
-            sqlite3_finalize(st);
-        }
-        else if (corruptCode(sqlite3_errcode(mRead)))
-        {
-            return failed("reading the record's version", sqlite3_errcode(mRead));
-        }
-        // Otherwise there is no meta table yet: a new file.
-    }
-    if (version > SCHEMA_VERSION)
-    {
-        // Written by a newer Lumen. Reading it might misread it; leave it be.
-        LL_WARNS("LumenAIUndo") << "the inventory record is from a newer version ("
-                                << version << "); not used" << LL_ENDL;
-        return TOO_NEW;
-    }
-
-    if (!execOn(mRead, SCHEMA)) return failed("the schema", sqlite3_errcode(mRead));
-
-    // Version 1 to 2: two columns, added where they are missing (a new file
-    // has them from the schema above), in one transaction with the version.
-    if (version < SCHEMA_VERSION)
-    {
-        bool ok = execOn(mRead, "BEGIN;");
-        if (ok && !hasColumn(mRead, "changes", "undone_at"))
-        {
-            // An undo that version 1 recorded counted as whole, so it reads as whole.
-            ok = execOn(mRead, "ALTER TABLE changes ADD COLUMN undone_at INTEGER;")
-              && execOn(mRead, "UPDATE changes SET undone_at=(SELECT s.undone_at FROM sets s "
-                               "WHERE s.id=changes.set_id) WHERE set_id IN "
-                               "(SELECT id FROM sets WHERE undone_at IS NOT NULL);");
-        }
-        if (ok && !hasColumn(mRead, "snapshots", "partial"))
-        {
-            ok = execOn(mRead, "ALTER TABLE snapshots ADD COLUMN partial INTEGER NOT NULL DEFAULT 0;");
-        }
-        if (ok)
-        {
-            ok = execOn(mRead, llformat("INSERT OR REPLACE INTO meta VALUES('schema','%d');",
-                                        SCHEMA_VERSION).c_str());
-        }
-        const int code = ok ? SQLITE_OK : sqlite3_errcode(mRead);
-        if (!finishTransaction(mRead, ok, "bringing the record up to date"))
-        {
-            return failed("bringing the record up to date", code);
-        }
-        if (version > 0)
-        {
-            LL_INFOS("LumenAIUndo") << "inventory record brought from version " << version << " to "
-                                    << SCHEMA_VERSION << LL_ENDL;
-        }
-    }
-    return OPENED;
-}
-
-void LumenAIUndo::setAside()
-{
-    // Not a cache: never delete it. Put it aside where it can still be
-    // looked at, and start a new one.
-    const std::string aside = mPath + ".set-aside-" + llformat("%lld", (long long)time(nullptr));
-    LL_WARNS("LumenAIUndo") << "the inventory record is damaged; kept as " << aside
-                            << " and a new one started" << LL_ENDL;
-    LLFile::rename(mPath, aside);
-    LLFile::rename(mPath + "-wal", aside + "-wal");
-    LLFile::rename(mPath + "-shm", aside + "-shm");
-}
-// </Lumen>
-
-bool LumenAIUndo::open()
-{
-    mPath = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, UNDO_FILE);
-    if (!lockRecord()) return false;   // <Lumen>
-
-    // <Lumen> Set aside only a damaged file, and only once: a new file that
-    // fails too is the computer's trouble, not the record's.
-    OpenResult r = openFile();
-    if (r == BAD_FILE)
-    {
-        close();
-        setAside();
-        r = openFile();
-    }
-    if (r != OPENED)
-    {
-        close();
-        unlockRecord();
-        if (r == TOO_NEW)
-        {
-            mWhyUnavailable = "it was written by a newer version of Lumen";
-        }
-        else if (r == BAD_FILE)
-        {
-            mWhyUnavailable = "it was damaged, and a new one could not be started";
-        }
-        else
-        {
-            mWhyUnavailable = "its file could not be opened for now (a busy, full or read-only disk)";
-            mRetryAt = LLTimer::getTotalSeconds() + LOCK_RETRY;
-        }
-        return false;
-    }
-    // </Lumen>
-
-    auto maxOf = [this](const char* sql) -> S64
-    {
-        S64 v = 0;
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(mRead, sql, -1, &st, nullptr) == SQLITE_OK)
-        {
-            if (sqlite3_step(st) == SQLITE_ROW) v = sqlite3_column_int64(st, 0);
-            sqlite3_finalize(st);
-        }
-        return v;
+        const bool there = LumenAIUndo::instanceExists();
+        if (LLMenuItemGL* item = dynamic_cast<LLMenuItemGL*>(ctrl))
+            item->setLabel(there ? LumenAIUndo::instance().menuLabel(redo)
+                                 : std::string(redo ? "Redo" : "Undo"));
+        return there && LumenAIUndo::instance().canUndo(redo);
     };
-    // Safe to number from here only because the record is held: no other
-    // viewer is numbering from the same place.
-    mNextSet  = maxOf("SELECT IFNULL(MAX(id),0) FROM sets;") + 1;
-    mNextSnap = maxOf("SELECT IFNULL(MAX(id),0) FROM snapshots;") + 1;
+    LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Lumen.Inventory.Undo",
+        [ask](LLUICtrl*, const LLSD&) { ask(false); });
+    LLUICtrl::CommitCallbackRegistry::defaultRegistrar().add("Lumen.Inventory.Redo",
+        [ask](LLUICtrl*, const LLSD&) { ask(true); });
+    LLUICtrl::EnableCallbackRegistry::defaultRegistrar().add("Lumen.Inventory.UndoEnable",
+        [label](LLUICtrl* c, const LLSD&) { return label(c, false); });
+    LLUICtrl::EnableCallbackRegistry::defaultRegistrar().add("Lumen.Inventory.RedoEnable",
+        [label](LLUICtrl* c, const LLSD&) { return label(c, true); });
 
-    startWorker();
-    LL_INFOS("LumenAIUndo") << "inventory record open: " << mPath << LL_ENDL;
-    return true;
-}
-
-void LumenAIUndo::startWorker()
-{
-    const std::string path = mPath;
-    mStop = false;
-    mWorker = std::thread([this, path]()
-    {
-        sqlite3* db = nullptr;
-        if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK)
-        {
-            LL_WARNS("LumenAIUndo") << "the writer could not open the record" << LL_ENDL;
-            if (db) sqlite3_close(db);
-            db = nullptr;
-        }
-        else
-        {
-            sqlite3_busy_timeout(db, 10000);
-            // <Lumen> Each change is its own small write, and a bulk run makes
-            // eighty a second. FULL flushed the disk on every one of them (the
-            // Windows build's default), which a slow disk could not keep up
-            // with -- and every reply that waits for the record then waited
-            // its whole limit. In WAL mode NORMAL is still safe if the viewer
-            // crashes; only a power cut can lose the last moment's writes.
-            execOn(db, "PRAGMA synchronous=NORMAL;");
-        }
-        for (;;)
-        {
-            std::function<void(sqlite3*)> job;
-            {
-                std::unique_lock<std::mutex> lock(mMutex);
-                mWake.wait(lock, [this] { return mStop || !mJobs.empty(); });
-                if (mJobs.empty())
-                {
-                    if (mStop) break;
-                    continue;
-                }
-                job = std::move(mJobs.front());
-                mJobs.pop_front();
-                mWorking = true;
-            }
-            if (db)
-            {
-                job(db);
-                // <Lumen> No job leaves a transaction open: one that did
-                // would take every later write into it, and lose them with it.
-                if (!sqlite3_get_autocommit(db))
-                {
-                    LL_WARNS("LumenAIUndo") << "a write left its transaction open; rolled back" << LL_ENDL;
-                    execOn(db, "ROLLBACK;");
-                }
-            }
-            {
-                std::lock_guard<std::mutex> lock(mMutex);
-                mWorking = false;
-                if (mJobs.empty()) mIdle.notify_all();
-            }
-        }
-        if (db) sqlite3_close(db);
-    });
-}
-
-void LumenAIUndo::stopWorker()
-{
-    if (!mWorker.joinable()) return;
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mStop = true;
-    }
-    mWake.notify_all();
-    mWorker.join();   // what was posted is written first
-}
-
-void LumenAIUndo::post(std::function<void(sqlite3*)> job)
-{
-    {
-        std::lock_guard<std::mutex> lock(mMutex);
-        mJobs.push_back(std::move(job));
-    }
-    mWake.notify_one();
-}
-
-bool LumenAIUndo::flush()
-{
-    // Bounded: a snapshot being written takes a fraction of a second, and a
-    // reply that would wait longer than this says so instead.
-    LLTimer t;
-    bool settled = false;
-    {
-        std::unique_lock<std::mutex> lock(mMutex);
-        settled = mIdle.wait_for(lock, std::chrono::milliseconds((S64)(FLUSH_SECONDS * 1000.f)),
-                                 [this] { return mJobs.empty() && !mWorking; });
-    }
-    // <Lumen> Said in the log when it is felt, so a slow disk can be seen.
-    const S32 ms = (S32)(t.getElapsedTimeF32() * 1000.f);
-    if (ms > 20 || !settled)
-    {
-        LL_INFOS("LumenAIUndo") << "waited " << ms << " ms for the record to be written"
-                                << (settled ? "" : ", and stopped waiting") << LL_ENDL;
-    }
-    return settled;
-}
-
-void LumenAIUndo::changed()
-{
-    // Called from the writer thread too, so it only raises a flag; the window
-    // reads the record again on the main thread when it next draws.
-    mDirty = true;
+    gIdleCallbacks.addFunction(undoIdle, nullptr);
 }
 
 // =============================================================================
-// Recording
+// Watching the inventory
+// =============================================================================
+
+void LumenAIUndo::startWatching()
+{
+    // A login: the list starts empty.
+    mUndo.clear();
+    mRedo.clear();
+    mBusy.reset();
+    mKnown.clear();
+    mClaims.clear();
+    mPending.clear();
+    mTrashedFrom.clear();
+    mRequestStep = 0;
+
+    const F64 t0 = LLTimer::getTotalSeconds();
+    LLInventoryModel::cat_array_t cats;
+    LLInventoryModel::item_array_t items;
+    gInventory.collectDescendents(gInventory.getRootFolderID(), cats, items, LLInventoryModel::INCLUDE_TRASH);
+    mKnown.reserve(cats.size() + items.size() + 4096);
+    for (const LLPointer<LLViewerInventoryCategory>& c : cats)
+        if (c) mKnown[c->getUUID()] = Known{ c->getParentUUID(), c->getName() };
+    for (const LLPointer<LLViewerInventoryItem>& i : items)
+        if (i) mKnown[i->getUUID()] = Known{ i->getParentUUID(), i->getName() };
+
+    if (!mObserver) mObserver = new UndoObserver();
+    if (!gInventory.containsObserver(mObserver)) gInventory.addObserver(mObserver);
+    mWatching = true;
+    mPersonToo = false;
+    LL_INFOS("LumenAIUndo") << "watching the inventory: " << mKnown.size() << " things known, in "
+                            << llformat("%.0f", (LLTimer::getTotalSeconds() - t0) * 1000.0) << " ms"
+                            << LL_ENDL;
+}
+
+void LumenAIUndo::observed(const std::set<LLUUID>& ids)
+{
+    if (!mWatching) return;
+    mPending.insert(ids.begin(), ids.end());
+}
+
+void LumenAIUndo::tick()
+{
+    if (!mWatching)
+    {
+        if (!gInventory.isInventoryUsable()) return;
+        startWatching();
+    }
+    if (!mPersonToo && LLInventoryModelBackgroundFetch::instance().isEverythingFetched())
+    {
+        mPersonToo = true;
+        LL_INFOS("LumenAIUndo") << "the whole inventory has loaded: the person's own changes are steps "
+                                << "from now on" << LL_ENDL;
+    }
+
+    const F64 now = LLTimer::getTotalSeconds();
+    if (now > mNextSweep)
+    {
+        mNextSweep = now + 10.0;
+        for (auto it = mClaims.begin(); it != mClaims.end(); )
+        {
+            if (now > it->second.until) it = mClaims.erase(it);
+            else ++it;
+        }
+    }
+
+    if (mPending.empty()) return;
+    std::set<LLUUID> ids;
+    ids.swap(mPending);
+
+    const LLUUID root = gInventory.getRootFolderID();
+    const std::string new_folder = LLViewerFolderType::lookupNewCategoryName(LLFolderType::FT_NONE);
+    std::set<LLUUID> removed;
+    for (const LLUUID& id : ids)
+    {
+        const LLInventoryObject* obj = gInventory.getObject(id);
+        auto known = mKnown.find(id);
+        if (!obj)
+        {
+            if (known != mKnown.end())
+            {
+                removed.insert(id);
+                mKnown.erase(known);
+            }
+            mClaims.erase(id);
+            continue;
+        }
+        const LLUUID parent = obj->getParentUUID();
+        const std::string& name = obj->getName();
+        const bool folder = gInventory.getCategory(id) != nullptr;
+        auto claim = mClaims.find(id);
+
+        if (known == mKnown.end())
+        {
+            // Arrived: loaded, delivered, or made. Only a folder the person
+            // made in the viewer is a step -- "New Folder", empty, where they
+            // keep their own things -- and not one the assistant made.
+            mKnown[id] = Known{ parent, name };
+            if (mPersonToo && folder && name == new_folder && claim == mClaims.end()
+                && within(id, root) && !inTrash(id) && !housekeeping(parent))
+            {
+                Change c;
+                c.kind = Change::NEW_FOLDER;
+                c.id = id;
+                c.folder = true;
+                c.parent_after = parent;
+                c.name_before = c.name_after = name;
+                c.chain_after = Chain::of(parent);
+                personChange(c);
+            }
+            continue;
+        }
+
+        const Known was = known->second;
+        known->second = Known{ parent, name };
+        bool moved = was.parent != parent;
+        bool renamed = was.name != name;
+        if (!moved && !renamed) continue;
+
+        // Said by whoever made it: the assistant's tools, undo and redo.
+        if (claim != mClaims.end())
+        {
+            if (moved && claim->second.has_parent && claim->second.parent == parent)
+            {
+                moved = false;
+                claim->second.has_parent = false;
+            }
+            if (renamed && claim->second.has_name && claim->second.name == name)
+            {
+                renamed = false;
+                claim->second.has_name = false;
+            }
+            if (!claim->second.has_parent && !claim->second.has_name) mClaims.erase(claim);
+        }
+        if (!mPersonToo || (!moved && !renamed)) continue;
+        if (!within(id, root)) continue;   // the Library
+
+        if (moved)
+        {
+            const LLUUID trash = trashId();
+            const bool from_trash = was.parent == trash || inTrash(was.parent);
+            const bool to_trash = inTrash(id);
+            if (!(from_trash && to_trash) && !housekeeping(was.parent) && !housekeeping(parent))
+            {
+                Change c;
+                c.kind = (to_trash && !from_trash) ? Change::TRASH : Change::MOVE;
+                c.id = id;
+                c.folder = folder;
+                c.parent_before = was.parent;
+                c.parent_after = parent;
+                c.name_before = c.name_after = name;
+                c.chain_before = Chain::of(was.parent);
+                c.chain_after = Chain::of(parent);
+                if (c.kind == Change::TRASH) mTrashedFrom[id] = was.parent;
+                personChange(c);
+            }
+        }
+        if (renamed && !inTrash(id) && !housekeeping(parent))
+        {
+            Change c;
+            c.kind = Change::RENAME;
+            c.id = id;
+            c.folder = folder;
+            c.parent_before = c.parent_after = parent;
+            c.name_before = was.name;
+            c.name_after = name;
+            personChange(c);
+        }
+    }
+    if (!removed.empty()) purged(removed);
+}
+
+/**
+ * The viewer's own places, where nothing is a step: the ones the shared rules
+ * keep the assistant out of (Current Outfit, the bridge's, the AO's, the
+ * favourites', the viewer's #-folders, Marketplace, the Library).
+ */
+bool LumenAIUndo::housekeeping(const LLUUID& folder) const
+{
+    if (folder.isNull()) return true;
+    return !LumenInventoryRules::offLimits(folder).empty();
+}
+
+void LumenAIUndo::personChange(const Change& c)
+{
+    const F64 now = LLTimer::getTotalSeconds();
+    Entry* top = mUndo.empty() ? nullptr : mUndo.back().get();
+    if (top && !top->assistant && !top->changes.empty())
+    {
+        const Change& first = top->changes.front();
+        // "New Folder", then the name they give it: one step.
+        if (c.kind == Change::RENAME && top->changes.size() == 1 && first.kind == Change::NEW_FOLDER
+            && first.id == c.id && now - top->when < NAMED_SOON)
+        {
+            top->changes.front().name_after = c.name_after;
+            top->when = now;
+            mRedo.clear();
+            return;
+        }
+        // One drag, one delete of several: one step.
+        if (now - top->when < GROUP_SECONDS && first.kind == c.kind
+            && (c.kind == Change::MOVE || c.kind == Change::TRASH) && first.parent_after == c.parent_after)
+        {
+            addChange(*top, c);
+            return;
+        }
+    }
+    Entry& e = pushEntry(false, std::string());
+    addChange(e, c);
+}
+
+void LumenAIUndo::purged(const std::set<LLUUID>& ids)
+{
+    auto mark = [&ids](std::deque<std::shared_ptr<Entry>>& list)
+    {
+        for (auto it = list.begin(); it != list.end(); )
+        {
+            Entry& e = **it;
+            bool any_left = e.changes.empty();
+            for (Change& c : e.changes)
+            {
+                if (ids.count(c.id)) c.gone = true;
+                if (!c.gone) any_left = true;
+            }
+            // Only about what is gone now: nothing left to undo or redo.
+            if (!any_left) it = list.erase(it);
+            else ++it;
+        }
+    };
+    mark(mUndo);
+    mark(mRedo);
+    if (mBusy) for (Change& c : mBusy->changes) if (ids.count(c.id)) c.gone = true;
+    for (const LLUUID& id : ids) mTrashedFrom.erase(id);
+}
+
+// =============================================================================
+// Recording the assistant's changes
 // =============================================================================
 
 void LumenAIUndo::beginRequest(const std::string& words)
 {
     mInRequest = true;
     mWords = words;
-    mRequestSet = 0;
+    mRequestStep = 0;
 }
 
 void LumenAIUndo::endRequest()
 {
     mInRequest = false;
     mWords.clear();
-    mRequestSet = 0;
+    mRequestStep = 0;
 }
 
-void LumenAIUndo::prepare()
+LumenAIUndo::Entry* LumenAIUndo::findEntry(S64 id)
 {
-    if (!ensureOpen()) return;
-    if (!mSnapshotThisLogin)
+    for (auto& e : mUndo) if (e->id == id) return e.get();
+    return nullptr;
+}
+
+LumenAIUndo::Entry& LumenAIUndo::pushEntry(bool assistant, const std::string& words)
+{
+    // Steps that never had a change in them -- a turn that changed nothing
+    // in the end -- are not kept, unless one is still being made.
+    for (auto it = mUndo.begin(); it != mUndo.end(); )
     {
-        mSnapshotThisLogin = true;
-        takeSnapshot("before the assistant's first change this login");
+        const Entry& old = **it;
+        if (old.changes.empty() && old.id != mRequestStep && !mRunning.count(old.id)) it = mUndo.erase(it);
+        else ++it;
     }
+    auto e = std::make_shared<Entry>();
+    e->id = mNextId++;
+    e->assistant = assistant;
+    e->words = words;
+    e->when = LLTimer::getTotalSeconds();
+    mUndo.push_back(e);
+    ++mPushes;
+    while (mUndo.size() > MAX_STEPS)
+    {
+        if (mUndo.front()->id == mRequestStep) mRequestStep = 0;
+        mUndo.pop_front();
+    }
+    return *mUndo.back();
 }
 
-S64 LumenAIUndo::currentSet()
-{
-    if (!ensureOpen()) return 0;
-    // <Lumen> Never one that has been undone: undo() lets go of it.
-    if (mInRequest && mRequestSet != 0 && !mClosed.count(mRequestSet)) return mRequestSet;
-
-    const S64 id = mNextSet++;
-    if (mInRequest) mRequestSet = id;
-    // <Lumen> The order of changes is NOT restarted per set any more: a bulk
-    // run writes to its own set while a turn writes to another, and a counter
-    // reset by one would have put the other's later changes before its
-    // earlier ones -- which undo, newest first, reads as the order to reverse.
-    // It only has to rise within a set, and it does.
-    addSet(id, mInRequest ? mWords : std::string(), mInRequest ? "assistant" : "endpoint");
-    return id;
-}
-
-// <Lumen>
 /**
- * The set a change goes in: the one asked for, unless that one has been
- * undone (or is being). Something landing in an undone set could never be
- * undone with it -- a folder Second Life made after "undo that", or a run's
- * folder answered after the run was undone. It joins the turn in progress,
- * or a set of its own, either of which "undo" can still reach.
+ * The step a change goes in: the one asked for, unless it has been undone
+ * since (or dropped off the end) -- then the turn's, as for a change with no
+ * step named. Outside a turn, none: nothing is listed for a direct call.
  */
-S64 LumenAIUndo::liveSet(S64 wanted)
+LumenAIUndo::Entry* LumenAIUndo::entryFor(S64 wanted)
 {
-    if (wanted == 0) return currentSet();
-    if (!mClosed.count(wanted)) return wanted;
-    LL_INFOS("LumenAIUndo") << "a change for change set " << wanted
-                            << ", which is undone, goes in another set" << LL_ENDL;
-    if (mInRequest) return currentSet();
-    std::map<S64, S64>::const_iterator late = mLateSets.find(wanted);
-    if (late != mLateSets.end() && !mClosed.count(late->second)) return late->second;
-    if (!ensureOpen()) return 0;
-    const S64 id = mNextSet++;
-    addSet(id, llformat("(arrived after change set %lld was undone)", (long long)wanted), "late");
-    mLateSets[wanted] = id;
-    return id;
-}
-// </Lumen>
-
-void LumenAIUndo::addSet(S64 id, const std::string& words, const std::string& source)
-{
-    const S64 at = (S64)time(nullptr);
-    post([this, id, at, words, source](sqlite3* db)
+    if (wanted < 0 || mUnlisted.count(wanted)) return nullptr;
+    if (wanted > 0)
     {
-        sqlite3_stmt* st = nullptr;
-        if (prepared(db, "INSERT INTO sets(id,at,words,source) VALUES(?,?,?,?);", &st))
+        if (Entry* e = findEntry(wanted)) return e;
+        LL_INFOS("LumenAIUndo") << "a change for step " << wanted << ", undone or gone since, goes in "
+                                << "the step in progress" << LL_ENDL;
+    }
+    if (mInRequest)
+    {
+        if (mRequestStep)
         {
-            sqlite3_bind_int64(st, 1, id);
-            sqlite3_bind_int64(st, 2, at);
-            bindText(st, 3, words);
-            bindText(st, 4, source);
-            stepDone(db, st, "recording a change set");
-            sqlite3_finalize(st);
+            if (Entry* e = findEntry(mRequestStep)) return e;
         }
-        changed();   // <Lumen> once it is there to be read
-    });
-}
-
-// <Lumen> A bulk run's own set, outside the turn's. See the header.
-S64 LumenAIUndo::beginBatch(const std::string& what)
-{
-    if (!ensureOpen()) return 0;
-    const S64 id = mNextSet++;
-    const std::string words = (mInRequest && !mWords.empty()) ? mWords + "  [" + what + "]" : what;
-    addSet(id, words, "bulk");
-    mRunning.insert(id);   // not undone while it is still being written
-    return id;
-}
-
-void LumenAIUndo::endBatch(S64 set_id)
-{
-    // Nothing to close: every change was written as it happened. The window
-    // reads the record again, so the finished run shows whole.
-    if (set_id == 0) return;
-    mRunning.erase(set_id);
-    mStopAsked.erase(set_id);
-    changed();
-}
-
-// Here rather than beside the run, so the Assistant window and the history
-// window can both stop one without knowing where runs are made.
-bool LumenAIUndo::stopBulk()
-{
-    bool any = false;
-    for (S64 id : mRunning)
-    {
-        any = true;
-        if (mStopAsked.insert(id).second)
-            LL_INFOS("LumenAIUndo") << "bulk run in change set " << id << " asked to stop" << LL_ENDL;
+        Entry& e = pushEntry(true, mWords);
+        mRequestStep = e.id;
+        return &e;
     }
-    // <Lumen> And an undo or a restore still putting things back.
-    for (const std::weak_ptr<RunState>& w : sRuns)
+    // <Lumen> A host application or a test calling the endpoint with no
+    // conversation: not listed, unless the debug setting says to -- then
+    // each change is a step of its own.
+    static LLCachedControl<bool> list_them(gSavedSettings, "LumenAIUndoEndpointCalls", false);
+    if (list_them) return &pushEntry(true, std::string());
+    return nullptr;
+}
+
+void LumenAIUndo::addChange(Entry& e, const Change& c)
+{
+    const F64 now = LLTimer::getTotalSeconds();
+    e.when = now;
+    mRedo.clear();   // a new change after an undo: what could be redone is gone
+    auto last = e.last.find(c.id);
+    if (last != e.last.end())
     {
-        std::shared_ptr<RunState> st = w.lock();
-        if (!st || st->reported) continue;
-        any = true;
-        if (!st->stop) LL_INFOS("LumenAIUndo") << "putting back asked to stop" << LL_ENDL;
-        st->stop = true;
+        Change& prev = e.changes[last->second];
+        // Moved twice, or renamed twice, in one step: one change, from where
+        // (or what) it was first to where (or what) it ended.
+        if (prev.kind == c.kind && (c.kind == Change::MOVE || c.kind == Change::RENAME) && !prev.undone)
+        {
+            prev.parent_after = c.parent_after;
+            prev.chain_after = c.chain_after;
+            prev.name_after = c.name_after;
+            return;
+        }
     }
-    return any;
+    e.last[c.id] = e.changes.size();
+    e.changes.push_back(c);
+}
+
+void LumenAIUndo::claimParent(const LLUUID& id, const LLUUID& parent)
+{
+    Claim& c = mClaims[id];
+    c.parent = parent;
+    c.has_parent = true;
+    c.until = LLTimer::getTotalSeconds() + CLAIM_KEEPS;
+}
+
+void LumenAIUndo::claimName(const LLUUID& id, const std::string& name)
+{
+    Claim& c = mClaims[id];
+    c.name = name;
+    c.has_name = true;
+    c.until = LLTimer::getTotalSeconds() + CLAIM_KEEPS;
+}
+
+bool LumenAIUndo::recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
+                             S64 set_id)
+{
+    claimParent(id, to);
+    Entry* e = entryFor(set_id);
+    if (!e) return false;
+    Change c;
+    c.kind = Change::MOVE;
+    c.id = id;
+    c.folder = folder;
+    c.parent_before = from;
+    c.parent_after = to;
+    c.name_before = c.name_after = nameOf(id);
+    c.chain_before = Chain::of(from);
+    c.chain_after = Chain::of(to);
+    addChange(*e, c);
+    return true;
+}
+
+bool LumenAIUndo::recordRename(const LLUUID& id, bool folder, const std::string& before,
+                               const std::string& after, S64 set_id)
+{
+    claimName(id, after);
+    Entry* e = entryFor(set_id);
+    if (!e) return false;
+    Change c;
+    c.kind = Change::RENAME;
+    c.id = id;
+    c.folder = folder;
+    c.parent_before = c.parent_after = parentOf(id);
+    c.name_before = before;
+    c.name_after = after;
+    addChange(*e, c);
+    return true;
 }
 
 S64 LumenAIUndo::setForLater()
 {
-    return currentSet();
+    Entry* e = entryFor(0);
+    return e ? e->id : -1;
 }
 
 void LumenAIUndo::renameSent(const LLUUID& id)
@@ -1864,1506 +1664,631 @@ void LumenAIUndo::renameAnswered(const LLUUID& id)
     std::map<LLUUID, S32>::iterator f = mRenamesInFlight.find(id);
     if (f != mRenamesInFlight.end() && --f->second <= 0) mRenamesInFlight.erase(f);
 }
-// </Lumen>
-
-void LumenAIUndo::addChange(S64 set_id, const std::string& kind, const LLUUID& id, bool folder,
-                            const std::string& name_before, const std::string& name_after,
-                            const LLUUID& parent_before, const LLUUID& parent_after,
-                            const std::string& chain)
-{
-    if (set_id == 0) return;
-    const S32 seq = ++mSeq;
-    // <Lumen> A delete is also kept in memory until it is on disk, so
-    // undelete straight after it never waits for the file.
-    const bool trash = (kind == "trash");
-    if (trash)
-    {
-        std::lock_guard<std::mutex> lock(mStateMutex);
-        PendingTrash& p = mPendingTrash[id];
-        p.parent = parent_before;
-        p.chain = chain;
-        p.seq = seq;
-    }
-    post([this, set_id, seq, kind, id, folder, name_before, name_after, parent_before, parent_after,
-          chain, trash](sqlite3* db)
-    {
-        sqlite3_stmt* st = nullptr;
-        bool ok = false;
-        if (prepared(db,
-                "INSERT INTO changes(set_id,seq,kind,object_id,folder,name_before,name_after,"
-                "parent_before,parent_after,chain) VALUES(?,?,?,?,?,?,?,?,?,?);", &st))
-        {
-            sqlite3_bind_int64(st, 1, set_id);
-            sqlite3_bind_int(st, 2, seq);
-            bindText(st, 3, kind);
-            bindText(st, 4, id.asString());
-            sqlite3_bind_int(st, 5, folder ? 1 : 0);
-            bindText(st, 6, name_before);
-            bindText(st, 7, name_after);
-            bindText(st, 8, parent_before.asString());
-            bindText(st, 9, parent_after.asString());
-            bindText(st, 10, chain);
-            ok = stepDone(db, st, "recording a change");
-            sqlite3_finalize(st);
-        }
-        // <Lumen> On disk now, so the file answers for it. Not written: it
-        // stays in memory, and undelete can still use it this login.
-        if (trash && ok)
-        {
-            std::lock_guard<std::mutex> lock(mStateMutex);
-            auto p = mPendingTrash.find(id);
-            if (p != mPendingTrash.end() && p->second.seq == seq) mPendingTrash.erase(p);
-        }
-        changed();
-    });
-}
-
-void LumenAIUndo::recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
-                             S64 set_id)
-{
-    const std::string name = nameOf(id);
-    addChange(liveSet(set_id), "move", id, folder, name, name, from, to,
-              Chain::of(from).serialise());
-}
-
-void LumenAIUndo::recordRename(const LLUUID& id, bool folder, const std::string& before,
-                               const std::string& after, S64 set_id)
-{
-    const LLUUID p = parentOf(id);
-    addChange(liveSet(set_id), "rename", id, folder, before, after, p, p, std::string());
-}
 
 void LumenAIUndo::recordTrash(const LLUUID& id, bool folder, const LLUUID& from, S64 set_id)
 {
-    const std::string name = nameOf(id);
-    addChange(liveSet(set_id), "trash", id, folder, name, name, from, parentOf(id),
-              Chain::of(from).serialise());
+    const LLUUID now_in = parentOf(id);
+    claimParent(id, now_in);
+    mTrashedFrom[id] = from;
+    Entry* e = entryFor(set_id);
+    if (!e) return;
+    Change c;
+    c.kind = Change::TRASH;
+    c.id = id;
+    c.folder = folder;
+    c.parent_before = from;
+    c.parent_after = now_in;
+    c.name_before = c.name_after = nameOf(id);
+    c.chain_before = Chain::of(from);
+    addChange(*e, c);
 }
 
 void LumenAIUndo::recordUntrash(const LLUUID& id, bool folder, const LLUUID& to)
 {
-    const std::string name = nameOf(id);
-    addChange(currentSet(), "untrash", id, folder, name, name, trashId(), to, std::string());
+    // Out of the Trash is a move from it: undone, it goes back in.
+    recordMove(id, folder, trashId(), to);
 }
 
 S64 LumenAIUndo::setForNewFolder()
 {
-    return currentSet();
+    Entry* e = entryFor(0);
+    return e ? e->id : -1;
 }
 
 void LumenAIUndo::recordNewFolder(S64 set_id, const LLUUID& id, const LLUUID& parent)
 {
-    // <Lumen> Its id arrives a moment after the request: its set may have
-    // been undone in between (see liveSet).
+    if (id.isNull()) return;
+    claimParent(id, parent);   // never the person's "New Folder"
+    Entry* e = entryFor(set_id == 0 ? -1 : set_id);
+    if (!e) return;
+    Change c;
+    c.kind = Change::NEW_FOLDER;
+    c.id = id;
+    c.folder = true;
+    c.parent_after = parent;
+    c.name_before = c.name_after = nameOf(id);
+    c.chain_after = Chain::of(parent);
+    addChange(*e, c);
+}
+
+S64 LumenAIUndo::beginBatch(const std::string& what)
+{
+    Entry* e = nullptr;
+    static LLCachedControl<bool> list_them(gSavedSettings, "LumenAIUndoEndpointCalls", false);
+    if (mInRequest || list_them)
+    {
+        e = &pushEntry(true, mInRequest ? mWords : std::string());
+        e->what = what;
+    }
+    if (!e)
+    {
+        // Not listed, but still a run: Clear reaches it by this id.
+        const S64 id = mNextId++;
+        mRunning.insert(id);
+        mUnlisted.insert(id);
+        return id;
+    }
+    mRunning.insert(e->id);   // not undone while it is still being made
+    return e->id;
+}
+
+void LumenAIUndo::endBatch(S64 set_id, bool stopped)
+{
     if (set_id == 0) return;
-    const std::string name = nameOf(id);
-    addChange(liveSet(set_id), "new_folder", id, true, name, name, LLUUID::null, parent, std::string());
+    mRunning.erase(set_id);
+    mStopAsked.erase(set_id);
+    mUnlisted.erase(set_id);
+    if (stopped)
+    {
+        if (Entry* e = findEntry(set_id)) e->stopped = true;
+    }
 }
 
-bool LumenAIUndo::lastTrashedFrom(const LLUUID& id, LLUUID& parent_out, Chain& chain_out)
+bool LumenAIUndo::stopBulk()
 {
-    if (!ensureOpen()) return false;
-    // <Lumen> No wait for the file: a delete still on its way to it is in
-    // memory, and is the newest anyway. Everything else is on disk.
+    bool any = false;
+    for (S64 id : mRunning)
     {
-        std::lock_guard<std::mutex> lock(mStateMutex);
-        auto p = mPendingTrash.find(id);
-        if (p != mPendingTrash.end())
-        {
-            parent_out = p->second.parent;
-            chain_out = Chain::parse(p->second.chain);
-            return true;
-        }
+        any = true;
+        if (mStopAsked.insert(id).second)
+            LL_INFOS("LumenAIUndo") << "bulk run in step " << id << " asked to stop" << LL_ENDL;
     }
-    bool found = false;
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(mRead,
-            "SELECT parent_before, chain FROM changes WHERE object_id=? AND kind='trash' "
-            "ORDER BY rowid DESC LIMIT 1;", -1, &st, nullptr) == SQLITE_OK)
+    // And an undo or a redo still putting things back.
+    for (const std::weak_ptr<RunState>& w : sRuns)
     {
-        bindText(st, 1, id.asString());
-        if (sqlite3_step(st) == SQLITE_ROW)
-        {
-            parent_out = LLUUID(col(st, 0));
-            chain_out = Chain::parse(col(st, 1));
-            found = true;
-        }
-        sqlite3_finalize(st);
+        std::shared_ptr<RunState> st = w.lock();
+        if (!st || st->reported) continue;
+        any = true;
+        if (!st->stop) LL_INFOS("LumenAIUndo") << "putting back asked to stop" << LL_ENDL;
+        st->stop = true;
     }
-    return found;
+    return any;
 }
 
-// =============================================================================
-// Snapshots
-// =============================================================================
-
-std::vector<LumenAIUndo::Node> LumenAIUndo::captureTree() const
+bool LumenAIUndo::lastTrashedFrom(const LLUUID& id, LLUUID& parent_out) const
 {
-    std::vector<Node> out;
-    const LLUUID root = gInventory.getRootFolderID();
-    if (root.isNull()) return out;
-
-    // What is not the person's arrangement to restore: what they wear (the
-    // outfit folder changes with every garment) and Marketplace listings,
-    // which have rules of their own. The folders themselves are kept, not
-    // what is in them; the Trash is neither.
-    // <Lumen> One walk, with the Trash looked up once: the viewer's own
-    // collectDescendents looks it up again in every folder it enters, by
-    // scanning the top of the inventory -- folders times what is at the top.
-    const LLUUID cof = gInventory.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT);
-    const LLUUID market = gInventory.findCategoryUUIDForType(LLFolderType::FT_MARKETPLACE_LISTINGS);
-    const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
-
-    std::vector<LLUUID> todo;
-    todo.push_back(root);
-    while (!todo.empty())
-    {
-        const LLUUID at = todo.back();
-        todo.pop_back();
-        LLInventoryModel::cat_array_t* cats = nullptr;
-        LLInventoryModel::item_array_t* items = nullptr;
-        gInventory.getDirectDescendentsOf(at, cats, items);
-        if (cats)
-        {
-            for (const auto& c : *cats)
-            {
-                if (!c) continue;
-                const LLUUID& id = c->getUUID();
-                if (id == trash) continue;
-                out.push_back(Node{ id, c->getParentUUID(), c->getName(), true });
-                if (id != cof && id != market) todo.push_back(id);
-            }
-        }
-        if (items)
-        {
-            for (const auto& i : *items)
-            {
-                if (i) out.push_back(Node{ i->getUUID(), i->getParentUUID(), i->getName(), false });
-            }
-        }
-    }
-    return out;
-    // </Lumen>
-}
-
-S64 LumenAIUndo::snapshotBefore(const std::string& reason)
-{
-    if (!ensureOpen()) return 0;
-    mSnapshotThisLogin = true;
-    return takeSnapshot(reason);
-}
-
-// <Lumen>
-LumenAIUndo::SnapState LumenAIUndo::snapshotState(S64 snap_id)
-{
-    std::lock_guard<std::mutex> lock(mStateMutex);
-    std::map<S64, SnapState>::const_iterator f = mSnapStates.find(snap_id);
-    return f != mSnapStates.end() ? f->second : SNAP_UNKNOWN;
-}
-// </Lumen>
-
-S64 LumenAIUndo::takeSnapshot(const std::string& reason)
-{
-    LLTimer timer;
-    std::shared_ptr<std::vector<Node>> nodes = std::make_shared<std::vector<Node>>(captureTree());
-    const S64 capture_ms = (S64)(timer.getElapsedTimeF32() * 1000.f);
-    if (nodes->empty()) return 0;
-
-    // <Lumen> After a cache clear the background fetch is still bringing in
-    // the inventory at the first change of a login, and what it has not
-    // brought is not in the snapshot. It cannot wait -- the change is being
-    // made now -- so it says so, here and wherever it is shown.
-    const bool partial = !LLInventoryModelBackgroundFetch::instance().isEverythingFetched();
-
-    const S64 snap = mNextSnap++;
-    const S64 at = (S64)time(nullptr);
-    {
-        std::lock_guard<std::mutex> lock(mStateMutex);   // <Lumen>
-        mSnapStates[snap] = SNAP_PENDING;
-    }
-    LL_INFOS("LumenAIUndo") << "snapshot " << snap << " (" << reason << "): " << nodes->size()
-                            << " objects read in " << capture_ms << " ms"
-                            << (partial ? ", before the whole inventory had loaded" : "") << LL_ENDL;
-
-    post([this, nodes, snap, at, reason, capture_ms, partial](sqlite3* db)
-    {
-        LLTimer t;
-        // <Lumen> Every step is checked, and the snapshot is committed whole
-        // or not at all: a full disk or an I/O error part way rolls it back
-        // rather than committing half a difference, and it is then said to
-        // have failed rather than reported by its id.
-        bool ok = execOn(db, "BEGIN;");
-        // What the newest snapshot has, still open.
-        struct Open { sqlite3_int64 row; std::string parent, name; };
-        std::unordered_map<std::string, Open> open;
-        sqlite3_stmt* st = nullptr;
-        if (ok && prepared(db, "SELECT rowid,id,parent,name FROM nodes WHERE to_snap IS NULL;", &st))
-        {
-            int rc;
-            while ((rc = sqlite3_step(st)) == SQLITE_ROW)
-            {
-                open[col(st, 1)] = Open{ sqlite3_column_int64(st, 0), col(st, 2), col(st, 3) };
-            }
-            if (rc != SQLITE_DONE)
-            {
-                LL_WARNS("LumenAIUndo") << "reading the last snapshot failed: " << sqlite3_errmsg(db) << LL_ENDL;
-                ok = false;
-            }
-            sqlite3_finalize(st);
-        }
-        else
-        {
-            ok = false;
-        }
-
-        sqlite3_stmt* ins = nullptr;
-        sqlite3_stmt* end = nullptr;
-        ok = ok
-            && prepared(db, "INSERT INTO nodes(id,folder,parent,name,from_snap,to_snap) "
-                            "VALUES(?,?,?,?,?,NULL);", &ins)
-            && prepared(db, "UPDATE nodes SET to_snap=? WHERE rowid=?;", &end);
-        S64 items = 0, folders = 0, written = 0;
-        for (size_t i = 0; ok && i < nodes->size(); ++i)
-        {
-            const Node& n = (*nodes)[i];
-            (n.folder ? folders : items)++;
-            const std::string id = n.id.asString();
-            const std::string parent = n.parent.asString();
-            auto o = open.find(id);
-            if (o != open.end())
-            {
-                const bool same = (o->second.parent == parent && o->second.name == n.name);
-                if (!same)
-                {
-                    sqlite3_bind_int64(end, 1, snap);
-                    sqlite3_bind_int64(end, 2, o->second.row);
-                    ok = stepDone(db, end, "ending a snapshot row");
-                    sqlite3_reset(end);
-                }
-                open.erase(o);
-                if (same || !ok) continue;
-            }
-            sqlite3_bind_text(ins, 1, id.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(ins, 2, n.folder ? 1 : 0);
-            sqlite3_bind_text(ins, 3, parent.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins, 4, n.name.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(ins, 5, snap);
-            ok = stepDone(db, ins, "writing a snapshot row");
-            sqlite3_reset(ins);
-            ++written;
-        }
-        // What is no longer there ends at this snapshot.
-        for (auto o = open.begin(); ok && o != open.end(); ++o)
-        {
-            sqlite3_bind_int64(end, 1, snap);
-            sqlite3_bind_int64(end, 2, o->second.row);
-            ok = stepDone(db, end, "ending a snapshot row");
-            sqlite3_reset(end);
-        }
-        sqlite3_finalize(ins);   // a no-op on null
-        sqlite3_finalize(end);
-
-        const S64 write_ms = (S64)(t.getElapsedTimeF32() * 1000.f);
-        if (ok && prepared(db, "INSERT INTO snapshots(id,at,reason,items,folders,capture_ms,write_ms,"
-                               "partial) VALUES(?,?,?,?,?,?,?,?);", &st))
-        {
-            sqlite3_bind_int64(st, 1, snap);
-            sqlite3_bind_int64(st, 2, at);
-            bindText(st, 3, reason);
-            sqlite3_bind_int64(st, 4, items);
-            sqlite3_bind_int64(st, 5, folders);
-            sqlite3_bind_int64(st, 6, capture_ms);
-            sqlite3_bind_int64(st, 7, write_ms);
-            sqlite3_bind_int(st, 8, partial ? 1 : 0);
-            ok = stepDone(db, st, "recording a snapshot");
-            sqlite3_finalize(st);
-        }
-        else
-        {
-            ok = false;
-        }
-        const bool committed = finishTransaction(db, ok, llformat("snapshot %lld", (long long)snap).c_str());
-        {
-            std::lock_guard<std::mutex> lock(mStateMutex);
-            mSnapStates[snap] = committed ? SNAP_WRITTEN : SNAP_FAILED;
-        }
-        if (!committed)
-        {
-            changed();
-            return;
-        }
-
-        // Keep: the newest few always, the rest for a week, never more than ten.
-        const S64 now = (S64)time(nullptr);
-        std::vector<std::pair<S64, S64>> all;   // id, at
-        if (sqlite3_prepare_v2(db, "SELECT id,at FROM snapshots ORDER BY id DESC;", -1, &st, nullptr) == SQLITE_OK)
-        {
-            while (sqlite3_step(st) == SQLITE_ROW)
-                all.emplace_back(sqlite3_column_int64(st, 0), sqlite3_column_int64(st, 1));
-            sqlite3_finalize(st);
-        }
-        S64 oldest_kept = 0;
-        std::vector<S64> drop;
-        for (size_t i = 0; i < all.size(); ++i)
-        {
-            const bool keep = (S32)i < SNAP_KEEP_MIN
-                || ((S32)i < SNAP_KEEP_MAX && now - all[i].second < SNAP_KEEP_SECONDS);
-            if (keep) oldest_kept = all[i].first;
-            else      drop.push_back(all[i].first);
-        }
-        if (!drop.empty())
-        {
-            bool pruned = execOn(db, "BEGIN;");
-            for (size_t i = 0; pruned && i < drop.size(); ++i)
-                pruned = execOn(db, llformat("DELETE FROM snapshots WHERE id=%lld;", (long long)drop[i]).c_str());
-            // A row that ended at or before the oldest snapshot kept is in none of them.
-            pruned = pruned
-                && execOn(db, llformat("DELETE FROM nodes WHERE to_snap IS NOT NULL AND to_snap<=%lld;",
-                                       (long long)oldest_kept).c_str());
-            finishTransaction(db, pruned, "pruning old snapshots");
-        }
-        {
-            bool pruned = execOn(db, "BEGIN;")
-                && execOn(db, llformat("DELETE FROM changes WHERE set_id IN (SELECT id FROM sets WHERE at<%lld);",
-                                       (long long)(now - SET_KEEP_SECONDS)).c_str())
-                && execOn(db, llformat("DELETE FROM sets WHERE at<%lld;",
-                                       (long long)(now - SET_KEEP_SECONDS)).c_str());
-            finishTransaction(db, pruned, "pruning old change sets");
-        }
-
-        LL_INFOS("LumenAIUndo") << "snapshot " << snap << " written: " << items << " items, "
-                                << folders << " folders, " << written << " rows new, in "
-                                << write_ms << " ms" << LL_ENDL;
-        changed();
-    });
-    return snap;
-}
-
-bool LumenAIUndo::readSnapshot(S64 snap_id, std::vector<Node>& out, bool* partial)
-{
-    sqlite3_stmt* st = nullptr;
-    bool exists_ = false;
-    if (sqlite3_prepare_v2(mRead, "SELECT partial FROM snapshots WHERE id=?;", -1, &st, nullptr) == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, snap_id);
-        exists_ = sqlite3_step(st) == SQLITE_ROW;
-        if (exists_ && partial) *partial = sqlite3_column_int(st, 0) != 0;
-        sqlite3_finalize(st);
-    }
-    if (!exists_) return false;
-    if (sqlite3_prepare_v2(mRead,
-            "SELECT id,folder,parent,name FROM nodes WHERE from_snap<=?1 "
-            "AND (to_snap IS NULL OR to_snap>?1);", -1, &st, nullptr) == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, snap_id);
-        while (sqlite3_step(st) == SQLITE_ROW)
-        {
-            out.push_back(Node{ LLUUID(col(st, 0)), LLUUID(col(st, 2)), col(st, 3),
-                                sqlite3_column_int(st, 1) != 0 });
-        }
-        sqlite3_finalize(st);
-    }
+    auto f = mTrashedFrom.find(id);
+    if (f == mTrashedFrom.end()) return false;
+    parent_out = f->second;
     return true;
 }
 
 // =============================================================================
-// Reading the record
+// Naming a step
 // =============================================================================
 
-LLSD LumenAIUndo::history(S32 limit, bool settled)
+std::string LumenAIUndo::describe(const Entry& e) const
 {
-    LLSD out = LLSD::emptyArray();
-    if (!ensureOpen()) return out;
-    if (settled) flush();   // <Lumen> the window reads what is on disk; see the header
-    if (limit <= 0 || limit > 100) limit = 20;
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(mRead,
-            "SELECT s.id,s.at,s.words,s.source,s.undone_at,s.undo_note,"
-            "  (SELECT COUNT(*) FROM changes c WHERE c.set_id=s.id),"
-            "  (SELECT COUNT(*) FROM changes c WHERE c.set_id=s.id AND c.undone_at IS NULL) "
-            "FROM sets s WHERE EXISTS(SELECT 1 FROM changes c WHERE c.set_id=s.id) "
-            "ORDER BY s.id DESC LIMIT ?;", -1, &st, nullptr) != SQLITE_OK)
+    const LLUUID trash = trashId();
+    S32 moved_items = 0, moved_folders = 0, untrashed = 0, trashed_items = 0, trashed_folders = 0;
+    S32 renamed = 0, made = 0;
+    LLUUID dest;
+    bool one_dest = true;
+    const Change* first[4] = { nullptr, nullptr, nullptr, nullptr };
+    const Change* first_untrash = nullptr;
+    for (const Change& c : e.changes)
     {
-        return out;
+        switch (c.kind)
+        {
+        case Change::MOVE:
+            if (c.parent_before == trash || within(c.parent_before, trash))
+            {
+                ++untrashed;
+                if (!first_untrash) first_untrash = &c;
+                break;
+            }
+            (c.folder ? moved_folders : moved_items)++;
+            if (dest.isNull()) dest = c.parent_after;
+            else if (dest != c.parent_after) one_dest = false;
+            if (!first[0]) first[0] = &c;
+            break;
+        case Change::TRASH:
+            (c.folder ? trashed_folders : trashed_items)++;
+            if (!first[1]) first[1] = &c;
+            break;
+        case Change::RENAME:
+            ++renamed;
+            if (!first[2]) first[2] = &c;
+            break;
+        case Change::NEW_FOLDER:
+            ++made;
+            if (!first[3]) first[3] = &c;
+            break;
+        }
     }
-    sqlite3_bind_int(st, 1, limit);
-    while (sqlite3_step(st) == SQLITE_ROW)
+    std::vector<std::string> parts;
+    if (moved_items + moved_folders > 0)
+    {
+        std::string what = (moved_items + moved_folders == 1) ? quoted(first[0]->name_after)
+                                                              : countOf(moved_items, moved_folders);
+        parts.push_back("moved " + what
+                        + (one_dest ? " to " + lastName(first[0]->chain_after, dest) : std::string()));
+    }
+    if (untrashed > 0)
+        parts.push_back("took " + (untrashed == 1 ? quoted(first_untrash->name_after)
+                                                  : countOf(untrashed, 0)) + " out of the Trash");
+    if (trashed_items + trashed_folders > 0)
+        parts.push_back("deleted " + (trashed_items + trashed_folders == 1 ? quoted(first[1]->name_before)
+                                                                           : countOf(trashed_items, trashed_folders)));
+    if (renamed > 0)
+        parts.push_back(renamed == 1 ? "renamed " + quoted(first[2]->name_before) + " to "
+                                       + quoted(first[2]->name_after)
+                                     : llformat("renamed %d things", renamed));
+    if (made > 0)
+        parts.push_back(made == 1 ? "made folder " + quoted(first[3]->name_after)
+                                  : llformat("made %d folders", made));
+    std::string out;
+    for (size_t i = 0; i < parts.size(); ++i) out += (i ? ", " : "") + parts[i];
+    if (out.empty()) out = "changed nothing";
+    if (e.stopped) out += " (stopped part way)";
+    return out;
+}
+
+LLSD LumenAIUndo::list() const
+{
+    auto one = [this](const Entry& e) -> LLSD
     {
         LLSD s;
-        const S64 id = sqlite3_column_int64(st, 0);
-        s["change_set"] = (LLSD::Integer)id;
-        s["when"] = whenText(sqlite3_column_int64(st, 1));
-        const std::string words = col(st, 2);
-        s["asked"] = words.empty() ? std::string("(not from the Assistant window)") : words;
-        s["changes"] = sqlite3_column_int(st, 6);
-        const S64 undone = sqlite3_column_int64(st, 4);
-        s["undone"] = undone > 0;
-        if (undone > 0)
-        {
-            s["undone_when"] = whenText(undone);
-            if (!col(st, 5).empty()) s["undo_note"] = col(st, 5);
-            // <Lumen> Some of it could not be put back then; undo with this
-            // change_set tries those again.
-            const S32 not_back = sqlite3_column_int(st, 7);
-            if (not_back > 0) s["not_put_back"] = not_back;
-        }
-        // <Lumen> Still being written, or being undone, in this viewer.
-        if (mRunning.count(id)) s["still_running"] = true;
-        if (mUndoing.count(id)) s["being_undone"] = true;
-        // What kinds, and the first few names, so it can be told apart.
-        // <Lumen> Counted by SQLite, not row by row here: a bulk set can be
-        // ten thousand changes, and the window reads this while it grows.
-        LLSD kinds;
-        LLSD names = LLSD::emptyArray();
-        sqlite3_stmt* c = nullptr;
-        if (sqlite3_prepare_v2(mRead, "SELECT kind,COUNT(*) FROM changes WHERE set_id=? GROUP BY kind;",
-                               -1, &c, nullptr) == SQLITE_OK)
-        {
-            sqlite3_bind_int64(c, 1, id);
-            while (sqlite3_step(c) == SQLITE_ROW) kinds[col(c, 0)] = sqlite3_column_int(c, 1);
-            sqlite3_finalize(c);
-        }
-        if (sqlite3_prepare_v2(mRead, "SELECT name_before FROM changes WHERE set_id=? ORDER BY seq LIMIT 4;",
-                               -1, &c, nullptr) == SQLITE_OK)
-        {
-            sqlite3_bind_int64(c, 1, id);
-            while (sqlite3_step(c) == SQLITE_ROW) names.append(col(c, 0));
-            sqlite3_finalize(c);
-        }
-        s["kinds"] = kinds;
-        s["examples"] = names;
-        out.append(s);
-    }
-    sqlite3_finalize(st);
+        s["step"] = (LLSD::Integer)e.id;
+        s["who"] = e.assistant ? "assistant" : "you";
+        s["did"] = describe(e);
+        if (!e.words.empty()) s["asked"] = e.words;
+        s["changes"] = (S32)e.changes.size();
+        if (mRunning.count(e.id)) s["still_running"] = true;
+        return s;
+    };
+    LLSD out;
+    out["undo"] = LLSD::emptyArray();
+    out["redo"] = LLSD::emptyArray();
+    for (auto it = mUndo.rbegin(); it != mUndo.rend(); ++it)
+        if (!(*it)->changes.empty()) out["undo"].append(one(**it));
+    for (auto it = mRedo.rbegin(); it != mRedo.rend(); ++it)
+        out["redo"].append(one(**it));
     return out;
 }
 
-LLSD LumenAIUndo::snapshots(bool settled)
+namespace
 {
-    LLSD out = LLSD::emptyArray();
-    if (!ensureOpen()) return out;
-    if (settled) flush();   // <Lumen>
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(mRead, "SELECT id,at,reason,items,folders,capture_ms,write_ms,partial "
-                                  "FROM snapshots ORDER BY id DESC;", -1, &st, nullptr) == SQLITE_OK)
+    template <class LIST> typename LIST::value_type newestWithChanges(const LIST& list)
     {
-        while (sqlite3_step(st) == SQLITE_ROW)
-        {
-            LLSD s;
-            s["snapshot"] = (LLSD::Integer)sqlite3_column_int64(st, 0);
-            s["when"] = whenText(sqlite3_column_int64(st, 1));
-            s["reason"] = col(st, 2);
-            s["items"] = sqlite3_column_int(st, 3);
-            s["folders"] = sqlite3_column_int(st, 4);
-            s["capture_ms"] = sqlite3_column_int(st, 5);
-            s["write_ms"] = sqlite3_column_int(st, 6);
-            // <Lumen>
-            if (sqlite3_column_int(st, 7) != 0)
-            {
-                s["partial"] = true;
-                s["partial_note"] = "Taken before the viewer had loaded the whole inventory from Second "
-                                    "Life, so it may not have everything in it.";
-            }
-            out.append(s);
-        }
-        sqlite3_finalize(st);
+        for (auto it = list.rbegin(); it != list.rend(); ++it)
+            if (!(*it)->changes.empty()) return *it;
+        return typename LIST::value_type();
     }
-    return out;
 }
 
-// =============================================================================
-// Undo
-// =============================================================================
+std::string LumenAIUndo::menuLabel(bool redo) const
+{
+    std::shared_ptr<Entry> e = redo ? newestWithChanges(mRedo) : newestWithChanges(mUndo);
+    if (!e) return redo ? "Redo" : "Undo";
+    std::string label = std::string(redo ? "Redo: " : "Undo: ") + (e->assistant ? "assistant " : "you ")
+                      + describe(*e);
+    LLWString w = utf8str_to_wstring(label);
+    if ((S32)w.size() > MENU_LABEL_MAX)
+    {
+        w.resize(MENU_LABEL_MAX - 3);
+        label = wstring_to_utf8str(w) + "...";
+    }
+    return label;
+}
 
-// <Lumen> Nothing is put back logged out -- or disconnected, the viewer still
-// open behind its message, where a move changes only the viewer's own copy and
-// the message to Second Life is dropped, and would be recorded as done -- nor
-// alongside another undo or restore: the two would fight over the same things,
-// both reporting success.
+bool LumenAIUndo::canUndo(bool redo) const
+{
+    if (puttingBack() || bulkRunning()) return false;
+    return (bool)(redo ? newestWithChanges(mRedo) : newestWithChanges(mUndo));
+}
+
 std::string LumenAIUndo::notNow(const char* what) const
 {
     if (offline())
-    {
-        return std::string("The viewer is not connected to Second Life (logged out), so nothing was ")
-             + what + ". Tell the user.";
-    }
+        return std::string("The viewer is not connected to Second Life (logged out), so nothing can be ")
+               + what + " now.";
+    if (bulkRunning())
+        return std::string("A bulk change is still running, so nothing was ") + what + ". Clear in the "
+               "Assistant window stops it; then try again.";
     if (puttingBack())
-    {
-        return std::string("An undo or a restore is still putting things back, so nothing was ") + what
-             + ". Tell the user; the viewer says when that has finished, and they can ask again then. "
-               "To stop it sooner: Stop in Comm > Assistant Inventory History, or Clear in the "
-               "Assistant window.";
-    }
+        return std::string("An undo or a redo is still putting things back, so nothing was ") + what
+               + ". Clear in the Assistant window stops it.";
     return std::string();
 }
 
-LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
+// =============================================================================
+// Planning an undo or a redo
+// =============================================================================
+
+bool LumenAIUndo::planFor(Entry& e, bool redo, Plan& plan, LLSD& error)
 {
-    Plan plan;
-    if (!ensureOpen())
+    plan.step_id = e.id;
+    plan.redo = redo;
+    const S32 n = (S32)e.changes.size();
+    auto isTrash = [](const LLUUID& id) { return id == trashId() || inTrash(id); };
+    for (S32 k = 0; k < n; ++k)
     {
-        error = "The inventory record is not available: "
-              + (mWhyUnavailable.empty() ? std::string("the inventory has not loaded yet") : mWhyUnavailable)
-              + ".";
-        return plan;
-    }
-    // <Lumen>
-    if (offline())
-    {
-        error = notNow("undone");
-        return plan;
-    }
-    // <Lumen> "Undo" means the newest. While a bulk run is still being
-    // written, that is the run -- which cannot be undone yet -- and never an
-    // older, unrelated change in its place.
-    if (set_id == 0 && !mRunning.empty())
-    {
-        error = llformat("The newest change is a bulk change (change set %lld) that is still running, so "
-                         "nothing was undone. It can be undone once it has finished; the viewer says "
-                         "so in the Assistant window. To stop it sooner: Stop in Comm > Assistant "
-                         "Inventory History, or Clear in the Assistant window.",
-                         (long long)*mRunning.rbegin());
-        return plan;
-    }
-    // Nor anything older while one runs: the two would get in each other's way.
-    if (!mRunning.empty() && !mRunning.count(set_id))
-    {
-        error = "A bulk change is still running, so nothing was undone. Ask again once it has finished, "
-                "or stop it with Stop in Comm > Assistant Inventory History.";
-        return plan;
-    }
-    // What was just recorded has to be in the file for this to see it.
-    if (!flush())
-    {
-        error = "The record is still being written (a snapshot of a large inventory), so nothing was "
-                "undone. The user can ask again in a little while.";
-        return plan;
-    }
-    // </Lumen>
-    sqlite3_stmt* st = nullptr;
-    if (set_id == 0)
-    {
-        if (sqlite3_prepare_v2(mRead,
-                "SELECT id FROM sets s WHERE undone_at IS NULL AND EXISTS(SELECT 1 FROM changes c "
-                "WHERE c.set_id=s.id) ORDER BY id DESC LIMIT 1;", -1, &st, nullptr) == SQLITE_OK)
+        // Undo goes newest first; redo in the order it was done.
+        const S32 i = redo ? k : n - 1 - k;
+        const Change& c = e.changes[i];
+        if (c.undone != redo) continue;   // undo: not undone yet; redo: undone last time
+        const std::string shown = nameOf(c.id).empty() ? (redo ? c.name_before : c.name_after) : nameOf(c.id);
+        auto leave = [&](const std::string& why)
         {
-            if (sqlite3_step(st) == SQLITE_ROW) set_id = sqlite3_column_int64(st, 0);
-            sqlite3_finalize(st);
+            ++plan.left_alone_count;
+            addCapped(plan.left_alone, entry(shown, why));
+        };
+        auto cannot = [&](const std::string& why)
+        {
+            ++plan.cannot_count;
+            addCapped(plan.cannot, entry(shown, why));
+        };
+        if (c.gone || !exists(c.id))
+        {
+            cannot("it is not in the inventory any more -- emptied from the Trash, given away or rezzed");
+            continue;
         }
-        if (set_id == 0)
+        const LLUUID cur = parentOf(c.id);
+        Step s;
+        s.id = c.id;
+        s.folder = c.folder;
+        s.label = shown;
+        s.row = i + 1;
+        s.expect_parent = cur;
+        bool make = true;
+        switch (c.kind)
         {
-            error = "There is nothing to undo: the record holds no change by the assistant that is "
-                    "not already undone.";
-            return plan;
-        }
-    }
-    // <Lumen>
-    if (mRunning.count(set_id))
-    {
-        error = llformat("Change set %lld is a bulk change that is still running, so nothing was undone. "
-                         "It can be undone once it has finished; the viewer says so in the Assistant "
-                         "window.", (long long)set_id);
-        return plan;
-    }
-    if (mUndoing.count(set_id))
-    {
-        error = llformat("An undo of change set %lld is still going, so it was not started again. The "
-                         "viewer says when it has finished.", (long long)set_id);
-        return plan;
-    }
-    if (puttingBack())
-    {
-        error = notNow("undone");
-        return plan;
-    }
-    // </Lumen>
-    S64 undone = -1;
-    if (sqlite3_prepare_v2(mRead, "SELECT IFNULL(undone_at,0) FROM sets WHERE id=?;", -1, &st, nullptr) == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, set_id);
-        if (sqlite3_step(st) == SQLITE_ROW) undone = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
-    }
-    if (undone < 0)
-    {
-        error = llformat("There is no change set %lld in the record -- inventory / history lists them.",
-                         (long long)set_id);
-        return plan;
-    }
-    // <Lumen> Undone before: planned again, but only what that undo did not
-    // put back -- what was refused then may go now. Nothing left, and it says
-    // so below.
-    plan.again = undone > 0;
-    plan.set_id = set_id;
-
-    struct Row { std::string kind, nb, na; LLUUID id, pb, pa; bool folder; std::string chain;
-                 S64 row; bool done; };
-    std::vector<Row> rows;
-    if (sqlite3_prepare_v2(mRead,
-            "SELECT kind,object_id,folder,name_before,name_after,parent_before,parent_after,chain,"
-            "rowid,IFNULL(undone_at,0) FROM changes WHERE set_id=? ORDER BY seq DESC;", -1, &st, nullptr)
-        == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, set_id);
-        while (sqlite3_step(st) == SQLITE_ROW)
+        case Change::MOVE:
         {
-            rows.push_back(Row{ col(st, 0), col(st, 3), col(st, 4), LLUUID(col(st, 1)),
-                                LLUUID(col(st, 5)), LLUUID(col(st, 6)),
-                                sqlite3_column_int(st, 2) != 0, col(st, 7),
-                                sqlite3_column_int64(st, 8), sqlite3_column_int64(st, 9) > 0 });
-        }
-        sqlite3_finalize(st);
-    }
-
-    // Undone newest first, so the state each step expects is simulated: a
-    // thing moved twice in one request is checked against where the later
-    // move left it, not where it is now.
-    std::map<LLUUID, LLUUID> simParent;
-    std::map<LLUUID, std::string> simName;
-    auto curParent = [&](const LLUUID& id) { auto f = simParent.find(id); return f != simParent.end() ? f->second : parentOf(id); };
-    auto curName   = [&](const LLUUID& id) { auto f = simName.find(id);   return f != simName.end()   ? f->second : nameOf(id); };
-    const LLUUID trash = trashId();
-    auto alone = [&](const std::string& name, const std::string& why)
-    {
-        ++plan.left_alone_count;
-        addCapped(plan.left_alone, entry(name, why));
-    };
-    auto gone = [&](const std::string& name, const std::string& why)
-    {
-        ++plan.cannot_count;
-        addCapped(plan.cannot, entry(name, why));
-    };
-    // <Lumen> Not checked yet -- not loaded, or a rename Second Life has not
-    // confirmed: tried again by the next undo of the set, which stays unmarked.
-    auto notYet = [&](const std::string& name, const std::string& why)
-    {
-        ++plan.not_yet_count;
-        addCapped(plan.not_yet, entry(name, why));
-    };
-
-    for (const Row& r : rows)
-    {
-        const std::string label = r.nb.empty() ? r.na : r.nb;
-        // <Lumen> Put back by an earlier undo of this set. Not simulated: the
-        // inventory shows it already, and the next older step is checked
-        // against the inventory -- so a hand change since is still seen.
-        if (r.done) { ++plan.earlier; continue; }
-        if (!exists(r.id))
-        {
-            if (r.kind == "new_folder") continue;   // already gone: nothing to put back
-            // <Lumen> Gone, or only not loaded? Asked of where it should be:
-            // the folder the change left it in (the Trash, for a delete).
-            switch (whyMissing(r.pa))
+            const LLUUID from = redo ? c.parent_before : c.parent_after;   // where it should be now
+            const LLUUID to = redo ? c.parent_after : c.parent_before;
+            if (from == to) { plan.already.push_back(i + 1); make = false; break; }
+            if (isTrash(from) ? !isTrash(cur) : cur != from)
             {
-            case NOT_LOADED: notYet(label, NOT_LOADED_YET); break;
-            case NOT_KNOWN:  gone(label, NOT_KNOWN_IF_THERE); break;
-            default:
-                gone(label, r.kind == "trash"
-                     ? "it was emptied from the Trash, so it is gone for good -- nothing can bring it back"
-                     : "it is no longer in inventory (emptied from the Trash, given away or rezzed)");
+                leave("moved since; it is in " + pathOf(cur));
+                make = false;
                 break;
             }
-            continue;
-        }
-        const LLUUID now = curParent(r.id);
-        // <Lumen> In a folder the user has protected since -- or, for a folder
-        // that would move or go to the Trash, holding one: left alone, and
-        // said. Into one is never asked: that harms nothing.
-        auto guarded = [&](bool carried) -> bool
-        {
-            const std::string why = LumenInventoryRules::inProtected(r.id, carried);
-            if (why.empty()) return false;
-            alone(label, why);
-            return true;
-        };
-        // </Lumen>
-        if (r.kind == "move" || r.kind == "trash")
-        {
-            if (now != r.pa)
+            if (isTrash(to)) s.kind = Step::TRASH;
+            else
             {
-                alone(label, r.kind == "trash"
-                      ? "taken out of the Trash since; it is in " + pathOf(now)
-                      : "moved again since; it is in " + pathOf(now));
-                continue;
+                s.kind = Step::MOVE;
+                s.target = to;
+                s.chain = redo ? c.chain_after : c.chain_before;
             }
-            if (guarded(r.folder)) continue;   // <Lumen>
-            Step s; s.kind = Step::MOVE; s.id = r.id; s.folder = r.folder; s.label = label;
-            s.target = r.pb; s.chain = Chain::parse(r.chain); s.row = r.row;
-            s.expect_parent = now;   // <Lumen>
-            plan.steps.push_back(s);
-            simParent[r.id] = r.pb;
+            break;
         }
-        else if (r.kind == "untrash")
-        {
-            if (now != r.pa) { alone(label, "moved since it came out of the Trash"); continue; }
-            if (guarded(r.folder)) continue;   // <Lumen>
-            Step s; s.kind = Step::TRASH; s.id = r.id; s.folder = r.folder; s.label = label;
-            s.row = r.row;
-            s.expect_parent = now;   // <Lumen>
-            plan.steps.push_back(s);
-            simParent[r.id] = trash;
-        }
-        else if (r.kind == "rename")
-        {
-            // <Lumen> Carrying the name it had before: a rename of it still on
-            // its way to Second Life has not been confirmed yet -- not a change
-            // since, and the set stays unmarked so the next undo tries it.
-            // Otherwise it simply has that name again: nothing to put back.
-            const std::string called = curName(r.id);
-            if (called == r.nb && called != r.na)
+        case Change::TRASH:
+            if (!redo)
             {
-                if (renamePending(r.id))
-                    notYet(label, "Second Life has not confirmed a rename of it yet");
-                else
-                    alone(label, "it has its old name again already");
-                continue;
-            }
-            // </Lumen>
-            if (called != r.na) { alone(label, "renamed again since; it is called \"" + called + "\""); continue; }
-            if (guarded(false)) continue;   // <Lumen>
-            Step s; s.kind = Step::RENAME; s.id = r.id; s.folder = r.folder; s.name = r.nb;
-            s.label = r.na; s.row = r.row;
-            s.expect_name = called;   // <Lumen>
-            plan.steps.push_back(s);
-            simName[r.id] = r.nb;
-        }
-        else if (r.kind == "new_folder")
-        {
-            if (inTrash(r.id) || now == trash) continue;
-            // Still holding anything once this undo has moved out what it moves out?
-            LLInventoryModel::cat_array_t* cats = nullptr;
-            LLInventoryModel::item_array_t* items = nullptr;
-            gInventory.getDirectDescendentsOf(r.id, cats, items);
-            S32 holding = 0;
-            if (cats)  for (const auto& c : *cats)  if (c && curParent(c->getUUID()) == r.id) ++holding;
-            if (items) for (const auto& i : *items) if (i && curParent(i->getUUID()) == r.id) ++holding;
-            if (holding > 0) { alone(label, "the folder it made has things in it now, so it stays"); continue; }
-            if (now != r.pa) { alone(label, "the folder it made has been moved since, so it stays"); continue; }
-            if (guarded(true)) continue;   // <Lumen>
-            Step s; s.kind = Step::TRASH; s.id = r.id; s.folder = true; s.label = label;
-            s.row = r.row;
-            s.expect_parent = now;   // <Lumen>
-            plan.steps.push_back(s);
-            simParent[r.id] = trash;
-        }
-    }
-    // <Lumen>
-    if (plan.again && plan.steps.empty() && plan.not_yet_count == 0)
-    {
-        error = llformat("Change set %lld was already undone, %s", (long long)set_id, whenText(undone).c_str());
-        if (plan.left_alone_count + plan.cannot_count > 0)
-        {
-            error = error.asString()
-                  + llformat(", and nothing in it is left that can be put back: %d changed again since, "
-                             "%d are gone from inventory.", plan.left_alone_count, plan.cannot_count);
-        }
-        else
-        {
-            error = error.asString() + ".";
-        }
-    }
-    // </Lumen>
-    return plan;
-}
-
-LLSD LumenAIUndo::undo(S64 set_id)
-{
-    LLSD error;
-    Plan plan = planUndo(set_id, error);
-    if (error.isDefined())
-    {
-        LLSD out; out["error"] = error; return out;
-    }
-    const S64 id = plan.set_id;
-    const bool again = plan.again;
-    const S32 earlier = plan.earlier;
-    const S32 not_yet = plan.not_yet_count;   // <Lumen>
-
-    // <Lumen> Undone, or being: nothing more is written into it. The turn
-    // that made it -- "no, undo that and put it in Autumn" -- writes what it
-    // changes next into a new set, so that "undo that" afterwards undoes the
-    // Autumn move and not something older (see liveSet()).
-    mClosed.insert(id);
-    mUndoing.insert(id);
-    if (mRequestSet == id) mRequestSet = 0;
-
-    LLSD out = run(plan, [this, id, not_yet](const LLSD& s, const std::vector<S64>& rows, bool later)
-    {
-        mUndoing.erase(id);
-        const S32 put_back = s["put_back"].asInteger();
-        const S32 could_not = s["could_not"].asInteger();
-        const S32 not_done = s["not_done"].asInteger();   // <Lumen> stopped before them
-        // Marked undone when something went back, or when nothing was
-        // refused (all of it changed since, or gone -- a second try would
-        // change nothing, and an unmarked set would stop every later "undo"
-        // at itself). When everything it tried was refused, it stays as it
-        // was and undo tries it again. Each change put back is marked on its
-        // own, so a later undo of the set tries only the rest.
-        // <Lumen> Nor when some of it was not loaded yet, or a rename not
-        // confirmed yet, or it stopped part way: there is more to try, and
-        // a plain "undo" must still find this set.
-        const bool whole = (put_back > 0 || could_not == 0) && not_yet == 0 && not_done == 0;
-        std::string note = llformat("%d put back, %d could not be", put_back, could_not);
-        if (not_done > 0) note += llformat(", %d not done", not_done);
-        if (not_yet > 0) note += llformat(", %d not checked yet", not_yet);
-        const S64 now = (S64)time(nullptr);
-        post([this, id, rows, whole, note, now](sqlite3* db)
-        {
-            bool ok = execOn(db, "BEGIN;");
-            sqlite3_stmt* st = nullptr;
-            if (ok && !rows.empty())
-            {
-                ok = prepared(db, "UPDATE changes SET undone_at=? WHERE rowid=?;", &st);
-                for (size_t i = 0; ok && i < rows.size(); ++i)
+                if (!isTrash(cur))
                 {
-                    sqlite3_bind_int64(st, 1, now);
-                    sqlite3_bind_int64(st, 2, rows[i]);
-                    ok = stepDone(db, st, "marking a change put back");
-                    sqlite3_reset(st);
+                    leave("taken out of the Trash since; it is in " + pathOf(cur));
+                    make = false;
+                    break;
                 }
-                sqlite3_finalize(st);
-            }
-            if (ok && prepared(db, whole ? "UPDATE sets SET undone_at=?, undo_note=? WHERE id=?;"
-                                         : "UPDATE sets SET undo_note=? WHERE id=?;", &st))
-            {
-                int i = 1;
-                if (whole) sqlite3_bind_int64(st, i++, now);
-                bindText(st, i++, note);
-                sqlite3_bind_int64(st, i, id);
-                ok = stepDone(db, st, "marking a change set undone");
-                sqlite3_finalize(st);
+                s.kind = Step::MOVE;
+                s.target = c.parent_before;
+                s.chain = c.chain_before;
             }
             else
             {
-                ok = false;
+                if (cur != c.parent_before)
+                {
+                    leave(isTrash(cur) ? std::string("it is in the Trash already")
+                                       : "moved since; it is in " + pathOf(cur));
+                    make = false;
+                    break;
+                }
+                s.kind = Step::TRASH;
             }
-            finishTransaction(db, ok, "recording an undo");
-            changed();
-        });
-        if (later)
+            break;
+        case Change::RENAME:
         {
-            // <Lumen> Stopped: said as stopped, with what is left.
-            std::string message = s["stopped_by_user"].asBoolean()
-                ? "Undo stopped, as asked: " + note + "."
-                : s["stopped"].asBoolean()
-                ? "Undo stopped part way, when the viewer was logged out: " + note + "."
-                : "Undo finished: " + note + ".";
-            if (not_done > 0 && s["stopped_by_user"].asBoolean())
+            const std::string now_name = nameOf(c.id);
+            const std::string should = redo ? c.name_before : c.name_after;
+            const std::string give = redo ? c.name_after : c.name_before;
+            make = false;
+            if (now_name == give)
             {
-                message += llformat(" Undoing change set %lld again does the rest.", (long long)id);
+                // Its old name: the rename was refused -- or is not confirmed
+                // by Second Life yet, and putting it back now would be undone
+                // by the answer.
+                if (renamePending(c.id))
+                {
+                    ++plan.not_yet_count;
+                    addCapped(plan.not_yet, entry(shown, "Second Life has not confirmed its new name yet"));
+                }
+                else plan.already.push_back(i + 1);
+                break;
             }
-            else if (could_not > 0)
+            if (now_name != should)
             {
-                message += llformat(" Undoing change set %lld again tries those, once whatever stopped "
-                                    "them is gone.", (long long)id);
+                leave("renamed since; it is called " + quoted(now_name));
+                break;
             }
-            announce(message);
+            s.kind = Step::RENAME;
+            s.name = give;
+            s.expect_name = now_name;
+            make = true;
+            break;
         }
-        changed();
-    });
-    out["change_set"] = (LLSD::Integer)id;
-    if (again)
-    {
-        out["again"] = true;
-        out["put_back_before"] = earlier;
-    }
-    // <Lumen> Not loaded yet, or a rename not confirmed yet: said, and the set
-    // is left for the next undo.
-    if (not_yet > 0)
-    {
-        out["not_yet"] = plan.not_yet;
-        out["not_yet_count"] = not_yet;
-        out["not_marked_undone"] = true;
-        out["try_again"] = llformat("%d could not be checked yet (listed under not_yet, each with why): "
-                                    "not loaded from Second Life yet -- the viewer is loading them -- or "
-                                    "a rename it has not confirmed yet. They are not gone. Change set "
-                                    "%lld stays not undone, and undoing it again tries them.",
-                                    not_yet, (long long)id);
-    }
-    else if (out["finished"].asBoolean() && out["could_not"].asInteger() > 0)
-    {
-        if (out["put_back"].asInteger() == 0)
-        {
-            out["not_marked_undone"] = true;
-            out["try_again"] = llformat("Nothing could be put back, so change set %lld stays as it was: "
-                                        "undo with change_set %lld tries it again, once whatever stopped "
-                                        "it is gone.", (long long)id, (long long)id);
+        case Change::NEW_FOLDER:
+            if (!redo)
+            {
+                if (isTrash(cur)) { plan.already.push_back(i + 1); make = false; break; }
+                s.kind = Step::TRASH;
+                s.only_empty = true;
+            }
+            else
+            {
+                if (!isTrash(cur))
+                {
+                    if (cur == c.parent_after) plan.already.push_back(i + 1);
+                    else leave("moved since; it is in " + pathOf(cur));
+                    make = false;
+                    break;
+                }
+                s.kind = Step::MOVE;
+                s.target = c.parent_after;
+                s.chain = c.chain_after;
+            }
+            break;
         }
+        if (!make) continue;
+
+        // The shared rules, asked now so the question says it; asked again
+        // as each step is done.
+        LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+        std::string why;
+        if (s.kind == Step::RENAME) why = LumenInventoryRules::notRename(s.id, s.folder, &rule);
+        else if (s.kind == Step::TRASH) why = LumenInventoryRules::notDelete(s.id, s.folder, &rule);
+        else if (liveFolder(s.target)) why = LumenInventoryRules::notMove(s.id, s.folder, s.target, &rule);
         else
         {
-            out["try_again"] = llformat("undo with change_set %lld tries the ones that could not be put "
-                                        "back again, once whatever stopped them is gone.", (long long)id);
+            why = LumenInventoryRules::held(s.id, s.folder, &rule);
+            if (why.empty() && s.folder) why = LumenInventoryRules::inProtected(s.id, true, &rule);
         }
-    }
-    // </Lumen>
-    changed();
-    return out;
-}
-
-// =============================================================================
-// Restoring a snapshot
-// =============================================================================
-
-LumenAIUndo::Plan LumenAIUndo::planRestore(S64 snap_id, LLSD& error, bool reuse)
-{
-    Plan plan;
-    if (!ensureOpen())
-    {
-        error = "The inventory record is not available: "
-              + (mWhyUnavailable.empty() ? std::string("the inventory has not loaded yet") : mWhyUnavailable)
-              + ".";
-        return plan;
-    }
-    // <Lumen> Not while a bulk run is going: the two would get in each
-    // other's way, and "undo" is refused mid-run, so restore is what a model
-    // reaches for next. Asked before the plan made in this frame is reused,
-    // so a Yes given after the run started is refused too.
-    if (!mRunning.empty())
-    {
-        error = "A bulk change is still running, so nothing was restored. Ask again once it has "
-                "finished, or stop it with Stop in Comm > Assistant Inventory History.";
-        return plan;
-    }
-    // <Lumen> Nor logged out, nor alongside another undo or restore.
-    {
-        const std::string why = notNow("restored");
         if (!why.empty())
         {
-            error = why;
-            return plan;
-        }
-    }
-    // <Lumen> The plan the question was built from is the one its Yes runs:
-    // planned once, not again in the frame of the Yes (a quarter of a second
-    // at 245,000 items, after a fifth of one at the question). It may be some
-    // minutes old by then; every step checks the thing is still as the plan
-    // saw it, and leaves alone what is not.
-    if (reuse && mPlanned && mPlannedSnap == snap_id
-        && LLTimer::getTotalSeconds() - mPlannedAt < PLAN_KEEPS)
-    {
-        return *mPlanned;
-    }
-    if (!flush())
-    {
-        error = "The record is still being written (a snapshot of a large inventory), so nothing was "
-                "changed. The user can ask again in a little while.";
-        return plan;
-    }
-    // On the main thread, and the biggest read there is: said in the log, so
-    // it can be measured on a real inventory.
-    LLTimer timer;
-    // </Lumen>
-    std::vector<Node> nodes;
-    if (!readSnapshot(snap_id, nodes, &plan.partial))
-    {
-        error = llformat("There is no snapshot %lld -- inventory / history lists them.", (long long)snap_id);
-        return plan;
-    }
-    const S32 read_ms = (S32)(timer.getElapsedTimeF32() * 1000.f);
-    plan.snap_id = snap_id;
-
-    std::unordered_map<LLUUID, const Node*> byId;
-    byId.reserve(nodes.size());
-    for (const Node& n : nodes) byId[n.id] = &n;
-    const LLUUID root = gInventory.getRootFolderID();
-
-    // <Lumen> What is in Current Outfit now, once, rather than a walk up from
-    // every node in the snapshot.
-    std::unordered_set<LLUUID> in_outfit;
-    {
-        const LLUUID cof = gInventory.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT);
-        if (cof.notNull())
-        {
-            LLInventoryModel::cat_array_t cats;
-            LLInventoryModel::item_array_t items;
-            gInventory.collectDescendents(cof, cats, items, LLInventoryModel::EXCLUDE_TRASH);
-            in_outfit.insert(cof);
-            for (const auto& c : cats)  if (c) in_outfit.insert(c->getUUID());
-            for (const auto& i : items) if (i) in_outfit.insert(i->getUUID());
-        }
-    }
-
-    // Folders first, shallowest first, so a folder comes back before what is in it.
-    // <Lumen> Each folder's depth worked out once, not once per thing in it.
-    std::unordered_map<LLUUID, S32> depthOf;
-    auto depth = [&](const Node& n)
-    {
-        std::vector<LLUUID> path;
-        LLUUID p = n.parent;
-        S32 base = 0;
-        for (S32 guard = 0; guard < 64 && p.notNull() && p != root; ++guard)
-        {
-            auto known = depthOf.find(p);
-            if (known != depthOf.end()) { base = known->second; break; }
-            auto f = byId.find(p);
-            if (f == byId.end()) break;
-            path.push_back(p);
-            p = f->second->parent;
-        }
-        S32 d = base;
-        for (auto it = path.rbegin(); it != path.rend(); ++it) depthOf[*it] = ++d;
-        return d;
-    };
-    std::vector<std::pair<S32, const Node*>> order;
-    order.reserve(nodes.size());
-    for (const Node& n : nodes) order.emplace_back((n.folder ? 0 : 1000) + depth(n), &n);
-    std::sort(order.begin(), order.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    auto chainFor = [&](const LLUUID& folder)
-    {
-        Chain c;
-        LLUUID p = folder;
-        for (S32 guard = 0; guard < 64 && p.notNull() && p != root; ++guard)
-        {
-            auto f = byId.find(p);
-            if (f == byId.end()) break;
-            c.folders.emplace_back(p, f->second->name);
-            p = f->second->parent;
-        }
-        std::reverse(c.folders.begin(), c.folders.end());
-        return c;
-    };
-    // <Lumen> Held where it is by the rules every path shares: not in the
-    // preview's counts or the question's, and listed with the reason. Asked
-    // again when it runs, since a minute may pass in between.
-    auto refuse = [&plan](const std::string& name, const std::string& why)
-    {
-        ++plan.refused_count;
-        addCapped(plan.refused, entry(name, why));
-    };
-    bool missing_asked = false;   // <Lumen>
-    Missing missing_why = GONE;
-
-    for (const auto& o : order)
-    {
-        const Node& n = *o.second;
-        // <Lumen> One look-up for whether it is there, where, and its name.
-        LLInventoryObject* obj = gInventory.getObject(n.id);
-        if (!obj)
-        {
-            // <Lumen> Gone, or only not loaded? Asked of the Trash, where a
-            // thing that left this arrangement most likely went -- once.
-            if (!missing_asked) { missing_why = whyMissing(trashId()); missing_asked = true; }
-            const Missing why = missing_why;
-            if (why == NOT_LOADED)
-            {
-                ++plan.not_yet_count;
-                addCapped(plan.not_yet, entry(n.name, NOT_LOADED_YET));
-                continue;
-            }
-            ++plan.cannot_count;
-            addCapped(plan.cannot, entry(n.name, why == NOT_KNOWN ? std::string(NOT_KNOWN_IF_THERE)
-                : n.folder ? std::string("the folder is gone from inventory (emptied from the Trash)")
-                : std::string("gone from inventory -- emptied from the Trash, given away or rezzed")));
+            if (rule == LumenInventoryRules::PROTECTED_FOLDER) leave(why);
+            else cannot(why);
             continue;
         }
-        if (n.folder)
-        {
-            LLViewerInventoryCategory* c = gInventory.getCategory(n.id);
-            if (c && LLFolderType::lookupIsProtectedType(c->getPreferredType())) continue;
-        }
-        if (in_outfit.count(n.id)) continue;
-        const LLUUID now = obj->getParentUUID();
-        const std::string name_now = obj->getName();
-        if (now != n.parent)
-        {
-            std::string why = LumenInventoryRules::held(n.id, n.folder);   // <Lumen>
-            // <Lumen> A folder holding a protected one would carry it off.
-            if (why.empty() && n.folder) why = LumenInventoryRules::inProtected(n.id, true);
-            if (why.empty() && liveFolder(n.parent)) why = LumenInventoryRules::notInto(n.parent);
-            if (!why.empty())
-            {
-                refuse(n.name, why);
-            }
-            else
-            {
-                Step s; s.kind = Step::MOVE; s.id = n.id; s.folder = n.folder; s.label = n.name;
-                s.target = n.parent; s.chain = chainFor(n.parent);
-                s.expect_parent = now;   // <Lumen>
-                plan.steps.push_back(s);
-            }
-        }
-        if (name_now != n.name)
-        {
-            const std::string why = LumenInventoryRules::notRename(n.id, n.folder);   // <Lumen>
-            if (!why.empty())
-            {
-                refuse(name_now, why);
-            }
-            else
-            {
-                Step s; s.kind = Step::RENAME; s.id = n.id; s.folder = n.folder; s.name = n.name;
-                s.label = name_now;
-                s.expect_name = name_now;   // <Lumen>
-                plan.steps.push_back(s);
-            }
-        }
+        plan.steps.push_back(s);
     }
-    // <Lumen>
-    LL_INFOS("LumenAIUndo") << "restoring snapshot " << snap_id << " planned on the main thread: "
-                            << nodes.size() << " objects read in " << read_ms << " ms, "
-                            << plan.steps.size() << " steps, " << (S32)(timer.getElapsedTimeF32() * 1000.f)
-                            << " ms in all" << LL_ENDL;
-    mPlanned = std::make_shared<Plan>(plan);
-    mPlannedSnap = snap_id;
-    mPlannedAt = LLTimer::getTotalSeconds();
-    // </Lumen>
-    return plan;
+    (void)error;
+    return !plan.steps.empty() || !plan.already.empty();
 }
 
-LLSD LumenAIUndo::previewRestore(S64 snap_id, S32 sample, bool reuse)
+LLSD LumenAIUndo::preview(bool redo)
 {
-    LLSD error;
-    Plan plan = planRestore(snap_id, error, reuse);
     LLSD out;
-    if (error.isDefined()) { out["error"] = error; return out; }
-    if (sample <= 0) sample = 12;
-    S32 moves = 0, out_of_trash = 0, renames = 0;
-    LLSD examples = LLSD::emptyArray();
-    for (const Step& s : plan.steps)
+    const std::string busy = notNow(redo ? "redone" : "undone");
+    if (!busy.empty()) { out["error"] = busy; return out; }
+    std::shared_ptr<Entry> e = redo ? newestWithChanges(mRedo) : newestWithChanges(mUndo);
+    if (!e)
     {
-        std::string what;
-        if (s.kind == Step::RENAME)
-        {
-            ++renames;
-            what = "renamed back to \"" + s.name + "\"";
-        }
-        else
-        {
-            if (inTrash(s.id)) { ++out_of_trash; what = "out of the Trash, into "; }
-            else               { ++moves;        what = "moved back to "; }
-            what += liveFolder(s.target) ? pathOf(s.target)
-                                         : (s.chain.folders.empty() ? std::string("(top of inventory)")
-                                                                    : s.chain.folders.back().second
-                                                                      + " (made again)");
-        }
-        if ((S32)examples.size() < sample) examples.append(entry(s.label, what, "what"));
+        out["error"] = redo ? "There is nothing to redo."
+                            : "There is nothing to undo: nothing has been changed in the inventory this "
+                              "login, or it has all been undone.";
+        return out;
     }
-    out["snapshot"] = (LLSD::Integer)snap_id;
-    out["moves"] = moves;
-    out["out_of_trash"] = out_of_trash;
-    out["renames"] = renames;
-    out["examples"] = examples;
+    Plan plan;
+    LLSD error;
+    planFor(*e, redo, plan, error);
+
+    const std::string name = std::string(e->assistant ? "Assistant: " : "You: ") + describe(*e);
+    out["step"] = (LLSD::Integer)e->id;
+    out["name"] = name;
+    out["who"] = e->assistant ? "assistant" : "you";
+    out["did"] = describe(*e);
+    if (!e->words.empty()) out["asked"] = e->words;
+    out["will_change"] = (S32)plan.steps.size();
+    out["left_alone"] = plan.left_alone;
+    out["left_alone_count"] = plan.left_alone_count;
     out["cannot"] = plan.cannot;
     out["cannot_count"] = plan.cannot_count;
-    // <Lumen>
-    if (plan.refused_count > 0)
-    {
-        out["refused"] = plan.refused;
-        out["refused_count"] = plan.refused_count;
-    }
-    if (plan.partial)
-    {
-        out["partial"] = true;
-        out["partial_note"] = "This snapshot was taken before the viewer had loaded the whole inventory "
-                              "from Second Life, so it may not have everything in it. What it does not "
-                              "have stays where it is now.";
-    }
     if (plan.not_yet_count > 0)
     {
         out["not_yet"] = plan.not_yet;
         out["not_yet_count"] = plan.not_yet_count;
     }
-    // </Lumen>
-    out["nothing_to_do"] = plan.steps.empty();
-    return out;
-}
+    out["nothing"] = plan.steps.empty() && plan.already.empty() && plan.not_yet_count == 0;
 
-LLSD LumenAIUndo::restore(S64 snap_id)
-{
-    LLSD error;
-    Plan plan = planRestore(snap_id, error, true);   // <Lumen> the plan its question showed
-    mPlanned.reset();   // <Lumen> used, or about to be out of date
-    if (error.isDefined())
+    // The lines the question shows. Short: a list of a hundred moves would
+    // fill the screen, and the longer it is the less of it is read.
+    const LLUUID trash = trashId();
+    S32 moves = 0, move_folders = 0, out_of_trash = 0, to_trash = 0, made_away = 0, renames = 0;
+    std::set<LLUUID> targets, sources;
+    const Step* one_rename = nullptr;
+    for (const Step& s : plan.steps)
     {
-        LLSD out; out["error"] = error; return out;
+        if (s.kind == Step::RENAME) { ++renames; if (!one_rename) one_rename = &s; continue; }
+        if (s.kind == Step::TRASH) { (s.only_empty ? made_away : to_trash)++; continue; }
+        if (s.expect_parent == trash || within(s.expect_parent, trash)) ++out_of_trash;
+        else { (s.folder ? move_folders : moves)++; sources.insert(s.expect_parent); }
+        targets.insert(s.target);
     }
+    std::vector<std::string> lines;
+    if (moves + move_folders > 0)
+    {
+        std::string l = llformat("Move %s ", countOf(moves, move_folders).c_str()) + (redo ? "" : "back ");
+        if (sources.size() == 1) l += "out of " + folderName(*sources.begin()) + ", ";
+        l += targets.size() == 1 ? "to " + folderName(*targets.begin())
+                                 : llformat("into %d folders", (S32)targets.size());
+        if (redo) l += " again";
+        lines.push_back(l + ".");
+    }
+    if (out_of_trash > 0)
+        lines.push_back(redo ? llformat("Take %s out of the Trash again.", countOf(out_of_trash, 0).c_str())
+                             : llformat("Take %s out of the Trash, back where %s.",
+                                        countOf(out_of_trash, 0).c_str(),
+                                        out_of_trash == 1 ? "it was" : "they were"));
+    if (to_trash > 0)
+        lines.push_back(llformat(redo ? "Put %s in the Trash again." : "Put %s back in the Trash.",
+                                 countOf(to_trash, 0).c_str()));
+    if (made_away > 0)
+        lines.push_back(llformat("Put %s made then in the Trash, if empty.", countOf(0, made_away).c_str()));
+    if (renames == 1)
+        lines.push_back("Rename " + quoted(one_rename->expect_name) + (redo ? " to " : " back to ")
+                        + quoted(one_rename->name) + ".");
+    else if (renames > 1)
+        lines.push_back(llformat(redo ? "Rename %d things again." : "Give %d things their names back.",
+                                 renames));
+    std::string text;
+    // One change says itself in its own line; more get the summary first.
+    if (plan.steps.size() > 1)
+        for (const std::string& l : lines) text += l + "\n";
+    S32 shown = 0;
+    for (const Step& s : plan.steps)
+    {
+        if (shown == SHOWN) break;
+        ++shown;
+        const std::string indent = plan.steps.size() > 1 ? "    " : "";
+        if (s.kind == Step::RENAME)
+            text += indent + quoted(s.expect_name) + " \xE2\x86\x92 " + quoted(s.name) + "\n";
+        else
+            text += indent + s.label + ": " + folderName(s.expect_parent) + " \xE2\x86\x92 "
+                  + (s.kind == Step::TRASH ? std::string("Trash") : lastName(s.chain, s.target)) + "\n";
+    }
+    if ((S32)plan.steps.size() > shown)
+        text += llformat("    and %d more.\n", (S32)plan.steps.size() - shown);
+    if (plan.left_alone_count > 0)
+        text += llformat("Left alone, changed since: %d (", plan.left_alone_count)
+              + plan.left_alone[0]["name"].asString() + ": " + plan.left_alone[0]["why"].asString() + ").\n";
+    if (plan.cannot_count > 0)
+        text += llformat("Cannot come back: %d (", plan.cannot_count)
+              + plan.cannot[0]["name"].asString() + ": " + plan.cannot[0]["why"].asString() + ").\n";
+    if (plan.not_yet_count > 0)
+        text += llformat("Not yet: %d -- Second Life has not confirmed a new name; try again in a moment.\n",
+                         plan.not_yet_count);
     if (plan.steps.empty())
-    {
-        LLSD out; out["nothing_to_do"] = true; out["cannot"] = plan.cannot;
-        out["cannot_count"] = plan.cannot_count;
-        if (plan.refused_count > 0) { out["refused"] = plan.refused; out["refused_count"] = plan.refused_count; }
-        if (plan.not_yet_count > 0) { out["not_yet"] = plan.not_yet; out["not_yet_count"] = plan.not_yet_count; }
-        return out;
-    }
-    // A restore is a change too: take a snapshot first, so it can be undone
-    // by restoring that one.
-    const S64 before = takeSnapshot(llformat("before restoring snapshot %lld", (long long)snap_id));
-    // <Lumen> ...and it has to be on disk before anything moves: a restore
-    // that cannot be put back is not started. A restore is rare and asked
-    // for, so the moment this waits is spent here and not on every frame.
-    const bool written = before != 0 && flush();
-    if (!written || snapshotState(before) != SNAP_WRITTEN)
-    {
-        LLSD out;
-        // <Lumen> A slow disk is not a failure: the snapshot is still on its
-        // way, and lands a moment later.
-        out["error"] = (before != 0 && snapshotState(before) == SNAP_PENDING)
-            ? std::string("The snapshot that lets this restore be put back is still being written (a "
-                          "large inventory, or a slow disk), so nothing was changed yet. Tell the user; "
-                          "they can ask again in a little while.")
-            : std::string("The snapshot that would let this restore be put back could not be written, "
-                          "so nothing was changed. Say so; the viewer's log says why.");
-        return out;
-    }
-    // </Lumen>
-    LLSD out = run(plan, [this](const LLSD& s, const std::vector<S64>&, bool later)
-    {
-        if (later)
-        {
-            // <Lumen> Stopped: said as stopped, with what is left.
-            const S32 not_done = s["not_done"].asInteger();
-            announce(s["stopped_by_user"].asBoolean()
-                ? llformat("Inventory restore stopped, as asked: %d put back, %d could not be, %d not done.",
-                           s["put_back"].asInteger(), s["could_not"].asInteger(), not_done)
-                : s["stopped"].asBoolean()
-                ? llformat("Inventory restore stopped part way, when the viewer was logged out: %d put "
-                           "back, %d could not be, %d not done.",
-                           s["put_back"].asInteger(), s["could_not"].asInteger(), not_done)
-                : llformat("Inventory restore finished: %d put back, %d could not be.",
-                           s["put_back"].asInteger(), s["could_not"].asInteger()));
-        }
-        changed();
-    });
-    out["snapshot"] = (LLSD::Integer)snap_id;
-    out["snapshot_before_restore"] = (LLSD::Integer)before;
-    if (plan.partial) out["partial"] = true;   // <Lumen>
-    if (plan.not_yet_count > 0)   // <Lumen>
-    {
-        out["not_yet"] = plan.not_yet;
-        out["not_yet_count"] = plan.not_yet_count;
-    }
+        text += plan.not_yet_count > 0 ? "Nothing else to put back.\n" : "Nothing needs putting back.\n";
+    if (!text.empty() && text.back() == '\n') text.pop_back();
+    out["text"] = text;
+    out["changes_shown"] = shown;
     return out;
 }
 
-// =============================================================================
-// The window
-// =============================================================================
-
-LumenAIUndoFloater::LumenAIUndoFloater(const LLSD& key)
-:   LLFloater(key)
+LLSD LumenAIUndo::perform(bool redo, S64 step)
 {
-}
-
-bool LumenAIUndoFloater::postBuild()
-{
-    mSets  = getChild<LLScrollListCtrl>("change_sets");
-    mSnaps = getChild<LLScrollListCtrl>("snapshots");
-    mText  = getChild<LLTextEditor>("detail");
-    getChild<LLButton>("undo_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onUndo(); });
-    // <Lumen> Stop: a bulk run, from here as well as from Clear in the Assistant.
-    mStopBtn = findChild<LLButton>("stop_btn");
-    if (mStopBtn)
+    LLSD out;
+    const std::string busy = notNow(redo ? "redone" : "undone");
+    if (!busy.empty()) { out["error"] = busy; return out; }
+    std::deque<std::shared_ptr<Entry>>& list = redo ? mRedo : mUndo;
+    std::shared_ptr<Entry> e = newestWithChanges(list);
+    if (!e || e->id != step)
     {
-        mStopBtn->setClickedCallback([this](LLUICtrl*, const LLSD&) { onStop(); });
-        mStopBtn->setEnabled(false);
+        out["error"] = redo ? "Nothing was redone: the list changed after the question was asked."
+                            : "Nothing was undone: the list changed after the question was asked -- "
+                              "something new was done, or that step was already undone.";
+        return out;
     }
-    getChild<LLButton>("preview_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onPreview(); });
-    getChild<LLButton>("restore_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onRestore(); });
-    return true;
-}
+    // Planned again now, after the question: what changed while it was up is left alone.
+    Plan plan;
+    LLSD error;
+    planFor(*e, redo, plan, error);
+    const std::string said = std::string(e->assistant ? "assistant " : "you ") + describe(*e);
 
-void LumenAIUndoFloater::onOpen(const LLSD& key)
-{
-    reload();
-}
+    // Off its list while it runs, so it is not asked for twice.
+    list.erase(std::find(list.begin(), list.end(), e));
+    if (mRequestStep == e->id) mRequestStep = 0;   // the turn's later changes start a new step
 
-void LumenAIUndoFloater::draw()
-{
-    // <Lumen> At most once a second: a bulk run marks the record changed with
-    // every one of its thousands of changes. The flag stays raised until then.
-    if (LLTimer::getTotalSeconds() - mLastReload >= 1.0
-        && LumenAIUndo::instanceExists() && LumenAIUndo::instance().takeDirty())
+    if (plan.steps.empty() && plan.already.empty() && plan.not_yet_count == 0)
     {
-        reload();
+        // Nothing in it can be put back, or through: it is not offered again,
+        // so the step under it can be.
+        std::string why = plan.left_alone_count > 0 ? plan.left_alone[0]["why"].asString()
+                        : plan.cannot_count > 0 ? plan.cannot[0]["why"].asString() : std::string();
+        toast(std::string("Nothing in \"") + said + "\" can be " + (redo ? "redone" : "undone")
+              + " now" + (why.empty() ? std::string() : " -- " + why) + ". It is off the list.");
+        out["nothing"] = true;
+        out["left_alone"] = plan.left_alone;
+        out["left_alone_count"] = plan.left_alone_count;
+        out["cannot"] = plan.cannot;
+        out["cannot_count"] = plan.cannot_count;
+        out["step"] = (LLSD::Integer)step;
+        return out;
     }
-    // <Lumen> Stop is there to press only while a bulk run, an undo or a
-    // restore is going.
-    if (mStopBtn)
-        mStopBtn->setEnabled(LumenAIUndo::instanceExists() && LumenAIUndo::instance().stoppable());
-    LLFloater::draw();
-}
 
-void LumenAIUndoFloater::show(const std::string& text)
-{
-    if (mText) mText->setText(text);
-}
+    mBusy = e;
+    const U64 pushes = mPushes;
+    const std::vector<S64> already = plan.already;
+    const S32 not_yet = plan.not_yet_count;
+    const S32 cannot = plan.cannot_count;
+    const std::string cannot_why = cannot > 0 ? plan.cannot[0]["why"].asString() : std::string();
+    LL_INFOS("LumenAIUndo") << (redo ? "redo" : "undo") << " of step " << step << ": "
+                            << plan.steps.size() << " to do" << LL_ENDL;
 
-S64 LumenAIUndoFloater::selected(LLScrollListCtrl* list) const
-{
-    LLScrollListItem* row = list ? list->getFirstSelected() : nullptr;
-    return row ? (S64)row->getValue().asInteger() : 0;
-}
-
-void LumenAIUndoFloater::reload()
-{
-    mLastReload = LLTimer::getTotalSeconds();   // <Lumen>
-    LumenAIUndo& u = LumenAIUndo::instance();
-    if (!u.available())
+    LLSD result = run(plan, [this, e, redo, pushes, already, not_yet, said, cannot, cannot_why]
+        (const LLSD& s, const std::vector<S64>& rows, bool)
     {
-        // <Lumen> Said why: not loaded yet, or held by another viewer.
-        const std::string why = u.unavailableWhy();
-        show("Nothing to show: the record is not available"
-             + (why.empty() ? std::string(".") : " -- " + why + "."));
-        return;
-    }
-    const S64 keep_set = selected(mSets);
-    const S64 keep_snap = selected(mSnaps);
-    mSets->deleteAllItems();
-    // <Lumen> What is on disk, without waiting for what is being written: a
-    // snapshot being written never holds up a frame. More arriving raises the
-    // flag draw() looks at, and it is read again.
-    const LLSD sets = u.history(50, false);
-    for (LLSD::array_const_iterator it = sets.beginArray(); it != sets.endArray(); ++it)
-    {
-        const LLSD& s = *it;
-        LLSD row;
-        row["value"] = s["change_set"];
-        std::string what = llformat("%d change%s", s["changes"].asInteger(),
-                                    s["changes"].asInteger() == 1 ? "" : "s");
-        // <Lumen>
-        if (s["still_running"].asBoolean())     what += ", still running";
-        else if (s["being_undone"].asBoolean()) what += ", being undone";
-        else if (s["undone"].asBoolean())
+        if (!LumenAIUndo::instanceExists()) return;
+        std::vector<S64> all = rows;
+        all.insert(all.end(), already.begin(), already.end());
+        for (S64 row : all)
         {
-            what += s.has("not_put_back") ? llformat(", undone but %d not put back", s["not_put_back"].asInteger())
-                                          : std::string(", undone");
+            if (row >= 1 && row <= (S64)e->changes.size()) e->changes[row - 1].undone = !redo;
         }
-        // </Lumen>
-        row["columns"][0]["column"] = "when";  row["columns"][0]["value"] = s["when"];
-        row["columns"][1]["column"] = "asked"; row["columns"][1]["value"] = s["asked"];
-        row["columns"][2]["column"] = "what";  row["columns"][2]["value"] = what;
-        mSets->addElement(row);
-    }
-    if (keep_set) mSets->selectByValue((LLSD::Integer)keep_set);
+        if (mBusy == e) mBusy.reset();
+        if (all.empty())
+        {
+            // Nothing done: back where it was if a name was only waiting for
+            // Second Life, so it can be tried again; otherwise off the list.
+            if (not_yet > 0) (redo ? mRedo : mUndo).push_back(e);
+        }
+        else if (redo)
+        {
+            mUndo.push_back(e);   // back on top: it can be undone again
+            while (mUndo.size() > MAX_STEPS) mUndo.pop_front();
+        }
+        else if (pushes == mPushes)
+        {
+            mRedo.push_back(e);   // a change made meanwhile would have cleared it
+        }
 
-    mSnaps->deleteAllItems();
-    const LLSD snaps = u.snapshots(false);   // <Lumen>
-    for (LLSD::array_const_iterator it = snaps.beginArray(); it != snaps.endArray(); ++it)
+        // The toast: what was done, and what could not be after all.
+        const S32 put = (S32)already.size() + s["put_back"].asInteger();
+        std::string line = std::string(redo ? "Redone: " : "Undone: ") + said + ". "
+                         + llformat("%d put %s", put, redo ? "through" : "back") + ".";
+        const S32 left = s["left_alone_count"].asInteger();
+        if (left > 0) line += llformat(" %d left alone: changed since.", left);
+        const S32 failed = s["could_not"].asInteger() + cannot;
+        if (failed > 0)
+        {
+            std::string why = cannot_why;
+            if (s["failed"].size() > 0) why = s["failed"][0]["why"].asString();
+            line += llformat(" %d could not be", failed) + (why.empty() ? std::string(".") : " -- " + why + ".");
+        }
+        if (s.has("not_done") && s["not_done"].asInteger() > 0)
+            line += llformat(" Stopped part way: %d not done.", s["not_done"].asInteger());
+        if (not_yet > 0) line += llformat(" %d not yet: Second Life had not confirmed a name.", not_yet);
+        toast(line);
+    });
+    result["step"] = (LLSD::Integer)step;
+    result["did"] = said;
+    result["already"] = (S32)already.size();
+    if (plan.not_yet_count > 0)
     {
-        const LLSD& s = *it;
-        LLSD row;
-        row["value"] = s["snapshot"];
-        row["columns"][0]["column"] = "when";   row["columns"][0]["value"] = s["when"];
-        // <Lumen> A snapshot taken before all of the inventory had loaded says so.
-        row["columns"][1]["column"] = "reason";
-        row["columns"][1]["value"] = s["reason"].asString()
-            + (s["partial"].asBoolean() ? " -- not all of the inventory had loaded" : "");
-        row["columns"][2]["column"] = "size";
-        row["columns"][2]["value"] = llformat("%d", s["items"].asInteger());
-        mSnaps->addElement(row);
+        result["not_yet"] = plan.not_yet;
+        result["not_yet_count"] = plan.not_yet_count;
     }
-    if (keep_snap) mSnaps->selectByValue((LLSD::Integer)keep_snap);
-}
-
-namespace
-{
-    std::string describe(const LLSD& r)
-    {
-        std::string t;
-        if (r.has("error")) return r["error"].asString();
-        if (r["paced"].asBoolean())
-        {
-            t += llformat("Started: %d changes to put back. The viewer says when it has finished.\n",
-                          r["steps"].asInteger());
-        }
-        else if (r.has("put_back"))
-        {
-            t += llformat("Put back: %d. Could not: %d.", r["put_back"].asInteger(),
-                          r["could_not"].asInteger());
-            if (r["waiting_for_folders"].asInteger() > 0)
-                t += llformat(" Waiting for a folder to be made again: %d.",
-                              r["waiting_for_folders"].asInteger());
-            // <Lumen>
-            if (r["waiting_for_names"].asInteger() > 0)
-                t += llformat(" Waiting for Second Life to confirm a name: %d.",
-                              r["waiting_for_names"].asInteger());
-            t += "\n";
-        }
-        if (r.has("moves"))
-        {
-            t += llformat("Restoring would move %d back, take %d out of the Trash and rename %d back.\n",
-                          r["moves"].asInteger(), r["out_of_trash"].asInteger(), r["renames"].asInteger());
-        }
-        // <Lumen>
-        if (r.has("partial_note")) t += r["partial_note"].asString() + "\n";
-        if (r["again"].asBoolean())
-        {
-            t += llformat("An earlier undo of this put %d back already; this tried the rest.\n",
-                          r["put_back_before"].asInteger());
-        }
-        if (r.has("try_again")) t += r["try_again"].asString() + "\n";
-        // </Lumen>
-        auto list = [&t](const LLSD& l, const char* head, const char* key)
-        {
-            if (!l.isArray() || l.size() == 0) return;
-            t += std::string("\n") + head + "\n";
-            for (LLSD::array_const_iterator i = l.beginArray(); i != l.endArray(); ++i)
-                t += "  " + (*i)["name"].asString() + " -- " + (*i)[key].asString() + "\n";
-        };
-        list(r["examples"], "For example:", "what");
-        list(r["done"], "Put back:", "what");
-        list(r["failed"], "Could not:", "why");
-        list(r["left_alone"], "Left alone:", "why");
-        list(r["refused"], "Left where it is, by the rules the assistant follows:", "why");   // <Lumen>
-        list(r["cannot"], "Cannot be brought back:", "why");
-        list(r["not_yet"], "Not checked yet:", "why");   // <Lumen>
-        if (r["nothing_to_do"].asBoolean()) t += "Nothing differs from that snapshot.\n";
-        return t;
-    }
-}
-
-void LumenAIUndoFloater::onUndo()
-{
-    const S64 id = selected(mSets);
-    if (!id) { show("Choose a change in the list first."); return; }
-    show(describe(LumenAIUndo::instance().undo(id)));
-    reload();
-}
-
-// <Lumen> What it has done stays, as one change set: the Assistant window
-// says how far it got, and Undo here puts it back.
-void LumenAIUndoFloater::onStop()
-{
-    // <Lumen> A bulk run, or an undo or restore putting things back.
-    if (LumenAIUndo::instance().stopBulk())
-        show("Stopping. What was done stays, and the viewer says how far it got.");
-    else
-        show("Nothing is running.");
-}
-
-void LumenAIUndoFloater::onPreview()
-{
-    const S64 id = selected(mSnaps);
-    if (!id) { show("Choose a snapshot in the list first."); return; }
-    show(describe(LumenAIUndo::instance().previewRestore(id, 20)));
-}
-
-void LumenAIUndoFloater::onRestore()
-{
-    const S64 id = selected(mSnaps);
-    if (!id) { show("Choose a snapshot in the list first."); return; }
-    const LLSD p = LumenAIUndo::instance().previewRestore(id, 0);
-    if (p.has("error") || p["nothing_to_do"].asBoolean())
-    {
-        show(describe(p));
-        return;
-    }
-    LLSD args;
-    args["MOVES"] = p["moves"].asInteger();
-    args["TRASH"] = p["out_of_trash"].asInteger();
-    args["RENAMES"] = p["renames"].asInteger();
-    LLHandle<LLFloater> h = getHandle();
-    LLNotificationsUtil::add("LumenConfirmRestore", args, LLSD(),
-        [h, id](const LLSD& n, const LLSD& response)
-        {
-            if (LLNotificationsUtil::getSelectedOption(n, response) != 0) return;
-            const LLSD r = LumenAIUndo::instance().restore(id);
-            if (LumenAIUndoFloater* f = dynamic_cast<LumenAIUndoFloater*>(h.get()))
-            {
-                f->show(describe(r));
-                f->reload();
-            }
-        });
+    return result;
 }

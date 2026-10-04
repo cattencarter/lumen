@@ -960,15 +960,6 @@
              function="Floater.Show"
              parameter="ai_memory" />
         </menu_item_call>
-        <!-- What the assistant changed in the inventory, with Undo, and the
-             snapshots of how it was arranged, with Restore. -->
-        <menu_item_call
-         name="Assistant Inventory History"
-         label="Assistant Inventory History...">
-            <menu_item_call.on_click
-             function="Floater.Show"
-             parameter="ai_inventory_history" />
-        </menu_item_call>
         <!-- </Lumen> -->
         <menu_item_check
          name="Conversation Log..."

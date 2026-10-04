@@ -15506,51 +15506,62 @@ The outfit's old contents are overwritten and cannot be brought back. Nothing yo
        text="Keep it"/>
     </form>
   </notification>
+  <!-- <Lumen> Undo and Redo, from the inventory window's gear menu or asked
+       of the assistant: the same question either way, showing what will
+       change. Never remembered (no ignore), and a LumenAsk name, so the
+       assistant cannot answer it. Cancel is the default, so Enter never acts.
+       [STEP] names the step ("Assistant: moved 885 items to Halloween");
+       [TEXT] is what will change, a few lines. -->
   <notification
    icon="alert.tga"
-   label="Restore the inventory?"
-   name="LumenAskRestore"
+   label="Undo?"
+   name="LumenAskUndo"
    type="alertmodal">
-The assistant wants to put your inventory back as a snapshot had it: [MOVES] moved back, [TRASH] out of the Trash, [RENAMES] renamed back. This can be undone too.
+Undo this?
+[STEP]
+
+[TEXT]
     <tag>confirm</tag>
     <form name="form">
-      <ignore name="ignore"
-       save_option="true"
-       text="When the assistant wants to restore the inventory from a snapshot"/>
       <button
-       ignore="Always allow"
        index="0"
        name="Yes"
-       text="Restore"/>
+       text="Accept"/>
       <button
        default="true"
-       ignore="Always refuse"
        index="1"
        name="No"
-       text="Leave it"/>
+       text="Cancel"/>
     </form>
   </notification>
-  <!-- <Lumen> The history window's own Restore. A form of its own, not
-       okcancelbuttons, whose default is OK: Leave it is the default here as
-       on every other Lumen question, so Enter never restores. -->
   <notification
    icon="alert.tga"
-   label="Restore the inventory?"
-   name="LumenConfirmRestore"
+   label="Redo?"
+   name="LumenAskRedo"
    type="alertmodal">
-Put your inventory back as this snapshot had it: [MOVES] moved back, [TRASH] out of the Trash, [RENAMES] renamed back? This can be undone too.
+Redo this?
+[STEP]
+
+[TEXT]
     <tag>confirm</tag>
     <form name="form">
       <button
        index="0"
        name="Yes"
-       text="Restore"/>
+       text="Accept"/>
       <button
        default="true"
        index="1"
        name="No"
-       text="Leave it"/>
+       text="Cancel"/>
     </form>
+  </notification>
+  <!-- <Lumen> What an undo or a redo did, and what it could not do after all. -->
+  <notification
+   icon="notifytip.tga"
+   name="LumenUndoDone"
+   type="notifytip">
+[MESSAGE]
   </notification>
   <notification
    icon="alert.tga"
