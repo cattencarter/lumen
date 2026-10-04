@@ -21010,6 +21010,7 @@ if (method == "camera")
                 if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
                     note += " Some things wait for the folder they were in to be made again; the "
                             "viewer tells the user itself when that is done. End the reply.";
+                if (result.has("waiting_note")) note += " " + result["waiting_note"].asString();
             }
             // </Lumen>
             // <Lumen> What could not be put back can be tried again.
@@ -21418,17 +21419,29 @@ if (method == "camera")
             {
                 LLSD subs;
                 subs["SUMMARY"] = plan.summary;
-                // <Lumen> What it changes, worded here: folders it only makes
-                // are in the summary, not counted as items changed, and one is
-                // "1 item", never "1 items".
-                S32 changed = 0;
+                // <Lumen> What it changes, worded here: items and folders
+                // counted apart -- a folder moved or deleted whole is a folder,
+                // not an item -- and one is "1 item", never "1 items". Folders
+                // it only makes are in the summary, and counted only when that
+                // is all it does.
+                S32 items = 0, folders = 0, made = 0;
                 for (const BulkOp& op : plan.ops)
                 {
-                    if (op.kind != BulkOp::NEW_FOLDER) ++changed;
+                    if (op.kind == BulkOp::MOVE || op.kind == BulkOp::RENAME || op.kind == BulkOp::TRASH)
+                        ++items;
+                    else if (op.kind == BulkOp::NEW_FOLDER)
+                        ++made;
+                    else
+                        ++folders;
                 }
-                subs["COUNT"] = changed == 1 ? std::string("1 item")
-                              : changed == 0 ? std::string("no items")
-                              : llformat("%d items", changed);
+                if (items == 0 && folders == 0) folders = made;
+                const std::string items_said = items == 1 ? std::string("1 item")
+                                             : llformat("%d items", items);
+                const std::string folders_said = folders == 1 ? std::string("1 folder")
+                                               : llformat("%d folders", folders);
+                subs["COUNT"] = folders == 0 ? items_said
+                              : items == 0 ? folders_said
+                              : items_said + " and " + folders_said;
                 // </Lumen>
                 LLSD ask;
                 plan.asked = true;
@@ -26100,9 +26113,13 @@ if (method == "camera")
                 }
                 sSaveScripts.erase(job);   // written again since: this is a new save
             }
-            else if (!by_title && sLastWrittenScript.get() != jw)
+            else if (!by_title && sLastWrittenScript.get() && sLastWrittenScript.get() != jw)
             {
-                sSaveScripts.erase(job);   // another window written into since
+                // <Lumen> Another window written into since, and still open:
+                // one written into and then closed is not a newer save, and
+                // dropping this one for it answered "nothing new to save" to
+                // the very call that had just saved.
+                sSaveScripts.erase(job);
             }
             else
             {
