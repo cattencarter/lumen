@@ -28,6 +28,7 @@
 
 #include "llviewerprecompiledheaders.h"
 
+#include "lumenaiundo.h"   // <Lumen>
 #include "lumenaichat.h"
 
 #include "llui.h"
@@ -753,6 +754,9 @@ namespace
             if (action == "new_folder")       return "Making a folder";   // <Lumen>
             if (action == "move")             return "Moving it";
             if (action == "rename")           return "Renaming it";
+            if (action == "history")          return "Checking what it changed";   // <Lumen>
+            if (action == "undo")             return "Putting things back";
+            if (action == "restore")          return "Restoring the inventory";
         }
         else if (group == "chat")
         {
@@ -2442,6 +2446,8 @@ void LumenAIChatFloater::sayNote(const std::string& text)
 
 void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 {
+    // <Lumen> A turn ending ends its inventory change set.
+    if (mBusy && !busy && LumenAIUndo::instanceExists()) LumenAIUndo::instance().endRequest();
     mBusy = busy;
 
     if (mSendBtn) mSendBtn->setEnabled(!busy);
@@ -2522,6 +2528,10 @@ void LumenAIChatFloater::beginTurn(const std::string& text)
     if (mBusy) return;
     setBusy(true, "Thinking...");
     // </Lumen>
+
+    // <Lumen> What this turn changes in the inventory is one change set, kept
+    // with these words, so "undo that" has something to undo.
+    LumenAIUndo::instance().beginRequest(text);
 
     // The handle is checked here only for the start; each turn keeps it and
     // asks again after every wait (see stillMine in the run* functions).

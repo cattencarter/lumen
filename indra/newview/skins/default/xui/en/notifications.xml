@@ -15502,6 +15502,46 @@ The outfit's old contents are overwritten and cannot be brought back. Nothing yo
   </notification>
   <notification
    icon="alert.tga"
+   label="Restore the inventory?"
+   name="LumenAskRestore"
+   type="alertmodal">
+The assistant wants to put your inventory back as a snapshot had it: [MOVES] moved back, [TRASH] taken out of the Trash and [RENAMES] renamed back.
+
+Nothing is deleted. A snapshot of how it is now is taken first, so this can be undone the same way.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to restore the inventory from a snapshot"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Restore"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Leave it"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Restore the inventory?"
+   name="LumenConfirmRestore"
+   type="alertmodal">
+Put your inventory back as this snapshot had it: [MOVES] moved back, [TRASH] taken out of the Trash and [RENAMES] renamed back?
+
+Nothing is deleted. A snapshot of how it is now is taken first, so this can be undone the same way.
+    <tag>confirm</tag>
+    <usetemplate
+     name="okcancelbuttons"
+     notext="Leave it"
+     yestext="Restore"/>
+  </notification>
+  <notification
+   icon="alert.tga"
    label="Delete an item?"
    name="LumenAskDelete"
    type="alertmodal">

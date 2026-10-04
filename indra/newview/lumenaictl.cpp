@@ -39,6 +39,7 @@
 #include "llviewercamera.h"
 #include "lumenainotecache.h"
 #include "lumenaimemory.h"
+#include "lumenaiundo.h"   // <Lumen> inventory undo
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
 #include "llagentui.h"
@@ -3731,6 +3732,9 @@ namespace
             if (action == "new_folder")      return "new_folder";   // <Lumen>
             if (action == "move")            return "move_item";    // <Lumen>
             if (action == "rename")          return "rename_item";  // <Lumen>
+            if (action == "history")         return "change_history";    // <Lumen>
+            if (action == "undo")            return "undo_changes";      // <Lumen>
+            if (action == "restore")         return "restore_snapshot";  // <Lumen>
             return "";
         }
         if (group == "chat")
@@ -3912,7 +3916,8 @@ namespace
                 // assistant wants to do is not the assistant's to answer --
                 // nor is a LumenSetup question, which starts a download.
                 if (n->getName().compare(0, 8, "LumenAsk") == 0
-                    || n->getName().compare(0, 10, "LumenSetup") == 0) return;
+                    || n->getName().compare(0, 10, "LumenSetup") == 0
+                    || n->getName().compare(0, 12, "LumenConfirm") == 0) return;
 
                 LLSD one;
                 one["id"] = n->getID();
@@ -4000,7 +4005,8 @@ namespace
         static const char* const inv_actions[] =
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
-              "save_outfit", "show", "open", "save_image", "new_folder", "move", "rename" };
+              "save_outfit", "show", "open", "save_image", "new_folder", "move", "rename",
+              "history", "undo", "restore" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -4118,6 +4124,21 @@ namespace
             "put back.\n"
             "- rename: give an item (`item_id`) or a folder (`folder_id`) a new name, `new_name`. "
             "Only what they may modify, and not Second Life's own folders.\n"
+            "- history: what you have changed in their inventory -- every move, rename, delete "
+            "and new folder, grouped by the request that caused it, with their own words -- and "
+            "the snapshots of how the inventory was arranged. For \"what did you change\" and "
+            "before undo or restore when it is not the last request.\n"
+            "- undo: put back one change set: things moved go back, renamed things get their "
+            "names back, deleted things come out of the Trash into the folder they were in (made "
+            "again if it is gone), folders you made are removed when empty. Without `change_set` "
+            "it undoes the newest one not already undone -- \"undo that\", \"put it back\". "
+            "Anything changed since by hand is left alone and listed; say which. Something "
+            "emptied from the Trash is gone for good, and the answer says so -- never claim it "
+            "came back.\n"
+            "- restore: put the inventory back as a `snapshot` from history had it -- for when "
+            "the request that changed things is not in the record any more. `preview: true` "
+            "says what it would change, and changes nothing; tell them before restoring. The "
+            "viewer asks them itself before it starts.\n"
             "- save_image: write a picture from their inventory to a file on their own "
             "computer, as a PNG. It lands on their DESKTOP unless they have already chosen "
             "somewhere for snapshots, because a folder you have to go looking for is no help "
@@ -4179,6 +4200,14 @@ namespace
                                "search result gives it in `folder`.";
         LLSD inn; inn["type"]="string"; inn["description"]="rename: the new name.";
         inv_props["to_folder"]=ito; inv_props["new_name"]=inn;
+        LLSD ics; ics["type"]="integer";
+            ics["description"]="undo: which change set, from history. Leave it out for the "
+                               "newest one not yet undone.";
+        LLSD isn; isn["type"]="integer";
+            isn["description"]="restore: which snapshot, from history.";
+        LLSD ipv; ipv["type"]="boolean";
+            ipv["description"]="restore: true only says what it would change.";
+        inv_props["change_set"]=ics; inv_props["snapshot"]=isn; inv_props["preview"]=ipv;
         // </Lumen>
                 LLSD sort_p; sort_p["type"]="string";
         sort_p["description"] =
@@ -18020,9 +18049,16 @@ if (method == "camera")
             making.at = LLTimer::getTotalSeconds();
             making.first = result;
             sMaking[key] = making;
+            // <Lumen> inventory undo: the set is fixed now, the id arrives later.
+            LumenAIUndo::instance().prepare();
+            const S64 undo_set = LumenAIUndo::instance().setForNewFolder();
             m.createNewCategory(parent, LLFolderType::FT_NONE, name,
-                                [key](const LLUUID& new_id)
+                                [key, undo_set, parent](const LLUUID& new_id)
                                 {
+                                    if (new_id.notNull())
+                                    {
+                                        LumenAIUndo::instance().recordNewFolder(undo_set, new_id, parent);
+                                    }
                                     std::map<std::string, Making>::iterator it = sMaking.find(key);
                                     if (it != sMaking.end())
                                     {
@@ -18094,10 +18130,19 @@ if (method == "camera")
                     LLSD e; e["code"] = -32000; e["message"] = no + " Nothing was moved.";
                     LLSD w; w["__error"] = e; return w;
                 }
+                LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
                 if (folder) m.changeCategoryParent(cat, dest, false);
                 else        change_item_parent(id, dest);
+                const LLUUID now_in = folder ? (cat ? cat->getParentUUID() : LLUUID::null)
+                                             : (m.getItem(id) ? m.getItem(id)->getParentUUID()
+                                                              : LLUUID::null);
+                if (now_in == dest)
+                {
+                    LumenAIUndo::instance().recordMove(id, folder, parent_now, dest);
+                }
                 result["moved_to"] = folderPath(dest);
-                result["note"] = "Moved. To put it back, move it to was_in_id.";
+                result["note"] = "Moved. inventory / undo puts back everything this request "
+                                 "changed, if the user asks.";
             }
             else   // rename_item
             {
@@ -18127,6 +18172,8 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
                 result["was_named"] = result["name"];
+                LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
+                LumenAIUndo::instance().recordRename(id, folder, result["name"].asString(), new_name);
                 if (folder) rename_category(&m, id, new_name);
                 else
                 {
@@ -18134,10 +18181,128 @@ if (method == "camera")
                     update_inventory_item(id, updates, NULL);
                 }
                 result["renamed_to"] = safeUtf8(new_name);
-                result["note"] = "Renamed. To undo, rename it back to was_named.";
+                result["note"] = "Renamed. inventory / undo puts back everything this request "
+                                 "changed, if the user asks.";
             }
         }
         LLSD summary; summary["action"] = method; summary["result"] = result;
+        recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
+
+    // <Lumen> inventory / history, undo and restore: the record LumenAIUndo
+    // keeps of what the assistant changed, and the snapshots beside it.
+    if (method == "change_history" || method == "undo_changes" || method == "restore_snapshot")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Inventory is not loaded yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LumenAIUndo& undo = LumenAIUndo::instance();
+        if (!undo.available())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The record of inventory changes could not be opened, so there is "
+                           "nothing to undo from. Say so.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (method == "change_history")
+        {
+            S32 limit = params.has("limit") ? params["limit"].asInteger() : 10;
+            LLSD result;
+            result["change_sets"] = undo.history(limit);
+            result["snapshots"] = undo.snapshots();
+            result["note"] = "change_sets are newest first, with what the user asked for each. "
+                             "undo takes a change_set; restore takes a snapshot. Only changes "
+                             "made through the assistant are in the record.";
+            return result;
+        }
+
+        const std::string request_id = params.has("request_id") ? params["request_id"].asString()
+                                                               : std::string();
+        LLSD replay;
+        if (!request_id.empty() && recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already carried out; nothing was done again.";
+            return replay;
+        }
+
+        if (method == "undo_changes")
+        {
+            const S64 set = params.has("change_set") ? (S64)params["change_set"].asInteger() : 0;
+            LLSD result = undo.undo(set);
+            if (result.has("error"))
+            {
+                LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
+                LLSD w; w["__error"] = e; return w;
+            }
+            std::string note = "Tell the user what was put back";
+            if (result["left_alone_count"].asInteger() > 0)
+                note += ", what was left alone because it changed again since";
+            if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
+                note += ", and what could not be brought back -- never say it all came back";
+            note += ".";
+            if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
+                note += " Some things wait for the folder they were in to be made again; the "
+                        "viewer tells the user itself when that is done. End the reply.";
+            if (result.has("paced") && result["paced"].asBoolean())
+                note += " It is a long list, done a little at a time; the viewer tells the user "
+                        "itself when it has finished. End the reply.";
+            result["note"] = note;
+            LLSD summary; summary["action"] = "undo"; summary["change_set"] = result["change_set"];
+            summary["put_back"] = result["put_back"];
+            recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
+            return result;
+        }
+
+        // ---- restore_snapshot ----
+        const S64 snap = params.has("snapshot") ? (S64)params["snapshot"].asInteger() : 0;
+        if (snap <= 0)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "Give `snapshot`: one of the snapshots inventory / history lists.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLSD preview = undo.previewRestore(snap, 12);
+        if (preview.has("error"))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = preview["error"].asString();
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (params.has("preview") && params["preview"].asBoolean())
+        {
+            preview["note"] = "Nothing has been changed. Tell the user what restoring would do; "
+                              "restore without preview does it, and the viewer asks them first.";
+            return preview;
+        }
+        if (preview["nothing_to_do"].asBoolean())
+        {
+            preview["note"] = "Nothing differs from that snapshot, so nothing was changed.";
+            return preview;
+        }
+        {
+            LLSD subs;
+            subs["MOVES"] = preview["moves"].asInteger();
+            subs["TRASH"] = preview["out_of_trash"].asInteger();
+            subs["RENAMES"] = preview["renames"].asInteger();
+            LLSD ask;
+            if (!askUser("LumenAskRestore", subs, fingerprintOf(method, params), ask)) return ask;
+        }
+        LLSD result = undo.restore(snap);
+        if (result.has("error"))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
+            LLSD w; w["__error"] = e; return w;
+        }
+        result["note"] = (result.has("paced") && result["paced"].asBoolean())
+            ? std::string("Started, a little at a time; the viewer tells the user itself when it "
+                          "has finished. End the reply.")
+            : std::string("Tell the user what was put back and what could not be.");
+        LLSD summary; summary["action"] = "restore"; summary["snapshot"] = (LLSD::Integer)snap;
         recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
         return result;
     }
@@ -19301,21 +19466,41 @@ if (method == "camera")
                 result["note"] = "That item is not in the Trash, so there was nothing to undo.";
                 return result;
             }
-            // <Lumen> The viewer's own Restore Item exactly (LLItemBridge::
-            // restoreItem): the default folder for the type, a photo to the
-            // Photo Album, and no restamp. The viewer does not record where an
-            // item was before the Trash, so "where it was" is not available --
-            // the reply names the folder instead, so nobody looks in the old one.
-            const LLFolderType::EType home =
-                (item->getInventoryType() == LLInventoryType::IT_SNAPSHOT)
-                    ? LLFolderType::FT_SNAPSHOT_CATEGORY
-                    : LLFolderType::assetTypeToFolderType(item->getType());
-            LLUUID parent = gInventory.findCategoryUUIDForType(home);
+            // <Lumen> Back where it was deleted from, when the inventory record
+            // knows and that folder is still there. Otherwise the viewer's own
+            // Restore Item exactly (LLItemBridge::restoreItem): the default
+            // folder for the type, a photo to the Photo Album, and no restamp.
+            LLUUID parent;
+            bool back_where_it_was = false;
+            {
+                LLUUID was;
+                LumenAIUndo::Chain chain;
+                if (LumenAIUndo::instance().lastTrashedFrom(id, was, chain)
+                    && was.notNull() && gInventory.getCategory(was)
+                    && !gInventory.isObjectDescendentOf(was, trash))
+                {
+                    parent = was;
+                    back_where_it_was = true;
+                }
+            }
+            if (parent.isNull())
+            {
+                const LLFolderType::EType home =
+                    (item->getInventoryType() == LLInventoryType::IT_SNAPSHOT)
+                        ? LLFolderType::FT_SNAPSHOT_CATEGORY
+                        : LLFolderType::assetTypeToFolderType(item->getType());
+                parent = gInventory.findCategoryUUIDForType(home);
+            }
             if (parent.isNull())
             {
                 parent = gInventory.getRootFolderID();
             }
+            LumenAIUndo::instance().prepare();
             gInventory.changeItemParent(item, parent, false);
+            if (item->getParentUUID() == parent)
+            {
+                LumenAIUndo::instance().recordUntrash(id, false, parent);
+            }
             // </Lumen>
 
             LL_INFOS("AICtl") << "undelete_item: " << id << " out of the Trash" << LL_ENDL;
@@ -19325,10 +19510,14 @@ if (method == "camera")
             result["name"] = item_name;
             result["restored"] = true;
             result["folder"] = folderPath(parent);   // <Lumen>
-            result["note"] = "Taken out of the Trash into " + folderPath(parent)
-                           + ", the default folder for its type -- not necessarily where it was "
-                             "before, which Second Life does not record. Tell the user which "
-                             "folder it is in now.";
+            result["back_where_it_was"] = back_where_it_was;   // <Lumen>
+            result["note"] = back_where_it_was
+                ? "Taken out of the Trash, back into " + folderPath(parent)
+                  + ", the folder it was in before. Tell the user."
+                : "Taken out of the Trash into " + folderPath(parent)
+                  + ", the default folder for its type -- not necessarily where it was "
+                    "before: it was not deleted through the assistant, or that folder is gone. "
+                    "Tell the user which folder it is in now.";
             result["confirm_with"] = "Call inventory / search for it to confirm it is back.";
             LLSD summary;
             summary["action"] = "undelete_item";
@@ -19425,6 +19614,8 @@ if (method == "camera")
 
         // Moves to Trash. Nothing here purges, and no tool offers purging:
         // emptying the Trash stays the user's own deliberate act.
+        const LLUUID deleted_from = item->getParentUUID();   // <Lumen> inventory undo
+        LumenAIUndo::instance().prepare();
         gInventory.removeItem(id);
 
         // <Lumen> Checked rather than assumed: the local move is immediate
@@ -19441,6 +19632,7 @@ if (method == "camera")
         // </Lumen>
 
         LL_INFOS("AICtl") << "delete_item: " << id << " to Trash" << LL_ENDL;
+        LumenAIUndo::instance().recordTrash(id, false, deleted_from);   // <Lumen>
 
         LLSD result;
         result["item_id"] = id;
@@ -19449,7 +19641,7 @@ if (method == "camera")
         result["recoverable"] = true;
         result["confirm_with"] =
             "It is in the Trash, not destroyed. inventory / undelete takes it back out, into the "
-            "default folder for its type. Tell the user it was "
+            "folder it was in. Tell the user it was "
             "moved to Trash rather than saying it was deleted.";
         if (is_link)
         {
@@ -22369,7 +22561,8 @@ if (method == "camera")
         // prevent. read_dialogues does not list these; this refuses them if an
         // id arrives anyway.
         if (n->getName().compare(0, 8, "LumenAsk") == 0
-            || n->getName().compare(0, 10, "LumenSetup") == 0)
+            || n->getName().compare(0, 10, "LumenSetup") == 0
+            || n->getName().compare(0, 12, "LumenConfirm") == 0)   // the user's own windows
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "That is the viewer asking the USER whether you may do something. "
