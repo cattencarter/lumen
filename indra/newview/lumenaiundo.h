@@ -37,15 +37,67 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 struct sqlite3;
 class LLScrollListCtrl;
 class LLTextEditor;
+
+// <Lumen>
+/**
+ * What the assistant may do to something in the inventory: ONE set of rules
+ * for every path that moves it, renames it or puts something into a folder --
+ * move_item, rename_item, new_folder, a batch, undo, restore and undelete.
+ * Before there was one, undo and restore had a shorter list than move_item,
+ * and could pull a listed item out of Marketplace or put the LSL bridge's
+ * folder somewhere else.
+ *
+ * Each answers why not, as a clause ("it is in the Library, which is Linden
+ * Lab's, not theirs"), or empty when it may. The caller makes the sentence;
+ * `rule`, when given, says which rule it was, for a caller that has words of
+ * its own for one of them.
+ */
+namespace LumenInventoryRules
+{
+    enum Rule
+    {
+        ALLOWED = 0,
+        NOT_IN_INVENTORY,
+        LIBRARY,
+        CURRENT_OUTFIT,
+        TRASH,
+        LSL_BRIDGE,
+        ANIMATION_OVERRIDER,
+        MARKETPLACE,
+        SYSTEM_FOLDER,      // one of Second Life's own folders
+        NAMED_FOLDER,       // #Firestorm, #Lumen, #RLV
+        PROTECTED_FOLDER,   // protected in the viewer's own settings
+        INSIDE_ITSELF,
+        RLV,
+        NOT_MODIFIABLE,     // no-modify, a link, a calling card
+        VIEWER              // the viewer's own check said no
+    };
+
+    /** Is this -- or a folder above it -- somewhere the assistant leaves alone? `it` names it in the answer. */
+    std::string offLimits(const LLUUID& id, const char* it = "it", Rule* rule = nullptr);
+    /** Why this may not be moved or renamed at all, wherever it would go. */
+    std::string held(const LLUUID& id, bool folder, Rule* rule = nullptr);
+    /** Why nothing may be put into this folder. */
+    std::string notInto(const LLUUID& dest, Rule* rule = nullptr);
+    /** Why this may not be moved into that folder: held(), notInto(), and the two together. */
+    std::string notMove(const LLUUID& id, bool folder, const LLUUID& dest, Rule* rule = nullptr);
+    /** Why this may not be renamed. */
+    std::string notRename(const LLUUID& id, bool folder, Rule* rule = nullptr);
+}
+// </Lumen>
 
 /**
  * A record of every inventory change the assistant makes, and the means to
@@ -71,7 +123,13 @@ class LLTextEditor;
  *
  * **This is not a cache.** A cache can be thrown away and fetched again; this
  * cannot. A file that fails its check is set aside under another name, never
- * deleted, and a fresh one started.
+ * deleted, and a fresh one started -- and only a file SQLite says is damaged:
+ * a busy, full or read-only disk is not a reason to start again.
+ *
+ * <Lumen> One viewer at a time: a second Lumen logged in as the same avatar
+ * on the same computer finds the record held, says so, and asks again now
+ * and then -- a viewer that was logged out by the second login is often
+ * still open, showing its message.
  *
  * Where it stops, said everywhere it matters: anything emptied from the Trash
  * is gone, and so is a no-copy item given away or rezzed. Nothing here claims
@@ -130,8 +188,15 @@ public:
     S64  setForNewFolder();
     void recordNewFolder(S64 set_id, const LLUUID& id, const LLUUID& parent);
 
-    /** A snapshot now, for a bulk operation. Returns its id, or 0. */
+    /**
+     * A snapshot now, for a bulk operation. Returns its id, or 0. <Lumen> It
+     * is written on the record's own thread a moment later, whole or not at
+     * all: snapshotState() says which, and only a WRITTEN one may be named
+     * to anybody as there.
+     */
     S64  snapshotBefore(const std::string& reason);
+    enum SnapState { SNAP_UNKNOWN, SNAP_PENDING, SNAP_WRITTEN, SNAP_FAILED };   // <Lumen>
+    SnapState snapshotState(S64 snap_id);                                     // <Lumen>
 
     // <Lumen> ---- a bulk run (inventory / batch) ------------------------------
     /**
@@ -140,18 +205,33 @@ public:
      * outlasts the turn that asked for it. Every change it makes is recorded
      * under the set this returns (0: the record is not available). `what` is
      * kept with it, after the person's own words when a turn is in progress.
+     * Until endBatch(), the set cannot be undone: it is still being written.
      */
     S64  beginBatch(const std::string& what);
     void endBatch(S64 set_id);
     // </Lumen>
 
-    /** Where this item was before the assistant last put it in the Trash. */
+    /**
+     * Where this item was before the assistant last put it in the Trash.
+     * <Lumen> Never waits for the record to be written: what is still on its
+     * way to the file is answered from memory.
+     */
     bool lastTrashedFrom(const LLUUID& id, LLUUID& parent_out, Chain& chain_out);
 
     // ---- reading and putting back ---------------------------------------------
-    LLSD history(S32 limit);
-    LLSD snapshots();
-    /** Undo one change set; 0 is the newest one not yet undone. */
+    /**
+     * <Lumen> `settled`: wait (briefly) for what is still being written, so
+     * a change made a moment ago is in the answer. The window passes false
+     * and reads what is on disk -- it reads again when more arrives -- so a
+     * snapshot being written never holds up a frame.
+     */
+    LLSD history(S32 limit, bool settled = true);
+    LLSD snapshots(bool settled = true);
+    /**
+     * Undo one change set; 0 is the newest one not yet undone. <Lumen> A set
+     * undone before, with things that could not be put back then, may be
+     * named again: only those are tried.
+     */
     LLSD undo(S64 set_id);
     /** What restoring a snapshot would change, with up to `sample` examples of each. */
     LLSD previewRestore(S64 snap_id, S32 sample);
@@ -159,11 +239,19 @@ public:
     LLSD restore(S64 snap_id);
 
     bool available();
+    /** <Lumen> Why available() is false, in words for the person; empty if it is not. */
+    std::string unavailableWhy() const { return mWhyUnavailable; }
     std::string path() const { return mPath; }
 
     /** Called by the writer thread and the runner: the window should read again. */
     void changed();
     bool takeDirty() { return mDirty.exchange(false); }
+
+    /**
+     * <Lumen> The end of a run: what it did, the change rows it put back,
+     * and whether it ended after run() had already answered.
+     */
+    typedef std::function<void(const LLSD& summary, const std::vector<S64>& rows, bool later)> Finished;
 
 private:
     struct Node
@@ -172,16 +260,24 @@ private:
         std::string name;
         bool folder = false;
     };
+    // <Lumen> How opening the file went. Only BAD_FILE sets it aside.
+    enum OpenResult { OPENED, BAD_FILE, NOT_NOW, TOO_NEW };
     bool open();
+    OpenResult openFile();
+    void setAside();
+    bool lockRecord();
+    void unlockRecord();
+    // </Lumen>
     void close();
     bool ensureOpen();
     void startWorker();
     void stopWorker();
     void post(std::function<void(sqlite3*)> job);
-    /** Wait until everything posted so far is on disk. Bounded. */
-    void flush();
+    /** Wait until everything posted so far is on disk. Bounded: false if it is not. */
+    bool flush();
 
     S64  currentSet();
+    S64  liveSet(S64 wanted);   // <Lumen>
     void addSet(S64 id, const std::string& words, const std::string& source);   // <Lumen>
     void addChange(S64 set_id, const std::string& kind, const LLUUID& id, bool folder,
                    const std::string& name_before, const std::string& name_after,
@@ -189,15 +285,18 @@ private:
                    const std::string& chain);
     S64  takeSnapshot(const std::string& reason);
     std::vector<Node> captureTree() const;
-    bool readSnapshot(S64 snap_id, std::vector<Node>& out);
+    bool readSnapshot(S64 snap_id, std::vector<Node>& out, bool* partial = nullptr);
 
     Plan planUndo(S64 set_id, LLSD& error);
     Plan planRestore(S64 snap_id, LLSD& error);
-    LLSD run(Plan& plan, const std::function<void(const LLSD&)>& finished);
+    LLSD run(Plan& plan, const Finished& finished);
 
     sqlite3*    mRead = nullptr;     // main thread: reads only
+    sqlite3*    mLock = nullptr;     // <Lumen> holds the lock file while the record is ours
     std::string mPath;
     bool        mTried = false;
+    F64         mRetryAt = 0.0;      // <Lumen> held by another viewer: ask again after this
+    std::string mWhyUnavailable;     // <Lumen>
 
     std::thread mWorker;
     std::mutex  mMutex;
@@ -214,6 +313,23 @@ private:
     bool        mSnapshotThisLogin = false;
     S32         mSeq = 0;
     std::atomic<bool> mDirty{ false };
+
+    // <Lumen> Main thread only.
+    std::set<S64> mClosed;           // undone, or being undone: nothing more is added to them
+    std::set<S64> mUndoing;          // an undo of these is still going
+    std::set<S64> mRunning;          // bulk runs still writing to these
+    std::map<S64, S64> mLateSets;    // closed set -> where what arrives for it late goes
+
+    // <Lumen> Shared with the writer thread, under mStateMutex.
+    struct PendingTrash { LLUUID parent; std::string chain; S32 seq = 0; };
+    std::mutex  mStateMutex;
+    std::unordered_map<LLUUID, PendingTrash> mPendingTrash;   // recorded, not on disk yet
+    std::map<S64, SnapState> mSnapStates;   // snapshots taken this login, and how their write went
+
+    // <Lumen> previewRestore() and restore() in one call plan once.
+    S64         mPlannedSnap = 0;
+    U32         mPlannedFrame = 0;
+    std::shared_ptr<Plan> mPlanned;
 };
 
 /**
@@ -243,6 +359,7 @@ private:
     LLScrollListCtrl* mSets = nullptr;
     LLScrollListCtrl* mSnaps = nullptr;
     LLTextEditor*     mText = nullptr;
+    F64               mLastReload = 0.0;   // <Lumen> read again at most once a second
 };
 
 #endif // LUMEN_AIUNDO_H
