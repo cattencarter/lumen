@@ -274,7 +274,7 @@ public:
      * was about that one. Planned again now; what changed since is left alone.
      * The toast says how it went; the answer says it too.
      */
-    LLSD perform(bool redo, S64 step);
+    LLSD perform(bool redo, S64 step, S32 rev = -1);
     /** An undo or a redo is still putting things back. */
     bool puttingBack() const;
     /** Why nothing may be put back now (logged out, something running), or empty. */
@@ -284,7 +284,8 @@ public:
     typedef std::function<void(const LLSD& summary, const std::vector<S64>& rows, bool later)> Finished;
 
     // ---- the observer and the frame ------------------------------------------
-    void observed(const std::set<LLUUID>& ids);
+    /** `created`: the viewer marked these as just made (AIS), not merely arrived. */
+    void observed(const std::set<LLUUID>& ids, bool created);
     void tick();
 
 private:
@@ -324,7 +325,7 @@ private:
     S64         mRequestStep = 0;   // the step the turn in progress writes to, once it has one
     bool        mInRequest = false;
     std::string mWords;
-    U64         mPushes = 0;        // steps added, ever: a run checks nobody added one meanwhile
+    U64         mRevision = 0;      // changes recorded, ever: an undo or redo checks none came meanwhile
 
     std::set<S64> mRunning;          // bulk runs still adding to these
     std::set<S64> mUnlisted;         // ...of those, runs outside a turn: not in the list
@@ -336,6 +337,7 @@ private:
     std::unordered_map<LLUUID, Claim> mClaims;
     std::unordered_map<LLUUID, LLUUID> mTrashedFrom;
     std::set<LLUUID> mPending;       // changed, not looked at yet
+    std::set<LLUUID> mCreated;       // ...of those, marked by the viewer as just made
     LLInventoryObserver* mObserver = nullptr;
     bool        mWatching = false;   // the observer is on and the copy made
     bool        mPersonToo = false;  // the whole inventory has loaded: the person's changes count

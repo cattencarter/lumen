@@ -176,6 +176,9 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
 #include "llavatarpropertiesprocessor.h"  // <Lumen> profile
 #include "lldiriterator.h"                 // <Lumen> settings lookup
 #include "llfloaterpreference.h"           // <Lumen> settings lookup
+#include "llfloaterprofile.h"              // <Lumen> close_window: windows whose X asks about
+#include "llfloatereditenvironmentbase.h"  //   unsaved changes
+#include "llmaterialeditor.h"
 #include "llsearcheditor.h"                // <Lumen> settings lookup
 #include "lltabcontainer.h"                // <Lumen> settings lookup
 #include "apr_base64.h"      // <Lumen> the bridge base64-encodes anything a person wrote
@@ -17860,11 +17863,23 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 kept = true;
             }
         }
-        // <Lumen> As its own X does, not closeFloater(): some windows ask
-        // about unsaved changes only there -- the profile, the environment
-        // editors, the material editor -- and closeFloater() threw their
-        // typing away and said "Closed". Their question is the person's.
-        if (!kept) LLFloater::onClickClose(target, false);
+        // <Lumen> As its own X does, for the windows that ask about unsaved
+        // changes only there -- the profile, the environment editors, the
+        // material editor, the appearance editor -- where closeFloater() threw
+        // their typing away and said "Closed". Their question is the
+        // person's. Every other window closes as before: its X can do more
+        // (Advanced Graphics' and the joystick's cancel what was set, and
+        // Shift held closes a whole group).
+        if (!kept)
+        {
+            const bool asks_on_x = dynamic_cast<LLFloaterProfile*>(target)
+                                || dynamic_cast<LLFloaterEditEnvironmentBase*>(target)
+                                || dynamic_cast<LLMaterialEditor*>(target)
+                                || (inst == "appearance"
+                                    && dynamic_cast<LLFloaterSidePanelContainer*>(target));
+            if (asks_on_x) LLFloater::onClickClose(target, false);
+            else target->closeFloater();
+        }
         // Asked again rather than trusted: a script window with changes asks
         // "Save Changes?" and stays, and a closed floater may be gone.
         LLFloater* after = LLFloaterReg::findInstance(inst, key);
@@ -21017,13 +21032,16 @@ if (method == "camera")
             subs["STEP"] = preview["name"];
             subs["TEXT"] = preview["text"];
             LLSD ask;
+            // The step and how much was in it: a step that grows while the
+            // question is up is a new question, not a Yes to more than it showed.
             if (!askUser(redo ? "LumenAskRedo" : "LumenAskUndo", subs,
-                         fingerprintOf(method, params) + "\n" + preview["step"].asString(), ask))
+                         fingerprintOf(method, params) + "\n" + preview["step"].asString() + "."
+                         + preview["rev"].asString(), ask))
             {
                 return ask;
             }
         }
-        LLSD result = undo.perform(redo, preview["step"].asInteger());
+        LLSD result = undo.perform(redo, preview["step"].asInteger(), preview["rev"].asInteger());
         if (result.has("error"))
         {
             LLSD e; e["code"] = -32000; e["message"] = result["error"].asString() + " Say so.";

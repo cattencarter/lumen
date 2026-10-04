@@ -56,6 +56,7 @@
 #include "lumenfolders.h"
 #include "rlvactions.h"
 #include "rlvdefines.h"
+#include "rlvinventory.h"   // <Lumen> RLV's shared folder is its own housekeeping
 #include "rlvlocks.h"
 
 #include <algorithm>
@@ -1122,6 +1123,7 @@ struct LumenAIUndo::Entry
     std::unordered_map<LLUUID, size_t> last;   // each thing's latest change here
     F64 when = 0.0;        // its latest change
     bool stopped = false;  // a bulk run that stopped part way
+    S32 rev = 0;           // changes added to it: a question about it is about this many
 };
 
 namespace
@@ -1134,7 +1136,8 @@ namespace
         void changed(U32 mask) override
         {
             if (LumenAIUndo::instanceExists())
-                LumenAIUndo::instance().observed(gInventory.getChangedIDs());
+                LumenAIUndo::instance().observed(gInventory.getChangedIDs(),
+                                                 (mask & LLInventoryObserver::CREATE) != 0);
         }
     };
 
@@ -1190,12 +1193,16 @@ LumenAIUndo::LumenAIUndo()
 
 LumenAIUndo::~LumenAIUndo()
 {
-    if (mObserver)
+    // <Lumen> At quit the inventory deletes every observer still registered
+    // (cleanupInventory) long before singletons go: ours is then gone, and
+    // deleting it again crashed every quit after login. Ours to delete only
+    // while the inventory still holds it.
+    if (mObserver && gInventory.containsObserver(mObserver))
     {
-        if (gInventory.containsObserver(mObserver)) gInventory.removeObserver(mObserver);
+        gInventory.removeObserver(mObserver);
         delete mObserver;
-        mObserver = nullptr;
     }
+    mObserver = nullptr;
 }
 
 // static
@@ -1226,6 +1233,7 @@ void LumenAIUndo::registerMenu()
         subs["TEXT"] = pv["text"];
         LLSD payload;
         payload["step"] = pv["step"];
+        payload["rev"] = pv["rev"];
         payload["redo"] = redo;
         LLNotificationsUtil::add(redo ? "LumenAskRedo" : "LumenAskUndo", subs, payload,
             [](const LLSD& n, const LLSD& r)
@@ -1233,7 +1241,8 @@ void LumenAIUndo::registerMenu()
                 if (LLNotificationsUtil::getSelectedOption(n, r) != 0) return;
                 if (!LumenAIUndo::instanceExists()) return;
                 const LLSD out = LumenAIUndo::instance().perform(n["payload"]["redo"].asBoolean(),
-                                                                 n["payload"]["step"].asInteger());
+                                                                 n["payload"]["step"].asInteger(),
+                                                                 n["payload"]["rev"].asInteger());
                 if (out.has("error")) toast(out["error"].asString());
             });
     };
@@ -1270,6 +1279,7 @@ void LumenAIUndo::startWatching()
     mKnown.clear();
     mClaims.clear();
     mPending.clear();
+    mCreated.clear();
     mTrashedFrom.clear();
     mRequestStep = 0;
 
@@ -1292,10 +1302,11 @@ void LumenAIUndo::startWatching()
                             << LL_ENDL;
 }
 
-void LumenAIUndo::observed(const std::set<LLUUID>& ids)
+void LumenAIUndo::observed(const std::set<LLUUID>& ids, bool created)
 {
     if (!mWatching) return;
     mPending.insert(ids.begin(), ids.end());
+    if (created) mCreated.insert(ids.begin(), ids.end());
 }
 
 void LumenAIUndo::tick()
@@ -1324,8 +1335,9 @@ void LumenAIUndo::tick()
     }
 
     if (mPending.empty()) return;
-    std::set<LLUUID> ids;
+    std::set<LLUUID> ids, created;
     ids.swap(mPending);
+    created.swap(mCreated);
 
     const LLUUID root = gInventory.getRootFolderID();
     const std::string new_folder = LLViewerFolderType::lookupNewCategoryName(LLFolderType::FT_NONE);
@@ -1353,9 +1365,11 @@ void LumenAIUndo::tick()
         {
             // Arrived: loaded, delivered, or made. Only a folder the person
             // made in the viewer is a step -- "New Folder", empty, where they
-            // keep their own things -- and not one the assistant made.
+            // keep their own things, marked by the viewer as just made (one
+            // given by somebody arrives unmarked) -- and not one the
+            // assistant made.
             mKnown[id] = Known{ parent, name };
-            if (mPersonToo && folder && name == new_folder && claim == mClaims.end()
+            if (mPersonToo && folder && name == new_folder && created.count(id) && claim == mClaims.end()
                 && within(id, root) && !inTrash(id) && !housekeeping(parent))
             {
                 Change c;
@@ -1437,6 +1451,10 @@ void LumenAIUndo::tick()
 bool LumenAIUndo::housekeeping(const LLUUID& folder) const
 {
     if (folder.isNull()) return true;
+    // <Lumen> RLV's shared folder too: a "give to #RLV" is moved in and
+    // renamed by RLV itself, and things worn from there are renamed by it.
+    const LLUUID rlv = RlvInventory::instance().getSharedRootID();
+    if (rlv.notNull() && within(folder, rlv)) return true;
     return !LumenInventoryRules::offLimits(folder).empty();
 }
 
@@ -1453,6 +1471,8 @@ void LumenAIUndo::personChange(const Change& c)
         {
             top->changes.front().name_after = c.name_after;
             top->when = now;
+            ++top->rev;
+            ++mRevision;
             mRedo.clear();
             return;
         }
@@ -1532,7 +1552,6 @@ LumenAIUndo::Entry& LumenAIUndo::pushEntry(bool assistant, const std::string& wo
     e->words = words;
     e->when = LLTimer::getTotalSeconds();
     mUndo.push_back(e);
-    ++mPushes;
     while (mUndo.size() > MAX_STEPS)
     {
         if (mUndo.front()->id == mRequestStep) mRequestStep = 0;
@@ -1577,6 +1596,8 @@ void LumenAIUndo::addChange(Entry& e, const Change& c)
 {
     const F64 now = LLTimer::getTotalSeconds();
     e.when = now;
+    ++e.rev;
+    ++mRevision;
     mRedo.clear();   // a new change after an undo: what could be redone is gone
     auto last = e.last.find(c.id);
     if (last != e.last.end())
@@ -2096,6 +2117,7 @@ LLSD LumenAIUndo::preview(bool redo)
 
     const std::string name = std::string(e->assistant ? "Assistant: " : "You: ") + describe(*e);
     out["step"] = (LLSD::Integer)e->id;
+    out["rev"] = e->rev;   // what the question shows: Accept is for this, not more
     out["name"] = name;
     out["who"] = e->assistant ? "assistant" : "you";
     out["did"] = describe(*e);
@@ -2187,7 +2209,7 @@ LLSD LumenAIUndo::preview(bool redo)
     return out;
 }
 
-LLSD LumenAIUndo::perform(bool redo, S64 step)
+LLSD LumenAIUndo::perform(bool redo, S64 step, S32 rev)
 {
     LLSD out;
     const std::string busy = notNow(redo ? "redone" : "undone");
@@ -2199,6 +2221,15 @@ LLSD LumenAIUndo::perform(bool redo, S64 step)
         out["error"] = redo ? "Nothing was redone: the list changed after the question was asked."
                             : "Nothing was undone: the list changed after the question was asked -- "
                               "something new was done, or that step was already undone.";
+        return out;
+    }
+    // <Lumen> The step itself grew while the question was up -- the
+    // assistant's turn still adding to it: Accept was for what it showed.
+    if (rev >= 0 && e->rev != rev)
+    {
+        out["error"] = std::string("Nothing was ") + (redo ? "redone" : "undone") + ": more was added "
+                       "to that step after the question was asked. Ask again to see all of it.";
+        out["grew"] = true;
         return out;
     }
     // Planned again now, after the question: what changed while it was up is left alone.
@@ -2229,7 +2260,8 @@ LLSD LumenAIUndo::perform(bool redo, S64 step)
     }
 
     mBusy = e;
-    const U64 pushes = mPushes;
+    const U64 revision = mRevision;
+    const F64 started = LLTimer::getTotalSeconds();
     const std::vector<S64> already = plan.already;
     const S32 not_yet = plan.not_yet_count;
     const S32 cannot = plan.cannot_count;
@@ -2237,7 +2269,7 @@ LLSD LumenAIUndo::perform(bool redo, S64 step)
     LL_INFOS("LumenAIUndo") << (redo ? "redo" : "undo") << " of step " << step << ": "
                             << plan.steps.size() << " to do" << LL_ENDL;
 
-    LLSD result = run(plan, [this, e, redo, pushes, already, not_yet, said, cannot, cannot_why]
+    LLSD result = run(plan, [this, e, redo, revision, started, already, not_yet, said, cannot, cannot_why]
         (const LLSD& s, const std::vector<S64>& rows, bool)
     {
         if (!LumenAIUndo::instanceExists()) return;
@@ -2248,20 +2280,35 @@ LLSD LumenAIUndo::perform(bool redo, S64 step)
             if (row >= 1 && row <= (S64)e->changes.size()) e->changes[row - 1].undone = !redo;
         }
         if (mBusy == e) mBusy.reset();
+        // <Lumen> Back in the undo list where it belongs: under anything
+        // changed while it ran, which is newer.
+        auto backInUndo = [this, &e, started]()
+        {
+            auto at = mUndo.end();
+            for (auto it = mUndo.begin(); it != mUndo.end(); ++it)
+            {
+                if ((*it)->when > started) { at = it; break; }
+            }
+            mUndo.insert(at, e);
+            while (mUndo.size() > MAX_STEPS) mUndo.pop_front();
+        };
         if (all.empty())
         {
             // Nothing done: back where it was if a name was only waiting for
             // Second Life, so it can be tried again; otherwise off the list.
-            if (not_yet > 0) (redo ? mRedo : mUndo).push_back(e);
+            if (not_yet > 0)
+            {
+                if (redo) { if (mRevision == revision) mRedo.push_back(e); }
+                else backInUndo();
+            }
         }
         else if (redo)
         {
-            mUndo.push_back(e);   // back on top: it can be undone again
-            while (mUndo.size() > MAX_STEPS) mUndo.pop_front();
+            backInUndo();   // it can be undone again
         }
-        else if (pushes == mPushes)
+        else if (mRevision == revision)
         {
-            mRedo.push_back(e);   // a change made meanwhile would have cleared it
+            mRedo.push_back(e);   // a change made meanwhile -- new, or added to a step -- clears it
         }
 
         // The toast: what was done, and what could not be after all.

@@ -28,6 +28,7 @@
 #include "llviewermessage.h"
 
 #include "lumenaictl.h"   // <Lumen>
+#include "lumenaiundo.h"  // <Lumen> a declined offer to the Trash is not the person's undo step
 
 // Linden libraries
 #include "llanimationstates.h"
@@ -1283,6 +1284,11 @@ public:
         // Use removeObject() rather than removeItem() because at this level,
         // the object could be either an item or a folder.
         LLAppViewer::instance()->addOnIdleCallback(boost::bind(&LLInventoryModel::removeObject, &gInventory, mObjectID));
+        // <Lumen> The viewer's own doing, not a delete of theirs to undo.
+        if (LumenAIUndo::instanceExists())
+            LumenAIUndo::instance().claimParent(mObjectID,
+                gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH));
+        // </Lumen>
         gInventory.removeObserver(this);
         delete this;
     }
