@@ -1154,7 +1154,8 @@ namespace
 {
     /**
      * @a w as a whole word of @a lname, or with a plural ending on it:
-     * "pumpkin" in "pumpkins" and "boxes", never in "pumpkinhead".
+     * "christmas" in "christmas tree", "box" in "boxes", never "christmas" in
+     * "christmastime".
      */
     bool wholeWordIn(const std::string& lname, const std::string& w)
     {

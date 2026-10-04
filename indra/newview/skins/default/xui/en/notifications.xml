@@ -15510,7 +15510,7 @@ The outfit's old contents are overwritten and cannot be brought back. Nothing yo
        of the assistant: the same question either way, showing what will
        change. Never remembered (no ignore), and a LumenAsk name, so the
        assistant cannot answer it. Cancel is the default, so Enter never acts.
-       [STEP] names the step ("Assistant: moved 885 items to Halloween");
+       [STEP] names the step ("Assistant: moved 885 items to Christmas");
        [TEXT] is what will change, a few lines. -->
   <notification
    icon="alert.tga"

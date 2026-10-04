@@ -8,7 +8,7 @@
  visible="false">
     <!-- <Lumen> Undo and Redo for this login: the assistant's changes and
          the person's own. Each names itself for the step it would undo
-         ("Undo: assistant moved 885 items to Halloween") and is greyed out
+         ("Undo: assistant moved 885 items to Christmas") and is greyed out
          when there is none; the viewer asks first, showing what will
          change. See lumenaiundo.h. -->
     <menu_item_call

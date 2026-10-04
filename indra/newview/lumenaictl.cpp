@@ -4317,20 +4317,22 @@ namespace
             "emptied from the Trash, given away or rezzed cannot come back -- never claim it did.\n"
             "- redo: put back what the last undo took away -- \"redo that\", \"no, do it after "
             "all\" -- asked the same way. After a new change nothing can be redone.\n"
-            "- batch: change many things in one go -- \"put everything named pumpkin into "
-            "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
+            "- batch: change many things in one go -- \"put everything named Christmas into my "
+            "Christmas folder\", \"take the unpack scripts and landmarks out of my product "
+            "folders\", "
             "\"delete the folders that are empty now\". **Off until the user switches it on** in "
             "Preferences > AI > Permissions; while it is off the answer says so -- tell them it is "
             "off and where they turn it on. `steps` is a short list "
             "(at most 20), done in order; each is a selection and what to do with it. A selection "
             "is `find`, and it picks ITEMS -- or, with `folders`: true, FOLDERS. **In Second Life a "
-            "product is usually a folder** (\"Pumpkin Spice Sweater\") holding things named only "
-            "for what they are, so \"put my pumpkin things in Halloween\" usually means those "
-            "folders: select them with `folders`: true and each is moved, or deleted, WHOLE, with "
-            "what is in it -- never emptied item by item into one pile. `name` (words, each a "
-            "whole word of the item's -- or, with `folders`, the folder's -- OWN name: \"pumpkin\" "
-            "finds \"Pumpkins\", not \"Pumpkinhead\", and not things that are only in a Pumpkin "
-            "folder; add `match`: \"loose\" to match as search does, in the folder too, inside "
+            "product is usually a folder** (\"Christmas Village Set\") holding things named only "
+            "for what they are, so \"put everything named Christmas into my Christmas folder\" "
+            "usually means those folders: select them with `folders`: true and each is moved, or "
+            "deleted, WHOLE, with what is in it -- never emptied item by item into one pile. The "
+            "Christmas folder itself, and what is already in it, are left where they are. `name` "
+            "(words, each a whole word of the item's -- or, with `folders`, the folder's -- OWN "
+            "name: \"christmas\" finds \"Christmas Tree\" and \"Christmas Lights\", not "
+            "\"Christmastime\", and not things that are only in a Christmas folder; add `match`: \"loose\" to match as search does, in the folder too, inside "
             "longer words and with spelling repaired, and the plan counts those apart), `type` "
             "(a kind, as search takes it), `creator` (an avatar id, or a name that is one maker's "
             "name in full), and `in` (a folder and everything inside "
@@ -4349,8 +4351,8 @@ namespace
             "all once the earlier steps have run go to the Trash -- never one holding anything). "
             "Each thing is acted on once: when two steps pick the same item, the first has it, and "
             "what is in a folder taken whole goes with it. "
-            "Example: [{\"find\": {\"name\": \"pumpkin\", \"folders\": true}, \"do\": \"move\", "
-            "\"to\": \"Halloween\"}, {\"find\": {\"in\": \"Products\", \"type\": \"script\", "
+            "Example: [{\"find\": {\"name\": \"christmas\", \"folders\": true}, \"do\": \"move\", "
+            "\"to\": \"Christmas\"}, {\"find\": {\"in\": \"Products\", \"type\": \"script\", "
             "\"name\": \"unpack\"}, \"do\": \"delete\"}, {\"in\": \"Products\", \"do\": "
             "\"delete_empty_folders\"}].\n"
             "  **Plan first, then run the plan.** A call with `steps` changes nothing: it answers "
@@ -10908,8 +10910,8 @@ namespace
 // <Lumen> inventory / batch and empty_trash: tidying in bulk, behind a switch.
 //
 // The author, 2026-10-04: bulk work must not need a model round per item. The
-// API providers stop at twelve tool rounds, and "put everything named pumpkin
-// into the Halloween folder" is hundreds of moves. So one call carries a short
+// API providers stop at twelve tool rounds, and "put everything named
+// Christmas into my Christmas folder" is hundreds of moves. So one call carries a short
 // list of steps, each a selection and what to do with it, and the VIEWER does
 // the whole list itself.
 //
@@ -11595,9 +11597,9 @@ namespace
             }
             // <Lumen> FOLDERS, by their own names, moved or put in the Trash
             // WHOLE with everything in them. In Second Life a product is a
-            // folder -- "Pumpkin Spice Sweater" -- holding things named only for
-            // what they are, so "put everything named pumpkin into Halloween"
-            // means those folders. Selecting items instead pulled each thing
+            // folder -- "Christmas Village Set" -- holding things named only for
+            // what they are, so "put everything named Christmas into my Christmas
+            // folder" means those folders. Selecting items instead pulled each thing
             // out of its product folder into one flat pile. The same matching
             // as items: each word whole in the folder's own name, unless
             // `match` is loose, which also takes it inside longer words.

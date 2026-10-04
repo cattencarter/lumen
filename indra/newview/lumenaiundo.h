@@ -63,7 +63,7 @@ class LLInventoryObserver;
  * than the viewer's own rule, on purpose. The viewer keeps only the folder
  * itself where it is; for the assistant nothing inside it is moved out,
  * renamed or deleted either -- protecting a folder says "leave this alone",
- * and a batch "everything named pumpkin" must not drain one. Putting things
+ * and a batch "everything named Christmas" must not drain one. Putting things
  * INTO it stays allowed: that harms nothing. The set is read live every time,
  * so protecting a folder mid-session counts at once. The folders the viewer
  * LOCKS -- the LSL bridge's, the AO's and the wearable favourites -- are off
@@ -135,7 +135,7 @@ namespace LumenInventoryRules
  *
  * **One list of steps, newest last, at most thirty.** A step is one whole
  * action, named for what was done and who did it: "Assistant: moved 885 items
- * to Halloween" (an Assistant turn, or a bulk run, is one step), "You: deleted
+ * to Christmas" (an Assistant turn, or a bulk run, is one step), "You: deleted
  * 3 items" (the person's own drag, delete, rename or new folder in the viewer
  * -- grouped when close together, so one drag of twenty items is one step).
  * Undo reverses the newest; redo puts it back; any new change after an undo
@@ -260,7 +260,7 @@ public:
     // ---- the list, undo and redo ---------------------------------------------
     /** The steps that can be undone, newest first, and those that can be redone. */
     LLSD list() const;
-    /** "Undo: assistant moved 885 items to Halloween", or plain "Undo" when there is none. */
+    /** "Undo: assistant moved 885 items to Christmas", or plain "Undo" when there is none. */
     std::string menuLabel(bool redo) const;
     bool canUndo(bool redo) const;
     /**

@@ -153,8 +153,8 @@ public:
     /**
      * <Lumen> For a bulk change, which acts on everything it selects: every
      * item whose OWN name has each word of @a query, as typed, as a whole word
-     * -- "pumpkin" finds "Pumpkins", not "Pumpkinhead", and not "Notecard" in
-     * a folder called Pumpkin. Best first, one entry per item, as matchAll().
+     * -- "christmas" finds "Christmas Tree" and "Christmas Lights", not
+     * "Christmastime", and not "Notecard" in a folder called Christmas. Best first, one entry per item, as matchAll().
      *
      * matchAll() is right for a search, where a person looks at the answer:
      * the brand is often only in the folder, and a misspelling is better
