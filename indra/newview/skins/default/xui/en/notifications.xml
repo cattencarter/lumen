@@ -15167,7 +15167,9 @@ How this information is processed, stored, or retained depends on your chosen AI
 
        No is the default button, so Enter or a stray click never acts.
        lumenaictl.cpp refuses to let the assistant answer any notification
-       whose name begins with LumenAsk. Keep that prefix. -->
+       whose name begins with LumenAsk, LumenConfirm or LumenSetup, and does
+       not list them to it. Keep those prefixes: a name with none of them
+       could be answered by the assistant itself. -->
   <notification
    icon="alert.tga"
    label="Talk to the assistant"
@@ -15528,6 +15530,9 @@ The assistant wants to put your inventory back as a snapshot had it: [MOVES] mov
        text="Leave it"/>
     </form>
   </notification>
+  <!-- <Lumen> The history window's own Restore. A form of its own, not
+       okcancelbuttons, whose default is OK: Leave it is the default here as
+       on every other Lumen question, so Enter never restores. -->
   <notification
    icon="alert.tga"
    label="Restore the inventory?"
@@ -15535,10 +15540,17 @@ The assistant wants to put your inventory back as a snapshot had it: [MOVES] mov
    type="alertmodal">
 Put your inventory back as this snapshot had it: [MOVES] moved back, [TRASH] out of the Trash, [RENAMES] renamed back? This can be undone too.
     <tag>confirm</tag>
-    <usetemplate
-     name="okcancelbuttons"
-     notext="Leave it"
-     yestext="Restore"/>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Restore"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Leave it"/>
+    </form>
   </notification>
   <notification
    icon="alert.tga"
@@ -15576,7 +15588,7 @@ The assistant wants to move [ITEM] to the Trash.
    label="Change many items?"
    name="LumenAskBatch"
    type="alertmodal">
-The assistant wants to change [COUNT] items in your inventory: [SUMMARY]. It can be undone afterwards.
+The assistant wants to change [COUNT] in your inventory: [SUMMARY]. It can be undone afterwards.
     <tag>confirm</tag>
     <form name="form">
       <ignore name="ignore"
@@ -15600,7 +15612,7 @@ The assistant wants to change [COUNT] items in your inventory: [SUMMARY]. It can
    label="Change and delete many items?"
    name="LumenAskBatchDelete"
    type="alertmodal">
-The assistant wants to change [COUNT] items in your inventory: [SUMMARY]. It can be undone until the Trash is emptied.
+The assistant wants to change [COUNT] in your inventory: [SUMMARY]. It can be undone until the Trash is emptied.
     <tag>confirm</tag>
     <form name="form">
       <button

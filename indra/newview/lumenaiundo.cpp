@@ -538,6 +538,36 @@ std::string LumenInventoryRules::notDelete(const LLUUID& id, bool folder, Rule* 
         return refused(rule, RLV, "an RLV lock the user is wearing holds it where it is");
     return std::string();
 }
+
+// <Lumen> The name being given, beside the names folders have now (the review
+// of 2026-10-04): new_folder could make a second #Firestorm at the top, which
+// findCategoryByName may then return in place of the real one -- the AO and
+// the favourites looking gone -- and undo could never remove it again.
+std::string LumenInventoryRules::notNamed(const LLUUID& parent, const std::string& name, Rule* rule,
+                                          const std::string& parent_name)
+{
+    if (rule) *rule = ALLOWED;
+    if (name.empty() || name[0] != '#') return std::string();
+    if (parent.notNull() && parent == gInventory.getRootFolderID())
+    {
+        if (name == LumenFolders::FIRESTORM_FOLDER || name == LumenFolders::LUMEN_FOLDER
+            || name == RLV_ROOT_FOLDER)
+            return refused(rule, NAMED_FOLDER, "\"" + name + "\" at the top of the inventory is a name "
+                                               "the viewer and RLV find their own folder by, so it "
+                                               "would be taken for theirs");
+        return std::string();
+    }
+    std::string above = parent_name;
+    if (parent.notNull())
+    {
+        LLViewerInventoryCategory* p = gInventory.getCategory(parent);
+        above = p ? p->getName() : std::string();
+    }
+    if (above == LumenFolders::FIRESTORM_FOLDER || above == LumenFolders::LUMEN_FOLDER)
+        return refused(rule, NAMED_FOLDER, "a #-name inside " + above + " is one the viewer finds its "
+                                           "own folders by, so it would be taken for one of theirs");
+    return std::string();
+}
 // </Lumen>
 
 // =============================================================================

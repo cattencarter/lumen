@@ -352,6 +352,8 @@ void LumenPanelPreferenceAIKeys::buildOptIns()
         const std::string warning  = o.warning;
         box->setCommitCallback([this, checkbox, warning](LLUICtrl* ctrl, const LLSD&)
         {
+            // <Lumen> Ticked or not, an earlier "Turn it on" no longer stands.
+            mOptInConfirmed.erase(checkbox);
             if (!ctrl->getValue().asBoolean()) return;   // turning it off is always safe
             // Ticked: say what it means. Anything but "Turn it on" -- Leave it
             // off, the close box -- unticks it again. Nothing is written
@@ -360,9 +362,13 @@ void LumenPanelPreferenceAIKeys::buildOptIns()
             LLNotificationsUtil::add(warning, LLSD(), LLSD(),
                 [h, checkbox](const LLSD& notification, const LLSD& response)
             {
-                if (LLNotificationsUtil::getSelectedOption(notification, response) == 0) return;
-                LLPanel* p = h.get();
+                LumenPanelPreferenceAIKeys* p = dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
                 if (!p) return;
+                if (LLNotificationsUtil::getSelectedOption(notification, response) == 0)
+                {
+                    p->mOptInConfirmed.insert(checkbox);   // <Lumen> see saveOptIns
+                    return;
+                }
                 if (LLCheckBoxCtrl* b = p->findChild<LLCheckBoxCtrl>(checkbox)) b->set(false);
             });
         });
@@ -371,6 +377,7 @@ void LumenPanelPreferenceAIKeys::buildOptIns()
 
 void LumenPanelPreferenceAIKeys::loadOptIns()
 {
+    mOptInConfirmed.clear();   // <Lumen> what the boxes show now is the settings
     for (const OptIn& o : OPT_INS)
     {
         if (LLCheckBoxCtrl* box = findChild<LLCheckBoxCtrl>(o.checkbox))
@@ -387,12 +394,24 @@ void LumenPanelPreferenceAIKeys::saveOptIns()
     // warning was still on the screen. And the settings are not in the
     // snapshot Preferences takes on OK and puts back on close, because no
     // control is bound to them, so what is written here stays.
+    //
+    // <Lumen> A switch is written ON only when its warning was answered "Turn
+    // it on" in this visit to the panel. OK pressed while the warning is
+    // still up -- by the assistant closing Preferences, which presses OK --
+    // would otherwise have saved it on, and "Leave it off" a moment later
+    // only unticked a box nobody saved again (the review of 2026-10-04).
     for (const OptIn& o : OPT_INS)
     {
         LLCheckBoxCtrl* box = findChild<LLCheckBoxCtrl>(o.checkbox);
         if (!box) continue;
         const bool want = box->get();
         if (want == gSavedSettings.getBOOL(o.setting)) continue;
+        if (want && !mOptInConfirmed.count(o.checkbox))
+        {
+            LL_INFOS("LumenAI") << "switch " << o.setting << " not turned on: its warning was not "
+                                   "answered" << LL_ENDL;
+            continue;
+        }
         gSavedSettings.setBOOL(o.setting, want);
         LL_INFOS("LumenAI") << "switch " << o.setting << " turned " << (want ? "on" : "off") << LL_ENDL;
     }

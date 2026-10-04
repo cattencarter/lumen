@@ -4251,14 +4251,15 @@ namespace
             "off whatever hangs on the new item's attachment point, which can be the body, the "
             "head or the hair, not the old garment.\n"
             "- delete: move an item to the Trash. Nothing is destroyed -- undelete takes it back "
-            "out, into the default folder for its type (Objects, Clothing and so on), not "
-            "necessarily where it was, and only the user emptying their own Trash actually "
-            "removes anything. Say so that "
+            "out, to the folder it was in when the record knows, otherwise the default folder "
+            "for its type (Objects, Clothing and so on); emptying the Trash -- empty_trash, which "
+            "asks them every time, or they themselves -- is what destroys. Say so that "
             "way: \"moved to Trash\", not \"deleted\". The viewer asks the user itself first, in "
             "a window of its own with Yes and No -- do not ask them for permission as well, just "
             "make the call once you know which item they mean. Anything worn must be detached "
             "first, and nothing in a folder the user protected is deleted.\n"
-            "- undelete: take an item back out of the Trash.\n"
+            "- undelete: take ONE item back out of the Trash -- \"restore it\", \"get it "
+            "back\", the viewer's own Restore Item.\n"
             "- wear_outfit: put on a whole saved outfit by `name` -- looked for in My Outfits and "
             "every folder inside it -- which is how people actually think about getting dressed. "
             "Any other folder is worn as an outfit by passing its `folder_id`, as the viewer's own "
@@ -4289,8 +4290,8 @@ namespace
             "made again answers with its folder_id, for moving things into, and makes nothing "
             "new.\n"
             "- move: put an item (`item_id`) or a folder (`folder_id`) into another folder, "
-            "`to_folder` -- an id, or a path as search gives it. \"Tidy my skirts into one "
-            "folder\" is new_folder, then move each one. Second Life's own folders, Current "
+            "`to_folder` -- an id, or a path as search gives it. Many things at once is batch; "
+            "one or two is move. Second Life's own folders, Current "
             "Outfit, the Library, the AO and the LSL bridge stay where they are, and so does "
             "anything in a folder the user protected (right-click > Protect) -- though things may "
             "go INTO one. Nothing is moved into the Trash -- that is delete. The answer says where "
@@ -4308,15 +4309,16 @@ namespace
             "Anything changed since by hand is left alone and listed; say which. Something "
             "emptied from the Trash is gone for good, and the answer says so -- never claim it "
             "came back.\n"
-            "- restore: put the inventory back as a `snapshot` from history had it -- for when "
+            "- restore: put the WHOLE inventory's arrangement back as a `snapshot` from history "
+            "had it, never for one item from the Trash -- that is undelete. For when "
             "the request that changed things is not in the record any more. `preview: true` "
             "says what it would change, and changes nothing; tell them before restoring. The "
             "viewer asks them itself before it starts.\n"
             "- batch: change many things in one go -- \"put everything named pumpkin into "
             "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
             "\"delete the folders that are empty now\". **Off until the user switches it on** in "
-            "Preferences > AI > Permissions; while it is off the answer says so -- tell them where, "
-            "and do not work round it one item at a time unless they ask. `steps` is a short list "
+            "Preferences > AI > Permissions; while it is off the answer says so -- tell them it is "
+            "off and where they turn it on. `steps` is a short list "
             "(at most 20), done in order; each is a selection and what to do with it. A selection "
             "is `find`: `name` (words, each a whole word of the item's OWN name -- \"pumpkin\" finds "
             "\"Pumpkins\", not \"Pumpkinhead\", and not things that are only in a Pumpkin "
@@ -4327,7 +4329,9 @@ namespace
             "creator or in. Anything in a folder the user protected is left alone, and the plan "
             "says so. `do` is one of: `move`, with `to` (a folder by id or path, "
             "or one a new_folder step earlier in the list makes); `rename`, with `replace` and "
-            "`with` (that text in each name, ignoring case, becomes `with`; empty takes it out); "
+            "`with` (that text, as whole words of each name and ignoring case, becomes `with` -- "
+            "\"red\" never touches \"Shredded\"; with `match`: \"loose\" inside longer words too, "
+            "and the plan counts those apart; empty takes it out); "
             "`delete` (to the Trash; never anything worn); `new_folder`, with `name` and `in` "
             "(where; the top of the inventory without it; one of that name already there is used "
             "instead); `delete_empty_folders`, with `in` (folders inside it that hold nothing at "
@@ -4432,7 +4436,10 @@ namespace
             LLSD bf_name = str; bf_name["description"] = "Words, each a whole word of the item's own "
                                                          "name (a plural counts). See `match`.";
             LLSD bf_type = str; bf_type["description"] = "One kind, as search takes it: object, "
-                                                         "clothing, notecard, landmark, script, ...";
+                                                         "clothing, notecard, landmark, script, ... "
+                                                         "Leave it out for garments: a mesh garment "
+                                                         "is `object`; `clothing` is system layers "
+                                                         "only.";
             LLSD bf_creator = str; bf_creator["description"] = "Only things this person made: an "
                                                                "avatar id, or a name.";
             LLSD bf_in = str; bf_in["description"] = "Only inside this folder, at any depth: an id "
@@ -4465,7 +4472,9 @@ namespace
             LLSD bin = str; bin["description"] = "new_folder: where to make it (the top without it). "
                                                  "delete_empty_folders: the folder to look inside.";
             LLSD brep = str; brep["description"] = "rename: the text to change in each name, "
-                                                   "ignoring case.";
+                                                   "as whole words, ignoring case -- inside "
+                                                   "longer words too only with `match`: "
+                                                   "\"loose\".";
             LLSD bwith = str; bwith["description"] = "rename: what that text becomes; empty takes "
                                                      "it out.";
             LLSD bstep_props;
@@ -5070,7 +5079,8 @@ namespace
             "the user has switched that on in Preferences > AI > Permissions; while it is off "
             "the answer says so, and they press Save themselves. It saves only a window holding "
             "exactly what you last wrote into it (edit_script, or new_script with `text`) -- "
-            "never a script they changed or wrote. Without `script` it is the window you wrote "
+            "never a window holding typing of theirs that nobody saved. Without `script` it is "
+            "the window you wrote "
             "into last. The viewer asks them first. The reply comes once the compiler has "
             "answered: `compiled` true, and the window is closed; or `compile_errors`, each "
             "starting with (line, column) -- fix those with edit_script and save again. Never "
@@ -10919,8 +10929,7 @@ namespace
         e["message"] = std::string(trash ? "Emptying the Trash" : "Changing many things in the "
                                            "inventory at once")
                      + " is switched off, so nothing was done. The user turns it on themselves, "
-                       "in Preferences > AI > Permissions. Tell them that, in a sentence. Do not "
-                       "work round it one item at a time unless they ask you to.";
+                       "in Preferences > AI > Permissions. Tell them that, in a sentence.";
         LLSD w; w["__error"] = e; return w;
     }
 
@@ -11061,20 +11070,48 @@ namespace
         return out;
     }
 
-    /** `replace` with `with`, wherever it is in the name, ignoring case. */
-    std::string bulkReplaced(const std::string& name, const std::string& from, const std::string& to)
+    /**
+     * `replace` with `with` in the name, ignoring case. <Lumen> At word edges
+     * only, by the selection's own rule (a letter or digit on neither side),
+     * unless `loose`: the selection was whole words and the replace was not,
+     * so "red" -> "blue" made "Red Shredded Top" "blue Shblueded Top", and
+     * "v1" -> "v2" made "v10" "v20" (the review of 2026-10-04). An edge is
+     * asked only where `replace` itself begins or ends with a letter or
+     * digit, so " - copy" or "(old)" still replace where they stand.
+     * `inside`, when given, says whether a replacement fell inside a longer
+     * word (loose), or whether one was passed over for that (not loose).
+     */
+    std::string bulkReplaced(const std::string& name, const std::string& from, const std::string& to,
+                             bool loose = false, bool* inside = NULL)
     {
+        if (inside) *inside = false;
         if (from.empty()) return name;
         const std::string lname = lowered(name);   // byte for byte, so positions agree
         const std::string lfrom = lowered(from);
+        auto word = [](const std::string& s, size_t i) -> bool
+        {
+            return i < s.size() && isalnum((unsigned char)s[i]);
+        };
+        const bool edge_left  = word(lfrom, 0);
+        const bool edge_right = word(lfrom, lfrom.size() - 1);
         std::string out;
-        size_t at = 0;
+        size_t at = 0;     // copied up to here
+        size_t from_at = 0;
         for (;;)
         {
-            const size_t hit = lname.find(lfrom, at);
+            const size_t hit = lname.find(lfrom, from_at);
             if (hit == std::string::npos) break;
+            const size_t end = hit + lfrom.size();
+            const bool at_edges = (!edge_left || hit == 0 || !word(lname, hit - 1))
+                               && (!edge_right || !word(lname, end));
+            if (!at_edges && inside) *inside = true;
+            if (!at_edges && !loose)
+            {
+                from_at = hit + 1;   // a later one may stand on its own
+                continue;
+            }
             out += name.substr(at, hit - at) + to;
-            at = hit + from.size();
+            at = from_at = end;
         }
         out += name.substr(at);
         return out;
@@ -11218,6 +11255,22 @@ namespace
                         }
                     }
                 }
+                // <Lumen> A folder made is not given a name the viewer finds its
+                // own folders by. One already there is only used, which names
+                // nothing. A parent this run makes is not made yet: its name.
+                if (existing.isNull())
+                {
+                    std::string made_name;
+                    for (const Planned& q : planned)
+                    {
+                        if (parent_made >= 0 && q.op == parent_made) { made_name = q.name; break; }
+                    }
+                    const std::string why = LumenInventoryRules::notNamed(parent_made < 0 ? parent
+                                                                                          : LLUUID::null,
+                                                                          name, NULL, made_name);
+                    if (!why.empty()) return fail(n, "not that name: " + why + ".");
+                }
+                // </Lumen>
                 Planned p;
                 p.name = name;
                 p.path = (parent == root && parent_made < 0) ? name : parent_path + "/" + name;
@@ -11492,6 +11545,10 @@ namespace
                 // </Lumen>
                 std::map<LLUUID, bool> in_scope;
                 S32 matched = 0, already = 0, unchanged = 0, no_copy = 0, count = 0;
+                // <Lumen> rename: replaced inside a longer word (loose), of those
+                // not otherwise loose, and left because that was all there was.
+                S32 inside_done = 0, inside_only = 0, inside_left = 0;
+                std::vector<std::string> inside_names;
                 for (const auto& hit : hits)
                 {
                     const LumenAIIndex::Match& m = *hit.first;
@@ -11588,9 +11645,25 @@ namespace
                     }
                     else
                     {
-                        std::string renamed = bulkReplaced(name, replace_from, replace_to);
+                        // <Lumen> Whole words, as the selection; inside longer
+                        // words only when loose, and counted apart.
+                        bool inside = false;
+                        std::string renamed = bulkReplaced(name, replace_from, replace_to, loose, &inside);
                         LLInventoryObject::correctInventoryName(renamed);
-                        if (renamed == name || renamed.empty()) { ++unchanged; continue; }
+                        if (renamed == name || renamed.empty())
+                        {
+                            ++unchanged;
+                            if (inside && !loose) ++inside_left;
+                            continue;
+                        }
+                        if (inside && loose)
+                        {
+                            ++inside_done;
+                            if (!by_loose) ++inside_only;
+                            if (inside_names.size() < BULK_EXAMPLES)
+                                inside_names.push_back("\"" + name + "\" to \"" + renamed + "\"");
+                        }
+                        // </Lumen>
                         op.kind = BulkOp::RENAME;
                         op.new_name = renamed;
                         names.push_back("\"" + name + "\" to \"" + renamed + "\"");
@@ -11650,7 +11723,27 @@ namespace
                 }
                 if (what == "move")   n_move_loose += loose_count;
                 if (what == "delete") n_trash_loose += loose_count;
-                if (what == "rename") n_rename_loose += loose_count;
+                if (what == "rename") n_rename_loose += loose_count + inside_only;
+                // <Lumen> The rename itself, at word edges unless loose.
+                if (inside_done)
+                {
+                    LLSD ex = LLSD::emptyArray();
+                    for (const std::string& one : inside_names) ex.append(safeUtf8(one));
+                    shown["replaced_inside_words"] = inside_done;
+                    shown["inside_examples"] = ex;
+                    shown["inside_note"] = "Of `count`, these had `replace` changed inside a longer word, "
+                                           "by the loose match (\"red\" in \"Shredded\"), and the "
+                                           "question counts them as loose. Say how many, with an example.";
+                }
+                if (inside_left)
+                {
+                    shown["only_inside_words"] = inside_left;
+                    shown["only_inside_note"] = "Of `name_unchanged`, these hold `replace` only inside a "
+                                                "longer word, so they keep their names: a rename changes "
+                                                "whole words. If the user means those too, plan again "
+                                                "with \"match\": \"loose\" in `find` -- which widens the "
+                                                "selection the same way -- and say so.";
+                }
                 // </Lumen>
                 if (what == "move" && already) shown["already_there"] = already;
                 if (what == "rename" && unchanged) shown["name_unchanged"] = unchanged;
@@ -17342,19 +17435,45 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // conversation, the memory and whatever the tools read to it. A proxy
         // setting does the same for everything else. Only the person changes
         // these, in Preferences; show_setting still takes them there.
+        //
+        // <Lumen> Nor the settings the rules it is held to read (the review of
+        // 2026-10-04): FSProtectedFolders IS the list of folders the person
+        // protected -- one `[]` emptied it, every protected-folder guard fell
+        // away on every path, and being per account it stayed empty after
+        // logout. And RLV: RestrainedLove switches it off (its folder locks go
+        // at the next start), the RLVa ones change how what they wear behaves.
+        // Each refusal names the viewer's own control for it.
         {
-            static const char* const OFF_LIMITS[] = {
-                "LumenAI", "Socks5", "HttpProxy", "BrowserProxy" };
+            static const struct { const char* prefix; const char* why; } OFF_LIMITS[] = {
+                { "LumenAI",
+                  "That is the assistant's own configuration -- which AI it talks to, where, "
+                  "and what it may do. Only they can change it, in Preferences > AI. Use "
+                  "show_setting to open it for them; do not set it." },
+                { "Socks5", NULL }, { "HttpProxy", NULL }, { "BrowserProxy", NULL },
+                { "FSProtectedFolders",
+                  "That is the list of folders the user protected, which you are held to: "
+                  "nothing in them is moved, renamed or deleted by you. Only they change it, "
+                  "in their inventory: right-click a folder > Protect, or Unprotect. Tell them "
+                  "that; do not set it." },
+                { "RestrainedLove",
+                  "That is RLV, which keeps the restrictions they wear -- and you are held to "
+                  "them too. Only they change it: RLV itself is Preferences > Extras, \"Allow "
+                  "Remote Scripted Viewer Controls (RLVa)\". Use show_setting to open it for "
+                  "them; do not set it." },
+                { "RLVa",
+                  "That is part of RLV's own configuration, which keeps the restrictions they "
+                  "wear -- and you are held to them too. Only they change it. Tell them; do "
+                  "not set it." },
+            };
             for (size_t i = 0; i < LL_ARRAY_SIZE(OFF_LIMITS); ++i)
             {
-                if (ctrl.compare(0, strlen(OFF_LIMITS[i]), OFF_LIMITS[i]) != 0) continue;
+                if (ctrl.compare(0, strlen(OFF_LIMITS[i].prefix), OFF_LIMITS[i].prefix) != 0) continue;
                 LLSD e; e["code"] = -32000;
-                e["message"] = ctrl.compare(0, 7, "LumenAI") == 0
-                    ? "That is the assistant's own configuration -- which AI it talks to, where, "
-                      "and what it may do. Only they can change it, in Preferences > AI. Use "
-                      "show_setting to open it for them; do not set it."
-                    : "That is how the viewer reaches the network. Only they can change it, in "
-                      "Preferences. Use show_setting to open it for them; do not set it.";
+                e["message"] = OFF_LIMITS[i].why
+                    ? std::string(OFF_LIMITS[i].why)
+                    : std::string("That is how the viewer reaches the network. Only they can change "
+                                  "it, in Preferences. Use show_setting to open it for them; do not "
+                                  "set it.");
                 LLSD d; d["setting"] = ctrl; e["data"] = d;
                 LLSD w; w["__error"] = e; return w;
             }
@@ -19921,6 +20040,14 @@ if (method == "camera")
                 e["message"] = "Not there: " + not_there + ". Nothing was made.";
                 LLSD w; w["__error"] = e; return w;
             }
+            // <Lumen> ...and not a name the viewer finds its own folders by.
+            const std::string not_named = LumenInventoryRules::notNamed(parent, name);
+            if (!not_named.empty())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Not that name: " + not_named + ". Nothing was made.";
+                LLSD w; w["__error"] = e; return w;
+            }
             result["creating"] = safeUtf8(name);
             result["in"] = parent == m.getRootFolderID() ? std::string("(top of inventory)")
                                                           : folderPath(parent);
@@ -20055,8 +20182,10 @@ if (method == "camera")
                     LLSD w; w["__error"] = e; return w;
                 }
                 // <Lumen> The shared rules: no-modify, links, calling cards,
-                // RLV, and the viewer's own check on a folder.
-                const std::string no = LumenInventoryRules::notRename(id, folder);
+                // RLV, and the viewer's own check on a folder -- and for a
+                // folder, the name it would be given.
+                std::string no = LumenInventoryRules::notRename(id, folder);
+                if (no.empty() && folder) no = LumenInventoryRules::notNamed(parent_now, new_name);
                 if (!no.empty())
                 {
                     LLSD e; e["code"] = -32000;
@@ -20143,23 +20272,41 @@ if (method == "camera")
                 LLSD e; e["code"] = -32000; e["message"] = result["error"].asString();
                 LLSD w; w["__error"] = e; return w;
             }
-            std::string note = "Tell the user what was put back";
-            if (result["left_alone_count"].asInteger() > 0)
-                note += ", what was left alone and why (each one in left_alone)";
-            if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
-                note += ", and what could not be brought back -- never say it all came back";
-            note += ".";
-            if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
-                note += " Some things wait for the folder they were in to be made again; the "
-                        "viewer tells the user itself when that is done. End the reply.";
-            if (result.has("paced") && result["paced"].asBoolean())
-                note += " It is a long list, done a little at a time; the viewer tells the user "
-                        "itself when it has finished. End the reply.";
+            // <Lumen> A long undo is paced, and its reply comes before any of it
+            // has run: it opens with that, as restore's does, so a model does
+            // not report as put back what has only been started.
+            const bool paced = result.has("paced") && result["paced"].asBoolean();
+            std::string note;
+            if (paced)
+            {
+                note = llformat("Started: %d to put back, a few at a time -- nothing is confirmed yet; "
+                                "say it has started", (S32)result["steps"].asInteger());
+                if (result["left_alone_count"].asInteger() > 0)
+                    note += ", what is left alone and why (each one in left_alone)";
+                if (result["cannot_count"].asInteger() > 0)
+                    note += ", and what cannot be brought back -- never say it will all come back";
+                note += ". The viewer says when it is finished. End the reply.";
+            }
+            else
+            {
+                note = "Tell the user what was put back";
+                if (result["left_alone_count"].asInteger() > 0)
+                    note += ", what was left alone and why (each one in left_alone)";
+                if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
+                    note += ", and what could not be brought back -- never say it all came back";
+                note += ".";
+                if (result.has("waiting_for_folders") && result["waiting_for_folders"].asInteger() > 0)
+                    note += " Some things wait for the folder they were in to be made again; the "
+                            "viewer tells the user itself when that is done. End the reply.";
+            }
+            // </Lumen>
             // <Lumen> What could not be put back can be tried again.
             if (result.has("try_again")) note += " " + result["try_again"].asString();
             if (result["again"].asBoolean())
-                note += " This set was undone before; only what that undo could not put back was "
-                        "tried now.";
+                note += paced ? " This set was undone before; only what that undo could not put back "
+                                "is being tried now."
+                              : " This set was undone before; only what that undo could not put back "
+                                "was tried now.";
             result["note"] = note;
             LLSD summary; summary["action"] = "undo"; summary["change_set"] = result["change_set"];
             summary["put_back"] = result["put_back"];
@@ -20267,11 +20414,40 @@ if (method == "camera")
                                          "Trash, so it was not emptied. Tell the user; they can ask "
                                          "again once it has finished.");
             }
+            const std::string print = fingerprintOf(method, params);
+            // <Lumen> The count a question showed is dropped with the question
+            // itself: one left on the screen (or its Yes, kept two minutes)
+            // after the Trash was emptied by hand went on to authorise the
+            // next, bigger purge -- the user had agreed to 12, and 500 went.
+            auto dropAsked = [this, &print]()
+            {
+                sTrashAsked.erase(print);
+                auto up = mAsks.find(print);
+                if (up == mAsks.end()) return;
+                if (up->second.id.notNull()) withdrawAsk(up->second.id);   // off the screen too
+                else mAsks.erase(up);
+            };
+            // <Lumen> A folder the user protected may be IN the Trash: the
+            // viewer's own Delete of a parent asks only about the folder being
+            // deleted, and a delete made on another computer is not stopped at
+            // all. Emptying would purge it for good, so it is refused before
+            // anything is asked -- and again on the call that collects a Yes.
+            {
+                const std::string why = LumenInventoryRules::inProtected(trash, /*carried*/ true);
+                if (!why.empty())
+                {
+                    dropAsked();
+                    return bulkError(-32000, "The Trash was not emptied: " + why + ". Emptying it "
+                                             "would destroy that folder for good, so the user is not "
+                                             "asked. Tell them it has to be taken out of the Trash, "
+                                             "or unprotected, before the Trash can be emptied.");
+                }
+            }
+            // </Lumen>
             LLInventoryModel::cat_array_t cats;
             LLInventoryModel::item_array_t items;
             gInventory.collectDescendents(trash, cats, items, LLInventoryModel::INCLUDE_TRASH);
             const S32 count = (S32)(cats.size() + items.size());
-            const std::string print = fingerprintOf(method, params);
             // <Lumen> The purge empties everything Second Life has in the Trash;
             // the count is what the viewer has LOADED. Right after login, or on a
             // big inventory, the question could say 12 while thousands went. So
@@ -20295,7 +20471,7 @@ if (method == "camera")
             if (whole) sTrashFetchAt = 0.0;
             if (!asked_already && !whole)
             {
-                sTrashAsked.erase(print);
+                dropAsked();   // <Lumen>
                 LLInventoryModelBackgroundFetch& fetch = LLInventoryModelBackgroundFetch::instance();
                 const F64 now = LLTimer::getTotalSeconds();
                 // Loaded once already, that load over, and still not whole:
@@ -20323,7 +20499,7 @@ if (method == "camera")
             // </Lumen>
             if (count == 0)
             {
-                sTrashAsked.erase(print);
+                dropAsked();   // <Lumen> and the question that showed it, if still up
                 LLSD result;
                 result["emptied"] = 0;
                 result["already_empty"] = true;
@@ -20336,7 +20512,13 @@ if (method == "camera")
             // <Lumen> Kept only while that question is still up or its answer
             // uncollected: one taken down unanswered left its count behind, and
             // the next question showed that old number instead of today's.
-            if (!asked_already) sTrashAsked[print] = count;   // <Lumen> swept above
+            // <Lumen> A question up with no count kept for it is withdrawn,
+            // so the one asked now shows today's number.
+            if (!asked_already)
+            {
+                dropAsked();
+                sTrashAsked[print] = count;
+            }
             {
                 LLSD subs;
                 subs["COUNT"] = sTrashAsked[print];
@@ -20374,18 +20556,20 @@ if (method == "camera")
             LL_INFOS("AICtl") << "empty_trash: " << count << " emptied" << LL_ENDL;
 
             LLSD result;
-            result["emptied"] = count;
+            // <Lumen> Sent, not done: the purge goes to Second Life with no
+            // answer the viewer hears, so the reply says what was sent. Whole,
+            // checked above: the count is what it holds.
+            result["sent_to_empty"] = count;
             result["items"] = (LLSD::Integer)items.size();
             result["folders"] = (LLSD::Integer)cats.size();
-            result["gone_for_good"] = true;
-            // <Lumen> Whole, checked above: the count is what was emptied.
-            result["note"] = "The Trash was emptied: these are gone for good. Neither Lumen nor anyone "
-                             "else -- Linden Lab included -- can bring them back, and the record of the "
-                             "assistant's changes ends for them: undo cannot return anything that was "
-                             "in it. Tell the user that plainly.";
+            result["can_be_undone"] = false;
+            result["note"] = "Sent to Second Life to empty. Once it has, these are gone for good: "
+                             "neither Lumen nor anyone else -- Linden Lab included -- can bring them "
+                             "back, and undo cannot return anything that was in it. Tell the user it "
+                             "is being emptied, and that this cannot be undone.";
             LLSD summary;
             summary["action"] = "empty_trash";
-            summary["emptied"] = count;
+            summary["sent_to_empty"] = count;
             recordAction(request_id, print, method, "ok", result, summary);
             return result;
         }
@@ -20483,7 +20667,18 @@ if (method == "camera")
             {
                 LLSD subs;
                 subs["SUMMARY"] = plan.summary;
-                subs["COUNT"] = (LLSD::Integer)plan.ops.size();   // <Lumen>
+                // <Lumen> What it changes, worded here: folders it only makes
+                // are in the summary, not counted as items changed, and one is
+                // "1 item", never "1 items".
+                S32 changed = 0;
+                for (const BulkOp& op : plan.ops)
+                {
+                    if (op.kind != BulkOp::NEW_FOLDER) ++changed;
+                }
+                subs["COUNT"] = changed == 1 ? std::string("1 item")
+                              : changed == 0 ? std::string("no items")
+                              : llformat("%d items", changed);
+                // </Lumen>
                 LLSD ask;
                 plan.asked = true;
                 if (!askUser(plan.deletes ? "LumenAskBatchDelete" : "LumenAskBatch", subs,
@@ -20703,6 +20898,25 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> Saving over an outfit replaces every link in its folder, and
+        // the old ones are in neither the Trash nor the record: not in a folder
+        // the user protected, nor anywhere the shared rules keep the assistant
+        // out of. Before the question, so nobody is asked about what will not
+        // happen.
+        if (existing.notNull())
+        {
+            std::string why = LumenInventoryRules::offLimits(existing);
+            if (why.empty()) why = LumenInventoryRules::inProtected(existing);
+            if (!why.empty())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "The outfit \"" + safeUtf8(existing_name) + "\" was not saved over: "
+                             + why + ". Nothing was saved. Tell them; saving under another name "
+                               "makes a new outfit.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
         if (existing.notNull())
         {
             // What was saved there is lost and nothing brings it back, so the
@@ -21913,10 +22127,17 @@ if (method == "camera")
         result["name"] = item_name;
         result["moved_to_trash"] = true;
         result["recoverable"] = true;
-        result["confirm_with"] =
-            "It is in the Trash, not destroyed. inventory / undelete takes it back out, into the "
-            "folder it was in. Tell the user it was "
-            "moved to Trash rather than saying it was deleted.";
+        // <Lumen> Where undelete puts it is the record's to know; without the
+        // record, the default folder for its type -- said, as move says it.
+        result["confirm_with"] = LumenAIUndo::instance().available()
+            ? std::string("It is in the Trash, not destroyed. inventory / undelete takes it back "
+                          "out, to the folder it was in when the record knows, otherwise the default "
+                          "folder for its type. Tell the user it was moved to Trash rather than "
+                          "saying it was deleted.")
+            : "It is in the Trash, not destroyed. inventory / undelete takes it back out, but into "
+              "the default folder for its type: the record of changes is not available ("
+              + LumenAIUndo::instance().unavailableWhy() + "), so where it was is not kept. Tell "
+              "the user it was moved to Trash rather than saying it was deleted.";
         if (is_link)
         {
             result["removed_link_only"] = true;
@@ -22248,6 +22469,35 @@ if (method == "camera")
                            "which the creator decided and the viewer cannot override.";
             LLSD w; w["__error"] = e; return w;
         }
+
+        // <Lumen> Asked of the ORIGINAL, the link followed above, and before
+        // anyone is asked. Marketplace listings first, whatever the copy
+        // permission: the viewer's own Share is withheld from everything in
+        // them, and a give takes a unit out of a listing. Then a no-copy item,
+        // which leaves the inventory with the offer: the rules for putting it
+        // in the Trash (a folder the user protected, the viewer's locked
+        // folders, an RLV lock), since giving it away is more final than that.
+        if (depth_nesting_in_marketplace(item->getUUID()) >= 0)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "\"" + safeUtf8(item->getName()) + "\" is in Marketplace listings, and the "
+                           "viewer itself does not give anything away from there. Nothing was "
+                           "offered. Tell them.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!item->getPermissions().allowCopyBy(gAgentID))
+        {
+            std::string why = LumenInventoryRules::notDelete(item->getUUID(), false);
+            if (!why.empty())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "\"" + safeUtf8(item->getName()) + "\" is no-copy, so giving it away "
+                               "takes it out of their inventory -- and " + why + ". Nothing was "
+                               "offered. Tell them.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
 
         const std::string request_id = params.has("request_id")
             ? params["request_id"].asString() : std::string();
@@ -25779,6 +26029,32 @@ if (method == "camera")
             // A no-copy object LEAVES inventory when it is rezzed. <Lumen> The
             // question says so; it used to take a `confirm` carrying the name.
             const bool copyable = item->getPermissions().allowCopyBy(gAgent.getID());
+            // <Lumen> Asked of the original, before the question: nothing is
+            // rezzed from Marketplace listings -- the viewer's own drag refuses
+            // it, "You can't rez items from the Marketplace Listings folder" --
+            // and a no-copy object, which leaves the inventory, only where it
+            // could be put in the Trash (not from a folder the user protected).
+            if (depth_nesting_in_marketplace(item->getUUID()) >= 0)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "\"" + safeUtf8(item->getName()) + "\" is in Marketplace listings, and "
+                               "the viewer itself does not rez anything from there. Nothing was "
+                               "rezzed. Tell them.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (!copyable)
+            {
+                const std::string why = LumenInventoryRules::notDelete(item->getUUID(), false);
+                if (!why.empty())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "\"" + safeUtf8(item->getName()) + "\" is no-copy, so rezzing it "
+                                   "takes it out of their inventory -- and " + why + ". Nothing was "
+                                   "rezzed. Tell them.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+            // </Lumen>
             {
                 LLSD subs;
                 subs["ACTION"] = "Rez \"" + safeUtf8(item->getName()) + "\" from your "
