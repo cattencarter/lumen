@@ -4033,8 +4033,9 @@ namespace
 
     // <Lumen> The viewer asking whether to save the changes in one of its own
     // windows as it closes -- a script, a notecard, a gesture and the
-    // experience profile all ask "SaveChanges"; the appearance editor and a
-    // profile have their own. Never the assistant's to answer, whichever
+    // experience profile all ask "SaveChanges"; the appearance editor, the
+    // material editor and a profile have their own (two spelt "Usaved" by
+    // Linden Lab, kept so). Never the assistant's to answer, whichever
     // button: Save saves whatever is in the window, the person's own unsaved
     // typing included -- and for a script, past the switch that keeps saving
     // theirs to allow (save_script) -- while Don't Save throws their typing
@@ -4043,7 +4044,8 @@ namespace
     {
         const std::string& kind = n->getName();
         return kind == "SaveChanges" || kind == "SaveClothingBodyChanges"
-            || kind == "ProfileUnsavedChanges";
+            || kind == "ProfileUnsavedChanges"
+            || kind == "UsavedWearableChanges" || kind == "UsavedMaterialChanges";   // <Lumen>
     }
 
     LLSD permissionsAsked(const LLNotificationPtr& n)
@@ -11664,6 +11666,28 @@ namespace
                 S32 matched = 0, already = 0, count = 0, carried_items = 0, carried_folders = 0;
                 S32 loose_count = 0, left_out = 0;
                 std::vector<std::string> loose_names, left_out_names;
+                // <Lumen> Folders this step passes over -- where they go, one
+                // already there, one refused, protected or not loaded -- and
+                // everything inside them: a matching folder deeper down is
+                // part of that one, and taking it on its own would pull a
+                // product apart, or empty a folder left alone piece by piece.
+                // `found` runs shallowest first, so a folder is passed over
+                // before anything inside it is looked at.
+                std::set<LLUUID> passed;
+                if (dest.notNull()) passed.insert(dest);
+                auto insidePassed = [&](const LLViewerInventoryCategory* c) -> bool
+                {
+                    LLUUID up = c->getParentUUID();
+                    for (S32 guard = 0; guard < 64 && up.notNull() && up != scope; ++guard)
+                    {
+                        if (passed.count(up)) return true;
+                        const LLViewerInventoryCategory* above = gInventory.getCategory(up);
+                        if (!above) break;
+                        up = above->getParentUUID();
+                    }
+                    return false;
+                };
+                // </Lumen>
                 for (const auto& f : found)
                 {
                     LLViewerInventoryCategory* c = f.second;
@@ -11671,6 +11695,7 @@ namespace
                     // Inside a folder this step takes whole: it goes with it.
                     std::map<LLUUID, S32>::const_iterator mine = claimed_by.find(id);
                     if (mine != claimed_by.end() && mine->second == (S32)n) continue;
+                    if (insidePassed(c)) continue;   // <Lumen>
                     const std::string lname = lowered(c->getName());
                     bool named = true, inside = true;
                     for (const std::string& w : typed)
@@ -11692,9 +11717,15 @@ namespace
                     {
                         ++earlier;
                         earlier_steps.insert(claimed_by[id] + 1);
+                        passed.insert(id);   // <Lumen>
                         continue;
                     }
-                    if (what == "move" && dest.notNull() && c->getParentUUID() == dest) { ++already; continue; }
+                    if (what == "move" && dest.notNull() && c->getParentUUID() == dest)
+                    {
+                        ++already;
+                        passed.insert(id);   // <Lumen>
+                        continue;
+                    }
                     // The shared rules, for the folder and all it carries: the
                     // Library, Current Outfit, the bridge's, the AO's and the
                     // favourites' folders, Marketplace, the viewer's own
@@ -11726,6 +11757,7 @@ namespace
                             }
                         }
                         if (kept.notNull()) kept_folders.insert(kept);
+                        passed.insert(id);   // <Lumen>
                         continue;
                     }
                     LLInventoryModel::cat_array_t cats;
@@ -11754,6 +11786,7 @@ namespace
                     {
                         ++refused_count;
                         bulkCapped(refused, c->getName(), why);
+                        passed.insert(id);   // <Lumen>
                         continue;
                     }
 
@@ -12515,11 +12548,21 @@ namespace
                 gInventory.collectDescendents(op.id, cats, items, LLInventoryModel::EXCLUDE_TRASH);
                 const std::string worn = bulkWornIn(items);
                 if (!worn.empty()) { failed("it holds \"" + safeUtf8(worn) + "\", which is being worn now"); return; }
-            }
-            if (!get_is_category_and_children_removable(&gInventory, op.id, true))
-            {
-                failed("the viewer does not allow removing it now");
-                return;
+                if (!get_is_category_and_children_removable(&gInventory, op.id, true))
+                {
+                    failed("the viewer does not allow removing it now");
+                    return;
+                }
+                // <Lumen> As the viewer's own removeCategory does: a gesture
+                // going to the Trash with its folder stops being active.
+                for (const LLPointer<LLViewerInventoryItem>& item : items)
+                {
+                    if (item && item->getType() == LLAssetType::AT_GESTURE && !item->getIsLinkType()
+                        && LLGestureMgr::instance().isGestureActive(item->getUUID()))
+                    {
+                        LLGestureMgr::instance().deactivateGesture(item->getUUID());
+                    }
+                }
             }
             // As delete_empty_folders does: the Trash-is-full check once, at the end.
             gInventory.changeCategoryParent(cat, trash, true);
