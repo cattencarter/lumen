@@ -19699,7 +19699,7 @@ if (method == "camera")
             }
             std::string note = "Tell the user what was put back";
             if (result["left_alone_count"].asInteger() > 0)
-                note += ", what was left alone because it changed again since";
+                note += ", what was left alone and why (each one in left_alone)";
             if (result["cannot_count"].asInteger() > 0 || result["could_not"].asInteger() > 0)
                 note += ", and what could not be brought back -- never say it all came back";
             note += ".";
