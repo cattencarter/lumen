@@ -239,5 +239,18 @@ if (LINUX OR DARWIN)
 
   add_compile_options(${GCC_WARNINGS})
   add_compile_options(-m${ADDRESS_SIZE})
+
+  # <Lumen> Nothing of the build machine in what ships. __FILE__ in log lines
+  # and checks put the checkout's absolute path -- a home folder, a user name
+  # -- into every binary we ship; its root is written as "." instead. The log
+  # shortens file names at their "indra/" part, so log lines read the same.
+  # On a Mac the linker also writes the path of every object file into the
+  # symbol table, for debugging; -oso_prefix makes those relative too.
+  get_filename_component(LUMEN_CHECKOUT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+  add_compile_options("-ffile-prefix-map=${LUMEN_CHECKOUT}=.")
+  if (DARWIN)
+    add_link_options("LINKER:-oso_prefix,${LUMEN_CHECKOUT}/")
+  endif (DARWIN)
+  # </Lumen>
 endif (LINUX OR DARWIN)
 
