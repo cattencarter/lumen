@@ -4419,7 +4419,7 @@ namespace
             "found -- use its object_id. Directions are "
             "either fixed (north, south, east, west and the between ones) or relative to the way "
             "the avatar is facing (forward, back, left, right). For short distances in sight; use "
-            "teleport to cross the grid.\n"
+            "teleport to cross the grid. `run: true` runs there instead -- use it when they say run.\n"
             "- go_back: take them back to where they were before the last walk or teleport -- "
             "\"take me back\", \"go back to where I was\", \"back where we started\". The viewer "
             "picks the way: on foot after a walk in this region, by teleport after a teleport. "
@@ -4597,6 +4597,11 @@ namespace
         LLSD mdis; mdis["type"]="number";
             mdis["description"]="walk_to: how far to go in that direction, in metres.";
         LLSD mfly; mfly["type"]="boolean"; mfly["description"]="fly: true takes off, false lands.";
+        LLSD mrun; mrun["type"]="boolean";
+            mrun["description"]="walk_to / go_back: true to RUN there instead of walking, whenever "
+                                "the user says run, hurry or jog. It is the viewer's own temporary "
+                                "run, so their always-run setting is left as it is, and it ends with "
+                                "the walk.";
         LLSD mlm; mlm["type"]="string";
             mlm["description"]="teleport: a landmark in inventory, instead of a region -- EVERY word the "
                                "user used about the place (\"amazon hut rio solimoes\", not just "
@@ -4606,7 +4611,7 @@ namespace
         move_props["landmark"]=mlm;
         LLSD mhd; mhd["type"]="number"; mhd["description"]="turn: a bearing in degrees, 0 north, 90 east.";
         move_props["direction"]=mdir; move_props["distance"]=mdis;
-        move_props["enabled"]=mfly; move_props["heading"]=mhd;
+        move_props["enabled"]=mfly; move_props["heading"]=mhd; move_props["run"]=mrun;
         move_props["region"]=mrg; move_props["x"]=mx; move_props["y"]=my; move_props["z"]=mz;
         move_props["home"]=mh; move_props["object_id"]=mo; move_props["ground"]=mg;
         move_props["radius"]=mrd; move_props["name"]=snm; move_props["request_id"]=srq;
@@ -5395,6 +5400,39 @@ void LumenAIControl::keepFollowing()
         });
     mFollowListenerUp = true;
 }
+
+// <Lumen> Running on the way ("run to whisper"): the viewer's temporary run,
+// the one double-tapping forward sets, so the user's own always-run setting is
+// never touched and RLV's @temprun still applies. The autopilot calls this
+// whenever a walk stops -- arrived, stopped, replaced by another walk or a
+// follow, or taken over with their own keys -- and only a run this started is
+// switched off again.
+namespace
+{
+    bool sAssistantRun = false;
+
+    void lumenWalkFinished(bool /*arrived*/, void* /*data*/)
+    {
+        if (sAssistantRun)
+        {
+            sAssistantRun = false;
+            gAgent.clearTempRun();
+        }
+    }
+
+    bool lumenWantsRun(const LLSD& params)
+    {
+        if (!params.has("run")) return false;
+        const LLSD& r = params["run"];
+        if (r.isString())   // LLSD calls any non-empty string true, "false" included
+        {
+            const std::string v = utf8str_tolower(r.asString());
+            return v == "true" || v == "yes" || v == "1";
+        }
+        return r.asBoolean();
+    }
+}
+// </Lumen>
 
 // <Lumen> Anything else that moves the avatar ends a follow first: the
 // autopilot re-aims at the person every frame while a leader is set, so a
@@ -17546,8 +17584,20 @@ if (method == "camera")
         // up and mid-flight, because nothing had recorded the start.
         const LLVector3 from = gAgent.getPositionAgent();
         noteWalkStarted(gAgent.getPositionGlobal(), region->getRegionID());   // <Lumen> go_back
-        gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, NULL, NULL, 1.5f,
-                                    0.03f, was_flying);
+        // <Lumen> lumenWalkFinished ends a run this walk starts. Starting a walk
+        // calls the previous walk's callback, so the run is switched on after.
+        gAgent.startAutoPilotGlobal(target, "walking to " + described, NULL, lumenWalkFinished,
+                                    NULL, 1.5f, 0.03f, was_flying);
+        bool running = gAgent.getRunning();   // their own always-run counts
+        bool run_refused = false;
+        if (lumenWantsRun(params) && !running)
+        {
+            gAgent.setTempRun();
+            running = gAgent.getRunning();
+            if (running) sAssistantRun = true;
+            else         run_refused = true;   // RLV @temprun
+        }
+        // </Lumen>
         mWalkActive = true;   // <Lumen> see status
         mWalkTarget = target;
         mWalkTo     = described;
@@ -17557,6 +17607,12 @@ if (method == "camera")
         LLSD result;
         result["walking_to"] = described;
         result["distance"] = distance;
+        result["running"] = running;   // <Lumen>
+        if (run_refused)
+        {
+            result["run_note"] = "An RLV restriction does not allow running, so they are walking "
+                                 "there. Tell the user.";
+        }
         if (ended_follow)
         {
             result["ended_follow"] = true;
@@ -21280,6 +21336,7 @@ if (method == "camera")
             const LLVector3 local = region->getPosRegionFromGlobal(mw.walk_from);
             LLSD walk;
             walk["x"] = local.mV[VX]; walk["y"] = local.mV[VY]; walk["z"] = local.mV[VZ];
+            if (params.has("run")) walk["run"] = params["run"];   // <Lumen>
             result = dispatch("walk_to", walk);
             if (result.has("__error")) return result;
             result["went_back_by"] = "walking";
@@ -24450,6 +24507,7 @@ LLSD LumenAIControl::toolStatus() const
         status["heading_degrees"] = (LLSD::Integer)llround(heading);
         status["facing"] = compassPoint(heading);
         status["walking"] = gAgent.getAutoPilot();
+        status["running"] = gAgent.getRunning();   // <Lumen> always-run, or a walk_to with run
         if (gAgent.getAutoPilot())
         {
             status["walking_to"] = gAgent.getAutoPilotBehaviorName();
