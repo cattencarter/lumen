@@ -817,6 +817,7 @@ namespace
             if (action == "answer_while_away") return "Covering for you";
             if (action == "read_scripts")     return "Reading your script";
             if (action == "edit_script")      return "Writing your script";
+            if (action == "save_script")      return "Saving your script";   // <Lumen>
             if (action == "lighting")         return "Adjusting the light";
             if (action == "set_setting") return "Changing a setting";
             if (action == "show_setting") return "Opening Preferences";
@@ -973,7 +974,8 @@ namespace
 
             "Some things the viewer asks the person about itself, in a window of its own with Yes "
             "and No, before doing them: deleting anything, giving something away, saying or "
-            "sending anything in their name, building or changing objects, adding a script, "
+            "sending anything in their name, building or changing objects, adding or saving a "
+            "script, "
             "overwriting a saved outfit, "
             "teleporting to a place found in search, answering a dialogue for them, and "
             "answering for them while they are away. Do not ask permission for those in the "

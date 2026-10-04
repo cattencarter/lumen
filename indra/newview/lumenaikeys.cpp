@@ -338,6 +338,7 @@ namespace
     const OptIn OPT_INS[] =
     {
         { "allow_bulk_inventory", "LumenAIAllowBulkInventory", "LumenConfirmBulkInventory" },
+        { "allow_save_scripts",   "LumenAIAllowSaveScripts",   "LumenConfirmSaveScripts" },
     };
 }
 

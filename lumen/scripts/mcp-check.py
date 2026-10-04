@@ -207,6 +207,10 @@ def main():
         # has to be an id that is real in shape and names nothing.
         ("viewer",   "new_script"):     {"object_id": NOWHERE_UUID},
         ("viewer",   "open_script"):    {"object_id": NOWHERE_UUID},
+        # With saving switched on, save_script saves the script window the
+        # assistant wrote into last -- a script then running in the world. A
+        # window title nothing has is refused before anything is asked.
+        ("viewer",   "save_script"):    {"script": "__check_only__"},
         # remember and forget with no text are refused by LumenAIMemory itself
         # ("Nothing to remember", "Say which entry"), so they need no entry.
 

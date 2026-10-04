@@ -15659,6 +15659,31 @@ Every run is shown to you first and can be undone afterwards. Anything emptied f
        text="Leave it off"/>
     </form>
   </notification>
+  <!-- <Lumen> Shown when the user ticks Preferences > AI > Permissions >
+       "Let the assistant save and run the scripts it writes". As the one
+       above: Leave it off is the default, the assistant may not answer it,
+       and it explains rather than frightens. -->
+  <notification
+   icon="alert.tga"
+   label="Let the assistant save scripts?"
+   name="LumenConfirmSaveScripts"
+   type="alertmodal">
+The assistant will be able to save the scripts it writes, so they run at once in their object. A script can act in the world: chat, move things, give items away and ask you for permissions.
+
+Every save is shown to you first. A mistake keeps running until the script is stopped or deleted.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="OK"
+       text="Turn it on"/>
+      <button
+       default="true"
+       index="1"
+       name="Cancel"
+       text="Leave it off"/>
+    </form>
+  </notification>
   <notification
    icon="alert.tga"
    label="Delete an object?"
@@ -15722,6 +15747,33 @@ The assistant wants to add a new script to [OBJECT]. It starts running at once, 
       <ignore name="ignore"
        save_option="true"
        text="When the assistant wants to add a script to an object"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Yes"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="No"/>
+    </form>
+  </notification>
+  <!-- <Lumen> Saving a script the assistant wrote, behind
+       LumenAIAllowSaveScripts. [WHERE] is a whole phrase: in "the object",
+       so it runs; or in your inventory, where a saved script runs nowhere. -->
+  <notification
+   icon="alert.tga"
+   label="Save a script?"
+   name="LumenAskSaveScript"
+   type="alertmodal">
+The assistant wants to save the script &quot;[SCRIPT]&quot; [WHERE].
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to save a script it wrote"/>
       <button
        ignore="Always allow"
        index="0"

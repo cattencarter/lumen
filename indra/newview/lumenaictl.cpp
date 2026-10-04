@@ -121,6 +121,8 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
                   LLObjectSelectionHandle selection_handle);
 // </Lumen>
 #include "lltextbox.h"       // <Lumen> a script window's compile result, for read_scripts
+#include "lltrans.h"         // <Lumen> save_script: the window's own "Compile successful!"
+#include "llcheckboxctrl.h"  // <Lumen> save_script: the script window's Running box
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
 #include "llfloatersnapshot.h" // <Lumen> close_window: the Snapshot layer
@@ -232,8 +234,70 @@ namespace
      * object, a window of its scripts still holding exactly what the
      * assistant wrote is closed without the question: nothing of the
      * person's is in it to lose. A window they typed into is left alone.
+     * <Lumen> Inventory script windows are kept here too, by their item id,
+     * for save_script: it saves only a window holding exactly what the
+     * assistant wrote, so it is never the one to save somebody's own edit.
      */
     std::map<std::string, std::string> sAssistantScriptText;
+
+    // <Lumen> The key a script window is kept under there: the script's item
+    // id, for a script inside an object (taskid + itemid) or in inventory
+    // (the item id alone).
+    std::string scriptWindowKey(LLFloater* f)
+    {
+        const LLSD& key = f->getKey();
+        return key.isMap() ? key["itemid"].asString() : key.asString();
+    }
+
+    // <Lumen> Whether a script window holds exactly what the assistant last
+    // wrote into it -- false once anybody has typed in it, and for a window
+    // it never wrote into. save_script saves nothing else.
+    bool scriptWindowHoldsYours(LLFloater* f)
+    {
+        LLTextEditor* ed = f ? f->findChild<LLTextEditor>("Script Editor") : NULL;
+        if (!ed) return false;
+        std::map<std::string, std::string>::const_iterator w =
+            sAssistantScriptText.find(scriptWindowKey(f));
+        return w != sAssistantScriptText.end() && w->second == ed->getText();
+    }
+
+    // <Lumen> The window edit_script last wrote into: what save_script saves
+    // when it is not told which.
+    LLHandle<LLFloater> sLastWrittenScript;
+
+    /**
+     * Saving the scripts it writes, behind a switch the person turns on in
+     * Preferences > AI > Permissions (LumenAIAllowSaveScripts). Off, the
+     * assistant writes and the person reads it and saves, as before, which is
+     * where everybody who leaves it off stays. Read defensively, as the bulk
+     * switch is: a viewer without the setting refuses rather than crashing.
+     */
+    bool saveScriptsAllowed()
+    {
+        return gSavedSettings.controlExists("LumenAIAllowSaveScripts")
+            && gSavedSettings.getBOOL("LumenAIAllowSaveScripts");
+    }
+
+    /**
+     * save_script's save while the compiler answers, by the call's
+     * fingerprint. The save is made once; the same call again -- the socket
+     * or the Assistant holding the reply -- reads the answer from the window
+     * instead of saving a second time.
+     */
+    struct SaveScriptJob
+    {
+        LLHandle<LLFloater> window;
+        std::string         text;           // what was saved
+        std::string         script;         // its name, for the reply
+        F64                 until = 0.0;    // this call's wait; 0: the next call starts one
+        F64                 keep = 0.0;     // dropped, if nobody came back, after this
+        bool                told_not_yet = false;   // "not answered yet" was said once
+    };
+    std::map<std::string, SaveScriptJob> sSaveScripts;
+    // How long a save's reply waits for the compiler: a second or two as a
+    // rule. Inside the fifteen seconds the Assistant's own wait allows.
+    const F64 SAVE_SCRIPT_WAIT = 12.0;
+    // </Lumen>
 
     // new_script opening and writing its own script in one call: open_script
     // leaves the window it opened here, and edit_script writes into the window
@@ -3816,6 +3880,7 @@ namespace
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
             if (action == "edit_script")      return "edit_open_script";
+            if (action == "save_script")      return "save_open_script";   // <Lumen>
             return "";
         }
         return "";
@@ -4837,7 +4902,7 @@ namespace
         // ---- viewer ---------------------------------------------------------
         static const char* const view_actions[] =
             { "status", "read_actions", "read_dialogues", "answer_dialogue",
-              "answer_while_away", "read_scripts", "edit_script", "lighting",
+              "answer_while_away", "read_scripts", "edit_script", "save_script", "lighting",
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall", "music" };
@@ -4899,7 +4964,18 @@ namespace
             "usually want and leaves the rest untouched; or `text` for the whole script when it "
             "is genuinely a rewrite. When they say they have saved, read_scripts has the "
             "compiler's answer -- `compile_errors` to fix, or `last_save_result` saying it "
-            "compiled. Tell them plainly that you have written it in and they need to save.\n"
+            "compiled. Tell them plainly that you have written it in and they need to save -- "
+            "unless the reply says saving is switched on for you, and then save_script saves it.\n"
+            "- save_script: **save the script you wrote, so it compiles and runs** -- only when "
+            "the user has switched that on in Preferences > AI > Permissions; while it is off "
+            "the answer says so, and they press Save themselves. It saves only a window holding "
+            "exactly what you last wrote into it (edit_script, or new_script with `text`) -- "
+            "never a script they changed or wrote. Without `script` it is the window you wrote "
+            "into last. The viewer asks them first. The reply comes once the compiler has "
+            "answered: `compiled` true, and the window is closed; or `compile_errors`, each "
+            "starting with (line, column) -- fix those with edit_script and save again. Never "
+            "say a script works before `compiled` is true. A script that asks for permissions "
+            "still asks THEM, and that window is never yours to answer.\n"
             "- lighting: change the light, which for a photograph matters as much as the "
             "framing. `preset` takes \"sunrise\", \"midday\", \"sunset\", \"midnight\", or "
             "\"region\" to give the place its own light back -- and the ordinary words, so "
@@ -4938,7 +5014,8 @@ namespace
             "or what they have selected. Without `text` it holds Linden Lab's default script and "
             "nothing of yours -- write with edit_script before telling them to save. Either way "
             "the default is ALREADY RUNNING until they press Save -- the object greets anyone who "
-            "touches it -- and nothing YOU write runs until they do.\n"
+            "touches it -- and nothing YOU write runs until they do, or until save_script saves "
+            "it when they have switched that on.\n"
             "\n- remember: when THE PERSON asks you to remember something -- \"remember that "
             "Kwanita's username is tyria06\" -- save it, in `text`, as they put it. It is kept for "
             "this avatar and given back to you with every message from then on. Then tell them "
@@ -4966,8 +5043,9 @@ namespace
             "contents is a round trip; the reply waits for it. It refuses plainly when the object "
             "is no-modify. **It does NOT save.** "
             "Opening, reading with read_scripts and writing with edit_script are all yours; "
-            "pressing Save is theirs, and nothing compiles or runs until they do. Say what you "
-            "changed and let them read it.\n"
+            "pressing Save is theirs, and nothing compiles or runs until they do -- unless they "
+            "have switched saving on for you (save_script). Say what you changed and let them "
+            "read it.\n"
             "\n- lsl_lookup: **check every LSL name before you write it, not after the compile "
             "fails.** It answers from the syntax THIS REGION served, so return types, argument "
             "order and argument types are fact rather than recollection, and it covers functions, "
@@ -5052,7 +5130,8 @@ namespace
         LLSD vsc; vsc["type"]="string";
             vsc["description"]="edit_script: which open script window to write into, by title. "
                                "Only needed when more than one is open; without it the one in "
-                               "front is used.";
+                               "front is used. save_script: which one to save; without it, the "
+                               "one you wrote into last.";
         view_props["script"]=vsc;
         LLSD vrp; vrp["type"]="string";
             vrp["description"]="edit_script: the exact existing text to replace. Must appear "
@@ -7683,6 +7762,42 @@ static LLFloater* frontmostScriptWindow(std::string* title_out = NULL)
     return best;
 }
 
+// <Lumen> The open script window a caller named by title, for edit_script and
+// save_script. An exact title (ignoring case) settles it on its own; otherwise
+// every title containing `want` is a match, and `matched` lists them -- more
+// than one is a question for the caller, never a coin toss: this kept
+// whichever window enumerated LAST, so with "Script: door" and "Script: door
+// v2" both open, "door" wrote into one of them with no warning.
+static LLFloater* scriptWindowByTitle(const std::string& want, LLSD& matched)
+{
+    const std::string lwant = lowered(want);
+    const char* const KINDS[] = { "preview_script", "preview_scriptedit" };
+    LLFloater* found = NULL;
+    LLFloater* exact = NULL;
+    matched = LLSD::emptyArray();
+    for (const char* kind : KINDS)
+    {
+        for (LLFloater* f : LLFloaterReg::getFloaterList(kind))
+        {
+            if (!f || !f->getVisible()) continue;
+            const std::string title = lowered(f->getTitle());
+            if (title == lwant) exact = f;
+            if (title.find(lwant) != std::string::npos)
+            {
+                found = f;
+                matched.append(f->getTitle());
+            }
+        }
+    }
+    if (exact)
+    {
+        matched = LLSD::emptyArray();
+        matched.append(exact->getTitle());
+        return exact;
+    }
+    return found;
+}
+
 // <Lumen> The script item a script window shows, or NULL when it cannot be
 // found (a brand-new script the object has not listed yet, say).
 static const LLInventoryItem* scriptWindowItem(LLFloater* f)
@@ -7708,6 +7823,38 @@ static std::string scriptSaveResult(LLFloater* f)
     LLScrollListCtrl* list = f ? f->findChild<LLScrollListCtrl>("lsl errors") : NULL;
     LLTextBox* comment = list ? list->findChild<LLTextBox>("comment_text") : NULL;
     return comment ? comment->getText() : std::string();
+}
+
+// <Lumen> The compiler's errors as a script window shows them, a line each:
+// the rows of its "lsl errors" list, which a failed save fills -- the upload
+// response's `errors` (LLLiveLSLEditor::callbackLSLCompileFailed) -- and
+// which Save empties first.
+static LLSD scriptWindowErrors(LLFloater* f)
+{
+    LLSD errors = LLSD::emptyArray();
+    if (LLScrollListCtrl* list = f ? f->findChild<LLScrollListCtrl>("lsl errors") : NULL)
+    {
+        std::vector<LLScrollListItem*> rows = list->getAllData();
+        for (LLScrollListItem* row : rows)
+        {
+            if (const LLScrollListCell* cell = row->getColumn(0))
+            {
+                const std::string line = cell->getValue().asString();
+                if (!line.empty()) errors.append(safeUtf8(line));
+            }
+        }
+    }
+    return errors;
+}
+
+// <Lumen> Whether a script window is waiting for the compiler: its own
+// spinner, which Save turns on and the answer -- either kind -- turns off
+// (LLScriptEdCore::updateIndicators). A save that never left the viewer
+// leaves it spinning, so this is "not answered", not "being answered".
+static bool scriptWindowCompiling(LLFloater* f)
+{
+    LLView* spinner = f ? f->findChild<LLView>("progress_indicator") : NULL;
+    return spinner && spinner->getVisible();
 }
 
 // <Lumen> Why a script window cannot take a write, in plain words, or "" when
@@ -15395,20 +15542,31 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             r["written"] = written;
             r["saved"] = false;
             const std::string made = "A new script called \"" + j.name + "\" was put into that object";
+            // <Lumen> Who saves it: them, or save_script when they have
+            // switched that on (Preferences > AI > Permissions).
+            const bool may_save = saveScriptsAllowed();
             if (written)
             {
                 r["window_in_front"] = true;
-                r["note"] = made + ", opened, and your script written into it -- NOT saved. The "
-                            "window is in front for them: tell them to read it and press Save. Until "
-                            "they do, Linden Lab's default script is what runs in it, and it greets "
-                            "anyone who touches the object.";
+                r["note"] = made + (may_save
+                    ? std::string(", opened, and your script written into it -- not saved yet. "
+                                  "Saving is switched on for you: save it with save_script, and "
+                                  "tell them whether it compiled. Until it is saved, Linden Lab's "
+                                  "default script is what runs in it, and it greets anyone who "
+                                  "touches the object.")
+                    : std::string(", opened, and your script written into it -- NOT saved. The "
+                                  "window is in front for them: tell them to read it and press "
+                                  "Save. Until they do, Linden Lab's default script is what runs "
+                                  "in it, and it greets anyone who touches the object."));
             }
             else if (stopped.empty())
             {
                 r["note"] = made + " and opened. Nothing of yours is in it yet: it holds Linden Lab's "
                             "default script, which is ALREADY RUNNING -- the object greets anyone who "
                             "touches it -- so say so. Write yours with edit_script before saying "
-                            "anything about saving; nothing you write runs until they press Save.";
+                            "anything about saving; "
+                          + (may_save ? "nothing you write runs until it is saved."
+                                      : "nothing you write runs until they press Save.");
             }
             else
             {
@@ -15883,8 +16041,11 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                       : "Nothing of yours is in it yet -- it holds what was already there, "
                         "which for a new script is Linden Lab's default. Write your change with "
                         "edit_script before saying anything about saving. ")
-              + "**They press Save**, not you: nothing is saved by opening it, and nothing runs "
-                "until they do."
+              + (saveScriptsAllowed()
+                 ? "Nothing is saved by opening it. Saving is switched on for you: once what you "
+                   "wrote is in it, save_script saves it -- the viewer asks them first."
+                 : "**They press Save**, not you: nothing is saved by opening it, and nothing "
+                   "runs until they do.")
             : std::string("The script window did not open. Say so rather than going on as "
                           "though it had.");
         recordAction(request_id, fingerprintOf(method, params), "open_script",
@@ -23942,19 +24103,7 @@ if (method == "camera")
                     one["saved"] = ed->isPristine();
                 }
 
-                LLSD errors = LLSD::emptyArray();
-                if (LLScrollListCtrl* list = f->findChild<LLScrollListCtrl>("lsl errors"))
-                {
-                    std::vector<LLScrollListItem*> rows = list->getAllData();
-                    for (LLScrollListItem* row : rows)
-                    {
-                        if (const LLScrollListCell* cell = row->getColumn(0))
-                        {
-                            const std::string line = cell->getValue().asString();
-                            if (!line.empty()) errors.append(safeUtf8(line));
-                        }
-                    }
-                }
+                const LLSD errors = scriptWindowErrors(f);   // <Lumen> shared with save_script
                 if (errors.size() > 0)
                 {
                     one["compile_errors"] = errors;
@@ -23966,17 +24115,16 @@ if (method == "camera")
                 {
                     one["last_save_result"] = safeUtf8(said);
                 }
-                // Whether what the assistant wrote is what is in it, for a
-                // script inside an object -- "nothing of yours is in it yet"
-                // otherwise. Saved, holding exactly that, and no answer of
-                // either kind yet, is a save the compiler has not answered.
-                if (dynamic_cast<LLLiveLSLEditor*>(f))
+                // Whether what the assistant wrote is what is in it -- "nothing
+                // of yours is in it yet" otherwise. A save the compiler has not
+                // answered is the window's own spinner, which Save starts and
+                // the answer stops (scriptWindowCompiling): "saved, and no
+                // answer yet" also described a window opened afresh on a
+                // script saved long ago.
                 {
-                    std::map<std::string, std::string>::const_iterator w =
-                        sAssistantScriptText.find(f->getKey()["itemid"].asString());
-                    const bool mine = (w != sAssistantScriptText.end() && w->second == text);
+                    const bool mine = scriptWindowHoldsYours(f);
                     one["holds_what_you_wrote"] = mine;
-                    if (mine && one["saved"].asBoolean() && errors.size() == 0 && said.empty())
+                    if (mine && scriptWindowCompiling(f))
                     {
                         one["compile_answer_pending"] = true;
                     }
@@ -24058,6 +24206,11 @@ if (method == "camera")
         // So the assistant writes and the person saves. That is one keystroke
         // rather than retyping by hand, and it keeps the moment where somebody
         // sees the code before it can do anything.
+        //
+        // <Lumen> Unless the person has switched saving on for it, in
+        // Preferences > AI > Permissions: then save_script saves what was
+        // written here, through the window's own Save, after the viewer has
+        // asked them. Writing is the same either way; only the note differs.
         LLTextEditor* ed = NULL;
         std::string where;
         LLFloater* target = NULL;
@@ -24072,29 +24225,10 @@ if (method == "camera")
         // read the list and knows which one it means.
         else if (params.has("script") && !params["script"].asString().empty())
         {
-            const std::string want = lowered(params["script"].asString());
-            const char* const KINDS[] = { "preview_script", "preview_scriptedit" };
-            // <Lumen> Count the matches. This kept whichever window enumerated
-            // LAST, so with "Script: door" and "Script: door v2" both open,
-            // script="door" overwrote one of them with no warning -- the very
-            // coin toss the parameter was added to remove (Decisions 90).
-            LLSD matched = LLSD::emptyArray();
-            LLFloater* exact = NULL;
-            for (const char* kind : KINDS)
-            {
-                for (LLFloater* f : LLFloaterReg::getFloaterList(kind))
-                {
-                    if (!f || !f->getVisible()) continue;
-                    const std::string title = lowered(f->getTitle());
-                    if (title == want) exact = f;                       // settles it on its own
-                    if (title.find(want) != std::string::npos)
-                    {
-                        target = f;
-                        matched.append(f->getTitle());
-                    }
-                }
-            }
-            if (exact) { target = exact; matched = LLSD::emptyArray(); matched.append(exact->getTitle()); }
+            // <Lumen> Count the matches -- the very coin toss the parameter
+            // was added to remove (Decisions 90); see scriptWindowByTitle.
+            LLSD matched;
+            target = scriptWindowByTitle(params["script"].asString(), matched);
             if (matched.size() > 1)
             {
                 LLSD e; e["code"] = -32000;
@@ -24318,18 +24452,17 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
-        // <Lumen> Remember what we wrote; see sAssistantScriptText.
-        if (target && dynamic_cast<LLLiveLSLEditor*>(target))
+        // <Lumen> Remember what we wrote; see sAssistantScriptText. Both
+        // kinds of window: closing on remove needs the object's, and
+        // save_script saves only a window still holding exactly this.
+        if (target)
         {
-            sAssistantScriptText[target->getKey()["itemid"].asString()] = ed->getText();
+            sAssistantScriptText[scriptWindowKey(target)] = ed->getText();
+            sLastWrittenScript = target->getHandle();
             LL_INFOS("AICtl") << "edit_script: remembered what was written into "
-                              << target->getKey()["itemid"].asString() << " in "
-                              << target->getKey()["taskid"].asString() << LL_ENDL;
-        }
-        else
-        {
-            LL_INFOS("AICtl") << "edit_script: not a task script window, nothing remembered ("
-                              << (target ? target->getName() : std::string("none")) << ")" << LL_ENDL;
+                              << scriptWindowKey(target) << " in "
+                              << (target->getKey().isMap() ? target->getKey()["taskid"].asString()
+                                                           : std::string("inventory")) << LL_ENDL;
         }
         // </Lumen>
         // <Lumen> The window stayed behind the Assistant while this was being
@@ -24353,16 +24486,439 @@ if (method == "camera")
             if (!said.empty()) result["last_save_result"] = safeUtf8(said);
         }
         result["window_in_front"] = true;
-        result["note"] = "Written into the script window and NOT saved. The window is now in "
-                         "front for them. Tell them to read it and press Save -- nothing runs "
-                         "until they do, and Ctrl-Z undoes it if they would rather not. "
-                         "`last_save_result`, if there is one, is from the save BEFORE this "
-                         "change. When they say they have saved, read_scripts shows the answer "
-                         "for this one: `saved` true, and then `compile_errors`, or "
-                         "`last_save_result` saying it compiled.";
+        result["note"] = saveScriptsAllowed()
+            ? "Written into the script window, not saved yet. Saving is switched on for you: "
+              "save it with save_script -- the viewer asks them first -- and tell them whether "
+              "it compiled. Ctrl-Z undoes the change if they would rather not."
+            : "Written into the script window and NOT saved. The window is now in "
+              "front for them. Tell them to read it and press Save -- nothing runs "
+              "until they do, and Ctrl-Z undoes it if they would rather not. "
+              "`last_save_result`, if there is one, is from the save BEFORE this "
+              "change. When they say they have saved, read_scripts shows the answer "
+              "for this one: `saved` true, and then `compile_errors`, or "
+              "`last_save_result` saying it compiled.";
         // </Lumen>
         return result;
     }
+
+    // <Lumen> save_script: save what the assistant wrote into a script window,
+    // so it compiles and runs without the person pressing Save -- only while
+    // they have switched that on (Preferences > AI > Permissions), and only
+    // after the viewer has asked them, naming the script and the object. Off,
+    // it refuses, and they read and save as before.
+    //
+    // **The window's own Save, not an upload of our own.** doSave() is what
+    // the Save button runs, so the object's script, the window, its Running
+    // box, Mono and experience all end up exactly as if they had pressed it,
+    // and the window is left pristine -- closing it afterwards asks nothing.
+    // Our own LLScriptAssetUpload would have had the response in hand, as the
+    // bridge's does, and left the window showing no answer and still asking
+    // "Save Changes?". The compiler's answer is that same response's
+    // `compiled` and `errors`, which the window's own callbacks put into its
+    // error list or its comment box ("Compile successful!"); this reads them
+    // back from there, as read_scripts does.
+    //
+    // Only a window still holding exactly what the assistant last wrote into
+    // it (sAssistantScriptText). One the person typed into is theirs to save,
+    // and one it never wrote into is not "a script it has written".
+    //
+    // The answer is a round trip, so the reply waits for it (mSettle): the
+    // same call made again reads the window rather than saving twice. A
+    // compiler slower than the wait is said ONCE, with one more call to
+    // collect the answer; after that the reply says plainly that it is not
+    // known, and never invites another call.
+    //
+    // Compiled, the window is closed: it holds exactly what was saved, so
+    // nothing is lost. With errors it stays open on them, for edit_script to
+    // fix and the person to see. And a script that asks for permissions once
+    // it runs asks THEM, whatever this switch says (isScriptPermissionRequest).
+    if (method == "save_open_script")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string request_id = params.has("request_id")
+            ? params["request_id"].asString() : std::string();
+        const std::string job_key = fingerprintOf(method, params);
+        const F64 now = LLTimer::getTotalSeconds();
+        const bool by_title = params.has("script") && !params["script"].asString().empty();
+        auto refuse = [](const std::string& message) -> LLSD
+        {
+            LLSD e; e["code"] = -32000; e["message"] = message;
+            LLSD w; w["__error"] = e; return w;
+        };
+        for (std::map<std::string, SaveScriptJob>::iterator it = sSaveScripts.begin();
+             it != sSaveScripts.end(); )
+        {
+            if (now > it->second.keep) it = sSaveScripts.erase(it);   // nobody came back for it
+            else ++it;
+        }
+
+        // ---- the same call again, while the compiler answers --------------
+        auto finish = [&](std::map<std::string, SaveScriptJob>::iterator at, const LLSD& r,
+                          const std::string& outcome) -> LLSD
+        {
+            sSaveScripts.erase(at);
+            recordAction(request_id, job_key, "save_script", outcome, r, briefOf(r));
+            return r;
+        };
+        auto carryOn = [&](std::map<std::string, SaveScriptJob>::iterator at) -> LLSD
+        {
+            SaveScriptJob& j = at->second;
+            LLFloater* win = j.window.get();
+            LLSD r;
+            r["script"] = j.script;
+            r["saved"] = true;
+            if (!win)
+            {
+                r["note"] = "It was saved, but its window was closed before the compiler "
+                            "answered, so whether it compiled is not known. Tell them that; do "
+                            "not say it works.";
+                return finish(at, r, "unknown");
+            }
+            if (j.until == 0.0) j.until = now + SAVE_SCRIPT_WAIT;   // the one more call
+            const LLSD errors = scriptWindowErrors(win);
+            const bool compiling = scriptWindowCompiling(win);
+            const bool compiled = scriptSaveResult(win).find(LLTrans::getString("CompileSuccessful"))
+                                  != std::string::npos;
+            const bool live = dynamic_cast<LLLiveLSLEditor*>(win) != NULL;
+            if (compiled)
+            {
+                r["compiled"] = true;
+                bool running = true;
+                if (live)
+                {
+                    if (LLCheckBoxCtrl* box = win->findChild<LLCheckBoxCtrl>("running"))
+                    {
+                        running = box->get();
+                    }
+                    r["running"] = running;
+                }
+                // Closed only while it holds exactly what was saved and is
+                // pristine, so the close asks nothing and loses nothing.
+                LLTextEditor* wed = win->findChild<LLTextEditor>("Script Editor");
+                const bool closing = wed && wed->isPristine() && wed->getText() == j.text;
+                r["window_closed"] = closing;
+                if (!live)
+                {
+                    r["note"] = "Saved and compiled, in their inventory. A script there runs "
+                                "nowhere until it is put into an object. Tell them in a sentence.";
+                }
+                else if (running)
+                {
+                    r["note"] = "Saved and compiled: it is running in that object now. Tell them "
+                                "in a sentence. If it asks for permissions, they answer that "
+                                "window themselves.";
+                }
+                else
+                {
+                    r["note"] = "Saved and compiled, but its Running box is off, so it is NOT "
+                                "running. Say so.";
+                }
+                if (closing) win->closeFloater();
+                return finish(at, r, "ok");
+            }
+            if (!compiling && errors.size())
+            {
+                r["compiled"] = false;
+                r["compile_errors"] = errors;
+                const LLSD unknown = lslUnknownNames(j.text);
+                if (unknown.size()) r["names_that_do_not_exist"] = unknown;
+                r["window_closed"] = false;
+                r["note"] = "Saved, but it did NOT compile, so your change is not running. "
+                            "`compile_errors` is the compiler's own answer, each line starting "
+                            "with (line, column); the window stays open on it. Fix it with "
+                            "edit_script and save again -- never tell them it works.";
+                return finish(at, r, "failed");
+            }
+            if (!compiling)
+            {
+                // The spinner stopped with neither answer in the window.
+                r["note"] = "It was saved, but the window shows no answer from the compiler, so "
+                            "whether it compiled is not known. Tell them that; do not say it "
+                            "works.";
+                return finish(at, r, "unknown");
+            }
+            r["pending"] = true;
+            r["compile_answer_pending"] = true;
+            if (now < j.until)
+            {
+                mSettle = llmax(0.25, j.until - now);
+                r["settling"] = true;
+                r["note"] = "Saved, and waiting for the compiler. The reply waits for its "
+                            "answer; if you are reading this, it is slow -- make this same call "
+                            "once more to collect it, and do not say it works until then.";
+                return r;
+            }
+            if (!j.told_not_yet)
+            {
+                j.told_not_yet = true;
+                j.until = 0.0;
+                j.keep = now + 120.0;
+                // Not recorded for request_id replay: replayed after the job
+                // has gone, it would invite the same call for ever.
+                r["note"] = "Saved, but the compiler has not answered yet. Make this same call "
+                            "once more to collect its answer, and do not say it works until "
+                            "then.";
+                return r;
+            }
+            r["note"] = "Saved, but the compiler has still not answered, so whether it compiled "
+                        "is not known. Do not call again: tell them it is saved, and that its "
+                        "window shows the compiler's answer when it comes.";
+            return finish(at, r, "unknown");
+        };
+
+        // A save already made by this same call carries on -- unless what it
+        // was about has changed: written again by the assistant (a new save),
+        // typed into by the person (theirs now), or, with no title given, a
+        // newer window written into since.
+        std::map<std::string, SaveScriptJob>::iterator job = sSaveScripts.find(job_key);
+        if (job != sSaveScripts.end())
+        {
+            LLFloater* jw = job->second.window.get();
+            LLTextEditor* jed = jw ? jw->findChild<LLTextEditor>("Script Editor") : NULL;
+            if (!jw)
+            {
+                return carryOn(job);
+            }
+            if (!jed || jed->getText() != job->second.text)
+            {
+                if (!scriptWindowHoldsYours(jw))
+                {
+                    LLSD r;
+                    r["script"] = job->second.script;
+                    r["saved"] = true;
+                    r["note"] = "What you wrote was saved, but it has been changed in its window "
+                                "since -- that change is theirs, and was not saved. The compiler's "
+                                "answer to your save is in that window. Tell them.";
+                    return finish(job, r, "changed");
+                }
+                sSaveScripts.erase(job);   // written again since: this is a new save
+            }
+            else if (!by_title && sLastWrittenScript.get() != jw)
+            {
+                sSaveScripts.erase(job);   // another window written into since
+            }
+            else
+            {
+                return carryOn(job);
+            }
+        }
+
+        if (!saveScriptsAllowed())
+        {
+            return refuse("Saving scripts is switched off, so nothing was saved: they press Save "
+                          "in the script window themselves, or switch saving on in Preferences > "
+                          "AI > Permissions -- tell them that in a sentence.");
+        }
+        {
+            LLSD replay;
+            if (recallAction(request_id, replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id was already carried out; nothing was saved a "
+                                 "second time.";
+                return replay;
+            }
+        }
+
+        // ---- which window ----------------------------------------------------
+        LLFloater* target = NULL;
+        if (by_title)
+        {
+            LLSD matched;
+            target = scriptWindowByTitle(params["script"].asString(), matched);
+            if (matched.size() > 1)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "More than one open script window matches \""
+                             + params["script"].asString()
+                             + "\". Say which, using its full title. Nothing was saved.";
+                e["data"] = matched;
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (!target)
+            {
+                return refuse("No open script window matches \"" + params["script"].asString()
+                              + "\". Call read_scripts to see which are open. Nothing was saved.");
+            }
+        }
+        else
+        {
+            // The window written into last; failing that, the one open window
+            // holding something of the assistant's -- never merely the one in
+            // front, which may be theirs.
+            target = sLastWrittenScript.get();
+            if (target && !target->getVisible()) target = NULL;
+            if (!target)
+            {
+                LLSD yours = LLSD::emptyArray();
+                std::set<LLFloater*> seen;
+                const char* const KINDS[] = { "preview_script", "preview_scriptedit" };
+                for (const char* kind : KINDS)
+                {
+                    for (LLFloater* f : LLFloaterReg::getFloaterList(kind))
+                    {
+                        if (!f || !f->getVisible() || !scriptWindowHoldsYours(f)) continue;
+                        if (!seen.insert(f).second) continue;
+                        if (!target) target = f;
+                        yours.append(f->getTitle());
+                    }
+                }
+                if (yours.size() > 1)
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "More than one open script window holds a script you wrote. "
+                                   "Say which with `script`, by its title. Nothing was saved.";
+                    e["data"] = yours;
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+            if (!target)
+            {
+                return refuse("No open script window holds a script you wrote, so there is "
+                              "nothing of yours to save. Write it first, with new_script and "
+                              "`text` or with edit_script.");
+            }
+        }
+        LLTextEditor* ed = target->findChild<LLTextEditor>("Script Editor");
+        const std::string title = safeUtf8(target->getTitle());
+        if (!ed)
+        {
+            return refuse("\"" + title + "\" is not a script window. Nothing was saved.");
+        }
+
+        // ---- only what the assistant wrote, as it wrote it --------------------
+        if (!scriptWindowHoldsYours(target))
+        {
+            return refuse(sAssistantScriptText.count(scriptWindowKey(target))
+                ? "Not saved: \"" + title + "\" has been changed since you wrote into it, so "
+                  "what is in it now is theirs to save. Tell them; do not write over their change."
+                : "Not saved: nothing you wrote is in \"" + title + "\", and save_script saves "
+                  "only a script you wrote. Saving their own script is theirs -- they press Save.");
+        }
+        {
+            const std::string why = scriptWindowRefusal(target);
+            if (!why.empty()) return refuse("Not saved. " + why);
+        }
+        if (ed->isPristine())
+        {
+            // Saved already -- by an earlier save_script, or by them.
+            LLSD r;
+            r["script"] = title;
+            r["saved"] = true;
+            r["changed"] = false;
+            const LLSD errors = scriptWindowErrors(target);
+            if (errors.size()) r["compile_errors"] = errors;
+            const std::string said = scriptSaveResult(target);
+            if (!said.empty()) r["last_save_result"] = safeUtf8(said);
+            if (scriptWindowCompiling(target)) r["compile_answer_pending"] = true;
+            r["note"] = "Nothing to save: what you wrote in it is already saved. `compile_errors` "
+                        "or `last_save_result`, when there, is the compiler's answer to that save.";
+            return r;
+        }
+
+        // ---- the checks the window's own Save would fail on, quietly ----------
+        // Each of these makes the viewer's Save return early, or its upload
+        // fail with nobody told, and the window's spinner turns for ever.
+        LLLiveLSLEditor* live = dynamic_cast<LLLiveLSLEditor*>(target);
+        LLViewerObject* object = NULL;
+        std::string cap;
+        if (live)
+        {
+            object = gObjectList.findObject(target->getKey()["taskid"].asUUID());
+            if (!object)
+            {
+                return refuse("The object that script is in is not in view now, so it cannot be "
+                              "saved. Nothing was saved.");
+            }
+            if (!object->permModify())
+            {
+                return refuse("That object does not allow modification, so the script in it "
+                              "cannot be saved. Say that plainly -- it is the object's "
+                              "permissions, not a failure.");
+            }
+            if (rlvForbidsEditing(object)
+                || (rlv_handler_t::isEnabled()
+                    && gRlvAttachmentLocks.isLockedAttachment(object->getRootEdit())))
+            {
+                return refuse("An RLV restriction the user is wearing stops that object being "
+                              "changed, so nothing was saved. Tell them plainly -- it is their own "
+                              "attachment doing it.");
+            }
+            if (object->getRegion()) cap = object->getRegion()->getCapability("UpdateScriptTask");
+        }
+        else if (gAgent.getRegion())
+        {
+            cap = gAgent.getRegion()->getCapability("UpdateScriptAgent");
+        }
+        // The window keeps its own copy of an object's script item, so a list
+        // being fetched again -- as one is after every save -- does not stop
+        // it saving; only a list that has arrived without the script does.
+        // An inventory window needs the item itself.
+        const LLInventoryItem* item = scriptWindowItem(target);
+        if (!item
+            && (!live || (!object->isInventoryPending() && !object->isInventoryDirty()
+                          && object->getInventoryRoot())))
+        {
+            return refuse(live ? "That object's contents no longer list the script, so it cannot "
+                                 "be saved. Nothing was saved."
+                               : "That script is no longer in their inventory, so it cannot be "
+                                 "saved. Nothing was saved.");
+        }
+        if (cap.empty())
+        {
+            return refuse("The region is not ready to take a script just now, so nothing was "
+                          "saved. Say so; it usually passes in a moment.");
+        }
+        LLScriptEdCore* core = ed->getParentByType<LLScriptEdCore>();
+        if (!core)
+        {
+            return refuse("The viewer could not find that window's Save, so nothing was saved. "
+                          "This is a fault in the viewer, not something they did.");
+        }
+
+        // ---- the viewer asks them ------------------------------------------
+        // Keyed by this window holding this text, not by the arguments alone:
+        // with no `script` they do not say which window, and a Yes given to
+        // one script must not save another written a minute later.
+        const std::string text = ed->getText();
+        const std::string script_name = (item && !item->getName().empty())
+                                      ? safeUtf8(item->getName()) : title;
+        {
+            LLSD subs;
+            subs["SCRIPT"] = script_name;
+            subs["WHERE"] = live ? "in " + askObjectName(object) + ", so it runs"
+                                 : std::string("in your inventory");
+            const std::string ask_key = job_key + "\n" + scriptWindowKey(target) + "\n"
+                                      + std::to_string(std::hash<std::string>()(text));
+            LLSD ask;
+            if (!askUser("LumenAskSaveScript", subs, ask_key, ask))
+            {
+                return ask;
+            }
+        }
+
+        // ---- the window's own Save ------------------------------------------
+        // Not closing after: the answer has to be read out of the window
+        // first, and an answer with errors keeps it open.
+        core->doSave(false, true);
+        LL_INFOS("AICtl") << "save_script: saving " << scriptWindowKey(target)
+                          << (live ? " in " + target->getKey()["taskid"].asString()
+                                   : std::string(" in inventory")) << LL_ENDL;
+
+        SaveScriptJob fresh;
+        fresh.window = target->getHandle();
+        fresh.text   = text;
+        fresh.script = script_name;
+        fresh.until  = now + SAVE_SCRIPT_WAIT;
+        fresh.keep   = fresh.until + 120.0;
+        sSaveScripts[job_key] = fresh;
+        return carryOn(sSaveScripts.find(job_key));
+    }
+    // </Lumen>
 
     if (method == "answer_dialogue")
     {
