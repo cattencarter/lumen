@@ -757,6 +757,8 @@ namespace
             if (action == "history")          return "Checking what it changed";   // <Lumen>
             if (action == "undo")             return "Putting things back";
             if (action == "restore")          return "Restoring the inventory";
+            if (action == "batch")            return "Tidying the inventory";   // <Lumen>
+            if (action == "empty_trash")      return "Emptying the Trash";      // <Lumen>
         }
         else if (group == "chat")
         {
@@ -2443,6 +2445,24 @@ void LumenAIChatFloater::sayNote(const std::string& text)
     LL_DEBUGS("LumenAITest") << "NOTE " << text << LL_ENDL;   // <Lumen>
     mTranscript->appendText("\n" + text, true, dimStyle());
 }
+
+// <Lumen> See the header. Looked up, never created: a run finishing must not
+// open a window the person closed.
+bool LumenAIChatFloater::postFromViewer(const std::string& status, const std::string& note)
+{
+    LumenAIChatFloater* self = LLFloaterReg::findTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self) return false;
+    if (!self->mBusy) self->setActivity(status);
+    if (!note.empty()) self->sayNote(note);
+    return self->getVisible();
+}
+
+bool LumenAIChatFloater::turnRunning()
+{
+    LumenAIChatFloater* self = LLFloaterReg::findTypedInstance<LumenAIChatFloater>("ai_chat");
+    return self && self->mBusy;
+}
+// </Lumen>
 
 void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 {

@@ -3698,6 +3698,11 @@ namespace
      * destroyed is the user deliberately emptying their own Trash. An extra
      * permission prompt for a reversible move is the interface barrier this
      * project exists to remove, bought with no safety at all.
+     *
+     * <Lumen> Changed 2026-10-04, on the author's call: empty_trash exists now,
+     * once every delete is asked about -- behind a switch the user turns on,
+     * and with the viewer asking every time, never remembered. Still the user's
+     * deliberate act; it is the assistant's hand on the button.
      */
     std::string groupAction(const std::string& group, const std::string& action)
     {
@@ -3735,6 +3740,8 @@ namespace
             if (action == "history")         return "change_history";    // <Lumen>
             if (action == "undo")            return "undo_changes";      // <Lumen>
             if (action == "restore")         return "restore_snapshot";  // <Lumen>
+            if (action == "batch")           return "batch_inventory";   // <Lumen>
+            if (action == "empty_trash")     return "empty_trash";       // <Lumen>
             return "";
         }
         if (group == "chat")
@@ -4006,7 +4013,7 @@ namespace
             { "search", "list_folder", "read_notecard", "create_notecard",
               "search_notecards", "wear", "detach", "delete", "undelete", "wear_outfit",
               "save_outfit", "show", "open", "save_image", "new_folder", "move", "rename",
-              "history", "undo", "restore" };
+              "history", "undo", "restore", "batch", "empty_trash" };
         LLSD inv;
         inv["name"] = "inventory";
         inv["description"] =
@@ -4139,6 +4146,41 @@ namespace
             "the request that changed things is not in the record any more. `preview: true` "
             "says what it would change, and changes nothing; tell them before restoring. The "
             "viewer asks them itself before it starts.\n"
+            "- batch: tidy many things in one go -- \"put everything named pumpkin into "
+            "Halloween\", \"take the unpack scripts and landmarks out of my product folders\", "
+            "\"delete the folders that are empty now\". **Off until the user switches it on** in "
+            "Preferences > AI > Permissions; while it is off the answer says so -- tell them where, "
+            "and do not work round it one item at a time unless they ask. `steps` is a short list "
+            "(at most 20), done in order; each is a selection and what to do with it. A selection "
+            "is `find`: `name` (words, matched exactly as search matches them, in the name or the "
+            "folder), `type` (a kind, as search takes it), `creator`, and `in` (a folder and "
+            "everything inside it, by id or by path as search gives it in `folder`) -- at least "
+            "one of name, creator or in. `do` is one of: `move`, with `to` (a folder by id or path, "
+            "or one a new_folder step earlier in the list makes); `rename`, with `replace` and "
+            "`with` (that text in each name, ignoring case, becomes `with`; empty takes it out); "
+            "`delete` (to the Trash; never anything worn); `new_folder`, with `name` and `in` "
+            "(where; the top of the inventory without it; one of that name already there is used "
+            "instead); `delete_empty_folders`, with `in` (folders inside it that hold nothing at "
+            "all once the earlier steps have run go to the Trash -- never one holding anything). "
+            "Each thing is acted on once: when two steps pick the same item, the first has it. "
+            "Example: [{\"find\": {\"name\": \"pumpkin\"}, \"do\": \"move\", \"to\": "
+            "\"Halloween\"}, {\"find\": {\"in\": \"Products\", \"type\": \"script\", "
+            "\"name\": \"unpack\"}, \"do\": \"delete\"}, {\"in\": \"Products\", \"do\": "
+            "\"delete_empty_folders\"}].\n"
+            "  **Plan first, then run the plan.** A call with `steps` changes nothing: it answers "
+            "with a plan -- counts, a few names, where things go, what the viewer's rules refused "
+            "and why -- and a `plan_id`. Tell the user briefly what it will do, then call batch "
+            "again with only that `plan_id`: it acts on exactly the planned items, never a fresh "
+            "search, and leaves alone anything changed by hand since. A plan lasts ten minutes. "
+            "The viewer asks the user itself before it runs, in a window of its own -- do not ask "
+            "them in the conversation as well. A long run belongs to the viewer: the answer says "
+            "how far it got, and the viewer writes in the Assistant window when it has finished, "
+            "so end your reply then -- there is nothing to check. The whole run is ONE change set: "
+            "undo with its `change_set` puts all of it back.\n"
+            "- empty_trash: empty the Trash, for good. Also off until the user switches it on, "
+            "and its own action, never a batch step. The viewer asks them every time. Once it is "
+            "emptied nothing in it can be brought back -- by Lumen or anyone -- and undo cannot "
+            "return it; say so.\n"
             "- save_image: write a picture from their inventory to a file on their own "
             "computer, as a PNG. It lands on their DESKTOP unless they have already chosen "
             "somewhere for snapshots, because a folder you have to go looking for is no help "
@@ -4208,6 +4250,57 @@ namespace
         LLSD ipv; ipv["type"]="boolean";
             ipv["description"]="restore: true only says what it would change.";
         inv_props["change_set"]=ics; inv_props["snapshot"]=isn; inv_props["preview"]=ipv;
+        // <Lumen> batch: the steps, and the plan they became. `items` is not
+        // optional: OpenAI refuses a schema with an array that does not say
+        // what is in it.
+        {
+            LLSD str; str["type"] = "string";
+            LLSD bfind; bfind["type"] = "object";
+            bfind["description"] = "move, rename, delete: which items. At least one of name, "
+                                   "creator or in.";
+            LLSD bfind_props;
+            LLSD bf_name = str; bf_name["description"] = "Words, matched as search matches them, "
+                                                         "in the item's name or its folder.";
+            LLSD bf_type = str; bf_type["description"] = "One kind, as search takes it: object, "
+                                                         "clothing, notecard, landmark, script, ...";
+            LLSD bf_creator = str; bf_creator["description"] = "Only things this person made: an "
+                                                               "avatar id, or a name.";
+            LLSD bf_in = str; bf_in["description"] = "Only inside this folder, at any depth: an id "
+                                                     "or a path as search gives it in `folder`.";
+            bfind_props["name"] = bf_name; bfind_props["type"] = bf_type;
+            bfind_props["creator"] = bf_creator; bfind_props["in"] = bf_in;
+            bfind["properties"] = bfind_props;
+
+            LLSD bdo = str;
+            bdo["description"] = "What to do with the selection.";
+            LLSD bdo_enum = LLSD::emptyArray();
+            for (const char* d : { "move", "rename", "delete", "new_folder", "delete_empty_folders" })
+                bdo_enum.append(d);
+            bdo["enum"] = bdo_enum;
+            LLSD bto = str; bto["description"] = "move: the folder to put them in, by id or path, "
+                                                 "or one an earlier new_folder step makes.";
+            LLSD bname = str; bname["description"] = "new_folder: the new folder's name.";
+            LLSD bin = str; bin["description"] = "new_folder: where to make it (the top without it). "
+                                                 "delete_empty_folders: the folder to look inside.";
+            LLSD brep = str; brep["description"] = "rename: the text to change in each name, "
+                                                   "ignoring case.";
+            LLSD bwith = str; bwith["description"] = "rename: what that text becomes; empty takes "
+                                                     "it out.";
+            LLSD bstep_props;
+            bstep_props["find"] = bfind; bstep_props["do"] = bdo; bstep_props["to"] = bto;
+            bstep_props["name"] = bname; bstep_props["in"] = bin;
+            bstep_props["replace"] = brep; bstep_props["with"] = bwith;
+            LLSD bstep; bstep["type"] = "object"; bstep["properties"] = bstep_props;
+            LLSD bstep_req = LLSD::emptyArray(); bstep_req.append("do");
+            bstep["required"] = bstep_req;
+
+            LLSD isteps; isteps["type"] = "array"; isteps["items"] = bstep;
+            isteps["description"] = "batch: what to do, in order -- each a selection and what to do "
+                                    "with it. Answers with a plan; nothing is changed.";
+            LLSD iplan = str;
+            iplan["description"] = "batch: run this plan, from the answer to `steps`. Give only this.";
+            inv_props["steps"] = isteps; inv_props["plan_id"] = iplan;
+        }
         // </Lumen>
                 LLSD sort_p; sort_p["type"]="string";
         sort_p["description"] =
@@ -10480,6 +10573,1123 @@ namespace
                                   << "): " << rows.size() << " on the first page of " << total
                                   << ", " << hops << " redirect(s)"
                                   << (hops ? " -- a new anonymous session" : "") << LL_ENDL;
+    }
+}
+// </Lumen>
+
+// <Lumen> inventory / batch and empty_trash: tidying in bulk, behind a switch.
+//
+// The author, 2026-10-04: bulk work must not need a model round per item. The
+// API providers stop at twelve tool rounds, and "put everything named pumpkin
+// into the Halloween folder" is hundreds of moves. So one call carries a short
+// list of steps, each a selection and what to do with it, and the VIEWER does
+// the whole list itself.
+//
+// Plan, then run what was planned. The first call resolves every selection to
+// ids and answers with what it would do; running takes that plan's id and acts
+// on exactly those ids -- never on whatever a search finds a minute later, and
+// never on something changed by hand in between, which is left alone and said.
+//
+// Off until the user turns it on (LumenAIAllowBulkInventory, Preferences > AI >
+// Permissions), one question from the viewer per run, one change set in the
+// inventory record per run, with a snapshot before it.
+namespace
+{
+    const char* const BULK_SWITCH = "LumenAIAllowBulkInventory";
+    const F64    BULK_PLAN_KEEPS   = 600.0;   // an unused plan expires after ten minutes
+    const F64    BULK_RUN_KEEPS    = 1800.0;  // what a run did is answered for this long
+    const F64    BULK_REPLY_WAIT   = 5.0;     // the run's reply waits this long for the end
+    // Paced: twenty changes, then a quarter of a second. Eighty a second is
+    // five thousand in about a minute, with the frame never held for more
+    // than twenty -- and each change is a message to Second Life, which a
+    // burst of thousands in one frame would be throttled on.
+    const S32    BULK_PER_BEAT     = 20;
+    const F32    BULK_BEAT_SECONDS = 0.25f;
+    const size_t BULK_MAX_STEPS    = 20;
+    const size_t BULK_MAX_CHANGES  = 10000;
+    const size_t BULK_EXAMPLES     = 6;       // names shown per step in a plan
+    const S32    BULK_LIST_CAP     = 25;      // refusals listed per step; the count is whole
+    const F64    BULK_FOLDER_WAIT  = 30.0;    // how long a run waits for a folder it makes
+
+    bool bulkAllowed()
+    {
+        // Read defensively: the setting is declared in settings.xml, and a
+        // viewer without it must refuse, not crash.
+        return gSavedSettings.controlExists(BULK_SWITCH) && gSavedSettings.getBOOL(BULK_SWITCH);
+    }
+
+    LLSD bulkSwitchedOff(bool trash)
+    {
+        LLSD e; e["code"] = -32000;
+        e["message"] = std::string(trash ? "Emptying the Trash" : "Changing many things in the "
+                                           "inventory at once")
+                     + " is switched off, so nothing was done. The user turns it on themselves, "
+                       "in Preferences > AI > Permissions. Tell them that, in a sentence. Do not "
+                       "work round it one item at a time unless they ask you to.";
+        LLSD w; w["__error"] = e; return w;
+    }
+
+    LLSD bulkError(S32 code, const std::string& message)
+    {
+        LLSD e; e["code"] = code; e["message"] = message;
+        LLSD w; w["__error"] = e; return w;
+    }
+
+    struct BulkOp
+    {
+        enum Kind { MOVE, RENAME, TRASH, NEW_FOLDER, TRASH_FOLDER };
+        Kind        kind = MOVE;
+        S32         step = 0;        // the step it came from, from 0
+        LLUUID      id;              // the item or folder; NEW_FOLDER: none until made
+        LLUUID      parent_then;     // where the plan saw it
+        std::string name_then;       // what it was called then
+        LLUUID      dest;            // MOVE: the folder; NEW_FOLDER: where it is made
+        S32         dest_made = -1;  // ...or a folder this run makes, by its op's index
+        std::string new_name;        // RENAME; NEW_FOLDER: its name
+    };
+
+    struct BulkRun
+    {
+        S64  change_set = 0;
+        S64  snapshot = 0;
+        F64  started = 0.0;
+        S32  total = 0;
+        S32  done = 0;
+        S32  failed = 0;
+        S32  left_alone = 0;         // changed after the plan, so not touched
+        S32  folders_pending = 0;    // folders asked for, not answered yet
+        bool trashed_any = false;
+        std::vector<S32> step_done, step_failed, step_left;
+        LLSD failed_list = LLSD::emptyArray();
+        LLSD left_list = LLSD::emptyArray();
+        std::map<S32, LLUUID> made;  // NEW_FOLDER op -> its id; null when refused
+        bool finished = false;
+        bool stopped = false;        // logged out or quitting part way
+        bool told_in_reply = false;  // a reply carried the whole outcome
+    };
+
+    struct BulkPlan
+    {
+        F64 made_at = 0.0;
+        std::vector<BulkOp> ops;
+        std::vector<std::string> step_do;   // each step's `do`
+        LLSD shown;                  // the plan as the caller was shown it
+        std::string summary;         // what the viewer's question shows
+        std::string what;            // a line for the change set and the snapshot
+        bool deletes = false;
+        bool asked = false;
+        std::shared_ptr<BulkRun> run;
+    };
+
+    std::map<std::string, BulkPlan> sBulkPlans;
+    std::shared_ptr<BulkRun> sBulkActive;     // the run in progress, if any
+    std::map<std::string, S32> sTrashAsked;   // empty_trash: the count the question showed
+
+    bool bulkBusy()
+    {
+        return sBulkActive && !sBulkActive->finished;
+    }
+
+    void sweepBulkPlans()
+    {
+        const F64 now = LLTimer::getTotalSeconds();
+        for (std::map<std::string, BulkPlan>::iterator it = sBulkPlans.begin(); it != sBulkPlans.end(); )
+        {
+            const BulkPlan& p = it->second;
+            const bool drop = p.run
+                ? (p.run->finished && now - p.run->started > BULK_RUN_KEEPS)
+                : (now - p.made_at > BULK_PLAN_KEEPS + (p.asked ? ASK_ABANDONED : 0.0));
+            if (drop) it = sBulkPlans.erase(it); else ++it;
+        }
+    }
+
+    bool bulkWithin(const LLUUID& id, const LLUUID& top)
+    {
+        return top.notNull() && (id == top || gInventory.isObjectDescendentOf(id, top));
+    }
+
+    /**
+     * Why nothing in this folder -- or this folder itself -- is the assistant's
+     * to change, or empty. The rules of the single-item tools, in one place.
+     */
+    std::string bulkHeld(const LLUUID& id)
+    {
+        if (!bulkWithin(id, gInventory.getRootFolderID()))
+            return "it is in the Library, which is Linden Lab's, not theirs";
+        if (bulkWithin(id, gInventory.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT)))
+            return "it is in Current Outfit, which is what they are wearing";
+        if (bulkWithin(id, gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH)))
+            return "it is in the Trash";
+        if (bulkWithin(id, FSLSLBridge::instance().getBridgeFolder()))
+            return "it is the LSL bridge's, which the viewer needs where it is";
+        if (bulkWithin(id, AOEngine::instance().getAOFolder()))
+            return "it belongs to their animation overrider, which finds things by where they are";
+        if (depth_nesting_in_marketplace(id) >= 0)
+            return "it is in Marketplace listings, which this does not change";
+        return std::string();
+    }
+
+    /** A folder a step names: by id, by path, or by a name only one folder has. */
+    LLUUID bulkFolder(const std::string& given, LLSD& error)
+    {
+        LLSD where; where["folder_id"] = given;
+        LLSD by_id_error;
+        const LLUUID id = resolveFolder(where, by_id_error);
+        if (id.notNull()) return id;
+        LLSD by_name; by_name["name"] = given;
+        return resolveFolder(by_name, error);
+    }
+
+    std::string bulkShort(const std::string& name)
+    {
+        std::string s = safeUtf8(name);
+        if (s.size() > 40)
+        {
+            size_t cut = 40;
+            while (cut > 0 && (((unsigned char)s[cut]) & 0xC0) == 0x80) --cut;   // a whole character
+            s = s.substr(0, cut) + "...";
+        }
+        return s;
+    }
+
+    /** "a, b, c and 11 more" -- for the viewer's question. */
+    std::string bulkNames(const std::vector<std::string>& names, size_t total)
+    {
+        std::string out;
+        const size_t shown = llmin(names.size(), (size_t)3);
+        for (size_t i = 0; i < shown; ++i)
+        {
+            if (i) out += ", ";
+            out += bulkShort(names[i]);
+        }
+        if (total > shown) out += llformat(" and %d more", (S32)(total - shown));
+        return out;
+    }
+
+    /** `replace` with `with`, wherever it is in the name, ignoring case. */
+    std::string bulkReplaced(const std::string& name, const std::string& from, const std::string& to)
+    {
+        if (from.empty()) return name;
+        const std::string lname = lowered(name);   // byte for byte, so positions agree
+        const std::string lfrom = lowered(from);
+        std::string out;
+        size_t at = 0;
+        for (;;)
+        {
+            const size_t hit = lname.find(lfrom, at);
+            if (hit == std::string::npos) break;
+            out += name.substr(at, hit - at) + to;
+            at = hit + from.size();
+        }
+        out += name.substr(at);
+        return out;
+    }
+
+    void bulkCapped(LLSD& list, const std::string& name, const std::string& why)
+    {
+        if ((S32)list.size() >= BULK_LIST_CAP) return;
+        LLSD e; e["name"] = safeUtf8(name); e["why"] = why;
+        list.append(e);
+    }
+
+    /**
+     * Turn the caller's steps into a plan of single changes, or say which step
+     * is wrong. Nothing is changed here.
+     */
+    bool bulkMakePlan(const LLSD& steps, BulkPlan& plan, LLSD& error)
+    {
+        auto fail = [&error](size_t n, const std::string& why, const LLSD& data = LLSD()) -> bool
+        {
+            error = LLSD();
+            error["code"] = -32602;
+            error["message"] = llformat("Step %d: ", (S32)(n + 1)) + why
+                             + " Nothing was planned or changed; fix that step and plan again.";
+            if (data.isDefined()) error["data"] = data;
+            return false;
+        };
+
+        if (steps.size() > BULK_MAX_STEPS)
+        {
+            error = LLSD();
+            error["code"] = -32602;
+            error["message"] = llformat("At most %d steps in one batch; this had %d. Split it.",
+                                        (S32)BULK_MAX_STEPS, (S32)steps.size());
+            return false;
+        }
+
+        const LLUUID root  = gInventory.getRootFolderID();
+        const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+        std::set<LLUUID> claimed;              // an item or folder is acted on once per run
+        std::map<LLUUID, S32> claimed_by;      // ...and which step had it first
+        // Folders a new_folder step makes, or finds already there, for later steps.
+        struct Planned { S32 op = -1; LLUUID id; std::string name, path; };
+        std::vector<Planned> planned;
+        std::map<LLUUID, std::string> held_cache;
+        auto heldIn = [&held_cache](const LLUUID& folder) -> const std::string&
+        {
+            std::map<LLUUID, std::string>::iterator f = held_cache.find(folder);
+            if (f == held_cache.end()) f = held_cache.emplace(folder, bulkHeld(folder)).first;
+            return f->second;
+        };
+        auto pathOf = [&root](const LLUUID& folder) -> std::string
+        {
+            return folder == root ? std::string("(top of inventory)") : folderPath(folder);
+        };
+
+        LLSD shown_steps = LLSD::emptyArray();
+        std::vector<std::string> lines;
+        S32 n_move = 0, n_rename = 0, n_trash = 0, n_new = 0, n_folders = 0;
+
+        for (size_t n = 0; n < steps.size(); ++n)
+        {
+            const LLSD& step = steps[n];
+            if (!step.isMap()) return fail(n, "each step is an object with `do`.");
+            const std::string what = lowered(step["do"].asString());
+            LLSD shown;
+            shown["step"] = (S32)(n + 1);
+            shown["do"] = what;
+            LLSD refused = LLSD::emptyArray();
+            S32 refused_count = 0;
+            S32 earlier = 0;
+            std::set<S32> earlier_steps;
+            std::vector<std::string> names;    // for examples and the question
+
+            // `in` sits in `find` for a selection, and on the step itself for
+            // new_folder and delete_empty_folders; either is read.
+            const LLSD pick = (step.has("find") && step["find"].isMap()) ? step["find"] : LLSD::emptyMap();
+            const std::string in_given = pick.has("in") ? pick["in"].asString()
+                                       : step.has("in") ? step["in"].asString() : std::string();
+
+            if (what == "new_folder")
+            {
+                std::string name = step["name"].asString();
+                LLInventoryObject::correctInventoryName(name);
+                if (name.empty()) return fail(n, "new_folder needs a `name`.");
+                LLUUID parent = root;
+                S32 parent_made = -1;
+                std::string parent_path = "(top of inventory)";
+                if (!in_given.empty())
+                {
+                    for (const Planned& p : planned)
+                    {
+                        if (lowered(in_given) == lowered(p.name) || lowered(in_given) == lowered(p.path))
+                        {
+                            parent = p.id; parent_made = p.id.isNull() ? p.op : -1; parent_path = p.path;
+                            break;
+                        }
+                    }
+                    if (parent == root && parent_made < 0)
+                    {
+                        LLSD ferr;
+                        parent = bulkFolder(in_given, ferr);
+                        if (parent.isNull())
+                            return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
+                        parent_path = pathOf(parent);
+                    }
+                }
+                if (parent_made < 0)
+                {
+                    const std::string why = heldIn(parent);
+                    if (!why.empty()) return fail(n, "not there: " + why + ".");
+                }
+                // One of that name already there is used, never a second one made.
+                LLUUID existing;
+                if (parent_made < 0)
+                {
+                    LLInventoryModel::cat_array_t* cats = NULL;
+                    LLInventoryModel::item_array_t* items = NULL;
+                    gInventory.getDirectDescendentsOf(parent, cats, items);
+                    if (cats)
+                    {
+                        for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
+                        {
+                            if (c && lowered(c->getName()) == lowered(name)) { existing = c->getUUID(); break; }
+                        }
+                    }
+                }
+                Planned p;
+                p.name = name;
+                p.path = (parent == root && parent_made < 0) ? name : parent_path + "/" + name;
+                shown["name"] = safeUtf8(name);
+                shown["in"] = safeUtf8(parent_path);
+                if (existing.notNull())
+                {
+                    p.id = existing;
+                    shown["count"] = 0;
+                    shown["already_there"] = true;
+                    shown["note"] = "A folder of that name is already there; later steps use it.";
+                }
+                else
+                {
+                    BulkOp op;
+                    op.kind = BulkOp::NEW_FOLDER;
+                    op.step = (S32)n;
+                    op.dest = parent_made < 0 ? parent : LLUUID::null;
+                    op.dest_made = parent_made;
+                    op.new_name = name;
+                    p.op = (S32)plan.ops.size();
+                    plan.ops.push_back(op);
+                    shown["count"] = 1;
+                    ++n_new;
+                    lines.push_back("Make the folder " + bulkShort(name) + " in " + bulkShort(parent_path));
+                }
+                planned.push_back(p);
+                plan.step_do.push_back(what);
+                shown_steps.append(shown);
+                continue;
+            }
+
+            if (what == "delete_empty_folders")
+            {
+                if (in_given.empty())
+                    return fail(n, "delete_empty_folders needs `in`: the folder to look inside. It "
+                                   "never runs over the whole inventory.");
+                LLSD ferr;
+                const LLUUID scope = bulkFolder(in_given, ferr);
+                if (scope.isNull())
+                    return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
+                {
+                    const std::string why = heldIn(scope);
+                    if (!why.empty()) return fail(n, "not there: " + why + ".");
+                }
+                shown["in"] = safeUtf8(pathOf(scope));
+
+                // What the earlier steps will have taken out of, or put into,
+                // each folder by the time this one runs.
+                std::map<LLUUID, S32> delta;
+                for (const BulkOp& op : plan.ops)
+                {
+                    switch (op.kind)
+                    {
+                    case BulkOp::MOVE:
+                        --delta[op.parent_then];
+                        if (op.dest.notNull()) ++delta[op.dest];
+                        break;
+                    case BulkOp::TRASH:
+                    case BulkOp::TRASH_FOLDER:
+                        --delta[op.parent_then];
+                        break;
+                    case BulkOp::NEW_FOLDER:
+                        if (op.dest.notNull()) ++delta[op.dest];
+                        break;
+                    default:
+                        break;
+                    }
+                }
+
+                LLInventoryModel::cat_array_t cats;
+                LLInventoryModel::item_array_t items;
+                gInventory.collectDescendents(scope, cats, items, LLInventoryModel::EXCLUDE_TRASH);
+                // Deepest first, so a folder holding only empty folders is
+                // seen to be empty once they are gone.
+                std::vector<std::pair<S32, LLViewerInventoryCategory*>> order;
+                order.reserve(cats.size());
+                for (const LLPointer<LLViewerInventoryCategory>& c : cats)
+                {
+                    if (!c) continue;
+                    S32 depth = 0;
+                    LLUUID p = c->getParentUUID();
+                    for (S32 guard = 0; guard < 64 && p.notNull() && p != scope; ++guard, ++depth)
+                    {
+                        const LLViewerInventoryCategory* pc = gInventory.getCategory(p);
+                        if (!pc) break;
+                        p = pc->getParentUUID();
+                    }
+                    order.emplace_back(depth, c.get());
+                }
+                std::stable_sort(order.begin(), order.end(),
+                                 [](const auto& a, const auto& b) { return a.first > b.first; });
+
+                S32 count = 0;
+                for (const auto& o : order)
+                {
+                    LLViewerInventoryCategory* c = o.second;
+                    const LLUUID id = c->getUUID();
+                    if (claimed.count(id)) continue;   // an earlier step removes it already
+                    const S32 holding = c->getViewerDescendentCount() + delta[id];
+                    if (holding > 0) continue;
+                    std::string why;
+                    if (!gInventory.isCategoryComplete(id))
+                        why = "the viewer has not loaded all of it from Second Life, so it may hold "
+                              "things it cannot see";
+                    else if (c->getPreferredType() != LLFolderType::FT_NONE)
+                        why = "it is a folder of a special kind, not one of their own";
+                    else if (c->getName() == ROOT_FIRESTORM_FOLDER || c->getName() == RLV_ROOT_FOLDER)
+                        why = "it is a folder the viewer and RLV look for by name";
+                    else
+                    {
+                        why = heldIn(id);
+                        if (why.empty() && !get_is_category_removable(&gInventory, id))
+                            why = "the viewer does not allow removing it (protected, or locked by RLV)";
+                    }
+                    if (!why.empty())
+                    {
+                        ++refused_count;
+                        bulkCapped(refused, c->getName(), why);
+                        continue;
+                    }
+                    BulkOp op;
+                    op.kind = BulkOp::TRASH_FOLDER;
+                    op.step = (S32)n;
+                    op.id = id;
+                    op.parent_then = c->getParentUUID();
+                    op.name_then = c->getName();
+                    plan.ops.push_back(op);
+                    claimed.insert(id);
+                    claimed_by[id] = (S32)n;
+                    --delta[op.parent_then];   // its parent may be empty now too
+                    names.push_back(pathOf(id));
+                    ++count;
+                }
+                n_folders += count;
+                shown["count"] = count;
+                if (count > 0)
+                {
+                    lines.push_back(llformat("Move %d empty folder%s in ", count, count == 1 ? "" : "s")
+                                    + bulkShort(pathOf(scope)) + " to the Trash: "
+                                    + bulkNames(names, names.size()));
+                }
+            }
+            else if (what == "move" || what == "rename" || what == "delete")
+            {
+                // ---- the selection, as search makes it ----------------------
+                const std::string words = pick.has("name") ? pick["name"].asString()
+                                        : pick.has("query") ? pick["query"].asString() : std::string();
+                const std::string kind_word = pick.has("type") ? pick["type"].asString()
+                                            : pick.has("kind") ? pick["kind"].asString() : std::string();
+                const std::string creator = pick.has("creator") ? pick["creator"].asString() : std::string();
+                if (!step.has("find") || !step["find"].isMap())
+                    return fail(n, what + " needs `find`: which items, by `name`, `type`, `creator` "
+                                      "and/or `in`.");
+                LLAssetType::EType kind = LLAssetType::AT_NONE;
+                {
+                    std::string k = kind_word;
+                    LLStringUtil::trim(k);
+                    if (!k.empty())
+                    {
+                        kind = kindFromWord(k);
+                        if (kind == LLAssetType::AT_NONE)
+                            return fail(n, "\"" + kind_word + "\" is not a kind search knows. Use one of: "
+                                           "object, clothing, bodypart, notecard, landmark, animation, "
+                                           "gesture, texture, sound, script, settings, material.");
+                    }
+                }
+                if (lowered(words).find_first_not_of(" \t") == std::string::npos
+                    && creator.empty() && in_given.empty())
+                    return fail(n, "a selection must say which: `name` words, a `creator`, or a folder "
+                                   "`in` -- never everything of a kind across the whole inventory.");
+                LLUUID scope;
+                if (!in_given.empty())
+                {
+                    LLSD ferr;
+                    scope = bulkFolder(in_given, ferr);
+                    if (scope.isNull())
+                        return fail(n, ferr["message"].asString(), ferr.has("data") ? ferr["data"] : LLSD());
+                    shown["in"] = safeUtf8(pathOf(scope));
+                }
+                NameAndKind by_maker(std::string(), LLAssetType::AT_NONE);
+                if (!creator.empty())
+                {
+                    const LLUUID maybe(creator);
+                    by_maker.requireCreator(maybe, maybe.notNull() ? std::string() : creator);
+                }
+
+                // ---- what each one is done to -------------------------------
+                LLUUID dest;
+                S32 dest_made = -1;
+                std::string dest_path;
+                std::string replace_from, replace_to;
+                if (what == "move")
+                {
+                    const std::string to = step["to"].asString();
+                    if (to.empty()) return fail(n, "move needs `to`: the folder, by id or path.");
+                    for (const Planned& p : planned)
+                    {
+                        if (lowered(to) == lowered(p.name) || lowered(to) == lowered(p.path))
+                        {
+                            dest = p.id; dest_made = p.id.isNull() ? p.op : -1; dest_path = p.path;
+                            break;
+                        }
+                    }
+                    if (dest.isNull() && dest_made < 0)
+                    {
+                        LLSD ferr;
+                        dest = bulkFolder(to, ferr);
+                        if (dest.isNull())
+                        {
+                            return fail(n, ferr["message"].asString()
+                                         + " To make it, put a new_folder step before this one.",
+                                        ferr.has("data") ? ferr["data"] : LLSD());
+                        }
+                        dest_path = pathOf(dest);
+                    }
+                    if (dest.notNull())
+                    {
+                        if (bulkWithin(dest, trash))
+                            return fail(n, "moving into the Trash is deleting -- use `do: delete`.");
+                        const std::string why = heldIn(dest);
+                        if (!why.empty()) return fail(n, "not into that folder: " + why + ".");
+                    }
+                    shown["to"] = safeUtf8(dest_path);
+                }
+                else if (what == "rename")
+                {
+                    replace_from = step["replace"].asString();
+                    replace_to = step.has("with") ? step["with"].asString() : std::string();
+                    if (replace_from.empty())
+                        return fail(n, "rename needs `replace` (the text to change in each name) and "
+                                       "`with` (what it becomes; empty takes it out).");
+                    shown["replace"] = safeUtf8(replace_from);
+                    shown["with"] = safeUtf8(replace_to);
+                }
+
+                std::vector<std::pair<std::string, std::string>> spelling;
+                const std::vector<LumenAIIndex::Match> hits =
+                    LumenAIIndex::instance().matchAll(words, kind, &spelling);
+                std::map<LLUUID, bool> in_scope;
+                S32 matched = 0, already = 0, unchanged = 0, no_copy = 0, count = 0;
+                for (const LumenAIIndex::Match& m : hits)
+                {
+                    LLViewerInventoryItem* item = gInventory.getItem(m.id);
+                    if (!item || item->getIsLinkType()) continue;
+                    if (scope.notNull())
+                    {
+                        const LLUUID& parent = item->getParentUUID();
+                        std::map<LLUUID, bool>::iterator f = in_scope.find(parent);
+                        if (f == in_scope.end())
+                            f = in_scope.emplace(parent, bulkWithin(parent, scope)).first;
+                        if (!f->second) continue;
+                    }
+                    if (!creator.empty() && !by_maker(NULL, item)) continue;
+                    ++matched;
+                    const std::string& name = item->getName();
+                    if (claimed.count(m.id))
+                    {
+                        ++earlier;
+                        earlier_steps.insert(claimed_by[m.id] + 1);
+                        continue;
+                    }
+                    std::string why = heldIn(item->getParentUUID());
+                    if (why.empty() && what == "move")
+                    {
+                        if (dest.notNull() && item->getParentUUID() == dest) { ++already; continue; }
+                        if (!get_is_item_removable(&gInventory, m.id, false))
+                            why = "a lock in the viewer holds it where it is (a protected folder, or RLV)";
+                        else if (RlvActions::isRlvEnabled() && dest.notNull()
+                                 && !RlvFolderLocks::instance().canMoveItem(m.id, dest))
+                            why = "an RLV lock the user is wearing holds it where it is";
+                    }
+                    else if (why.empty() && what == "delete")
+                    {
+                        if (get_is_item_worn(m.id))
+                            why = "it is being worn";
+                        else if (!get_is_item_removable(&gInventory, m.id, true))
+                            why = "the viewer does not allow deleting it (a protected folder, or RLV)";
+                    }
+                    else if (why.empty() && what == "rename")
+                    {
+                        if (!item->getPermissions().allowModifyBy(gAgent.getID()))
+                            why = "it is not theirs to modify";
+                        else if (item->getInventoryType() == LLInventoryType::IT_CALLINGCARD)
+                            why = "the viewer does not rename calling cards";
+                        else if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canRenameItem(m.id))
+                            why = "an RLV lock the user is wearing keeps its name";
+                    }
+                    if (!why.empty())
+                    {
+                        ++refused_count;
+                        bulkCapped(refused, name, why);
+                        continue;
+                    }
+
+                    BulkOp op;
+                    op.step = (S32)n;
+                    op.id = m.id;
+                    op.parent_then = item->getParentUUID();
+                    op.name_then = name;
+                    if (what == "move")
+                    {
+                        op.kind = BulkOp::MOVE;
+                        op.dest = dest;
+                        op.dest_made = dest_made;
+                        names.push_back(name);
+                    }
+                    else if (what == "delete")
+                    {
+                        op.kind = BulkOp::TRASH;
+                        if (!item->getPermissions().allowCopyBy(gAgent.getID())) ++no_copy;
+                        names.push_back(name);
+                    }
+                    else
+                    {
+                        std::string renamed = bulkReplaced(name, replace_from, replace_to);
+                        LLInventoryObject::correctInventoryName(renamed);
+                        if (renamed == name || renamed.empty()) { ++unchanged; continue; }
+                        op.kind = BulkOp::RENAME;
+                        op.new_name = renamed;
+                        names.push_back("\"" + name + "\" to \"" + renamed + "\"");
+                    }
+                    plan.ops.push_back(op);
+                    claimed.insert(m.id);
+                    claimed_by[m.id] = (S32)n;
+                    ++count;
+                    if (plan.ops.size() > BULK_MAX_CHANGES)
+                    {
+                        return fail(n, llformat("this comes to more than %d changes in one batch. "
+                                                "Narrow the selection, or split it.",
+                                                (S32)BULK_MAX_CHANGES));
+                    }
+                }
+                shown["matched"] = matched;
+                shown["count"] = count;
+                if (!spelling.empty())
+                {
+                    LLSD fixes = LLSD::emptyArray();
+                    for (const auto& f : spelling)
+                    {
+                        LLSD one; one["asked"] = f.first; one["used"] = f.second;
+                        fixes.append(one);
+                    }
+                    shown["spelling_corrected"] = fixes;
+                }
+                if (what == "move" && already) shown["already_there"] = already;
+                if (what == "rename" && unchanged) shown["name_unchanged"] = unchanged;
+                if (what == "delete" && no_copy) shown["no_copy"] = no_copy;
+                if (count > 0)
+                {
+                    if (what == "move")
+                    {
+                        n_move += count;
+                        lines.push_back(llformat("Move %d to ", count) + bulkShort(dest_path) + ": "
+                                        + bulkNames(names, names.size()));
+                    }
+                    else if (what == "delete")
+                    {
+                        n_trash += count;
+                        lines.push_back(llformat("Move %d to the Trash: ", count)
+                                        + bulkNames(names, names.size())
+                                        + (no_copy ? llformat(" (%d no-copy)", no_copy) : std::string()));
+                    }
+                    else
+                    {
+                        n_rename += count;
+                        lines.push_back(llformat("Rename %d: ", count) + bulkNames(names, names.size()));
+                    }
+                }
+            }
+            else
+            {
+                return fail(n, "`do` is one of move, rename, delete, new_folder, delete_empty_folders"
+                               + (what.empty() ? std::string(".") : ", not \"" + what + "\"."));
+            }
+
+            LLSD examples = LLSD::emptyArray();
+            for (size_t i = 0; i < names.size() && i < BULK_EXAMPLES; ++i)
+            {
+                examples.append(safeUtf8(names[i]));
+            }
+            shown["examples"] = examples;
+            if (refused_count)
+            {
+                shown["refused_count"] = refused_count;
+                shown["refused"] = refused;
+            }
+            if (earlier)
+            {
+                shown["picked_by_an_earlier_step"] = earlier;
+                LLSD which = LLSD::emptyArray();
+                for (S32 e : earlier_steps) which.append(e);
+                shown["picked_by_steps"] = which;
+                shown["picked_note"] = "Each thing is acted on once per run: the earlier step has "
+                                       "these, and this one leaves them alone.";
+            }
+            plan.step_do.push_back(what);
+            shown_steps.append(shown);
+        }
+
+        // ---- the plan as shown, the question, the line for the record -------
+        std::string summary;
+        for (const std::string& l : lines)
+        {
+            if (!summary.empty()) summary += "\n";
+            summary += l;
+        }
+        if (summary.size() > 1200)
+        {
+            size_t cut = 1200;
+            while (cut > 0 && (((unsigned char)summary[cut]) & 0xC0) == 0x80) --cut;
+            summary = summary.substr(0, cut) + "...";
+        }
+        plan.summary = summary;
+        plan.deletes = n_trash > 0 || n_folders > 0;
+
+        std::vector<std::string> parts;
+        if (n_move)    parts.push_back(llformat("%d moved", n_move));
+        if (n_rename)  parts.push_back(llformat("%d renamed", n_rename));
+        if (n_trash)   parts.push_back(llformat("%d to the Trash", n_trash));
+        if (n_folders) parts.push_back(llformat("%d empty folder%s removed", n_folders, n_folders == 1 ? "" : "s"));
+        if (n_new)     parts.push_back(llformat("%d new folder%s", n_new, n_new == 1 ? "" : "s"));
+        std::string what_line = "bulk tidy:";
+        for (size_t i = 0; i < parts.size(); ++i) what_line += (i ? ", " : " ") + parts[i];
+        plan.what = what_line;
+
+        plan.made_at = LLTimer::getTotalSeconds();
+        plan.shown = LLSD::emptyMap();
+        plan.shown["steps"] = shown_steps;
+        plan.shown["changes"] = (LLSD::Integer)plan.ops.size();
+        plan.shown["will_ask"] = plan.deletes
+            ? std::string("every time, because it puts things in the Trash")
+            : std::string("unless the user has told the viewer always to allow moves and renames");
+        return true;
+    }
+
+    /** One planned change, done now. NEW_FOLDER is the run's own business. */
+    void bulkDo(const BulkOp& op, const std::shared_ptr<BulkRun>& run)
+    {
+        const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+        auto failed = [&](const std::string& why)
+        {
+            ++run->failed;
+            ++run->step_failed[op.step];
+            bulkCapped(run->failed_list, op.name_then, why);
+        };
+        auto leave = [&](const std::string& why)
+        {
+            ++run->left_alone;
+            ++run->step_left[op.step];
+            bulkCapped(run->left_list, op.name_then, why);
+        };
+        auto done = [&]()
+        {
+            ++run->done;
+            ++run->step_done[op.step];
+        };
+
+        if (op.kind == BulkOp::TRASH_FOLDER)
+        {
+            LLViewerInventoryCategory* cat = gInventory.getCategory(op.id);
+            if (!cat) { failed("it is no longer in inventory"); return; }
+            if (cat->getParentUUID() != op.parent_then) { leave("moved after the plan, so it stays"); return; }
+            // Checked again now, on the viewer's own model: anything in it --
+            // or anything it has not loaded -- and it stays. Never a folder
+            // holding anything.
+            if (!gInventory.isCategoryComplete(op.id) || cat->getViewerDescendentCount() != 0)
+            {
+                leave("it is not empty now, so it stays");
+                return;
+            }
+            if (!get_is_category_removable(&gInventory, op.id))
+            {
+                failed("the viewer does not allow removing it");
+                return;
+            }
+            // What removeCategory does, without its Trash-is-full check after
+            // every single folder -- that is asked once, at the end of the run.
+            gInventory.changeCategoryParent(cat, trash, true);
+            const LLViewerInventoryCategory* now = gInventory.getCategory(op.id);
+            if (!now || now->getParentUUID() != trash) { failed("the viewer did not move it to the Trash"); return; }
+            LumenAIUndo::instance().recordTrash(op.id, true, op.parent_then, run->change_set);
+            run->trashed_any = true;
+            done();
+            return;
+        }
+
+        LLViewerInventoryItem* item = gInventory.getItem(op.id);
+        if (!item) { failed("it is no longer in inventory"); return; }
+        if (item->getParentUUID() != op.parent_then)
+        {
+            leave("moved after the plan; it is in " + folderPath(item->getParentUUID()));
+            return;
+        }
+        if (item->getName() != op.name_then)
+        {
+            leave("renamed after the plan; it is called \"" + safeUtf8(item->getName()) + "\"");
+            return;
+        }
+
+        switch (op.kind)
+        {
+        case BulkOp::MOVE:
+        {
+            LLUUID dest = op.dest;
+            if (op.dest_made >= 0)
+            {
+                std::map<S32, LLUUID>::const_iterator f = run->made.find(op.dest_made);
+                dest = (f != run->made.end()) ? f->second : LLUUID::null;
+                if (dest.isNull()) { failed("the folder it was to go in could not be made"); return; }
+            }
+            if (!gInventory.getCategory(dest) || bulkWithin(dest, trash))
+            {
+                failed("the folder it was to go in is gone");
+                return;
+            }
+            if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canMoveItem(op.id, dest))
+            {
+                failed("an RLV lock the user is wearing holds it where it is");
+                return;
+            }
+            gInventory.changeItemParent(item, dest, false);
+            const LLViewerInventoryItem* now = gInventory.getItem(op.id);
+            if (!now || now->getParentUUID() != dest) { failed("the viewer did not move it"); return; }
+            LumenAIUndo::instance().recordMove(op.id, false, op.parent_then, dest, run->change_set);
+            done();
+            return;
+        }
+        case BulkOp::RENAME:
+        {
+            if (!item->getPermissions().allowModifyBy(gAgent.getID()))
+            {
+                failed("it is not theirs to modify");
+                return;
+            }
+            if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canRenameItem(op.id))
+            {
+                failed("an RLV lock the user is wearing keeps its name");
+                return;
+            }
+            LumenAIUndo::instance().recordRename(op.id, false, op.name_then, op.new_name, run->change_set);
+            LLSD updates; updates["name"] = op.new_name;
+            update_inventory_item(op.id, updates, NULL);
+            done();
+            return;
+        }
+        case BulkOp::TRASH:
+        {
+            if (get_is_item_worn(op.id)) { failed("it is being worn now"); return; }
+            if (!get_is_item_removable(&gInventory, op.id, true))
+            {
+                failed("the viewer does not allow deleting it now");
+                return;
+            }
+            gInventory.removeItem(op.id);
+            const LLViewerInventoryItem* now = gInventory.getItem(op.id);
+            if (!now || now->getParentUUID() != trash) { failed("the viewer did not move it to the Trash"); return; }
+            LumenAIUndo::instance().recordTrash(op.id, false, op.parent_then, run->change_set);
+            run->trashed_any = true;
+            done();
+            return;
+        }
+        default:
+            return;
+        }
+    }
+
+    /** "1,234 done" -- the counts as a person reads them. */
+    std::string bulkCount(S32 n)
+    {
+        std::string digits = llformat("%d", n);
+        for (S32 at = (S32)digits.size() - 3; at > 0; at -= 3) digits.insert((size_t)at, ",");
+        return digits;
+    }
+
+    /** The line the viewer writes itself when a run it was left with ends. */
+    void bulkFinalLine(const std::shared_ptr<BulkRun>& run)
+    {
+        std::string line = run->stopped
+            ? "Inventory tidy stopped part way, when the inventory went away (logging out or "
+              "quitting): " + bulkCount(run->done) + " of " + bulkCount(run->total) + " done."
+            : "Inventory tidy finished: " + bulkCount(run->done) + " of " + bulkCount(run->total)
+              + " done.";
+        if (run->failed) line += " " + bulkCount(run->failed) + " could not be done.";
+        if (run->left_alone) line += " " + bulkCount(run->left_alone) + " left alone because they "
+                                     "changed after the plan.";
+        if (run->done)
+        {
+            line += " To put it all back, ask the assistant to undo it, or use Comm > Assistant "
+                    "Inventory History.";
+        }
+        if (!LumenAIChatFloater::postFromViewer(std::string(), line))
+        {
+            LLSD args; args["MESSAGE"] = line;
+            LLNotificationsUtil::add("SystemMessageTip", args);
+        }
+    }
+
+    /** Start a planned run: the snapshot, its change set, and the paced work. */
+    void bulkStart(BulkPlan& plan)
+    {
+        std::shared_ptr<BulkRun> run = std::make_shared<BulkRun>();
+        LumenAIUndo& undo = LumenAIUndo::instance();
+        run->snapshot = undo.snapshotBefore("before a " + plan.what);
+        run->change_set = undo.beginBatch(plan.what);
+        run->started = LLTimer::getTotalSeconds();
+        run->total = (S32)plan.ops.size();
+        run->step_done.assign(plan.step_do.size(), 0);
+        run->step_failed.assign(plan.step_do.size(), 0);
+        run->step_left.assign(plan.step_do.size(), 0);
+        plan.run = run;
+        sBulkActive = run;
+
+        std::shared_ptr<const std::vector<BulkOp>> ops =
+            std::make_shared<const std::vector<BulkOp>>(plan.ops);
+        LL_INFOS("AICtl") << "batch_inventory: " << run->total << " changes, change set "
+                          << run->change_set << LL_ENDL;
+
+        // Runs until its first wait inside launch(), so a small run is done
+        // before the call that started it answers.
+        LLCoros::instance().launch("LumenAIBulkRun", [run, ops]()
+        {
+            S32 in_beat = 0;
+            for (size_t i = 0; i < ops->size(); ++i)
+            {
+                if (LLApp::isExiting() || !gInventory.isInventoryUsable())
+                {
+                    run->stopped = true;
+                    break;
+                }
+                const BulkOp& op = (*ops)[i];
+
+                // A folder made by this run: asked for here, and whatever goes
+                // into it waits for Second Life to give it an id.
+                if (op.kind == BulkOp::NEW_FOLDER)
+                {
+                    LLUUID parent = op.dest;
+                    if (op.dest_made >= 0)
+                    {
+                        const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                        while (!run->made.count(op.dest_made) && LLTimer::getTotalSeconds() < give_up)
+                            llcoro::suspendUntilTimeout(0.1f);
+                        std::map<S32, LLUUID>::const_iterator f = run->made.find(op.dest_made);
+                        parent = (f != run->made.end()) ? f->second : LLUUID::null;
+                    }
+                    if (parent.isNull() || !gInventory.getCategory(parent))
+                    {
+                        run->made[(S32)i] = LLUUID::null;
+                        ++run->failed;
+                        ++run->step_failed[op.step];
+                        bulkCapped(run->failed_list, op.new_name, "the folder it was to go in could not be made");
+                        continue;
+                    }
+                    ++run->folders_pending;
+                    const S32 index = (S32)i;
+                    const S32 step = op.step;
+                    const std::string name = op.new_name;
+                    const S64 set = run->change_set;
+                    gInventory.createNewCategory(parent, LLFolderType::FT_NONE, name,
+                        [run, index, step, name, set, parent](const LLUUID& new_id)
+                        {
+                            run->made[index] = new_id;
+                            --run->folders_pending;
+                            if (new_id.notNull())
+                            {
+                                LumenAIUndo::instance().recordNewFolder(set, new_id, parent);
+                                ++run->done;
+                                ++run->step_done[step];
+                            }
+                            else
+                            {
+                                ++run->failed;
+                                ++run->step_failed[step];
+                                bulkCapped(run->failed_list, name, "Second Life did not make it");
+                            }
+                        });
+                    continue;
+                }
+
+                if (op.kind == BulkOp::MOVE && op.dest_made >= 0)
+                {
+                    const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+                    while (!run->made.count(op.dest_made) && LLTimer::getTotalSeconds() < give_up)
+                        llcoro::suspendUntilTimeout(0.1f);
+                }
+
+                bulkDo(op, run);
+                if (++in_beat >= BULK_PER_BEAT)
+                {
+                    in_beat = 0;
+                    LumenAIChatFloater::postFromViewer("Tidying the inventory: "
+                        + bulkCount((S32)i + 1) + " of " + bulkCount(run->total), std::string());
+                    llcoro::suspendUntilTimeout(BULK_BEAT_SECONDS);
+                }
+            }
+            // Folders still on their way are part of the outcome.
+            const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
+            while (run->folders_pending > 0 && LLTimer::getTotalSeconds() < give_up)
+                llcoro::suspendUntilTimeout(0.1f);
+
+            run->finished = true;
+            if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().endBatch(run->change_set);
+            if (run->trashed_any && gInventory.isInventoryUsable()) gInventory.checkTrashOverflow();
+            LL_INFOS("AICtl") << "batch_inventory: finished, " << run->done << " done, "
+                              << run->failed << " could not, " << run->left_alone
+                              << " left alone" << LL_ENDL;
+
+            // The reply waiting on this run may yet carry the whole outcome;
+            // give it its chance, then say it here if it did not.
+            while (!run->told_in_reply
+                   && LLTimer::getTotalSeconds() < run->started + BULK_REPLY_WAIT + 1.0)
+                llcoro::suspendUntilTimeout(0.25f);
+            if (!run->told_in_reply)
+            {
+                // Not into the middle of a turn's own words: wait for it to end, a while.
+                const F64 until = LLTimer::getTotalSeconds() + 60.0;
+                while (LumenAIChatFloater::turnRunning() && LLTimer::getTotalSeconds() < until)
+                    llcoro::suspendUntilTimeout(0.25f);
+                bulkFinalLine(run);
+            }
+            else
+            {
+                LumenAIChatFloater::postFromViewer(std::string(), std::string());
+            }
+            if (sBulkActive == run) sBulkActive.reset();
+        });
+    }
+
+    /** What a started run has done, as the reply to the call that runs it. */
+    LLSD bulkRunReply(const std::string& plan_id, const BulkPlan& plan, bool& settling)
+    {
+        const std::shared_ptr<BulkRun>& run = plan.run;
+        const F64 now = LLTimer::getTotalSeconds();
+        LLSD r;
+        r["plan_id"] = plan_id;
+        r["change_set"] = (LLSD::Integer)run->change_set;
+        if (run->snapshot) r["snapshot"] = (LLSD::Integer)run->snapshot;
+        r["total"] = run->total;
+        r["done"] = run->done;
+        r["could_not"] = run->failed;
+        r["left_alone"] = run->left_alone;
+        r["finished"] = run->finished;
+        LLSD steps = LLSD::emptyArray();
+        for (size_t i = 0; i < plan.step_do.size(); ++i)
+        {
+            LLSD s;
+            s["step"] = (S32)(i + 1);
+            s["do"] = plan.step_do[i];
+            s["done"] = run->step_done[i];
+            s["could_not"] = run->step_failed[i];
+            s["left_alone"] = run->step_left[i];
+            steps.append(s);
+        }
+        r["steps"] = steps;
+        if (run->failed) r["could_not_list"] = run->failed_list;
+        if (run->left_alone) r["left_alone_list"] = run->left_list;
+        r["undo"] = llformat("inventory / undo with change_set %lld puts back everything this run "
+                             "changed: moved things go back, renames are reversed, and what went "
+                             "to the Trash comes back out -- unless the Trash is emptied first.",
+                             (long long)run->change_set);
+
+        settling = false;
+        if (run->finished)
+        {
+            run->told_in_reply = true;
+            r["note"] = std::string(run->stopped
+                ? "It stopped part way, because the inventory went away (logging out or quitting). "
+                : "Done. ")
+                + "Tell the user briefly what was done, and what could not be done or was left "
+                  "alone and why -- never say it all went if `could_not` or `left_alone` is above "
+                  "0. Say it can be undone.";
+            return r;
+        }
+        settling = now - run->started < BULK_REPLY_WAIT;
+        if (settling) r["settling"] = true;
+        r["going"] = true;
+        r["note"] = "Under way: " + bulkCount(run->done + run->failed + run->left_alone) + " of "
+                  + bulkCount(run->total) + " so far. The viewer carries on by itself, paced so it "
+                    "stays smooth, and writes a line in the Assistant window when it has "
+                    "finished. Tell the user it is under way and that the viewer will say when "
+                    "it is done, and how to undo it. End the reply there -- there is nothing for "
+                    "you to check or wait for.";
+        return r;
     }
 }
 // </Lumen>
@@ -18308,6 +19518,224 @@ if (method == "camera")
     }
     // </Lumen>
 
+    // <Lumen> inventory / batch and empty_trash: tidying in bulk, behind a
+    // switch the user turns on. The machinery is above dispatch(), with the
+    // reasons; this is the front door.
+    if (method == "batch_inventory" || method == "empty_trash")
+    {
+        if (!gInventory.isInventoryUsable())
+        {
+            return bulkError(-32000, "Inventory is not loaded yet.");
+        }
+        if (!bulkAllowed())
+        {
+            return bulkSwitchedOff(method == "empty_trash");
+        }
+        const std::string request_id = params.has("request_id") ? params["request_id"].asString()
+                                                               : std::string();
+        LLSD replay;
+        if (!request_id.empty() && recallAction(request_id, replay))
+        {
+            replay["replayed"] = true;
+            replay["note"] = "This request_id was already carried out; nothing was done again.";
+            return replay;
+        }
+        sweepBulkPlans();
+
+        // ---- empty_trash: its own action, never a batch step -------------------
+        if (method == "empty_trash")
+        {
+            const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+            if (trash.isNull()) return bulkError(-32000, "No Trash folder was found.");
+            if (bulkBusy())
+            {
+                return bulkError(-32000, "A bulk tidy is still running and may still be putting "
+                                         "things in the Trash, so it was not emptied. Tell the user; "
+                                         "the viewer says in the Assistant window when the tidy "
+                                         "has finished, and they can ask again then.");
+            }
+            LLInventoryModel::cat_array_t cats;
+            LLInventoryModel::item_array_t items;
+            gInventory.collectDescendents(trash, cats, items, LLInventoryModel::INCLUDE_TRASH);
+            const S32 count = (S32)(cats.size() + items.size());
+            const std::string print = fingerprintOf(method, params);
+            if (count == 0)
+            {
+                sTrashAsked.erase(print);
+                LLSD result;
+                result["emptied"] = 0;
+                result["already_empty"] = true;
+                result["note"] = "The Trash is already empty, so nothing was done.";
+                return result;
+            }
+            // Asked every time, never remembered (the template has no box for
+            // it). What the question showed is kept, so a Trash that grew
+            // while they read it is not emptied on a Yes to fewer things.
+            if (!sTrashAsked.count(print)) sTrashAsked[print] = count;
+            {
+                LLSD subs;
+                subs["COUNT"] = sTrashAsked[print];
+                LLSD ask;
+                if (!askUser("LumenAskEmptyTrash", subs, print, ask))
+                {
+                    if (ask.has("__error")) sTrashAsked.erase(print);
+                    return ask;
+                }
+            }
+            const S32 agreed = sTrashAsked[print];
+            sTrashAsked.erase(print);
+            if (count > agreed)
+            {
+                return bulkError(-32000, llformat("While the user was deciding, more went into the "
+                                 "Trash: it holds %d things now, not the %d they agreed to, so it was "
+                                 "NOT emptied. Tell them; if they still want it, empty_trash asks "
+                                 "again with the new count.", count, agreed));
+            }
+            const bool complete = gInventory.isCategoryComplete(trash);
+            // The viewer's own Empty Trash, after its own question -- which is
+            // ours here, so the notification name is empty.
+            gInventory.emptyFolderType(std::string(), LLFolderType::FT_TRASH);
+            LL_INFOS("AICtl") << "empty_trash: " << count << " emptied" << LL_ENDL;
+
+            LLSD result;
+            result["emptied"] = count;
+            result["items"] = (LLSD::Integer)items.size();
+            result["folders"] = (LLSD::Integer)cats.size();
+            result["gone_for_good"] = true;
+            result["note"] = std::string("The Trash was emptied: these are gone for good. Neither "
+                             "Lumen nor anyone else -- Linden Lab included -- can bring them back, "
+                             "and the record of the assistant's changes ends for them: undo cannot "
+                             "return anything that was in it. Tell the user that plainly.")
+                           + (complete ? std::string()
+                                       : std::string(" The viewer had not loaded all of the Trash "
+                                         "from Second Life, so it may have held more than it "
+                                         "counted; all of it was emptied."));
+            LLSD summary;
+            summary["action"] = "empty_trash";
+            summary["emptied"] = count;
+            recordAction(request_id, print, method, "ok", result, summary);
+            return result;
+        }
+
+        // ---- batch: a plan, or the run of one --------------------------------
+        const std::string plan_id = params.has("plan_id") ? params["plan_id"].asString()
+                                                         : std::string();
+        if (plan_id.empty())
+        {
+            if (!params.has("steps") || !params["steps"].isArray() || params["steps"].size() == 0)
+            {
+                return bulkError(-32602, "Give `steps`, a list of what to do -- or `plan_id`, to "
+                                         "run a plan already made.");
+            }
+            BulkPlan plan;
+            LLSD error;
+            if (!bulkMakePlan(params["steps"], plan, error))
+            {
+                LLSD w; w["__error"] = error; return w;
+            }
+            LLSD shown = plan.shown;
+            if (plan.ops.empty())
+            {
+                shown["nothing_to_do"] = true;
+                shown["note"] = "Nothing to do: no step selected anything the viewer may change. "
+                                "Nothing was changed. Tell the user, with what the steps say was "
+                                "matched or refused.";
+                return shown;   // no plan_id: there is nothing to run
+            }
+            // Not in the action log: a plan changes nothing.
+            std::string id = "plan-" + LLUUID::generateNewID().asString().substr(0, 8);
+            while (sBulkPlans.count(id)) id = "plan-" + LLUUID::generateNewID().asString().substr(0, 8);
+            shown["plan_id"] = id;
+            shown["expires_in_seconds"] = (LLSD::Integer)BULK_PLAN_KEEPS;
+            shown["note"] = "Nothing has been changed yet. Tell the user in a sentence or two what "
+                            "this will do: the counts, a few names, where things go, and anything "
+                            "refused and why -- and any `spelling_corrected`, since that changes "
+                            "what was matched. Then run it: inventory / batch with only this "
+                            "plan_id. The viewer asks the user itself, in a window of its own, "
+                            "before anything is done -- do not ask them in the conversation as "
+                            "well. Running acts on exactly these items; anything changed by hand "
+                            "after this plan is left alone. The plan lasts ten minutes.";
+            plan.shown = shown;
+            sBulkPlans[id] = plan;
+            LL_INFOS("AICtl") << "batch_inventory: plan " << id << ", " << plan.ops.size()
+                              << " changes" << LL_ENDL;
+            return shown;
+        }
+
+        std::map<std::string, BulkPlan>::iterator found = sBulkPlans.find(plan_id);
+        if (found == sBulkPlans.end())
+        {
+            return bulkError(-32602, "There is no plan \"" + plan_id + "\" -- a plan lasts ten "
+                                     "minutes, and one the user said no to is gone. Make a new one "
+                                     "with `steps`; nothing was changed.");
+        }
+        BulkPlan& plan = found->second;
+        const F64 now = LLTimer::getTotalSeconds();
+        bool settling = false;
+        if (!plan.run)
+        {
+            if (!plan.asked && now - plan.made_at > BULK_PLAN_KEEPS)
+            {
+                sBulkPlans.erase(found);
+                return bulkError(-32000, "That plan is more than ten minutes old, so it was not run "
+                                         "and nothing was changed: the inventory may have moved on "
+                                         "since. Make a new one with the same `steps` and run that.");
+            }
+            if (bulkBusy())
+            {
+                return bulkError(-32000, "Another bulk tidy is still running, so this one was not "
+                                         "started and nothing was changed. Tell the user; the viewer "
+                                         "says in the Assistant window when the other has finished, "
+                                         "and they can ask again then.");
+            }
+            if (!LumenAIUndo::instance().available())
+            {
+                return bulkError(-32000, "The record that makes a bulk change undoable could not be "
+                                         "opened, so nothing was done. Say so.");
+            }
+            // One question per run. Moving, renaming and making folders may be
+            // remembered; anything that puts things in the Trash asks every time.
+            {
+                LLSD subs;
+                subs["SUMMARY"] = plan.summary;
+                LLSD ask;
+                plan.asked = true;
+                if (!askUser(plan.deletes ? "LumenAskBatchDelete" : "LumenAskBatch", subs,
+                             "batch_inventory\n" + plan_id, ask))
+                {
+                    if (ask.has("__error") && ask["__error"].has("data")
+                        && ask["__error"]["data"]["user_said"].asString() == "no")
+                    {
+                        sBulkPlans.erase(found);   // a No ends the plan: it is not asked again
+                    }
+                    return ask;
+                }
+            }
+            bulkStart(plan);
+        }
+
+        // Started -- now or earlier. Never a second run of the same plan.
+        LLSD result = bulkRunReply(plan_id, plan, settling);
+        if (settling)
+        {
+            // The reply waits a few seconds for the end, the same call made
+            // again a quarter second apart (see mSettle): a small run is done
+            // by then and answered whole. Its own deadline comes first.
+            mSettle = llmax(0.5, plan.run->started + BULK_REPLY_WAIT - now + 0.5);
+            return result;
+        }
+        LLSD summary;
+        summary["action"] = "batch_inventory";
+        summary["plan_id"] = plan_id;
+        summary["change_set"] = result["change_set"];
+        summary["total"] = result["total"];
+        summary["done"] = result["done"];
+        summary["finished"] = result["finished"];
+        recordAction(request_id, fingerprintOf(method, params), method, "ok", result, summary);
+        return result;
+    }
+    // </Lumen>
+
     if (method == "save_outfit")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
@@ -19612,8 +21040,8 @@ if (method == "camera")
         }
         // </Lumen>
 
-        // Moves to Trash. Nothing here purges, and no tool offers purging:
-        // emptying the Trash stays the user's own deliberate act.
+        // Moves to Trash. Nothing here purges. <Lumen> Emptying the Trash is
+        // empty_trash's alone, behind its switch and asked every time.
         const LLUUID deleted_from = item->getParentUUID();   // <Lumen> inventory undo
         LumenAIUndo::instance().prepare();
         gInventory.removeItem(id);

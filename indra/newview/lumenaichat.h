@@ -212,6 +212,19 @@ public:
     static void offerAtLogin();
     static void summariseNow();   //< the offer was accepted
 
+    /**
+     * <Lumen> A line from the viewer itself, for work that outlives the turn
+     * that started it: a bulk inventory run, which carries on for a minute
+     * after the model has answered. `status` goes in the action bar while no
+     * turn is using it ("" clears it; nothing is changed while a turn runs);
+     * `note`, if any, is written into the conversation. True when it reached
+     * an Assistant window that is on the screen -- otherwise the caller should
+     * say it some other way as well.
+     */
+    static bool postFromViewer(const std::string& status, const std::string& note);
+    /** <Lumen> Whether a turn is running in the Assistant window right now. */
+    static bool turnRunning();
+
     LumenAIChatFloater(const LLSD& key);
     ~LumenAIChatFloater() override;
 

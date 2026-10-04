@@ -117,10 +117,14 @@ public:
      */
     void prepare();
 
-    void recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to);
+    // <Lumen> `set_id` 0 is the request in progress, as always; a bulk run
+    // passes the set beginBatch() gave it.
+    void recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
+                    S64 set_id = 0);
     void recordRename(const LLUUID& id, bool folder, const std::string& before,
-                      const std::string& after);
-    void recordTrash(const LLUUID& id, bool folder, const LLUUID& from);
+                      const std::string& after, S64 set_id = 0);
+    /** Call AFTER it is in the Trash: where it is now is recorded too. */
+    void recordTrash(const LLUUID& id, bool folder, const LLUUID& from, S64 set_id = 0);
     void recordUntrash(const LLUUID& id, bool folder, const LLUUID& to);
     /** A folder being made: the set it joins is fixed now, its id arrives later. */
     S64  setForNewFolder();
@@ -128,6 +132,18 @@ public:
 
     /** A snapshot now, for a bulk operation. Returns its id, or 0. */
     S64  snapshotBefore(const std::string& reason);
+
+    // <Lumen> ---- a bulk run (inventory / batch) ------------------------------
+    /**
+     * A bulk run is ONE change set of its own, whatever Assistant turn starts
+     * or ends while it is still going -- a run of thousands is paced and
+     * outlasts the turn that asked for it. Every change it makes is recorded
+     * under the set this returns (0: the record is not available). `what` is
+     * kept with it, after the person's own words when a turn is in progress.
+     */
+    S64  beginBatch(const std::string& what);
+    void endBatch(S64 set_id);
+    // </Lumen>
 
     /** Where this item was before the assistant last put it in the Trash. */
     bool lastTrashedFrom(const LLUUID& id, LLUUID& parent_out, Chain& chain_out);
@@ -166,6 +182,7 @@ private:
     void flush();
 
     S64  currentSet();
+    void addSet(S64 id, const std::string& words, const std::string& source);   // <Lumen>
     void addChange(S64 set_id, const std::string& kind, const LLUUID& id, bool folder,
                    const std::string& name_before, const std::string& name_after,
                    const LLUUID& parent_before, const LLUUID& parent_after,

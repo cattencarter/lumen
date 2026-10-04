@@ -880,11 +880,19 @@ S64 LumenAIUndo::currentSet()
     if (mInRequest && mRequestSet != 0) return mRequestSet;
 
     const S64 id = mNextSet++;
-    const S64 at = (S64)time(nullptr);
-    const std::string words = mInRequest ? mWords : std::string();
-    const std::string source = mInRequest ? "assistant" : "endpoint";
     if (mInRequest) mRequestSet = id;
-    mSeq = 0;
+    // <Lumen> The order of changes is NOT restarted per set any more: a bulk
+    // run writes to its own set while a turn writes to another, and a counter
+    // reset by one would have put the other's later changes before its
+    // earlier ones -- which undo, newest first, reads as the order to reverse.
+    // It only has to rise within a set, and it does.
+    addSet(id, mInRequest ? mWords : std::string(), mInRequest ? "assistant" : "endpoint");
+    return id;
+}
+
+void LumenAIUndo::addSet(S64 id, const std::string& words, const std::string& source)
+{
+    const S64 at = (S64)time(nullptr);
     post([id, at, words, source](sqlite3* db)
     {
         sqlite3_stmt* st = nullptr;
@@ -898,8 +906,26 @@ S64 LumenAIUndo::currentSet()
             sqlite3_finalize(st);
         }
     });
+}
+
+// <Lumen> A bulk run's own set, outside the turn's. See the header.
+S64 LumenAIUndo::beginBatch(const std::string& what)
+{
+    if (!ensureOpen()) return 0;
+    const S64 id = mNextSet++;
+    const std::string words = (mInRequest && !mWords.empty()) ? mWords + "  [" + what + "]" : what;
+    addSet(id, words, "bulk");
+    changed();
     return id;
 }
+
+void LumenAIUndo::endBatch(S64 set_id)
+{
+    // Nothing to close: every change was written as it happened. The window
+    // reads the record again, so the finished run shows whole.
+    if (set_id != 0) changed();
+}
+// </Lumen>
 
 void LumenAIUndo::addChange(S64 set_id, const std::string& kind, const LLUUID& id, bool folder,
                             const std::string& name_before, const std::string& name_after,
@@ -932,24 +958,27 @@ void LumenAIUndo::addChange(S64 set_id, const std::string& kind, const LLUUID& i
     changed();
 }
 
-void LumenAIUndo::recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to)
+void LumenAIUndo::recordMove(const LLUUID& id, bool folder, const LLUUID& from, const LLUUID& to,
+                             S64 set_id)
 {
     const std::string name = nameOf(id);
-    addChange(currentSet(), "move", id, folder, name, name, from, to, Chain::of(from).serialise());
+    addChange(set_id != 0 ? set_id : currentSet(), "move", id, folder, name, name, from, to,
+              Chain::of(from).serialise());
 }
 
 void LumenAIUndo::recordRename(const LLUUID& id, bool folder, const std::string& before,
-                               const std::string& after)
+                               const std::string& after, S64 set_id)
 {
     const LLUUID p = parentOf(id);
-    addChange(currentSet(), "rename", id, folder, before, after, p, p, std::string());
+    addChange(set_id != 0 ? set_id : currentSet(), "rename", id, folder, before, after, p, p,
+              std::string());
 }
 
-void LumenAIUndo::recordTrash(const LLUUID& id, bool folder, const LLUUID& from)
+void LumenAIUndo::recordTrash(const LLUUID& id, bool folder, const LLUUID& from, S64 set_id)
 {
     const std::string name = nameOf(id);
-    addChange(currentSet(), "trash", id, folder, name, name, from, parentOf(id),
-              Chain::of(from).serialise());
+    addChange(set_id != 0 ? set_id : currentSet(), "trash", id, folder, name, name, from,
+              parentOf(id), Chain::of(from).serialise());
 }
 
 void LumenAIUndo::recordUntrash(const LLUUID& id, bool folder, const LLUUID& to)
