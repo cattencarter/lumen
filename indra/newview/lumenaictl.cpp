@@ -10710,23 +10710,17 @@ namespace
 
     /**
      * Why nothing in this folder -- or this folder itself -- is the assistant's
-     * to change, or empty. The rules of the single-item tools, in one place.
+     * to change, or empty. <Lumen> The rules every inventory path shares
+     * (LumenInventoryRules, lumenaiundo.h: the Library, Current Outfit, the
+     * bridge's and the AO's folders, Marketplace), and the Trash, which a
+     * batch neither selects from nor puts into.
      */
     std::string bulkHeld(const LLUUID& id)
     {
-        if (!bulkWithin(id, gInventory.getRootFolderID()))
-            return "it is in the Library, which is Linden Lab's, not theirs";
-        if (bulkWithin(id, gInventory.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT)))
-            return "it is in Current Outfit, which is what they are wearing";
-        if (bulkWithin(id, gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH)))
-            return "it is in the Trash";
-        if (bulkWithin(id, FSLSLBridge::instance().getBridgeFolder()))
-            return "it is the LSL bridge's, which the viewer needs where it is";
-        if (bulkWithin(id, AOEngine::instance().getAOFolder()))
-            return "it belongs to their animation overrider, which finds things by where they are";
-        if (depth_nesting_in_marketplace(id) >= 0)
-            return "it is in Marketplace listings, which this does not change";
-        return std::string();
+        std::string why = LumenInventoryRules::offLimits(id);
+        if (why.empty() && bulkWithin(id, gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH)))
+            why = "it is in the Trash";
+        return why;
     }
 
     /** A folder a step names: by id, by path, or by a name only one folder has. */
@@ -11423,10 +11417,11 @@ namespace
                 failed("the folder it was to go in is gone");
                 return;
             }
-            if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canMoveItem(op.id, dest))
+            // <Lumen> The shared rules, asked again now: a folder listed in
+            // Marketplace since the plan, or an RLV lock put on since.
             {
-                failed("an RLV lock the user is wearing holds it where it is");
-                return;
+                const std::string why = LumenInventoryRules::notMove(op.id, false, dest);
+                if (!why.empty()) { failed(why); return; }
             }
             gInventory.changeItemParent(item, dest, false);
             const LLViewerInventoryItem* now = gInventory.getItem(op.id);
@@ -11437,15 +11432,10 @@ namespace
         }
         case BulkOp::RENAME:
         {
-            if (!item->getPermissions().allowModifyBy(gAgent.getID()))
+            // <Lumen> The shared rules, asked again now.
             {
-                failed("it is not theirs to modify");
-                return;
-            }
-            if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canRenameItem(op.id))
-            {
-                failed("an RLV lock the user is wearing keeps its name");
-                return;
+                const std::string why = LumenInventoryRules::notRename(op.id, false);
+                if (!why.empty()) { failed(why); return; }
             }
             LumenAIUndo::instance().recordRename(op.id, false, op.name_then, op.new_name, run->change_set);
             LLSD updates; updates["name"] = op.new_name;
@@ -11643,7 +11633,20 @@ namespace
         LLSD r;
         r["plan_id"] = plan_id;
         r["change_set"] = (LLSD::Integer)run->change_set;
-        if (run->snapshot) r["snapshot"] = (LLSD::Integer)run->snapshot;
+        // <Lumen> A snapshot is named only once it is on disk: one still being
+        // written may yet fail, and one rolled back (a full disk) does not
+        // exist. The change set undoes the run either way.
+        if (run->snapshot)
+        {
+            const LumenAIUndo::SnapState snap = LumenAIUndo::instance().snapshotState(run->snapshot);
+            if (snap == LumenAIUndo::SNAP_WRITTEN)
+                r["snapshot"] = (LLSD::Integer)run->snapshot;
+            else if (snap == LumenAIUndo::SNAP_FAILED)
+                r["snapshot_failed"] = "The snapshot before this run could not be written; undo with "
+                                       "its change_set still puts back what the run changed.";
+            else
+                r["snapshot_pending"] = "The snapshot before this run is still being written.";
+        }
         r["total"] = run->total;
         r["done"] = run->done;
         r["could_not"] = run->failed;
@@ -19140,35 +19143,25 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
         LLInventoryModel& m = gInventory;
-        const LLUUID cof   = m.findCategoryUUIDForType(LLFolderType::FT_CURRENT_OUTFIT);
-        const LLUUID trash = m.findCategoryUUIDForType(LLFolderType::FT_TRASH);
-        const LLUUID lib   = m.getLibraryRootFolderID();
-        auto within = [](const LLUUID& id, const LLUUID& top) -> bool
+        // <Lumen> The rules are the ones every inventory path shares -- undo,
+        // restore, undelete and a batch ask the same (LumenInventoryRules,
+        // lumenaiundo.h). This only makes their clause a sentence.
+        auto sentence = [](std::string clause) -> std::string
         {
-            return top.notNull() && (id == top || gInventory.isObjectDescendentOf(id, top));
+            if (!clause.empty()) clause[0] = (char)toupper((unsigned char)clause[0]);
+            return clause + ".";
         };
         // Why this may not move or be renamed, or empty.
         auto held = [&](const LLUUID& id, bool folder) -> std::string
         {
-            if (within(id, lib))  return "It is in the Library, which is Linden Lab's, not theirs.";
-            if (within(id, cof))  return "It is in Current Outfit, which is what they are wearing -- use wear or detach.";
-            if (within(id, FSLSLBridge::instance().getBridgeFolder()))
-                return "It is the LSL bridge's, which the viewer needs where it is.";
-            if (within(id, AOEngine::instance().getAOFolder()))
-                return "It is their animation overrider's, which finds its animations by where they are.";
-            if (folder)
-            {
-                LLViewerInventoryCategory* cat = m.getCategory(id);
-                if (!cat) return "No folder with that id.";
-                if (LLFolderType::lookupIsProtectedType(cat->getPreferredType()))
-                    return "It is one of Second Life's own folders.";
-                if (cat->getName() == ROOT_FIRESTORM_FOLDER || cat->getName() == RLV_ROOT_FOLDER)
-                    return "It is a folder the viewer and RLV look for by name.";
-                if (m.getProtectedCategories().count(id))
-                    return "It is protected in the viewer's own settings.";
-            }
-            return std::string();
+            LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+            const std::string why = LumenInventoryRules::held(id, folder, &rule);
+            if (why.empty()) return why;
+            if (rule == LumenInventoryRules::CURRENT_OUTFIT)
+                return "It is in Current Outfit, which is what they are wearing -- use wear or detach.";
+            return sentence(why);
         };
+        // </Lumen>
         const std::string request_id = params.has("request_id") ? params["request_id"].asString()
                                                                : std::string();
         // <Lumen> new_folder made again with the same arguments: what came of
@@ -19236,11 +19229,12 @@ if (method == "camera")
                 parent = resolveFolder(where, folder_error);
                 if (parent.isNull()) { LLSD w; w["__error"] = folder_error; return w; }
             }
-            if (within(parent, lib) || within(parent, cof) || within(parent, trash))
+            // <Lumen> Anywhere something may be put: the shared rules.
+            const std::string not_there = LumenInventoryRules::notInto(parent);
+            if (!not_there.empty())
             {
                 LLSD e; e["code"] = -32000;
-                e["message"] = "Not there: the Library, Current Outfit and the Trash are not places "
-                               "for their own folders.";
+                e["message"] = "Not there: " + not_there + ". Nothing was made.";
                 LLSD w; w["__error"] = e; return w;
             }
             result["creating"] = safeUtf8(name);
@@ -19324,17 +19318,22 @@ if (method == "camera")
                 LLSD dest_error;
                 const LLUUID dest = resolveFolder(where, dest_error);
                 if (dest.isNull()) { LLSD w; w["__error"] = dest_error; return w; }
-                std::string no;
-                if (within(dest, trash))     no = "Moving into the Trash is deleting -- use delete.";
-                else if (within(dest, lib))  no = "The Library is Linden Lab's.";
-                else if (within(dest, cof))  no = "Current Outfit is what they wear -- use wear.";
-                else if (folder && within(dest, id)) no = "A folder cannot go inside itself.";
-                else if (depth_nesting_in_marketplace(dest) >= 0)
-                    no = "Marketplace listings have rules of their own; do that in the viewer.";
-                else if (RlvActions::isRlvEnabled()
-                         && !(folder ? RlvFolderLocks::instance().canMoveFolder(id, dest)
-                                     : RlvFolderLocks::instance().canMoveItem(id, dest)))
-                    no = "An RLV lock the user is wearing holds it where it is.";
+                // <Lumen> The shared rules; three of them in words that say
+                // what to do instead.
+                LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                std::string no = LumenInventoryRules::notMove(id, folder, dest, &rule);
+                if (!no.empty())
+                {
+                    if (rule == LumenInventoryRules::TRASH)
+                        no = "Moving into the Trash is deleting -- use delete.";
+                    else if (rule == LumenInventoryRules::CURRENT_OUTFIT)
+                        no = "Current Outfit is what they wear -- use wear.";
+                    else if (rule == LumenInventoryRules::MARKETPLACE)
+                        no = "Marketplace listings have rules of their own; do that in the viewer.";
+                    else
+                        no = sentence(no);
+                }
+                // </Lumen>
                 if (!no.empty())
                 {
                     LLSD e; e["code"] = -32000; e["message"] = no + " Nothing was moved.";
@@ -19353,6 +19352,13 @@ if (method == "camera")
                 result["moved_to"] = folderPath(dest);
                 result["note"] = "Moved. inventory / undo puts back everything this request "
                                  "changed, if the user asks.";
+                // <Lumen> Unless nothing was recorded: say so rather than promise an undo.
+                if (!LumenAIUndo::instance().available())
+                {
+                    result["note"] = "Moved -- but the record of changes is not available ("
+                                   + LumenAIUndo::instance().unavailableWhy() + "), so undo cannot put "
+                                     "this back. Say so if they may want it back.";
+                }
             }
             else   // rename_item
             {
@@ -19364,23 +19370,16 @@ if (method == "camera")
                     LLSD e; e["code"] = -32602; e["message"] = "Give `new_name`.";
                     LLSD w; w["__error"] = e; return w;
                 }
-                if (item && (!item->getPermissions().allowModifyBy(gAgent.getID())
-                             || item->getInventoryType() == LLInventoryType::IT_CALLINGCARD
-                             || item->getIsLinkType()))
+                // <Lumen> The shared rules: no-modify, links, calling cards,
+                // RLV, and the viewer's own check on a folder.
+                const std::string no = LumenInventoryRules::notRename(id, folder);
+                if (!no.empty())
                 {
                     LLSD e; e["code"] = -32000;
-                    e["message"] = "That cannot be renamed: it is not theirs to modify, or it is a "
-                                   "link or a calling card, which the viewer does not rename.";
+                    e["message"] = "That cannot be renamed: " + no + ". Nothing changed.";
                     LLSD w; w["__error"] = e; return w;
                 }
-                if (RlvActions::isRlvEnabled()
-                    && !(folder ? RlvFolderLocks::instance().canRenameFolder(id)
-                                : RlvFolderLocks::instance().canRenameItem(id)))
-                {
-                    LLSD e; e["code"] = -32000;
-                    e["message"] = "An RLV lock the user is wearing keeps its name. Nothing changed.";
-                    LLSD w; w["__error"] = e; return w;
-                }
+                // </Lumen>
                 result["was_named"] = result["name"];
                 LumenAIUndo::instance().prepare();   // <Lumen> inventory undo
                 LumenAIUndo::instance().recordRename(id, folder, result["name"].asString(), new_name);
@@ -19393,6 +19392,13 @@ if (method == "camera")
                 result["renamed_to"] = safeUtf8(new_name);
                 result["note"] = "Renamed. inventory / undo puts back everything this request "
                                  "changed, if the user asks.";
+                // <Lumen> Unless nothing was recorded.
+                if (!LumenAIUndo::instance().available())
+                {
+                    result["note"] = "Renamed -- but the record of changes is not available ("
+                                   + LumenAIUndo::instance().unavailableWhy() + "), so undo cannot put "
+                                     "the old name back. Say so if they may want it back.";
+                }
             }
         }
         LLSD summary; summary["action"] = method; summary["result"] = result;
@@ -19415,8 +19421,11 @@ if (method == "camera")
         if (!undo.available())
         {
             LLSD e; e["code"] = -32000;
-            e["message"] = "The record of inventory changes could not be opened, so there is "
-                           "nothing to undo from. Say so.";
+            // <Lumen> And why: another Lumen holding it is something they can fix.
+            const std::string why = undo.unavailableWhy();
+            e["message"] = "The record of inventory changes could not be opened"
+                         + (why.empty() ? std::string() : " -- " + why) + ", so there is nothing to "
+                           "undo from. Say so.";
             LLSD w; w["__error"] = e; return w;
         }
         if (method == "change_history")
@@ -19462,6 +19471,11 @@ if (method == "camera")
             if (result.has("paced") && result["paced"].asBoolean())
                 note += " It is a long list, done a little at a time; the viewer tells the user "
                         "itself when it has finished. End the reply.";
+            // <Lumen> What could not be put back can be tried again.
+            if (result.has("try_again")) note += " " + result["try_again"].asString();
+            if (result["again"].asBoolean())
+                note += " This set was undone before; only what that undo could not put back was "
+                        "tried now.";
             result["note"] = note;
             LLSD summary; summary["action"] = "undo"; summary["change_set"] = result["change_set"];
             summary["put_back"] = result["put_back"];
@@ -19485,8 +19499,15 @@ if (method == "camera")
         }
         if (params.has("preview") && params["preview"].asBoolean())
         {
-            preview["note"] = "Nothing has been changed. Tell the user what restoring would do; "
-                              "restore without preview does it, and the viewer asks them first.";
+            preview["note"] = std::string("Nothing has been changed. Tell the user what restoring would do; "
+                              "restore without preview does it, and the viewer asks them first.")
+                            // <Lumen>
+                            + (preview["partial"].asBoolean()
+                               ? " Say too that this snapshot was taken before the whole inventory had "
+                                 "loaded, so it may not have everything in it." : "")
+                            + (preview["refused_count"].asInteger() > 0
+                               ? " Some things stay where they are by the rules the assistant follows "
+                                 "(`refused`, with why); say so." : "");
             return preview;
         }
         if (preview["nothing_to_do"].asBoolean())
@@ -19690,8 +19711,11 @@ if (method == "camera")
             }
             if (!LumenAIUndo::instance().available())
             {
+                // <Lumen> And why.
+                const std::string why = LumenAIUndo::instance().unavailableWhy();
                 return bulkError(-32000, "The record that makes a bulk change undoable could not be "
-                                         "opened, so nothing was done. Say so.");
+                                         "opened" + (why.empty() ? std::string() : " -- " + why)
+                                         + ", so nothing was done. Say so.");
             }
             // One question per run. Moving, renaming and making folders may be
             // remembered; anything that puts things in the Trash asks every time.
@@ -20901,6 +20925,7 @@ if (method == "camera")
             // folder for the type, a photo to the Photo Album, and no restamp.
             LLUUID parent;
             bool back_where_it_was = false;
+            std::string not_back;   // <Lumen> why not the folder it was in, when the rules say no
             {
                 LLUUID was;
                 LumenAIUndo::Chain chain;
@@ -20908,8 +20933,14 @@ if (method == "camera")
                     && was.notNull() && gInventory.getCategory(was)
                     && !gInventory.isObjectDescendentOf(was, trash))
                 {
-                    parent = was;
-                    back_where_it_was = true;
+                    // <Lumen> The rules every path shares: a folder listed in
+                    // Marketplace since, or an RLV lock, keeps it out.
+                    not_back = LumenInventoryRules::notMove(id, false, was);
+                    if (not_back.empty())
+                    {
+                        parent = was;
+                        back_where_it_was = true;
+                    }
                 }
             }
             if (parent.isNull())
@@ -20924,6 +20955,20 @@ if (method == "camera")
             {
                 parent = gInventory.getRootFolderID();
             }
+            // <Lumen> The default folder under the same rules: an RLV lock
+            // between the Trash and it keeps the item where it is.
+            if (!back_where_it_was)
+            {
+                const std::string no = LumenInventoryRules::notMove(id, false, parent);
+                if (!no.empty())
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "\"" + safeUtf8(item_name) + "\" was left in the Trash: " + no
+                                 + ". Nothing was moved. Say so.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+            }
+            // </Lumen>
             LumenAIUndo::instance().prepare();
             gInventory.changeItemParent(item, parent, false);
             if (item->getParentUUID() == parent)
@@ -20943,6 +20988,10 @@ if (method == "camera")
             result["note"] = back_where_it_was
                 ? "Taken out of the Trash, back into " + folderPath(parent)
                   + ", the folder it was in before. Tell the user."
+                : !not_back.empty()   // <Lumen>
+                ? "Taken out of the Trash into " + folderPath(parent)
+                  + ", the default folder for its type -- not the folder it was in before, because "
+                  + not_back + ". Tell the user which folder it is in now, and why."
                 : "Taken out of the Trash into " + folderPath(parent)
                   + ", the default folder for its type -- not necessarily where it was "
                     "before: it was not deleted through the assistant, or that folder is gone. "
