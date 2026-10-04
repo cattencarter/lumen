@@ -48,14 +48,16 @@
 #include <vector>
 
 struct sqlite3;
+class LLButton;   // <Lumen>
 class LLScrollListCtrl;
 class LLTextEditor;
 
 // <Lumen>
 /**
  * What the assistant may do to something in the inventory: ONE set of rules
- * for every path that moves it, renames it or puts something into a folder --
- * move_item, rename_item, new_folder, a batch, undo, restore and undelete.
+ * for every path that moves it, renames it, deletes it or puts something into
+ * a folder -- move_item, rename_item, delete_item, new_folder, a batch, undo,
+ * restore and undelete.
  * Before there was one, undo and restore had a shorter list than move_item,
  * and could pull a listed item out of Marketplace or put the LSL bridge's
  * folder somewhere else.
@@ -64,6 +66,17 @@ class LLTextEditor;
  * Lab's, not theirs"), or empty when it may. The caller makes the sentence;
  * `rule`, when given, says which rule it was, for a caller that has words of
  * its own for one of them.
+ *
+ * <Lumen> A folder the user PROTECTED (right-click > Protect) is stricter here
+ * than the viewer's own rule, on purpose. The viewer keeps only the folder
+ * itself where it is; for the assistant nothing inside it is moved out,
+ * renamed or deleted either -- protecting a folder says "leave this alone",
+ * and a batch "everything named pumpkin" must not drain one. Putting things
+ * INTO it stays allowed: that harms nothing. The set is read live every time,
+ * so protecting a folder mid-session counts at once. The folders the viewer
+ * LOCKS -- the LSL bridge's, the AO's and the wearable favourites -- are off
+ * limits whatever the Lock settings say: the assistant has no reason to touch
+ * them.
  */
 namespace LumenInventoryRules
 {
@@ -76,10 +89,11 @@ namespace LumenInventoryRules
         TRASH,
         LSL_BRIDGE,
         ANIMATION_OVERRIDER,
+        WEARABLE_FAVORITES, // <Lumen> the wearable favourites folder, locked like the two above
         MARKETPLACE,
         SYSTEM_FOLDER,      // one of Second Life's own folders
         NAMED_FOLDER,       // #Firestorm, #Lumen, #RLV
-        PROTECTED_FOLDER,   // protected in the viewer's own settings
+        PROTECTED_FOLDER,   // protected by the user: the folder, or anything in it
         INSIDE_ITSELF,
         RLV,
         NOT_MODIFIABLE,     // no-modify, a link, a calling card
@@ -88,6 +102,14 @@ namespace LumenInventoryRules
 
     /** Is this -- or a folder above it -- somewhere the assistant leaves alone? `it` names it in the answer. */
     std::string offLimits(const LLUUID& id, const char* it = "it", Rule* rule = nullptr);
+    /** <Lumen> The folder the user protected that this is, or is inside (the nearest), or null. */
+    LLUUID protectedFolderOf(const LLUUID& id);
+    /**
+     * <Lumen> Why a protected folder keeps this as it is: it is one, or is in
+     * one -- or, with `carried` (a folder being moved or deleted), it holds
+     * one. Empty if none. Never asked of where something goes.
+     */
+    std::string inProtected(const LLUUID& id, bool carried = false, Rule* rule = nullptr);
     /** Why this may not be moved or renamed at all, wherever it would go. */
     std::string held(const LLUUID& id, bool folder, Rule* rule = nullptr);
     /** Why nothing may be put into this folder. */
@@ -96,6 +118,8 @@ namespace LumenInventoryRules
     std::string notMove(const LLUUID& id, bool folder, const LLUUID& dest, Rule* rule = nullptr);
     /** Why this may not be renamed. */
     std::string notRename(const LLUUID& id, bool folder, Rule* rule = nullptr);
+    /** <Lumen> Why this may not be put in the Trash. Worn things are the caller's to ask about. */
+    std::string notDelete(const LLUUID& id, bool folder, Rule* rule = nullptr);
 }
 // </Lumen>
 
@@ -209,6 +233,16 @@ public:
      */
     S64  beginBatch(const std::string& what);
     void endBatch(S64 set_id);
+    /** A bulk run is still going. Undo and restore wait for it. */
+    bool bulkRunning() const { return !mRunning.empty(); }
+    /**
+     * Ask every bulk run to stop after the change in hand -- Clear in the
+     * Assistant window, or Stop in the history window. What it did stays one
+     * change set, undoable. True when a run was going.
+     */
+    bool stopBulk();
+    /** Has this run been asked to stop? The run asks between changes. */
+    bool stopAsked(S64 set_id) const { return mStopAsked.count(set_id) > 0; }
     // </Lumen>
 
     /**
@@ -320,6 +354,7 @@ private:
     std::set<S64> mClosed;           // undone, or being undone: nothing more is added to them
     std::set<S64> mUndoing;          // an undo of these is still going
     std::set<S64> mRunning;          // bulk runs still writing to these
+    std::set<S64> mStopAsked;        // ...and the ones asked to stop
     std::map<S64, S64> mLateSets;    // closed set -> where what arrives for it late goes
 
     // <Lumen> Shared with the writer thread, under mStateMutex.
@@ -353,6 +388,7 @@ public:
 
 private:
     void onUndo();
+    void onStop();      // <Lumen> a bulk run
     void onPreview();
     void onRestore();
     S64  selected(LLScrollListCtrl* list) const;
@@ -361,6 +397,7 @@ private:
     LLScrollListCtrl* mSets = nullptr;
     LLScrollListCtrl* mSnaps = nullptr;
     LLTextEditor*     mText = nullptr;
+    LLButton*         mStopBtn = nullptr;   // <Lumen>
     F64               mLastReload = 0.0;   // <Lumen> read again at most once a second
 };
 

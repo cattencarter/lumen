@@ -1148,4 +1148,147 @@ std::vector<LumenAIIndex::Match> LumenAIIndex::matchAll(
     }
     return out;
 }
+
+// <Lumen> See the header.
+namespace
+{
+    /**
+     * @a w as a whole word of @a lname, or with a plural ending on it:
+     * "pumpkin" in "pumpkins" and "boxes", never in "pumpkinhead".
+     */
+    bool wholeWordIn(const std::string& lname, const std::string& w)
+    {
+        if (w.empty())
+        {
+            return true;
+        }
+        for (size_t at = lname.find(w); at != std::string::npos; at = lname.find(w, at + 1))
+        {
+            if (at > 0 && isalnum((unsigned char)lname[at - 1]))
+            {
+                continue;
+            }
+            const size_t end = at + w.size();
+            if (isWordEdge(lname, at, w.size()))
+            {
+                return true;
+            }
+            for (const char* tail : { "s", "es" })
+            {
+                const size_t len = strlen(tail);
+                if (lname.compare(end, len, tail) == 0 && isWordEdge(lname, at, w.size() + len))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+std::vector<LumenAIIndex::Match> LumenAIIndex::matchWords(
+    const std::string& query,
+    LLAssetType::EType kind,
+    std::vector<Match>* loose,
+    std::vector<std::pair<std::string, std::string> >* corrections)
+{
+    if (!mBuilt)
+    {
+        build();
+    }
+
+    const std::string whole = lowered(query);
+    const std::vector<std::string> typed = wordsOf(whole);
+
+    // The wider match, as matchAll() makes it -- only when somebody asks.
+    std::vector<std::string> wide;
+    std::string phrase = whole;
+    if (loose)
+    {
+        std::vector<std::pair<std::string, std::string> > mine;
+        std::vector<std::pair<std::string, std::string> >* fixes = corrections ? corrections : &mine;
+        const size_t fixes_before = fixes->size();
+        wide = repairedWords(typed, fixes);
+        if (fixes->size() > fixes_before)
+        {
+            phrase.clear();
+            for (const std::string& w : wide)
+            {
+                if (!phrase.empty()) phrase += " ";
+                phrase += w;
+            }
+        }
+    }
+
+    std::vector<Match> out;
+    for (const Entry& e : mEntries)
+    {
+        if (e.in_trash)
+        {
+            continue;
+        }
+        if (kind != LLAssetType::AT_NONE && e.type != kind)
+        {
+            continue;
+        }
+        bool named = true;
+        for (const std::string& w : typed)
+        {
+            if (!wholeWordIn(e.lname, w))
+            {
+                named = false;
+                break;
+            }
+        }
+        // A whole word of the name is in it as typed, so it occurs, so it is
+        // never repaired: every named item is in the wider match too.
+        if (!named)
+        {
+            if (!loose)
+            {
+                continue;
+            }
+            bool all = true;
+            for (const std::string& w : wide)
+            {
+                if (e.lname.find(w) == std::string::npos &&
+                    e.lfolder.find(w) == std::string::npos)
+                {
+                    all = false;
+                    break;
+                }
+            }
+            if (!all)
+            {
+                continue;
+            }
+        }
+        Match m;
+        m.id      = e.id;
+        m.parent  = e.parent;
+        m.type    = e.type;
+        m.creator = e.creator;
+        if (named)
+        {
+            m.score = typed.empty() ? 0 : score(e.lname, typed, whole, e.lfolder);
+            out.push_back(m);
+        }
+        else
+        {
+            m.score = wide.empty() ? 0 : score(e.lname, wide, phrase, e.lfolder);
+            loose->push_back(m);
+        }
+    }
+
+    auto best = [](const Match& a, const Match& b) { return a.score > b.score; };
+    if (!typed.empty())
+    {
+        std::stable_sort(out.begin(), out.end(), best);
+        if (loose)
+        {
+            std::stable_sort(loose->begin(), loose->end(), best);
+        }
+    }
+    return out;
+}
 // </Lumen>

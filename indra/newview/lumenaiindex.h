@@ -151,6 +151,28 @@ public:
                                 const std::set<LLUUID>* only = NULL);
 
     /**
+     * <Lumen> For a bulk change, which acts on everything it selects: every
+     * item whose OWN name has each word of @a query, as typed, as a whole word
+     * -- "pumpkin" finds "Pumpkins", not "Pumpkinhead", and not "Notecard" in
+     * a folder called Pumpkin. Best first, one entry per item, as matchAll().
+     *
+     * matchAll() is right for a search, where a person looks at the answer:
+     * the brand is often only in the folder, and a misspelling is better
+     * repaired than empty. For a batch it was wrong -- "unpack" deleted every
+     * script inside an "Unpacker HUD" folder, and the plan's few examples,
+     * best first, showed none of them.
+     *
+     * @param loose  If given: what matchAll() finds beyond these -- through
+     *               the folder, inside a longer word, or by a repaired
+     *               spelling -- for the caller to count apart, or to include
+     *               when asked. Repairs are reported in @a corrections.
+     */
+    std::vector<Match> matchWords(const std::string& query,
+                                  LLAssetType::EType kind,
+                                  std::vector<Match>* loose = NULL,
+                                  std::vector<std::pair<std::string, std::string> >* corrections = NULL);
+
+    /**
      * The body-fit token in a name -- "larax", "maitreya", "legacy" -- or "".
      *
      * Public because the caller works out which fit the avatar is wearing by

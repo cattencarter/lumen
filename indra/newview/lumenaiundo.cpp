@@ -32,6 +32,7 @@
 #include "lumenaichat.h"   // <Lumen> where a long undo says it finished
 
 #include "aoengine.h"           // <Lumen> the AO folder, for the shared rules
+#include "fsfloaterwearablefavorites.h"   // <Lumen> the wearable favourites folder, likewise
 #include "fslslbridge.h"        // <Lumen> the LSL bridge's folder, likewise
 #include "llagent.h"
 #include "llapp.h"
@@ -326,6 +327,10 @@ namespace
         if (out) *out = r;
         return why;
     }
+
+    // <Lumen> Said to the person in the end, so in their words and with the
+    // way out: the menu item is "Unprotect" on the folder's right-click menu.
+    const char* const UNPROTECT = ", a folder you protected (right-click > Unprotect to change that)";
 }
 
 std::string LumenInventoryRules::offLimits(const LLUUID& id, const char* it, Rule* rule)
@@ -344,6 +349,11 @@ std::string LumenInventoryRules::offLimits(const LLUUID& id, const char* it, Rul
     if (within(id, AOEngine::instance().getAOFolder()))
         return refused(rule, ANIMATION_OVERRIDER, s + " belongs to their animation overrider, which finds "
                                                       "things by where they are");
+    // <Lumen> The third folder the viewer locks, whatever its Lock setting
+    // says: what is in it is what the wearable favourites window shows.
+    if (within(id, FSFloaterWearableFavorites::getFavoritesFolder()))
+        return refused(rule, WEARABLE_FAVORITES, s + " is in their wearable favourites, a folder the viewer "
+                                                     "keeps for its own window");
     // <Lumen> The viewer's own folders inside #Lumen and #Firestorm (#AO,
     // #LSL Bridge, #Wearable Favorites ...) are found by NAME, and the ones a
     // feature is not using today -- a leftover #AO under the root that is not
@@ -376,9 +386,52 @@ std::string LumenInventoryRules::offLimits(const LLUUID& id, const char* it, Rul
     return std::string();
 }
 
+// <Lumen>
+LLUUID LumenInventoryRules::protectedFolderOf(const LLUUID& id)
+{
+    // Live: the viewer refills this set the moment the setting changes.
+    const uuid_set_t& kept = gInventory.getProtectedCategories();
+    if (kept.empty() || id.isNull()) return LLUUID::null;
+    LLUUID walk = id;
+    for (S32 guard = 0; guard < 64 && walk.notNull(); ++guard)
+    {
+        if (kept.count(walk)) return walk;
+        walk = parentOf(walk);
+    }
+    return LLUUID::null;
+}
+
+std::string LumenInventoryRules::inProtected(const LLUUID& id, bool carried, Rule* rule)
+{
+    if (rule) *rule = ALLOWED;
+    const uuid_set_t& kept = gInventory.getProtectedCategories();
+    if (kept.empty()) return std::string();
+    const LLUUID at = protectedFolderOf(id);
+    if (at.notNull() && at == id)
+        return refused(rule, PROTECTED_FOLDER, std::string("it is a folder you protected (right-click > "
+                                                           "Unprotect to change that)"));
+    if (at.notNull())
+        return refused(rule, PROTECTED_FOLDER, "it is in \"" + nameOf(at) + "\"" + UNPROTECT);
+    // A folder moved or deleted carries what is in it along.
+    if (carried && gInventory.getCategory(id))
+    {
+        for (const LLUUID& k : kept)
+        {
+            if (k != id && within(k, id))
+                return refused(rule, PROTECTED_FOLDER, "it holds \"" + nameOf(k) + "\"" + UNPROTECT);
+        }
+    }
+    return std::string();
+}
+// </Lumen>
+
 std::string LumenInventoryRules::held(const LLUUID& id, bool folder, Rule* rule)
 {
     std::string why = offLimits(id, "it", rule);
+    if (!why.empty()) return why;
+    // <Lumen> Protected by the user: the folder itself, and -- stricter than
+    // the viewer's own rule -- anything inside it.
+    why = inProtected(id, false, rule);
     if (!why.empty() || !folder) return why;
 
     LLViewerInventoryCategory* cat = gInventory.getCategory(id);
@@ -391,13 +444,16 @@ std::string LumenInventoryRules::held(const LLUUID& id, bool folder, Rule* rule)
     if (ao.notNull() && within(ao, id))
         return refused(rule, ANIMATION_OVERRIDER, "it holds their animation overrider's folder, which finds "
                                                   "things by where they are");
+    // <Lumen> ...and the wearable favourites, likewise.
+    const LLUUID favs = FSFloaterWearableFavorites::getFavoritesFolder();
+    if (favs.notNull() && within(favs, id))
+        return refused(rule, WEARABLE_FAVORITES, "it holds their wearable favourites folder, which the viewer "
+                                                 "keeps for its own window");
     if (LLFolderType::lookupIsProtectedType(cat->getPreferredType()))
         return refused(rule, SYSTEM_FOLDER, "it is one of Second Life's own folders");
     const std::string& name = cat->getName();
     if (name == LumenFolders::FIRESTORM_FOLDER || name == LumenFolders::LUMEN_FOLDER || name == RLV_ROOT_FOLDER)
         return refused(rule, NAMED_FOLDER, "it is a folder the viewer and RLV look for by name");
-    if (gInventory.getProtectedCategories().count(id))
-        return refused(rule, PROTECTED_FOLDER, "it is protected in the viewer's own settings");
     return std::string();
 }
 
@@ -417,6 +473,12 @@ std::string LumenInventoryRules::notMove(const LLUUID& id, bool folder, const LL
 {
     std::string why = held(id, folder, rule);
     if (!why.empty()) return why;
+    // <Lumen> A folder holding a protected one would carry it off.
+    if (folder)
+    {
+        why = inProtected(id, true, rule);
+        if (!why.empty()) return why;
+    }
     why = notInto(dest, rule);
     if (!why.empty()) return why;
     if (folder && within(dest, id))
@@ -453,6 +515,27 @@ std::string LumenInventoryRules::notRename(const LLUUID& id, bool folder, Rule* 
     // that one day keeps an item's name is kept here too.
     if (RlvActions::isRlvEnabled() && !RlvFolderLocks::instance().canRenameItem(id))
         return refused(rule, RLV, "an RLV lock the user is wearing keeps its name");
+    return std::string();
+}
+
+// <Lumen> delete_item, a batch's deletes, and undo putting a thing back in
+// the Trash. Before this the single delete asked only the viewer's own check,
+// which lets go of the bridge's, the AO's and the favourites' folders when
+// their Lock setting is off, and knows nothing of what is inside a protected
+// folder.
+std::string LumenInventoryRules::notDelete(const LLUUID& id, bool folder, Rule* rule)
+{
+    std::string why = held(id, folder, rule);
+    if (!why.empty()) return why;
+    if (folder)
+    {
+        why = inProtected(id, true, rule);
+        if (!why.empty()) return why;
+    }
+    if (RlvActions::isRlvEnabled() && RlvFolderLocks::instance().hasLockedFolder(RLV_LOCK_ANY)
+        && !(folder ? RlvFolderLocks::instance().canRemoveFolder(id)
+                    : RlvFolderLocks::instance().canRemoveItem(id)))
+        return refused(rule, RLV, "an RLV lock the user is wearing holds it where it is");
     return std::string();
 }
 // </Lumen>
@@ -722,10 +805,11 @@ namespace
     // </Lumen>
 
     /** Move now; true when the viewer's own model shows it where it belongs. */
-    bool moveNow(const LLUUID& id, bool folder, const LLUUID& target, std::string& why)
+    bool moveNow(const LLUUID& id, bool folder, const LLUUID& target, std::string& why,
+                 LumenInventoryRules::Rule* rule = nullptr)
     {
         // <Lumen> The rules every path shares: move_item's, a batch's, this.
-        why = LumenInventoryRules::notMove(id, folder, target);
+        why = LumenInventoryRules::notMove(id, folder, target, rule);
         if (!why.empty()) return false;
         if (folder)
         {
@@ -751,12 +835,15 @@ namespace
     void doStep(const LumenAIUndo::Step& s, const std::shared_ptr<RunState>& st)
     {
         std::string why;
+        // <Lumen> Which rule said no: a folder protected since the plan leaves
+        // the thing alone, and says so -- it is not a failure.
+        LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
         switch (s.kind)
         {
         case LumenAIUndo::Step::RENAME:
         {
             if (!exists(s.id)) { why = "it is no longer in inventory"; break; }
-            why = LumenInventoryRules::notRename(s.id, s.folder);   // <Lumen>
+            why = LumenInventoryRules::notRename(s.id, s.folder, &rule);   // <Lumen>
             if (!why.empty()) break;
             if (s.folder)
             {
@@ -780,7 +867,8 @@ namespace
                 st->didIt(s, "already in the Trash");
                 return;
             }
-            why = LumenInventoryRules::held(s.id, s.folder);   // <Lumen>
+            // <Lumen> The shared rules for anything going to the Trash.
+            why = LumenInventoryRules::notDelete(s.id, s.folder, &rule);
             if (!why.empty()) break;
             if (s.folder)
             {
@@ -830,7 +918,7 @@ namespace
             if (!exists(s.id)) { why = "it is no longer in inventory"; break; }
             if (liveFolder(s.target))
             {
-                if (moveNow(s.id, s.folder, s.target, why))
+                if (moveNow(s.id, s.folder, s.target, why, &rule))
                 {
                     st->didIt(s, "back in " + pathOf(s.target));
                     return;
@@ -842,6 +930,9 @@ namespace
                 why = "the folder it was in is gone, and the record does not say where that was";
                 break;
             }
+            // <Lumen> Not a folder made again for something that may not move.
+            why = LumenInventoryRules::inProtected(s.id, s.folder, &rule);
+            if (!why.empty()) break;
             // The folder it came from is gone: make it again, then move.
             ++st->outstanding;
             std::shared_ptr<RunState> keep = st;
@@ -851,13 +942,18 @@ namespace
                 {
                     if (keep->gave_up) return;   // <Lumen> reported without it already
                     std::string w;
+                    LumenInventoryRules::Rule r = LumenInventoryRules::ALLOWED;   // <Lumen>
                     if (dest.isNull())
                     {
                         keep->couldNot(step.label, "the folder it was in could not be made again");
                     }
-                    else if (moveNow(step.id, step.folder, dest, w))
+                    else if (moveNow(step.id, step.folder, dest, w, &r))
                     {
                         keep->didIt(step, "back in " + pathOf(dest) + " (that folder was made again)");
+                    }
+                    else if (r == LumenInventoryRules::PROTECTED_FOLDER)   // <Lumen>
+                    {
+                        keep->leftIt(step.label, w);
                     }
                     else
                     {
@@ -869,7 +965,9 @@ namespace
             return;
         }
         }
-        st->couldNot(s.label, why);
+        // <Lumen>
+        if (rule == LumenInventoryRules::PROTECTED_FOLDER) st->leftIt(s.label, why);
+        else st->couldNot(s.label, why);
     }
 }
 
@@ -1470,7 +1568,21 @@ void LumenAIUndo::endBatch(S64 set_id)
     // reads the record again, so the finished run shows whole.
     if (set_id == 0) return;
     mRunning.erase(set_id);
+    mStopAsked.erase(set_id);
     changed();
+}
+
+// Here rather than beside the run, so the Assistant window and the history
+// window can both stop one without knowing where runs are made.
+bool LumenAIUndo::stopBulk()
+{
+    if (mRunning.empty()) return false;
+    for (S64 id : mRunning)
+    {
+        if (mStopAsked.insert(id).second)
+            LL_INFOS("LumenAIUndo") << "bulk run in change set " << id << " asked to stop" << LL_ENDL;
+    }
+    return true;
 }
 // </Lumen>
 
@@ -1992,7 +2104,16 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
     {
         error = llformat("The newest change is a bulk change (change set %lld) that is still running, so "
                          "nothing was undone. It can be undone once it has finished; the viewer says "
-                         "so in the Assistant window.", (long long)*mRunning.rbegin());
+                         "so in the Assistant window. To stop it sooner: Stop in Comm > Assistant "
+                         "Inventory History, or Clear in the Assistant window.",
+                         (long long)*mRunning.rbegin());
+        return plan;
+    }
+    // Nor anything older while one runs: the two would get in each other's way.
+    if (!mRunning.empty() && !mRunning.count(set_id))
+    {
+        error = "A bulk change is still running, so nothing was undone. Ask again once it has finished, "
+                "or stop it with Stop in Comm > Assistant Inventory History.";
         return plan;
     }
     // What was just recorded has to be in the file for this to see it.
@@ -2108,6 +2229,17 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
             continue;
         }
         const LLUUID now = curParent(r.id);
+        // <Lumen> In a folder the user has protected since -- or, for a folder
+        // that would move or go to the Trash, holding one: left alone, and
+        // said. Into one is never asked: that harms nothing.
+        auto guarded = [&](bool carried) -> bool
+        {
+            const std::string why = LumenInventoryRules::inProtected(r.id, carried);
+            if (why.empty()) return false;
+            alone(label, why);
+            return true;
+        };
+        // </Lumen>
         if (r.kind == "move" || r.kind == "trash")
         {
             if (now != r.pa)
@@ -2117,6 +2249,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
                       : "moved again since; it is in " + pathOf(now));
                 continue;
             }
+            if (guarded(r.folder)) continue;   // <Lumen>
             Step s; s.kind = Step::MOVE; s.id = r.id; s.folder = r.folder; s.label = label;
             s.target = r.pb; s.chain = Chain::parse(r.chain); s.row = r.row;
             plan.steps.push_back(s);
@@ -2125,6 +2258,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
         else if (r.kind == "untrash")
         {
             if (now != r.pa) { alone(label, "moved since it came out of the Trash"); continue; }
+            if (guarded(r.folder)) continue;   // <Lumen>
             Step s; s.kind = Step::TRASH; s.id = r.id; s.folder = r.folder; s.label = label;
             s.row = r.row;
             plan.steps.push_back(s);
@@ -2133,6 +2267,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
         else if (r.kind == "rename")
         {
             if (curName(r.id) != r.na) { alone(label, "renamed again since; it is called \"" + curName(r.id) + "\""); continue; }
+            if (guarded(false)) continue;   // <Lumen>
             Step s; s.kind = Step::RENAME; s.id = r.id; s.folder = r.folder; s.name = r.nb;
             s.label = r.na; s.row = r.row;
             plan.steps.push_back(s);
@@ -2150,6 +2285,7 @@ LumenAIUndo::Plan LumenAIUndo::planUndo(S64 set_id, LLSD& error)
             if (items) for (const auto& i : *items) if (i && curParent(i->getUUID()) == r.id) ++holding;
             if (holding > 0) { alone(label, "the folder it made has things in it now, so it stays"); continue; }
             if (now != r.pa) { alone(label, "the folder it made has been moved since, so it stays"); continue; }
+            if (guarded(true)) continue;   // <Lumen>
             Step s; s.kind = Step::TRASH; s.id = r.id; s.folder = true; s.label = label;
             s.row = r.row;
             plan.steps.push_back(s);
@@ -2294,6 +2430,16 @@ LumenAIUndo::Plan LumenAIUndo::planRestore(S64 snap_id, LLSD& error)
               + ".";
         return plan;
     }
+    // <Lumen> Not while a bulk run is going: the two would get in each
+    // other's way, and "undo" is refused mid-run, so restore is what a model
+    // reaches for next. Asked before the plan made in this frame is reused,
+    // so a Yes given after the run started is refused too.
+    if (!mRunning.empty())
+    {
+        error = "A bulk change is still running, so nothing was restored. Ask again once it has "
+                "finished, or stop it with Stop in Comm > Assistant Inventory History.";
+        return plan;
+    }
     // <Lumen> previewRestore() and restore() in the same call -- the endpoint
     // does both once the question is answered -- plan once. Another frame
     // plans again: the inventory may have moved on.
@@ -2413,6 +2559,8 @@ LumenAIUndo::Plan LumenAIUndo::planRestore(S64 snap_id, LLSD& error)
         if (now != n.parent)
         {
             std::string why = LumenInventoryRules::held(n.id, n.folder);   // <Lumen>
+            // <Lumen> A folder holding a protected one would carry it off.
+            if (why.empty() && n.folder) why = LumenInventoryRules::inProtected(n.id, true);
             if (why.empty() && liveFolder(n.parent)) why = LumenInventoryRules::notInto(n.parent);
             if (!why.empty())
             {
@@ -2565,6 +2713,13 @@ bool LumenAIUndoFloater::postBuild()
     mSnaps = getChild<LLScrollListCtrl>("snapshots");
     mText  = getChild<LLTextEditor>("detail");
     getChild<LLButton>("undo_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onUndo(); });
+    // <Lumen> Stop: a bulk run, from here as well as from Clear in the Assistant.
+    mStopBtn = findChild<LLButton>("stop_btn");
+    if (mStopBtn)
+    {
+        mStopBtn->setClickedCallback([this](LLUICtrl*, const LLSD&) { onStop(); });
+        mStopBtn->setEnabled(false);
+    }
     getChild<LLButton>("preview_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onPreview(); });
     getChild<LLButton>("restore_btn")->setClickedCallback([this](LLUICtrl*, const LLSD&) { onRestore(); });
     return true;
@@ -2584,6 +2739,9 @@ void LumenAIUndoFloater::draw()
     {
         reload();
     }
+    // <Lumen> Stop is there to press only while a bulk run is going.
+    if (mStopBtn)
+        mStopBtn->setEnabled(LumenAIUndo::instanceExists() && LumenAIUndo::instance().bulkRunning());
     LLFloater::draw();
 }
 
@@ -2717,6 +2875,16 @@ void LumenAIUndoFloater::onUndo()
     if (!id) { show("Choose a change in the list first."); return; }
     show(describe(LumenAIUndo::instance().undo(id)));
     reload();
+}
+
+// <Lumen> What it has done stays, as one change set: the Assistant window
+// says how far it got, and Undo here puts it back.
+void LumenAIUndoFloater::onStop()
+{
+    if (LumenAIUndo::instance().stopBulk())
+        show("Stopping. What was done stays, and can be undone here once it has stopped.");
+    else
+        show("Nothing is running.");
 }
 
 void LumenAIUndoFloater::onPreview()

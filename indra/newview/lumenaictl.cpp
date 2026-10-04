@@ -4092,7 +4092,7 @@ namespace
             "way: \"moved to Trash\", not \"deleted\". The viewer asks the user itself first, in "
             "a window of its own with Yes and No -- do not ask them for permission as well, just "
             "make the call once you know which item they mean. Anything worn must be detached "
-            "first.\n"
+            "first, and nothing in a folder the user protected is deleted.\n"
             "- undelete: take an item back out of the Trash.\n"
             "- wear_outfit: put on a whole saved outfit by `name` -- looked for in My Outfits and "
             "every folder inside it -- which is how people actually think about getting dressed. "
@@ -4126,9 +4126,10 @@ namespace
             "- move: put an item (`item_id`) or a folder (`folder_id`) into another folder, "
             "`to_folder` -- an id, or a path as search gives it. \"Tidy my skirts into one "
             "folder\" is new_folder, then move each one. Second Life's own folders, Current "
-            "Outfit, the Library, the AO and the LSL bridge stay where they are, and nothing is "
-            "moved into the Trash -- that is delete. The answer says where it was, so it can be "
-            "put back.\n"
+            "Outfit, the Library, the AO and the LSL bridge stay where they are, and so does "
+            "anything in a folder the user protected (right-click > Protect) -- though things may "
+            "go INTO one. Nothing is moved into the Trash -- that is delete. The answer says where "
+            "it was, so it can be put back.\n"
             "- rename: give an item (`item_id`) or a folder (`folder_id`) a new name, `new_name`. "
             "Only what they may modify, and not Second Life's own folders.\n"
             "- history: what you have changed in their inventory -- every move, rename, delete "
@@ -4152,10 +4153,14 @@ namespace
             "Preferences > AI > Permissions; while it is off the answer says so -- tell them where, "
             "and do not work round it one item at a time unless they ask. `steps` is a short list "
             "(at most 20), done in order; each is a selection and what to do with it. A selection "
-            "is `find`: `name` (words, matched exactly as search matches them, in the name or the "
-            "folder), `type` (a kind, as search takes it), `creator`, and `in` (a folder and "
-            "everything inside it, by id or by path as search gives it in `folder`) -- at least "
-            "one of name, creator or in. `do` is one of: `move`, with `to` (a folder by id or path, "
+            "is `find`: `name` (words, each a whole word of the item's OWN name -- \"pumpkin\" finds "
+            "\"Pumpkins\", not \"Pumpkinhead\", and not things that are only in a Pumpkin "
+            "folder; add `match`: \"loose\" to match as search does, in the folder too, inside "
+            "longer words and with spelling repaired, and the plan counts those apart), `type` "
+            "(a kind, as search takes it), `creator`, and `in` (a folder and everything inside "
+            "it, by id or by path as search gives it in `folder`) -- at least one of name, "
+            "creator or in. Anything in a folder the user protected is left alone, and the plan "
+            "says so. `do` is one of: `move`, with `to` (a folder by id or path, "
             "or one a new_folder step earlier in the list makes); `rename`, with `replace` and "
             "`with` (that text in each name, ignoring case, becomes `with`; empty takes it out); "
             "`delete` (to the Trash; never anything worn); `new_folder`, with `name` and `in` "
@@ -4259,16 +4264,28 @@ namespace
             bfind["description"] = "move, rename, delete: which items. At least one of name, "
                                    "creator or in.";
             LLSD bfind_props;
-            LLSD bf_name = str; bf_name["description"] = "Words, matched as search matches them, "
-                                                         "in the item's name or its folder.";
+            LLSD bf_name = str; bf_name["description"] = "Words, each a whole word of the item's own "
+                                                         "name (a plural counts). See `match`.";
             LLSD bf_type = str; bf_type["description"] = "One kind, as search takes it: object, "
                                                          "clothing, notecard, landmark, script, ...";
             LLSD bf_creator = str; bf_creator["description"] = "Only things this person made: an "
                                                                "avatar id, or a name.";
             LLSD bf_in = str; bf_in["description"] = "Only inside this folder, at any depth: an id "
                                                      "or a path as search gives it in `folder`.";
+            // <Lumen> How `name` matches: whole words by default, search's way when asked.
+            LLSD bf_match = str;
+            bf_match["description"] = "\"words\" (the default): each word of `name` a whole word of "
+                                      "the item's own name. \"loose\": as search matches -- in the "
+                                      "folder too, inside longer words, spelling repaired; the plan "
+                                      "and the question count those apart. Use loose only when the "
+                                      "user means it, or after a plan's `left_out` shows they do.";
+            LLSD bf_match_enum = LLSD::emptyArray();
+            bf_match_enum.append("words");
+            bf_match_enum.append("loose");
+            bf_match["enum"] = bf_match_enum;
             bfind_props["name"] = bf_name; bfind_props["type"] = bf_type;
             bfind_props["creator"] = bf_creator; bfind_props["in"] = bf_in;
+            bfind_props["match"] = bf_match;
             bfind["properties"] = bfind_props;
 
             LLSD bdo = str;
@@ -10597,6 +10614,7 @@ namespace
 {
     const char* const BULK_SWITCH = "LumenAIAllowBulkInventory";
     const F64    BULK_PLAN_KEEPS   = 600.0;   // an unused plan expires after ten minutes
+    const F64    BULK_ANSWER_GRACE = 120.0;   // <Lumen> ...and a Yes to it, two minutes after that
     const F64    BULK_RUN_KEEPS    = 1800.0;  // what a run did is answered for this long
     const F64    BULK_REPLY_WAIT   = 5.0;     // the run's reply waits this long for the end
     // Paced: twenty changes, then a quarter of a second. Eighty a second is
@@ -10657,6 +10675,7 @@ namespace
         S32  done = 0;
         S32  failed = 0;
         S32  left_alone = 0;         // changed after the plan, so not touched
+        S32  left_protected = 0;     // <Lumen> ...of those, in a folder protected since
         S32  folders_pending = 0;    // folders asked for, not answered yet
         bool trashed_any = false;
         std::vector<S32> step_done, step_failed, step_left;
@@ -10665,6 +10684,7 @@ namespace
         std::map<S32, LLUUID> made;  // NEW_FOLDER op -> its id; null when refused
         bool finished = false;
         bool stopped = false;        // logged out or quitting part way
+        bool stopped_by_user = false;   // <Lumen> Clear, or Stop in the history window
         bool told_in_reply = false;  // a reply carried the whole outcome
     };
 
@@ -10684,6 +10704,10 @@ namespace
     std::map<std::string, BulkPlan> sBulkPlans;
     std::shared_ptr<BulkRun> sBulkActive;     // the run in progress, if any
     std::map<std::string, S32> sTrashAsked;   // empty_trash: the count the question showed
+    // <Lumen> empty_trash: when it first asked for the Trash to be loaded, and
+    // how long a finished load may leave it short before that is said plainly.
+    F64 sTrashFetchAt = 0.0;
+    const F64 TRASH_FETCH_SETTLE = 20.0;
 
     bool bulkBusy()
     {
@@ -10829,10 +10853,23 @@ namespace
         {
             return folder == root ? std::string("(top of inventory)") : folderPath(folder);
         };
+        // <Lumen> The folder the user protected that a folder is, or is in --
+        // or null. Read live (LumenInventoryRules), once per folder per plan.
+        std::map<LLUUID, LLUUID> kept_cache;
+        auto keptIn = [&kept_cache](const LLUUID& folder) -> LLUUID
+        {
+            std::map<LLUUID, LLUUID>::iterator f = kept_cache.find(folder);
+            if (f == kept_cache.end())
+                f = kept_cache.emplace(folder, LumenInventoryRules::protectedFolderOf(folder)).first;
+            return f->second;
+        };
+        S32 n_kept = 0;   // left alone in a protected folder, in all steps
+        // </Lumen>
 
         LLSD shown_steps = LLSD::emptyArray();
         std::vector<std::string> lines;
         S32 n_move = 0, n_rename = 0, n_trash = 0, n_new = 0, n_folders = 0;
+        S32 n_move_loose = 0, n_rename_loose = 0, n_trash_loose = 0;   // <Lumen> of those, matched loosely
 
         for (size_t n = 0; n < steps.size(); ++n)
         {
@@ -10847,6 +10884,9 @@ namespace
             S32 earlier = 0;
             std::set<S32> earlier_steps;
             std::vector<std::string> names;    // for examples and the question
+            // <Lumen> Left alone because a folder the user protected holds them.
+            S32 kept_count = 0;
+            std::set<LLUUID> kept_folders;
 
             // `in` sits in `find` for a selection, and on the step itself for
             // new_folder and delete_empty_folders; either is read.
@@ -11002,6 +11042,17 @@ namespace
                     if (claimed.count(id)) continue;   // an earlier step removes it already
                     const S32 holding = c->getViewerDescendentCount() + delta[id];
                     if (holding > 0) continue;
+                    // <Lumen> A folder the user protected, or one inside it: left
+                    // alone, and counted, never refused.
+                    {
+                        const LLUUID kept = keptIn(id);
+                        if (kept.notNull())
+                        {
+                            ++kept_count;
+                            kept_folders.insert(kept);
+                            continue;
+                        }
+                    }
                     std::string why;
                     if (!gInventory.isCategoryComplete(id))
                         why = "the viewer has not loaded all of it from Second Life, so it may hold "
@@ -11074,6 +11125,16 @@ namespace
                     && creator.empty() && in_given.empty())
                     return fail(n, "a selection must say which: `name` words, a `creator`, or a folder "
                                    "`in` -- never everything of a kind across the whole inventory.");
+                // <Lumen> How `name` matches. Each word a whole word of the item's
+                // OWN name, unless the step asks for search's looser way -- the
+                // folder too, inside longer words, a repaired spelling -- which
+                // then counts apart in the plan and in the question.
+                const std::string match_word = lowered(pick.has("match") ? pick["match"].asString()
+                                                                          : step["match"].asString());
+                const bool loose = match_word == "loose";
+                if (!match_word.empty() && !loose && match_word != "words")
+                    return fail(n, "`match` is \"words\" (the default: whole words of the item's own "
+                                   "name) or \"loose\".");
                 LLUUID scope;
                 if (!in_given.empty())
                 {
@@ -11139,13 +11200,25 @@ namespace
                     shown["with"] = safeUtf8(replace_to);
                 }
 
+                // <Lumen> Whole words of the name first; then what only the looser
+                // match finds, taken when asked and counted apart either way.
                 std::vector<std::pair<std::string, std::string>> spelling;
-                const std::vector<LumenAIIndex::Match> hits =
-                    LumenAIIndex::instance().matchAll(words, kind, &spelling);
+                std::vector<LumenAIIndex::Match> wider;
+                const std::vector<LumenAIIndex::Match> named =
+                    LumenAIIndex::instance().matchWords(words, kind, &wider, &spelling);
+                std::vector<std::pair<const LumenAIIndex::Match*, bool>> hits;
+                hits.reserve(named.size() + wider.size());
+                for (const LumenAIIndex::Match& m : named) hits.emplace_back(&m, false);
+                for (const LumenAIIndex::Match& m : wider) hits.emplace_back(&m, true);
+                S32 loose_count = 0, left_out = 0;
+                std::vector<std::string> loose_names, left_out_names;
+                // </Lumen>
                 std::map<LLUUID, bool> in_scope;
                 S32 matched = 0, already = 0, unchanged = 0, no_copy = 0, count = 0;
-                for (const LumenAIIndex::Match& m : hits)
+                for (const auto& hit : hits)
                 {
+                    const LumenAIIndex::Match& m = *hit.first;
+                    const bool by_loose = hit.second;   // <Lumen>
                     LLViewerInventoryItem* item = gInventory.getItem(m.id);
                     if (!item || item->getIsLinkType()) continue;
                     if (scope.notNull())
@@ -11157,6 +11230,14 @@ namespace
                         if (!f->second) continue;
                     }
                     if (!creator.empty() && !by_maker(NULL, item)) continue;
+                    // <Lumen> Found only loosely, and not asked for: counted, not taken.
+                    if (by_loose && !loose)
+                    {
+                        ++left_out;
+                        if (left_out_names.size() < BULK_EXAMPLES)
+                            left_out_names.push_back(item->getName() + "  (in " + pathOf(item->getParentUUID()) + ")");
+                        continue;
+                    }
                     ++matched;
                     const std::string& name = item->getName();
                     if (claimed.count(m.id))
@@ -11166,6 +11247,18 @@ namespace
                         continue;
                     }
                     std::string why = heldIn(item->getParentUUID());
+                    // <Lumen> In a folder the user protected: left alone, and
+                    // counted with the folder's name -- never refused, never moved.
+                    if (why.empty())
+                    {
+                        const LLUUID kept = keptIn(item->getParentUUID());
+                        if (kept.notNull())
+                        {
+                            ++kept_count;
+                            kept_folders.insert(kept);
+                            continue;
+                        }
+                    }
                     if (why.empty() && what == "move")
                     {
                         if (dest.notNull() && item->getParentUUID() == dest) { ++already; continue; }
@@ -11229,6 +11322,12 @@ namespace
                     claimed.insert(m.id);
                     claimed_by[m.id] = (S32)n;
                     ++count;
+                    if (by_loose)   // <Lumen>
+                    {
+                        ++loose_count;
+                        if (loose_names.size() < BULK_EXAMPLES)
+                            loose_names.push_back(name + "  (in " + pathOf(item->getParentUUID()) + ")");
+                    }
                     if (plan.ops.size() > BULK_MAX_CHANGES)
                     {
                         return fail(n, llformat("this comes to more than %d changes in one batch. "
@@ -11238,6 +11337,9 @@ namespace
                 }
                 shown["matched"] = matched;
                 shown["count"] = count;
+                // <Lumen> A repaired spelling is part of the loose match only:
+                // said as what was used when it was used, and otherwise beside
+                // what was left out.
                 if (!spelling.empty())
                 {
                     LLSD fixes = LLSD::emptyArray();
@@ -11246,8 +11348,33 @@ namespace
                         LLSD one; one["asked"] = f.first; one["used"] = f.second;
                         fixes.append(one);
                     }
-                    shown["spelling_corrected"] = fixes;
+                    shown[loose ? "spelling_corrected" : "left_out_spelling"] = fixes;
                 }
+                if (loose_count)
+                {
+                    LLSD ex = LLSD::emptyArray();
+                    for (const std::string& one : loose_names) ex.append(safeUtf8(one));
+                    shown["matched_loosely"] = loose_count;
+                    shown["loose_examples"] = ex;
+                    shown["loose_note"] = "Of `count`, these are in only by the loose match: the words "
+                                          "are in their folder, inside a longer word, or a repaired "
+                                          "spelling -- not whole words of their own names. Say how many.";
+                }
+                if (left_out)
+                {
+                    LLSD ex = LLSD::emptyArray();
+                    for (const std::string& one : left_out_names) ex.append(safeUtf8(one));
+                    shown["left_out"] = left_out;
+                    shown["left_out_examples"] = ex;
+                    shown["left_out_note"] = "NOT included: these match only through their folder, inside "
+                                             "a longer word, or by a repaired spelling. If the user means "
+                                             "them too, plan again with \"match\": \"loose\" in `find`, "
+                                             "and say so.";
+                }
+                if (what == "move")   n_move_loose += loose_count;
+                if (what == "delete") n_trash_loose += loose_count;
+                if (what == "rename") n_rename_loose += loose_count;
+                // </Lumen>
                 if (what == "move" && already) shown["already_there"] = already;
                 if (what == "rename" && unchanged) shown["name_unchanged"] = unchanged;
                 if (what == "delete" && no_copy) shown["no_copy"] = no_copy;
@@ -11290,6 +11417,19 @@ namespace
                 shown["refused_count"] = refused_count;
                 shown["refused"] = refused;
             }
+            // <Lumen> Left alone: in a folder the user protected.
+            if (kept_count)
+            {
+                LLSD folders = LLSD::emptyArray();
+                for (const LLUUID& k : kept_folders)
+                {
+                    if (folders.size() >= BULK_EXAMPLES) break;
+                    folders.append(safeUtf8(pathOf(k)));
+                }
+                shown["left_alone_in_protected_folder"] = kept_count;
+                shown["protected_folders"] = folders;
+                n_kept += kept_count;
+            }
             if (earlier)
             {
                 shown["picked_by_an_earlier_step"] = earlier;
@@ -11308,10 +11448,12 @@ namespace
         // first and a big run filled the screen (the author, 2026-10-04); the
         // assistant names things in the conversation, from the plan.
         (void)lines;
+        // <Lumen> What only a loose match picked is counted apart, in the line.
+        auto loosely = [](S32 k) { return k ? llformat(" (%d by a loose match)", k) : std::string(); };
         std::vector<std::string> asked;
-        if (n_move)    asked.push_back(llformat("move %d", n_move));
-        if (n_rename)  asked.push_back(llformat("rename %d", n_rename));
-        if (n_trash)   asked.push_back(llformat("put %d in the Trash", n_trash));
+        if (n_move)    asked.push_back(llformat("move %d", n_move) + loosely(n_move_loose));
+        if (n_rename)  asked.push_back(llformat("rename %d", n_rename) + loosely(n_rename_loose));
+        if (n_trash)   asked.push_back(llformat("put %d in the Trash", n_trash) + loosely(n_trash_loose));
         if (n_new)     asked.push_back(llformat("make %d folder%s", n_new, n_new == 1 ? "" : "s"));
         if (n_folders) asked.push_back(llformat("remove %d empty folder%s", n_folders, n_folders == 1 ? "" : "s"));
         std::string summary;
@@ -11336,6 +11478,14 @@ namespace
         plan.shown["will_ask"] = plan.deletes
             ? std::string("every time, because it puts things in the Trash")
             : std::string("unless the user has told the viewer always to allow moves and renames");
+        // <Lumen>
+        if (n_kept)
+        {
+            plan.shown["protected_note"] = "Things in a folder the user protected are left alone "
+                                           "(`left_alone_in_protected_folder`, the folders in "
+                                           "`protected_folders`). Tell them, naming the folder: "
+                                           "right-click > Unprotect on it changes that.";
+        }
         return true;
     }
 
@@ -11354,6 +11504,20 @@ namespace
             ++run->left_alone;
             ++run->step_left[op.step];
             bulkCapped(run->left_list, op.name_then, why);
+        };
+        // <Lumen> A rule said no: a folder protected since the plan leaves it
+        // alone -- a batch never fails on one -- and anything else could not.
+        auto refuse = [&](const std::string& why, LumenInventoryRules::Rule rule)
+        {
+            if (rule == LumenInventoryRules::PROTECTED_FOLDER)
+            {
+                ++run->left_protected;
+                leave(why);
+            }
+            else
+            {
+                failed(why);
+            }
         };
         auto done = [&]()
         {
@@ -11374,11 +11538,12 @@ namespace
                 leave("it is not empty now, so it stays");
                 return;
             }
-            // <Lumen> The shared rules, asked again now, as a move asks them:
+            // <Lumen> The shared rules, asked again now, as a delete asks them:
             // its folder listed in Marketplace since the plan, or protected.
             {
-                const std::string why = LumenInventoryRules::held(op.id, true);
-                if (!why.empty()) { failed(why); return; }
+                LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                const std::string why = LumenInventoryRules::notDelete(op.id, true, &rule);
+                if (!why.empty()) { refuse(why, rule); return; }
             }
             if (!get_is_category_removable(&gInventory, op.id))
             {
@@ -11428,8 +11593,9 @@ namespace
             // <Lumen> The shared rules, asked again now: a folder listed in
             // Marketplace since the plan, or an RLV lock put on since.
             {
-                const std::string why = LumenInventoryRules::notMove(op.id, false, dest);
-                if (!why.empty()) { failed(why); return; }
+                LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                const std::string why = LumenInventoryRules::notMove(op.id, false, dest, &rule);
+                if (!why.empty()) { refuse(why, rule); return; }
             }
             gInventory.changeItemParent(item, dest, false);
             const LLViewerInventoryItem* now = gInventory.getItem(op.id);
@@ -11442,8 +11608,9 @@ namespace
         {
             // <Lumen> The shared rules, asked again now.
             {
-                const std::string why = LumenInventoryRules::notRename(op.id, false);
-                if (!why.empty()) { failed(why); return; }
+                LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                const std::string why = LumenInventoryRules::notRename(op.id, false, &rule);
+                if (!why.empty()) { refuse(why, rule); return; }
             }
             LumenAIUndo::instance().recordRename(op.id, false, op.name_then, op.new_name, run->change_set);
             LLSD updates; updates["name"] = op.new_name;
@@ -11455,10 +11622,11 @@ namespace
         {
             if (get_is_item_worn(op.id)) { failed("it is being worn now"); return; }
             // <Lumen> The shared rules, asked again now: a folder listed in
-            // Marketplace since the plan.
+            // Marketplace since the plan, or protected.
             {
-                const std::string why = LumenInventoryRules::offLimits(op.id);
-                if (!why.empty()) { failed(why); return; }
+                LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+                const std::string why = LumenInventoryRules::notDelete(op.id, false, &rule);
+                if (!why.empty()) { refuse(why, rule); return; }
             }
             if (!get_is_item_removable(&gInventory, op.id, true))
             {
@@ -11489,14 +11657,21 @@ namespace
     /** The line the viewer writes itself when a run it was left with ends. */
     void bulkFinalLine(const std::shared_ptr<BulkRun>& run)
     {
-        std::string line = run->stopped
+        std::string line = run->stopped_by_user   // <Lumen>
+            ? "Inventory changes stopped, as asked: " + bulkCount(run->done) + " of "
+              + bulkCount(run->total) + " done."
+            : run->stopped
             ? "Inventory changes stopped part way, when the inventory went away (logging out or "
               "quitting): " + bulkCount(run->done) + " of " + bulkCount(run->total) + " done."
             : "Inventory changes finished: " + bulkCount(run->done) + " of " + bulkCount(run->total)
               + " done.";
         if (run->failed) line += " " + bulkCount(run->failed) + " could not be done.";
-        if (run->left_alone) line += " " + bulkCount(run->left_alone) + " left alone because they "
-                                     "changed after the plan.";
+        // <Lumen> Two reasons to leave a thing alone, said apart.
+        const S32 changed_since = run->left_alone - run->left_protected;
+        if (changed_since > 0) line += " " + bulkCount(changed_since) + " left alone because they "
+                                       "changed after the plan.";
+        if (run->left_protected > 0) line += " " + bulkCount(run->left_protected) + " left alone in a "
+                                             "folder you protected.";
         if (run->done)
         {
             line += " To put it all back, ask the assistant to undo it, or use Comm > Assistant "
@@ -11539,10 +11714,15 @@ namespace
             // the whole while again before, so one folder never answered for
             // held the run (and with it every other run and empty_trash) half
             // a minute per item. An answer arriving later still counts.
-            auto madeFolder = [&run](S32 index) -> LLUUID
+            // <Lumen> Asked to stop: Clear in the Assistant, or Stop in the history window.
+            auto stopAsked = [&run]() -> bool
+            {
+                return LumenAIUndo::instanceExists() && LumenAIUndo::instance().stopAsked(run->change_set);
+            };
+            auto madeFolder = [&run, &stopAsked](S32 index) -> LLUUID
             {
                 const F64 give_up = LLTimer::getTotalSeconds() + BULK_FOLDER_WAIT;
-                while (!run->made.count(index) && LLTimer::getTotalSeconds() < give_up)
+                while (!run->made.count(index) && LLTimer::getTotalSeconds() < give_up && !stopAsked())
                     llcoro::suspendUntilTimeout(0.1f);
                 std::map<S32, LLUUID>::iterator f = run->made.find(index);
                 if (f == run->made.end()) f = run->made.emplace(index, LLUUID::null).first;
@@ -11556,6 +11736,14 @@ namespace
                     run->stopped = true;
                     break;
                 }
+                // <Lumen> Between changes, never in one: what is done is whole.
+                if (stopAsked())
+                {
+                    run->stopped_by_user = true;
+                    LL_INFOS("AICtl") << "batch_inventory: stopped by the user after " << i << " of "
+                                      << ops->size() << LL_ENDL;
+                    break;
+                }
                 const BulkOp& op = (*ops)[i];
 
                 // A folder made by this run: asked for here, and whatever goes
@@ -11564,6 +11752,11 @@ namespace
                 {
                     LLUUID parent = op.dest;
                     if (op.dest_made >= 0) parent = madeFolder(op.dest_made);   // <Lumen>
+                    if (stopAsked())   // <Lumen> asked while it waited for the folder
+                    {
+                        run->stopped_by_user = true;
+                        break;
+                    }
                     // <Lumen> And somewhere a folder may go, asked again now: the
                     // Trash (an earlier step of this run may have put it there),
                     // or Marketplace listings since the plan.
@@ -11607,7 +11800,15 @@ namespace
                     continue;
                 }
 
-                if (op.kind == BulkOp::MOVE && op.dest_made >= 0) madeFolder(op.dest_made);   // <Lumen>
+                if (op.kind == BulkOp::MOVE && op.dest_made >= 0)   // <Lumen>
+                {
+                    madeFolder(op.dest_made);
+                    if (stopAsked())   // asked while it waited for the folder
+                    {
+                        run->stopped_by_user = true;
+                        break;
+                    }
+                }
 
                 bulkDo(op, run);
                 if (++in_beat >= BULK_PER_BEAT)
@@ -11635,7 +11836,9 @@ namespace
             while (!run->told_in_reply
                    && LLTimer::getTotalSeconds() < run->started + BULK_REPLY_WAIT + 1.0)
                 llcoro::suspendUntilTimeout(0.25f);
-            if (!run->told_in_reply)
+            // <Lumen> Stopped by the user: always said here too. The reply that
+            // carried it may have gone to a turn Clear threw away.
+            if (!run->told_in_reply || run->stopped_by_user)
             {
                 // Not into the middle of a turn's own words: wait for it to end, a while.
                 const F64 until = LLTimer::getTotalSeconds() + 60.0;
@@ -11677,6 +11880,9 @@ namespace
         r["done"] = run->done;
         r["could_not"] = run->failed;
         r["left_alone"] = run->left_alone;
+        if (run->left_protected)   // <Lumen> of those, in a folder protected since the plan
+            r["left_alone_in_protected_folder"] = run->left_protected;
+        if (run->stopped_by_user) r["stopped_by_user"] = true;   // <Lumen>
         r["finished"] = run->finished;
         LLSD steps = LLSD::emptyArray();
         for (size_t i = 0; i < plan.step_do.size(); ++i)
@@ -11701,7 +11907,10 @@ namespace
         if (run->finished)
         {
             run->told_in_reply = true;
-            r["note"] = std::string(run->stopped
+            r["note"] = std::string(run->stopped_by_user   // <Lumen>
+                ? "The user stopped it part way (Clear, or Stop in the history window); what was "
+                  "done stays. "
+                : run->stopped
                 ? "It stopped part way, because the inventory went away (logging out or quitting). "
                 : "Done. ")
                 + "Tell the user briefly what was done, and what could not be done or was left "
@@ -11718,6 +11927,9 @@ namespace
                     "finished. Tell the user it is under way and that the viewer will say when "
                     "it is done, and how to undo it. End the reply there -- there is nothing for "
                     "you to check or wait for.";
+        // <Lumen> And how the user stops it: undo is refused while it runs.
+        r["stop"] = "Clear in the Assistant window, or Stop in Comm > Assistant Inventory History, "
+                    "stops it after the change in hand. What was done stays, one change set to undo.";
         return r;
     }
 }
@@ -19614,6 +19826,55 @@ if (method == "camera")
             gInventory.collectDescendents(trash, cats, items, LLInventoryModel::INCLUDE_TRASH);
             const S32 count = (S32)(cats.size() + items.size());
             const std::string print = fingerprintOf(method, params);
+            // <Lumen> The purge empties everything Second Life has in the Trash;
+            // the count is what the viewer has LOADED. Right after login, or on a
+            // big inventory, the question could say 12 while thousands went. So
+            // the Trash and every folder in it must be whole before anything is
+            // asked -- and again when the Yes comes back. Not whole: the fetch is
+            // started, and nothing is asked or emptied, so the next request
+            // counts it all. (A question already up is left to its answer, and
+            // the Yes is checked below.)
+            auto trashWhole = [&trash](const LLInventoryModel::cat_array_t& folders) -> bool
+            {
+                if (!gInventory.isCategoryComplete(trash)) return false;
+                for (const LLPointer<LLViewerInventoryCategory>& c : folders)
+                {
+                    if (c && !gInventory.isCategoryComplete(c->getUUID())) return false;
+                }
+                return true;
+            };
+            sweepAsks();
+            const bool asked_already = mAsks.count(print) && sTrashAsked.count(print);
+            const bool whole = trashWhole(cats);
+            if (whole) sTrashFetchAt = 0.0;
+            if (!asked_already && !whole)
+            {
+                sTrashAsked.erase(print);
+                LLInventoryModelBackgroundFetch& fetch = LLInventoryModelBackgroundFetch::instance();
+                const F64 now = LLTimer::getTotalSeconds();
+                // Loaded once already, that load over, and still not whole:
+                // Second Life counts something in it the viewer never gets (it
+                // happens). Said so, rather than "still loading" for ever.
+                if (sTrashFetchAt > 0.0 && !fetch.folderFetchActive() && now - sTrashFetchAt > TRASH_FETCH_SETTLE)
+                {
+                    sTrashFetchAt = 0.0;   // the next request loads it once more
+                    LL_INFOS("AICtl") << "empty_trash: the Trash is still not whole after loading it; "
+                                         "nothing asked" << LL_ENDL;
+                    return bulkError(-32000, "Second Life says the Trash holds more than the viewer could "
+                                             "load, so it was not emptied and the user was not asked: the "
+                                             "count would have been short. Tell the user; they can empty it "
+                                             "themselves from the inventory window.");
+                }
+                if (sTrashFetchAt == 0.0) sTrashFetchAt = now;
+                fetch.start(trash, true);
+                LL_INFOS("AICtl") << "empty_trash: the Trash is not all loaded; fetching it, nothing "
+                                     "asked" << LL_ENDL;
+                return bulkError(-32000, "The Trash is still loading from Second Life, so it was not "
+                                         "emptied and the user was not asked: the count would have "
+                                         "been short. The viewer is loading it now. Tell the user "
+                                         "that; they can ask again.");
+            }
+            // </Lumen>
             if (count == 0)
             {
                 sTrashAsked.erase(print);
@@ -19629,8 +19890,7 @@ if (method == "camera")
             // <Lumen> Kept only while that question is still up or its answer
             // uncollected: one taken down unanswered left its count behind, and
             // the next question showed that old number instead of today's.
-            sweepAsks();
-            if (!mAsks.count(print) || !sTrashAsked.count(print)) sTrashAsked[print] = count;
+            if (!asked_already) sTrashAsked[print] = count;   // <Lumen> swept above
             {
                 LLSD subs;
                 subs["COUNT"] = sTrashAsked[print];
@@ -19650,7 +19910,18 @@ if (method == "camera")
                                  "NOT emptied. Tell them; if they still want it, empty_trash asks "
                                  "again with the new count.", count, agreed));
             }
-            const bool complete = gInventory.isCategoryComplete(trash);
+            // <Lumen> Whole at the question is not enough: a folder put in the
+            // Trash while they read it may not be loaded. Counted on the model
+            // as it is now -- this call's own collection, made above.
+            if (!whole)
+            {
+                LLInventoryModelBackgroundFetch::instance().start(trash, true);
+                return bulkError(-32000, "Part of the Trash is still loading from Second Life (something "
+                                         "went in while the user was deciding), so it was NOT emptied: "
+                                         "the count they agreed to may be short. Tell them; if they "
+                                         "still want it, they can ask again.");
+            }
+            // </Lumen>
             // The viewer's own Empty Trash, after its own question -- which is
             // ours here, so the notification name is empty.
             gInventory.emptyFolderType(std::string(), LLFolderType::FT_TRASH);
@@ -19661,14 +19932,11 @@ if (method == "camera")
             result["items"] = (LLSD::Integer)items.size();
             result["folders"] = (LLSD::Integer)cats.size();
             result["gone_for_good"] = true;
-            result["note"] = std::string("The Trash was emptied: these are gone for good. Neither "
-                             "Lumen nor anyone else -- Linden Lab included -- can bring them back, "
-                             "and the record of the assistant's changes ends for them: undo cannot "
-                             "return anything that was in it. Tell the user that plainly.")
-                           + (complete ? std::string()
-                                       : std::string(" The viewer had not loaded all of the Trash "
-                                         "from Second Life, so it may have held more than it "
-                                         "counted; all of it was emptied."));
+            // <Lumen> Whole, checked above: the count is what was emptied.
+            result["note"] = "The Trash was emptied: these are gone for good. Neither Lumen nor anyone "
+                             "else -- Linden Lab included -- can bring them back, and the record of the "
+                             "assistant's changes ends for them: undo cannot return anything that was "
+                             "in it. Tell the user that plainly.";
             LLSD summary;
             summary["action"] = "empty_trash";
             summary["emptied"] = count;
@@ -19698,7 +19966,7 @@ if (method == "camera")
                 shown["nothing_to_do"] = true;
                 shown["note"] = "Nothing to do: no step selected anything the viewer may change. "
                                 "Nothing was changed. Tell the user, with what the steps say was "
-                                "matched or refused.";
+                                "matched, refused, left out or left alone.";
                 return shown;   // no plan_id: there is nothing to run
             }
             // Not in the action log: a plan changes nothing.
@@ -19708,8 +19976,9 @@ if (method == "camera")
             shown["expires_in_seconds"] = (LLSD::Integer)BULK_PLAN_KEEPS;
             shown["note"] = "Nothing has been changed yet. Tell the user in a sentence or two what "
                             "this will do: the counts, a few names, where things go, and anything "
-                            "refused and why -- and any `spelling_corrected`, since that changes "
-                            "what was matched. Then run it: inventory / batch with only this "
+                            "refused and why -- and any `spelling_corrected` or `matched_loosely`, "
+                            "since that changes what was matched, any `left_out`, and anything left "
+                            "alone in a protected folder. Then run it: inventory / batch with only this "
                             "plan_id. The viewer asks the user itself, in a window of its own, "
                             "before anything is done -- do not ask them in the conversation as "
                             "well. Running acts on exactly these items; anything changed by hand "
@@ -19747,6 +20016,14 @@ if (method == "camera")
                                          "says in the Assistant window when the other has finished, "
                                          "and they can ask again then.");
             }
+            // <Lumen> Nor while an undo or a restore is putting things back:
+            // the two would get in each other's way.
+            if (LumenAIUndo::instance().puttingBack())
+            {
+                return bulkError(-32000, "An undo or a restore is still putting things back, so this was "
+                                         "not started and nothing was changed. Tell the user; the viewer "
+                                         "says when that has finished, and they can ask again then.");
+            }
             if (!LumenAIUndo::instance().available())
             {
                 // <Lumen> And why.
@@ -19773,6 +20050,18 @@ if (method == "camera")
                     }
                     return ask;
                 }
+            }
+            // <Lumen> Its age again, now the Yes is in: the question may have
+            // stood a long while, and a plan acts on the inventory as it was
+            // when it was made. A remembered Yes comes back at once, so this
+            // only ever stops a slow answer -- and the Yes is spent with it.
+            if (LLTimer::getTotalSeconds() - plan.made_at > BULK_PLAN_KEEPS + BULK_ANSWER_GRACE)
+            {
+                sBulkPlans.erase(found);
+                return bulkError(-32000, "The user said yes, but the plan was made more than ten minutes "
+                                         "before that, so it was not run and nothing was changed: the "
+                                         "inventory may have moved on since. Tell them; if they still "
+                                         "want it, make a new plan with the same `steps`.");
             }
             bulkStart(plan);
         }
@@ -21055,6 +21344,30 @@ if (method == "camera")
             return result;
         }
 
+        // <Lumen> The rules every path shares (LumenInventoryRules): the
+        // Library, Current Outfit, Marketplace, the folders the viewer locks
+        // whatever their Lock setting says, and -- stricter than the viewer's
+        // own Delete -- anything inside a folder the user protected. Before
+        // the question, so nobody is asked to agree to what will not happen.
+        {
+            LumenInventoryRules::Rule rule = LumenInventoryRules::ALLOWED;
+            std::string why = LumenInventoryRules::notDelete(id, false, &rule);
+            if (!why.empty())
+            {
+                if (rule == LumenInventoryRules::CURRENT_OUTFIT)
+                    why = "It is in Current Outfit, which is what they are wearing -- use detach.";
+                else
+                {
+                    why[0] = (char)toupper((unsigned char)why[0]);
+                    why += ".";
+                }
+                LLSD e; e["code"] = -32000;
+                e["message"] = "\"" + safeUtf8(item_name) + "\" cannot be deleted, so nothing was "
+                               "moved. " + why;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
         // <Lumen> The viewer's own Delete asks get_is_item_removable first, and
         // removeItem does not: an item in an RLV-locked folder went to the
         // Trash, one in a protected Firestorm folder silently stayed where it
@@ -21084,10 +21397,9 @@ if (method == "camera")
             }
             else
             {
-                why = "It is inside one of the folders the viewer protects from deletion -- the "
-                      "AO, the LSL bridge or the wearable favourites folder. That protection is "
-                      "a setting the user can switch off in Preferences; do not suggest it "
-                      "unless they ask.";
+                // <Lumen> The locked folders are the shared rules' now, whatever
+                // their setting says, so switching it off is no way round.
+                why = "The viewer does not allow deleting it.";
             }
             LLSD e; e["code"] = -32000;
             e["message"] = "\"" + safeUtf8(item_name) + "\" cannot be deleted, so nothing was "

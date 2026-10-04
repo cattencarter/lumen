@@ -2488,6 +2488,11 @@ void LumenAIChatFloater::onClear()
     const bool was_busy = mBusy;
     if (was_busy) abandonTurn();
     if (mListening || mKeepListening) stopMic(std::string());
+    // A bulk inventory change outlasts the turn that asked for it, and Clear
+    // is the stop people reach for: it stops after the change in hand, and
+    // says how far it got in the new conversation. What it did stays, one
+    // change set to undo.
+    if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().stopBulk();
     // </Lumen>
     mMessages = LLSD::emptyArray();
     mHistoryProvider.clear();
