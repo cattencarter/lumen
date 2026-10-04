@@ -15154,8 +15154,12 @@ How this information is processed, stored, or retained depends on your chosen AI
        "Always choose this option" is the viewer's own checkbox (save_option):
        the answer is remembered with every other remembered answer and undone
        in Preferences > Notifications, or Preferences > AI > Permissions.
-       Every question has it (the author's call, 2026-09-28). A script's own
-       request for permissions is never put to the assistant at all.
+       Every question has it (the author's call, 2026-09-28), except the ones
+       that delete in bulk or empty the Trash: those ask every time (the
+       author, 2026-10-04), so they carry no ignore element, and Preferences >
+       AI > Permissions shows them as asking every time, with no choice to set.
+       A script's own request for permissions is never put to the assistant at
+       all.
 
        Modal, as the viewer's own confirmations are: a plain alert is sent to
        the back of the window stack, and one sat hidden behind the Snapshot
@@ -15564,6 +15568,124 @@ The assistant wants to move [ITEM] to the Trash.
        index="1"
        name="No"
        text="No"/>
+    </form>
+  </notification>
+  <!-- <Lumen> Bulk inventory tidying: one question per run, showing what the
+       run will do. A run that only moves, renames or makes folders may be
+       remembered like any other question. One that deletes, and emptying the
+       Trash, ask every time: no ignore element, so no "Always choose this
+       option" (the author, 2026-10-04). -->
+  <notification
+   icon="alert.tga"
+   label="Tidy the inventory?"
+   name="LumenAskBatch"
+   type="alertmodal">
+The assistant wants to tidy your inventory in one go:
+
+[SUMMARY]
+
+Nothing is deleted, and the whole run can be undone afterwards: ask the assistant to undo it, or use Comm &gt; Assistant Inventory History.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to tidy many items at once without deleting"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Go ahead"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Leave it"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Delete many items at once?"
+   name="LumenAskBatchDelete"
+   type="alertmodal">
+The assistant wants to tidy your inventory in one go, and this deletes things:
+
+[SUMMARY]
+
+Deleted items go to the Trash. The whole run can be undone afterwards, as long as the Trash has not been emptied: ask the assistant to undo it, or use Comm &gt; Assistant Inventory History.
+
+Anything that deletes is asked every time.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Go ahead"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Leave it"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
+   label="Empty the Trash?"
+   name="LumenAskEmptyTrash"
+   type="alertmodal">
+The assistant wants to empty your Trash.
+
+Items in the Trash: [COUNT]
+
+Once the Trash is emptied, they are gone for good. Neither Lumen nor anyone else can bring them back, and the assistant's record of changes cannot undo them any more.
+
+This is asked every time.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Empty it"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Leave it"/>
+    </form>
+  </notification>
+  <!-- <Lumen> Shown when the user ticks Preferences > AI > Permissions >
+       "Let the assistant tidy many inventory items at once". Leave it off is
+       the default button, so Enter never turns it on. A LumenConfirm name:
+       the assistant may not answer it. Calm on purpose (the author,
+       2026-10-04): explain the risk, do not frighten. -->
+  <notification
+   icon="alert.tga"
+   label="Let the assistant tidy many items at once?"
+   name="LumenConfirmBulkInventory"
+   type="alertmodal">
+With this on, the assistant can move, rename and delete many inventory items in one go, hundreds at a time if that is what you ask for. It can also empty the Trash.
+
+It can get it wrong. A model can take a request more widely than you meant, and the mic can mishear a word, so a run may catch items you wanted left alone.
+
+What Lumen does so it can be put right:
+- The viewer shows you each run before it starts. A run that only moves or renames things can be set to go ahead without asking; one that deletes asks every time.
+- Before each run, a snapshot is taken of how your inventory is arranged.
+- Every change is recorded and can be undone: ask the assistant to "undo that", or use Comm &gt; Assistant Inventory History.
+
+Where that stops: anything emptied from the Trash is gone for good, and neither Lumen nor anyone else can bring it back. Emptying the Trash asks you every time.
+
+You can turn this off again here whenever you like.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="OK"
+       text="Turn it on"/>
+      <button
+       default="true"
+       index="1"
+       name="Cancel"
+       text="Leave it off"/>
     </form>
   </notification>
   <notification

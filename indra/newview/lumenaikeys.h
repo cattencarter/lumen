@@ -195,6 +195,13 @@ private:
     void loadPermissionStates();
     bool savePermissionStates();   // true when anything changed
 
+    // <Lumen> The switches above the questions: things the assistant cannot
+    // do at all until the person ticks them, each with a warning first. Read
+    // on open and on cancel, written on OK. See OPT_INS in the .cpp.
+    void buildOptIns();
+    void loadOptIns();
+    void saveOptIns();
+
     struct Row
     {
         std::string   provider;
