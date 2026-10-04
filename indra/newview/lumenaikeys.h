@@ -111,6 +111,7 @@ class LLRadioGroup;
 
 class LumenPanelPreferenceAIKeys : public LLPanelPreference
 {
+    LOG_CLASS(LumenPanelPreferenceAIKeys);   // <Lumen> the base's is private
 public:
     LumenPanelPreferenceAIKeys();
 
