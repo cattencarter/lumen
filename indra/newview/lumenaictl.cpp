@@ -292,11 +292,15 @@ namespace
         F64                 until = 0.0;    // this call's wait; 0: the next call starts one
         F64                 keep = 0.0;     // dropped, if nobody came back, after this
         bool                told_not_yet = false;   // "not answered yet" was said once
+        F64                 seen = 0.0;     // when this job last answered
     };
     std::map<std::string, SaveScriptJob> sSaveScripts;
     // How long a save's reply waits for the compiler: a second or two as a
     // rule. Inside the fifteen seconds the Assistant's own wait allows.
     const F64 SAVE_SCRIPT_WAIT = 12.0;
+    // A held reply makes the same call again every quarter second; a longer
+    // gap is the caller coming back after a reply that got out.
+    const F64 SAVE_SCRIPT_GAP = 1.0;
     // </Lumen>
 
     // new_script opening and writing its own script in one call: open_script
@@ -24403,6 +24407,13 @@ if (method == "camera")
             }
         }
 
+        // <Lumen> A passage replaced in a window holding changes of theirs that
+        // nobody has saved carries those changes along: the window is not only
+        // the assistant's any more, so save_script must not save it nor a
+        // remove close it. A whole `text` leaves nothing of theirs in it.
+        const bool theirs_unsaved = params.has("replace") && !ed->isPristine()
+                                  && !scriptWindowHoldsYours(target);
+        // </Lumen>
         if (params.has("replace"))
         {
             const std::string find = params["replace"].asString();
@@ -24457,9 +24468,12 @@ if (method == "camera")
         // save_script saves only a window still holding exactly this.
         if (target)
         {
-            sAssistantScriptText[scriptWindowKey(target)] = ed->getText();
+            if (theirs_unsaved) sAssistantScriptText.erase(scriptWindowKey(target));
+            else sAssistantScriptText[scriptWindowKey(target)] = ed->getText();
             sLastWrittenScript = target->getHandle();
-            LL_INFOS("AICtl") << "edit_script: remembered what was written into "
+            LL_INFOS("AICtl") << "edit_script: "
+                              << (theirs_unsaved ? "not remembered, their unsaved changes are in "
+                                                 : "remembered what was written into ")
                               << scriptWindowKey(target) << " in "
                               << (target->getKey().isMap() ? target->getKey()["taskid"].asString()
                                                            : std::string("inventory")) << LL_ENDL;
@@ -24486,7 +24500,7 @@ if (method == "camera")
             if (!said.empty()) result["last_save_result"] = safeUtf8(said);
         }
         result["window_in_front"] = true;
-        result["note"] = saveScriptsAllowed()
+        result["note"] = (saveScriptsAllowed() && !theirs_unsaved)   // <Lumen> theirs: they save
             ? "Written into the script window, not saved yet. Saving is switched on for you: "
               "save it with save_script -- the viewer asks them first -- and tell them whether "
               "it compiled. Ctrl-Z undoes the change if they would rather not."
@@ -24578,7 +24592,18 @@ if (method == "camera")
                             "not say it works.";
                 return finish(at, r, "unknown");
             }
+            // A call after a gap, before "not answered yet" was said, comes
+            // after a "settling" reply got out -- a hold cut short by the
+            // question's own time limit -- which already said "once more":
+            // this is that call, and it is not invited again.
+            if (!j.told_not_yet && j.seen > 0.0 && now - j.seen > SAVE_SCRIPT_GAP)
+            {
+                j.told_not_yet = true;
+                j.until = now + SAVE_SCRIPT_WAIT;
+            }
+            j.seen = now;
             if (j.until == 0.0) j.until = now + SAVE_SCRIPT_WAIT;   // the one more call
+            j.keep = llmax(j.keep, j.until + 120.0);
             const LLSD errors = scriptWindowErrors(win);
             const bool compiling = scriptWindowCompiling(win);
             const bool compiled = scriptSaveResult(win).find(LLTrans::getString("CompileSuccessful"))
@@ -24645,7 +24670,9 @@ if (method == "camera")
             r["compile_answer_pending"] = true;
             if (now < j.until)
             {
-                mSettle = llmax(0.25, j.until - now);
+                // A second past the wait, so the try after it -- the one that
+                // says "not answered yet" -- is still inside the hold.
+                mSettle = llmax(0.5, j.until - now + 1.0);
                 r["settling"] = true;
                 r["note"] = "Saved, and waiting for the compiler. The reply waits for its "
                             "answer; if you are reading this, it is slow -- make this same call "
@@ -24669,6 +24696,19 @@ if (method == "camera")
                         "window shows the compiler's answer when it comes.";
             return finish(at, r, "unknown");
         };
+
+        // A request_id already answered gets that answer -- first, so it is not
+        // taken for a later call's save, nor told saving is off when it saved.
+        {
+            LLSD replay;
+            if (recallAction(request_id, replay))
+            {
+                replay["replayed"] = true;
+                replay["note"] = "This request_id was already carried out; nothing was saved a "
+                                 "second time.";
+                return replay;
+            }
+        }
 
         // A save already made by this same call carries on -- unless what it
         // was about has changed: written again by the assistant (a new save),
@@ -24712,16 +24752,6 @@ if (method == "camera")
             return refuse("Saving scripts is switched off, so nothing was saved: they press Save "
                           "in the script window themselves, or switch saving on in Preferences > "
                           "AI > Permissions -- tell them that in a sentence.");
-        }
-        {
-            LLSD replay;
-            if (recallAction(request_id, replay))
-            {
-                replay["replayed"] = true;
-                replay["note"] = "This request_id was already carried out; nothing was saved a "
-                                 "second time.";
-                return replay;
-            }
         }
 
         // ---- which window ----------------------------------------------------
