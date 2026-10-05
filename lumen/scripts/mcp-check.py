@@ -235,6 +235,9 @@ def main():
         ("build",    "list_contents"):  {"object_id": NULL_UUID},
         ("build",    "link"):           {"object_id": NULL_UUID},
         ("build",    "unlink"):         {"object_id": NULL_UUID},
+        # picture changes nothing, but it renders the world and returns a
+        # picture; an object_id that cannot be found is refused before that.
+        ("build",    "picture"):        {"object_id": NULL_UUID},
 
         # There is no harmless landmark either -- every call makes one. A name
         # past Second Life's 63-character limit is refused by the handler

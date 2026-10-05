@@ -115,6 +115,7 @@ set(viewer_SOURCE_FILES
     lumenaictl.cpp
     lumenaikeys.cpp
     lumenaisetup.cpp
+    lumenaisight.cpp
     fsassetblacklist.cpp
     fsavatarrenderpersistence.cpp
     fsavatarsearchmenu.cpp
@@ -988,6 +989,7 @@ set(viewer_HEADER_FILES
     lumenaictl.h
     lumenaikeys.h
     lumenaisetup.h
+    lumenaisight.h
     fsassetblacklist.h
     fsavatarrenderpersistence.h
     fsavatarsearchmenu.h

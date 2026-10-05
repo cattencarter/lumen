@@ -93,6 +93,49 @@
 
 namespace
 {
+    /**
+     * <Lumen> Task 016. Every picture a tool returned stays in the history and
+     * goes back with every later request, so a few rounds of building would
+     * resend a dozen pictures each time. Only the newest `keep` stay; older
+     * ones become a line saying one was there. Both dialects: Anthropic's
+     * image blocks inside a tool_result, and the OpenAI dialect's image_url
+     * parts in a user message.
+     */
+    void keepNewestPictures(LLSD& messages, LLSD::Integer keep)
+    {
+        LLSD gone;
+        gone["type"] = "text";
+        gone["text"] = "(A picture shown earlier. It is no longer attached, to keep the "
+                       "conversation small -- ask the tool again for a new one.)";
+        LLSD::Integer seen = 0;
+        for (LLSD::Integer i = messages.size() - 1; i >= 0; --i)
+        {
+            if (!messages[i].isMap() || !messages[i].has("content")
+                || !messages[i]["content"].isArray())
+            {
+                continue;   // asked before touching, so nothing gains an empty key
+            }
+            LLSD& content = messages[i]["content"];
+            for (LLSD::Integer j = content.size() - 1; j >= 0; --j)
+            {
+                LLSD& part = content[j];
+                const std::string type = part["type"].asString();
+                if (type == "image_url")
+                {
+                    if (++seen > keep) part = gone;
+                }
+                else if (type == "tool_result" && part.has("content") && part["content"].isArray())
+                {
+                    LLSD& inner = part["content"];
+                    for (LLSD::Integer k = inner.size() - 1; k >= 0; --k)
+                    {
+                        if (inner[k]["type"].asString() == "image" && ++seen > keep) inner[k] = gone;
+                    }
+                }
+            }
+        }
+    }
+
     const std::string ANTHROPIC_URL_DEFAULT = "https://api.anthropic.com/v1/messages";
     const std::string OPENAI_URL_DEFAULT    = "https://api.openai.com/v1/chat/completions";
     const std::string MISTRAL_URL_DEFAULT   = "https://api.mistral.ai/v1/chat/completions";
@@ -747,6 +790,7 @@ namespace
             if (action == "list_contents") return "Looking inside the object";   // <Lumen>
             if (action == "link")   return "Linking the objects";
             if (action == "unlink") return "Unlinking the object";
+            if (action == "picture") return "Looking at the build";   // <Lumen> task 016
         }
         if (group == "inventory")
         {
@@ -4354,6 +4398,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     um["role"]    = "user";
                     um["content"] = parts;
                     mMessages.append(um);
+                    keepNewestPictures(mMessages, 2);   // <Lumen> task 016
                 }
                 // </Lumen>
             }
@@ -4439,6 +4484,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             {
                 LLSD m; m["role"] = "user"; m["content"] = tool_results;
                 mMessages.append(m);
+                keepNewestPictures(mMessages, 2);   // <Lumen> task 016
             }
 
             // <Lumen> show_waiting IS the reply, so the turn is over.

@@ -40,6 +40,7 @@
 #include "lumenainotecache.h"
 #include "lumenaimemory.h"
 #include "lumenaiundo.h"   // <Lumen> inventory undo
+#include "lumenaisight.h"  // <Lumen> build / picture
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
 #include "llagentui.h"
@@ -104,6 +105,7 @@
 #include "lllogchat.h"
 #include "llimagepng.h"
 #include "llbase64.h"   // <Lumen> test_picture
+#include "llimagejpeg.h" // <Lumen> build / picture
 #include "llrand.h"     // <Lumen> test_picture
 #include "llsnapshotmodel.h"
 #include "llsnapshotlivepreview.h"
@@ -188,6 +190,7 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
 
 #include <boost/json.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <sstream>
@@ -3864,6 +3867,7 @@ namespace
             if (action == "list_contents") return "list_object_contents";   // <Lumen>
             if (action == "link")   return "link_objects";
             if (action == "unlink") return "unlink_objects";
+            if (action == "picture") return "build_picture";   // <Lumen> task 016
             return std::string();
         }
         if (group == "inventory")
@@ -5502,7 +5506,8 @@ namespace
         // rather than letting the simulator reject it and leaving the assistant
         // to guess why.
         static const char* const build_actions[] =
-            { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink" };
+            { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink",
+              "picture" };   // <Lumen> task 016
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -5534,6 +5539,18 @@ namespace
             "this build, and says so if some have not arrived yet. Otherwise pass `object_ids`. "
             "Linking needs at least two, all the user's to modify, with one owner and in one "
             "region.\n"
+            "- picture: a picture of the build for YOU to look at, with every avatar left out -- "
+            "the user's own too -- and a number on each object, listed in `numbered` with its "
+            "object_id, name, size and centre. Use it to see how things stand and fit before and "
+            "after you build or arrange, and to find the object a person means (\"the shelf by "
+            "the window\" is number 4, so act on its object_id). With no object_id it looks from "
+            "where the user stands -- `look`: ahead, behind, left or right -- or, with `from: "
+            "\"above\"`, down on the area around them (`distance` metres around, default 8). "
+            "With an object_id it looks at that object, `from` near (their side, the default), "
+            "far, left, right or above, from as far as fits it unless `distance` says. "
+            "`detail: \"high\"` for a bigger picture when the small one is not enough. Nothing "
+            "on the user's screen changes and nothing is saved. Do not describe it to them "
+            "unless they ask -- they can see the world.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -5560,7 +5577,9 @@ namespace
             LLSD bds; bds["type"]="number";
                 bds["description"]="rez: how far in front of the user to put it, in metres. "
                                    "Default 2, at most 10 -- beyond that it is out of sight and "
-                                   "of reach.";
+                                   "of reach. picture: how far the camera stands from the "
+                                   "object, or with from \"above\" and no object, how many "
+                                   "metres around the user to show.";
             LLSD bit; bit["type"]="string";
                 bit["description"]="rez: the name of an OBJECT in inventory to rez, instead of "
                                    "making a new prim. Find it with inventory / search first.";
@@ -5603,7 +5622,7 @@ namespace
             build_props["colour_name"]=bcn;
             build_props["position"]=bpo; build_props["rotation"]=bro;
             LLSD bid; bid["type"]="string";
-                bid["description"]="set, remove, take, list_contents, select: the object to act "
+                bid["description"]="set, remove, take, list_contents, select, picture: the object to act "
                                    "on, as an object_id from movement / look_nearby or viewer / "
                                    "inspect_object. Pass it whenever the object already exists. "
                                    "Without it they work on what the user has selected, or -- "
@@ -5623,6 +5642,25 @@ namespace
                                     "assistant just made.";
             build_props["object_ids"]=bids;
             build_props["object_id"]=bid; build_props["add"]=bad; build_props["edit"]=bed;
+            // <Lumen> task 016
+            LLSD blk; blk["type"]="string";
+                blk["description"]="picture, with no object_id: which way to look from where the "
+                                   "user stands -- ahead (the default), behind, left, right, or a "
+                                   "compass bearing in degrees.";
+            LLSD bfr; bfr["type"]="string";
+                bfr["description"]="picture: \"above\" looks down from overhead. With an "
+                                   "object_id, the side to look at it from: near (the user's side, "
+                                   "the default), far, left, right, above, or a compass bearing "
+                                   "in degrees.";
+            LLSD bdt; bdt["type"]="string";
+                bdt["description"]="picture: \"high\" for 1280 x 960 instead of 640 x 480. Only "
+                                   "when the small picture is not enough -- it costs more.";
+            LLSD blb; blb["type"]="boolean";
+                blb["description"]="picture: false leaves the numbers off, to see the build "
+                                   "without them. On by default.";
+            build_props["look"]=blk; build_props["from"]=bfr;
+            build_props["detail"]=bdt; build_props["labels"]=blb;
+            // </Lumen>
             build_props["take"]=btk;    build_props["request_id"]=srq;
         }
         LLSD build_schema; build_schema["type"]="object"; build_schema["properties"]=build_props;
@@ -27746,6 +27784,435 @@ if (method == "camera")
     // open_script fetched the whole contents and then listed only the scripts
     // -- "That object contains no scripts at all", passed on as "the box is
     // empty". It only reads: nothing is copied or moved.
+    // <Lumen> Task 016: a picture of the build, for the MODEL, with nobody in
+    // it -- every avatar left out, the user's own too -- and a number on each
+    // object, so "number 7" means one exact thing. The author: building and
+    // furnishing come first, and describing the world means nothing, because
+    // people can see it themselves. See lumenaisight.h for how it renders.
+    if (method == "build_picture")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+            || !isAgentAvatarValid())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (const char* why = picturesCannotReach())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = why;
+            LLSD w; w["__error"] = e; return w;
+        }
+        // A picture from somewhere else would show what an RLV restriction is
+        // keeping from them: a camera held near the avatar, a blindfold, a
+        // vision sphere, textures replaced.
+        if (rlv_handler_t::isEnabled()
+            && (RlvActions::isCameraDistanceClamped()
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_FOCUS)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_UNLOCK)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_TEXTURES)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETSPHERE)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETOVERLAY)))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Something the user is wearing (an RLV restriction) limits what their "
+                           "camera may see, so no picture can be taken. Tell them plainly -- it is "
+                           "their own attachment doing it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const bool hide_location = rlv_handler_t::isEnabled() && !RlvActions::canShowLocation();
+
+        const LLTimer took;
+        LumenAISight::View view;
+        const bool high = lowered(params["detail"].asString()) == "high";
+        view.width  = high ? 1280 : 640;
+        view.height = high ? 960  : 480;
+        view.fov    = 60.f * DEG_TO_RAD;
+
+        const LLVector3 me = gAgent.getPositionAgent();
+        LLVector3 feet = me;
+        feet.mV[VZ] -= gAgentAvatarp->getPelvisToFoot();
+        const LLVector3 eye = gAgentAvatarp->mHeadp
+            ? gAgentAvatarp->mHeadp->getWorldPosition() + LLVector3(0.f, 0.f, 0.08f)
+            : me + LLVector3(0.f, 0.f, 0.6f);
+        LLVector3 facing = gAgent.getAtAxis();
+        facing.mV[VZ] = 0.f;
+        if (facing.magVec() < 0.01f) facing.setVec(1.f, 0.f, 0.f);
+        facing.normVec();
+        const LLVector3 up_z(0.f, 0.f, 1.f);
+
+        // A direction as words around `ahead`, or as a compass bearing
+        // (Second Life's X is east and Y north, so a bearing is atan2(x, y)).
+        auto direction = [](const LLSD& v, const LLVector3& ahead, const char* ahead_word,
+                            LLVector3& out, std::string& said) -> bool
+        {
+            const LLVector3 left(-ahead.mV[VY], ahead.mV[VX], 0.f);
+            const std::string w = lowered(v.asString());
+            const bool number = v.isReal() || v.isInteger()
+                || (!w.empty() && w.find_first_not_of("0123456789.-") == std::string::npos);
+            if (number)
+            {
+                const F32 b = (F32)v.asReal() * DEG_TO_RAD;
+                out.setVec(sinf(b), cosf(b), 0.f);
+                said = llformat("%d degrees", (S32)ll_round((F32)v.asReal()));
+                return true;
+            }
+            if (w.empty() || w == ahead_word) { out = ahead;  said = ahead_word; return true; }
+            if (w == "behind" || w == "back" || w == "far") { out = -ahead; said = w; return true; }
+            if (w == "left")  { out = left;  said = "left";  return true; }
+            if (w == "right") { out = -left; said = "right"; return true; }
+            return false;
+        };
+        auto bearingOf = [](const LLVector3& d) -> S32
+        {
+            S32 b = (S32)ll_round(atan2f(d.mV[VX], d.mV[VY]) * RAD_TO_DEG);
+            return (b + 360) % 360;
+        };
+
+        LLViewerObject* target = nullptr;
+        const bool id_given = params.has("object_id") && !params["object_id"].asString().empty();
+        if (id_given)
+        {
+            LLViewerObject* o = gObjectList.findObject(params["object_id"].asUUID());
+            if (o && o->isAvatar())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That id is a person. Pictures leave every avatar out; pass the id "
+                               "of an object, or no object_id for a view from where the user stands.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (o && o->isAttachment())
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That is something somebody is wearing, and pictures leave avatars "
+                               "and what they wear out.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            if (o) target = o->getRootEdit();
+            if (!target)
+            {
+                LLSD e; e["code"] = -32000; e["message"] = STALE_OBJECT_ID;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+
+        const std::string from_word = lowered(params["from"].asString());
+        const bool overhead = from_word == "above" || from_word == "top" || from_word == "overhead";
+        const bool distance_given = params.has("distance") && params["distance"].asReal() > 0.0;
+        LLSD notes = LLSD::emptyArray();
+        std::string where_from;
+        F32 label_range = 64.f;
+
+        LumenAISight::WithoutAvatars hidden;   // the raycasts below see the world as the picture will
+
+        if (target)
+        {
+            LLVector3 bmin, bmax;
+            LumenAISight::linksetBox(target, bmin, bmax);
+            const LLVector3 c = (bmin + bmax) * 0.5f;
+            const F32 r = llmax(0.25f, (bmax - bmin).magVec() * 0.5f);
+            view.fov = 50.f * DEG_TO_RAD;
+
+            // "near" is the user's side of it; the rest turn from there.
+            LLVector3 toward_me = me - c;
+            toward_me.mV[VZ] = 0.f;
+            if (toward_me.magVec() < 0.3f) toward_me = -facing;
+            toward_me.normVec();
+
+            LLVector3 dir;
+            std::string said;
+            if (overhead)
+            {
+                dir = up_z;
+                said = "above";
+            }
+            else if (!direction(params["from"], toward_me, "near", dir, said))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "`from` is near, far, left, right, above, or a compass bearing in "
+                               "degrees for the side to look from.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            // Left and right as the user sees it from where they stand, which
+            // is the other way round from "left of the direction towards them".
+            if (!overhead && said == "left")       { dir = LLVector3(toward_me.mV[VY], -toward_me.mV[VX], 0.f); }
+            else if (!overhead && said == "right") { dir = LLVector3(-toward_me.mV[VY], toward_me.mV[VX], 0.f); }
+
+            F32 dist = distance_given
+                ? llclamp((F32)params["distance"].asReal(), 0.5f, 60.f)
+                : llmax(1.5f, r / sinf(view.fov * 0.5f) * 1.15f);
+            LLVector3 cam = c + dir * dist;
+            if (!overhead) cam.mV[VZ] += llmin(r * 0.6f, dist * 0.4f);   // a little above, looking down
+
+            // A wall between it and where the camera would stand: come in to
+            // this side of the wall and look wider, as a person in the room would.
+            LLVector3 wall;
+            if (LumenAISight::firstHit(c, cam, 0.f, wall, target))
+            {
+                LLVector3 in = c - cam;
+                in.normVec();
+                cam = wall + in * 0.2f;
+                const F32 near_dist = llmax(0.3f, (cam - c).magVec());
+                view.fov = llclamp(2.f * asinf(llmin(1.f, r * 1.1f / near_dist)),
+                                   view.fov, 100.f * DEG_TO_RAD);
+                notes.append("Something stood between it and where the camera would have been, so "
+                             "it was taken from closer, with a wider view.");
+            }
+            view.origin = cam;
+            LumenAISight::aim(view, c, overhead ? -toward_me : up_z);
+
+            std::string name;
+            if (const ObjectLabel* lab = objectLabel(target->getID())) name = lab->name;
+            std::string side;
+            if (overhead)                                         side = ", from above";
+            else if (said == "near")                              side = ", from the user's side";
+            else if (said.find("degrees") != std::string::npos)   side = ", from the side at " + said;
+            else                                                  side = ", from its " + said + " side";
+            where_from = (name.empty() ? std::string("the object") : "\"" + name + "\"") + side;
+            label_range = dist + r * 3.f + 10.f;
+        }
+        else if (overhead)
+        {
+            const F32 cover = distance_given ? llclamp((F32)params["distance"].asReal(), 2.f, 40.f) : 8.f;
+            F32 h = cover / tanf(view.fov * 0.5f);
+            // Indoors the roof would be all there is to see, so the camera goes
+            // just under it instead, with a wider lens to cover the same ground.
+            LLVector3 roof;
+            if (LumenAISight::firstHit(eye, eye + LLVector3(0.f, 0.f, h), 0.f, roof))
+            {
+                const F32 under = roof.mV[VZ] - 0.25f - feet.mV[VZ];
+                if (under > 0.5f)
+                {
+                    h = under;
+                    view.fov = llclamp(2.f * atanf(cover / h), view.fov, 110.f * DEG_TO_RAD);
+                    notes.append(llformat("There is a roof or ceiling over the user, so this was taken "
+                                          "from just under it, %.1f m above their feet, with a wide "
+                                          "lens -- the edges are stretched.", h));
+                }
+                else
+                {
+                    notes.append("Something is right above the user's head, so a view from above "
+                                 "shows only that. Try a view from where they stand instead.");
+                }
+            }
+            view.origin = feet + LLVector3(0.f, 0.f, h);
+            LumenAISight::aim(view, feet, facing);   // the top of the picture is the way they face
+            where_from = llformat("above the user, about %d m around them, the top of the picture "
+                                  "the way they face", (S32)ll_round(cover));
+            label_range = h + cover * 2.f;
+        }
+        else
+        {
+            LLVector3 dir;
+            std::string said;
+            if (!direction(params["look"], facing, "ahead", dir, said))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "`look` is ahead, behind, left, right, or a compass bearing in degrees.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            // Tipped down a little, so the floor and what stands on it are in.
+            const F32 tilt = 12.f * DEG_TO_RAD;
+            view.origin = eye;
+            LumenAISight::aim(view, eye + dir * cosf(tilt) - up_z * sinf(tilt), up_z);
+            where_from = "where the user stands, at eye height, looking " + said;
+            label_range = 48.f;
+        }
+        label_range = llmin(label_range, gAgentCamera.mDrawDistance);
+
+        LLPointer<LLImageRaw> raw;
+        std::string why;
+        if (!LumenAISight::render(view, raw, why))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = why;
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        // ---- the numbers ------------------------------------------------
+        const bool labels = !params.has("labels") || params["labels"].asBoolean();
+        LLSD numbered = LLSD::emptyArray();
+        S32 not_numbered = 0;
+        std::vector<LLUUID> want;
+        if (labels)
+        {
+            struct Cand { LLViewerObject* o; F32 d; LLVector3 min, max; };
+            std::vector<Cand> cands;
+            const S32 count = gObjectList.getNumObjects();
+            for (S32 i = 0; i < count; ++i)
+            {
+                LLViewerObject* o = gObjectList.getObject(i);
+                // As look_nearby: ordinary prims, one per linked set, ones that
+                // can be selected -- so every number is an id the tools take.
+                if (!o || o->isDead() || o->getPCode() != LL_PCODE_VOLUME
+                    || o->isAttachment() || o->getRootEdit() != o || !o->mbCanSelect)
+                {
+                    continue;
+                }
+                Cand cd;
+                cd.o = o;
+                LumenAISight::linksetBox(o, cd.min, cd.max);
+                const LLVector3 c = (cd.min + cd.max) * 0.5f;
+                cd.d = (c - view.origin).magVec();
+                if (cd.d > label_range) continue;
+                // Some part of its box must be in front of the camera and in frame.
+                bool in_view = false;
+                F32 px, py;
+                for (S32 k = 0; k < 9 && !in_view; ++k)
+                {
+                    const LLVector3 p = k == 8 ? c
+                        : LLVector3((k & 1) ? cd.max.mV[VX] : cd.min.mV[VX],
+                                    (k & 2) ? cd.max.mV[VY] : cd.min.mV[VY],
+                                    (k & 4) ? cd.max.mV[VZ] : cd.min.mV[VZ]);
+                    in_view = LumenAISight::project(view, p, px, py);
+                }
+                if (in_view) cands.push_back(cd);
+            }
+            std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
+            if (target)
+            {   // the one asked about first, so it is number 1 whenever it shows
+                for (size_t i = 0; i < cands.size(); ++i)
+                {
+                    if (cands[i].o == target) { std::rotate(cands.begin(), cands.begin() + i, cands.begin() + i + 1); break; }
+                }
+            }
+            const size_t MAX_TRIED = 80, MAX_LABELS = 40;
+            const S32 scale = high ? 3 : 2;
+            std::vector<std::array<S32, 4>> placed;
+            for (size_t i = 0; i < cands.size() && i < MAX_TRIED; ++i)
+            {
+                if (numbered.size() >= MAX_LABELS) { ++not_numbered; continue; }
+                const Cand& cd = cands[i];
+                const LLVector3 c = (cd.min + cd.max) * 0.5f;
+                const LLVector3 ext = cd.max - cd.min;
+                const F32 through = ext.magVec();
+                bool done = false;
+                for (S32 k = 0; k < 10 && !done; ++k)
+                {
+                    LLVector3 p = c;
+                    if (k == 1) p.mV[VZ] += ext.mV[VZ] * 0.35f;
+                    else if (k >= 2)
+                    {
+                        const S32 m = k - 2;
+                        p += LLVector3(((m & 1) ? 0.35f : -0.35f) * ext.mV[VX],
+                                       ((m & 2) ? 0.35f : -0.35f) * ext.mV[VY],
+                                       ((m & 4) ? 0.35f : -0.35f) * ext.mV[VZ]);
+                    }
+                    F32 px, py;
+                    if (!LumenAISight::project(view, p, px, py)) continue;
+                    LLVector3 hit;
+                    LLViewerObject* first = LumenAISight::firstHit(view.origin, p, through, hit);
+                    if (!first || first->getRootEdit() != cd.o) continue;   // something else is in front
+                    if (!LumenAISight::project(view, hit, px, py)) continue;
+                    S32 rect[4];
+                    LumenAISight::label(raw, (S32)px, (S32)py, (S32)numbered.size() + 1, scale, false, rect);
+                    if (rect[0] < 1 || rect[1] < 1 || rect[2] > view.width - 2 || rect[3] > view.height - 2)
+                        continue;
+                    bool overlaps = false;
+                    for (const auto& q : placed)
+                    {
+                        if (rect[0] <= q[2] + 2 && rect[2] + 2 >= q[0] && rect[1] <= q[3] + 2 && rect[3] + 2 >= q[1])
+                        { overlaps = true; break; }
+                    }
+                    if (overlaps) continue;
+                    LumenAISight::label(raw, (S32)px, (S32)py, (S32)numbered.size() + 1, scale, true, rect);
+                    placed.push_back({ rect[0], rect[1], rect[2], rect[3] });
+
+                    LLSD entry;
+                    entry["n"] = (S32)numbered.size() + 1;
+                    entry["object_id"] = cd.o->getID();
+                    if (const ObjectLabel* lab = objectLabel(cd.o->getID()))
+                    {
+                        entry["name"] = safeUtf8(lab->name);
+                    }
+                    else
+                    {
+                        entry["name"] = "(unnamed)";
+                        if (!cd.o->flagUsePhysics()) want.push_back(cd.o->getID());
+                    }
+                    entry["distance"] = ll_round((c - me).magVec(), 0.1f);
+                    LLSD sz; sz.append(ll_round(ext.mV[VX], 0.01f)); sz.append(ll_round(ext.mV[VY], 0.01f));
+                    sz.append(ll_round(ext.mV[VZ], 0.01f));
+                    entry["size"] = sz;
+                    if (!hide_location && cd.o->getRegion())
+                    {
+                        const LLVector3 rc = cd.o->getRegion()->getPosRegionFromAgent(c);
+                        LLSD cen; cen.append(ll_round(rc.mV[VX], 0.01f)); cen.append(ll_round(rc.mV[VY], 0.01f));
+                        cen.append(ll_round(rc.mV[VZ], 0.01f));
+                        entry["centre"] = cen;
+                        if (cd.o->getRegion() != gAgent.getRegion()) entry["region"] = cd.o->getRegion()->getName();
+                    }
+                    if (cd.o == target) entry["looked_at"] = true;
+                    if (rezzedByAssistant(cd.o->getID())) entry["rezzed_by_assistant"] = true;
+                    numbered.append(entry);
+                    done = true;
+                }
+                if (!done) ++not_numbered;
+            }
+            if (cands.size() > MAX_TRIED) not_numbered += (S32)(cands.size() - MAX_TRIED);
+        }
+        askNames(want);
+
+        LLPointer<LLImageJPEG> jpeg = new LLImageJPEG(85);
+        if (!jpeg->encode(raw, 0.f))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "The picture could not be made.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
+        LLSD result;
+        result["picture"] = "From " + where_from + ".";
+        result["size"] = llformat("%dx%d", view.width, view.height);
+        result["field_of_view"] = (S32)ll_round(view.fov * RAD_TO_DEG);
+        if (fabsf(view.at.mV[VZ]) > 0.97f) result["looking"] = "straight down";
+        else result["looking_toward"] = bearingOf(LLVector3(view.at.mV[VX], view.at.mV[VY], 0.f));
+        if (!hide_location && gAgent.getRegion())
+        {
+            const LLVector3 rc = gAgent.getRegion()->getPosRegionFromAgent(view.origin);
+            LLSD cam; cam.append(ll_round(rc.mV[VX], 0.01f)); cam.append(ll_round(rc.mV[VY], 0.01f));
+            cam.append(ll_round(rc.mV[VZ], 0.01f));
+            result["camera"] = cam;
+        }
+        if (labels)
+        {
+            result["numbered"] = numbered;
+            if (not_numbered > 0) result["not_numbered"] = not_numbered;
+            if (!want.empty()) result["names_still_coming"] = (S32)want.size();
+        }
+        notes.append("A picture rendered just now for this call, with every avatar left out -- the "
+                     "user's own too -- and nothing on the user's screen changed. It is not saved "
+                     "anywhere.");
+        if (labels)
+        {
+            notes.append("Each number on a dark tag marks one object; `numbered` says which "
+                         "object_id it is, with its name, size in metres and centre in region "
+                         "coordinates. Act on things by that object_id (build / set, select, "
+                         "remove). Things too small, covered, or past the first forty have no number.");
+        }
+        notes.append("Use it to build and arrange. Do not describe the picture to the user unless "
+                     "they ask -- they can see the world themselves.");
+        notes.append("Things away from where the user is looking can be blurry or not drawn yet: "
+                     "the viewer loads most what the user faces. Say so rather than guessing if "
+                     "something seems to be missing.");
+        if (!want.empty())
+        {
+            notes.append("Some names are still on their way; movement / look_nearby will have them "
+                         "in a couple of seconds.");
+        }
+        result["notes"] = notes;
+
+        LLSD image;
+        image["data"] = LLBase64::encode(jpeg->getData(), jpeg->getDataSize());
+        image["mime"] = "image/jpeg";
+        result["__image"] = image;
+
+        LL_INFOS("AICtl") << "picture from " << where_from << ", " << view.width << "x" << view.height
+                          << ", " << numbered.size() << " numbered, " << not_numbered
+                          << " not, " << jpeg->getDataSize() / 1024 << " KB, "
+                          << (S32)(took.getElapsedTimeF32() * 1000.f) << " ms" << LL_ENDL;
+        return result;
+    }
+    // </Lumen>
+
     if (method == "list_object_contents")
     {
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
