@@ -31,6 +31,8 @@
 #include "llsingleton.h"
 #include "llsd.h"
 #include "llhttpnode.h"   // <Lumen> a socket reply held while the user is asked
+#include "v3dmath.h"
+#include "v3math.h"
 
 #include <boost/signals2.hpp>
 #include <deque>
@@ -436,6 +438,22 @@ private:
     const ObjectLabel* objectLabel(const LLUUID& id) const;
     /** Whether a name for this object is still on its way. */
     bool nameOnItsWay(const LLUUID& id) const;
+
+    /**
+     * <Lumen> Task 017: the camera of the last build / picture, so a pixel in
+     * it can be turned into a point in the world. Held in GLOBAL coordinates:
+     * agent coordinates move whenever the user crosses into another region.
+     */
+    struct PictureCamera
+    {
+        bool       valid = false;
+        LLVector3d origin;
+        LLVector3  at, up;
+        F32        fov = 0.f;
+        S32        width = 0, height = 0;
+        F64        taken = 0.0;
+    };
+    PictureCamera mLastPicture;
 
     /**
      * Second Life's own search -- places and events.

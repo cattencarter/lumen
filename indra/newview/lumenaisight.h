@@ -104,9 +104,15 @@ namespace LumenAISight
      * `beyond` carries the ray that far past `to`, so a ray aimed at the
      * middle of a table still finds the table. Hits on `ignore`'s linked set
      * are stepped past too, for a ray that starts inside an object.
+     * `normal` and `face`, when given, get which way the surface faces there
+     * (unit length) and the face of the prim it hit.
      */
     LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
-                             const LLViewerObject* ignore = nullptr);
+                             const LLViewerObject* ignore = nullptr,
+                             LLVector3* normal = nullptr, S32* face = nullptr);
+
+    /** The direction from the camera through a pixel of the picture, counted from the top-left. */
+    LLVector3 rayThrough(const View& view, F32 px, F32 py);
 
     /** The axis-aligned box of a whole linked set, in agent coordinates. */
     void linksetBox(const LLViewerObject* root, LLVector3& min, LLVector3& max);

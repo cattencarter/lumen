@@ -3868,6 +3868,7 @@ namespace
             if (action == "link")   return "link_objects";
             if (action == "unlink") return "unlink_objects";
             if (action == "picture") return "build_picture";   // <Lumen> task 016
+            if (action == "point")   return "build_point";     // <Lumen> task 017
             return std::string();
         }
         if (group == "inventory")
@@ -5507,7 +5508,7 @@ namespace
         // to guess why.
         static const char* const build_actions[] =
             { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink",
-              "picture" };   // <Lumen> task 016
+              "picture", "point" };   // <Lumen> tasks 016, 017
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -5551,6 +5552,12 @@ namespace
             "`detail: \"high\"` for a bigger picture when the small one is not enough. Nothing "
             "on the user's screen changes and nothing is saved. Do not describe it to them "
             "unless they ask -- they can see the world.\n"
+            "- point: what is at a spot in the LAST picture -- `pixels`, x then y from its "
+            "top-left. Gives the point in region coordinates (what set's `position` takes), the "
+            "way the surface faces, and which object it is on, even a wall that is only one face "
+            "of a whole house. On a floor it says the room above and how far to the first thing "
+            "each way; anywhere else, the floor below. Several points at once give the distances "
+            "between them, for measuring a wall, a gap or a doorway.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -5658,6 +5665,12 @@ namespace
             LLSD blb; blb["type"]="boolean";
                 blb["description"]="picture: false leaves the numbers off, to see the build "
                                    "without them. On by default.";
+            LLSD num_list; num_list["type"]="number";
+            LLSD bpx; bpx["type"]="array"; bpx["items"]=num_list;
+                bpx["description"]="point: spots in the last picture as a flat list of x, y "
+                                   "pairs counted from its top-left -- [320, 400] for one, "
+                                   "[100, 200, 500, 210] for two. At most eight.";
+            build_props["pixels"]=bpx;
             build_props["look"]=blk; build_props["from"]=bfr;
             build_props["detail"]=bdt; build_props["labels"]=blb;
             // </Lumen>
@@ -10442,6 +10455,27 @@ namespace
     F64 sNextWebSearchAt = 0.0;
     // <Lumen> Task 015: which assistants a picture from a tool cannot reach.
     // Asked by every tool that answers with a picture, before it makes one.
+    /**
+     * <Lumen> Tasks 016 and 017. A picture from anywhere but the user's own
+     * camera would show what an RLV restriction is keeping from them: a camera
+     * held near the avatar, a blindfold, a vision sphere, textures replaced.
+     */
+    bool rlvLimitsPictures()
+    {
+        return rlv_handler_t::isEnabled()
+            && (RlvActions::isCameraDistanceClamped()
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_FOCUS)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_UNLOCK)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_TEXTURES)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETSPHERE)
+                || gRlvHandler.hasBehaviour(RLV_BHVR_SETOVERLAY));
+    }
+    const char* const RLV_LIMITS_PICTURES =
+        "Something the user is wearing (an RLV restriction) limits what their camera may see, so "
+        "no picture can be taken or looked into. Tell them plainly -- it is their own attachment "
+        "doing it.";
+
     const char* picturesCannotReach()
     {
         if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::VIBE)
@@ -27802,22 +27836,9 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = why;
             LLSD w; w["__error"] = e; return w;
         }
-        // A picture from somewhere else would show what an RLV restriction is
-        // keeping from them: a camera held near the avatar, a blindfold, a
-        // vision sphere, textures replaced.
-        if (rlv_handler_t::isEnabled()
-            && (RlvActions::isCameraDistanceClamped()
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_FOCUS)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_UNLOCK)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETCAM_TEXTURES)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETSPHERE)
-                || gRlvHandler.hasBehaviour(RLV_BHVR_SETOVERLAY)))
+        if (rlvLimitsPictures())
         {
-            LLSD e; e["code"] = -32000;
-            e["message"] = "Something the user is wearing (an RLV restriction) limits what their "
-                           "camera may see, so no picture can be taken. Tell them plainly -- it is "
-                           "their own attachment doing it.";
+            LLSD e; e["code"] = -32000; e["message"] = RLV_LIMITS_PICTURES;
             LLSD w; w["__error"] = e; return w;
         }
         const bool hide_location = rlv_handler_t::isEnabled() && !RlvActions::canShowLocation();
@@ -28027,6 +28048,16 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = why;
             LLSD w; w["__error"] = e; return w;
         }
+        // Kept for build / point, which turns a pixel of THIS picture into a
+        // point in the world.
+        mLastPicture.valid  = true;
+        mLastPicture.origin = gAgent.getPosGlobalFromAgent(view.origin);
+        mLastPicture.at     = view.at;
+        mLastPicture.up     = view.up;
+        mLastPicture.fov    = view.fov;
+        mLastPicture.width  = view.width;
+        mLastPicture.height = view.height;
+        mLastPicture.taken  = LLTimer::getTotalSeconds();
 
         // ---- the numbers ------------------------------------------------
         const bool labels = !params.has("labels") || params["labels"].asBoolean();
@@ -28209,6 +28240,247 @@ if (method == "camera")
                           << ", " << numbered.size() << " numbered, " << not_numbered
                           << " not, " << jpeg->getDataSize() / 1024 << " KB, "
                           << (S32)(took.getElapsedTimeF32() * 1000.f) << " ms" << LL_ENDL;
+        return result;
+    }
+    // </Lumen>
+
+    // <Lumen> Task 017: from a spot in the last picture to a point in the
+    // world. A wall is often one face of one house mesh rather than an object
+    // of its own, so the numbers alone cannot name it; this can. Geometry
+    // only -- the same ray the viewer's own click picking casts, from the
+    // camera that took the picture, through avatars as the picture left them out.
+    if (method == "build_point")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+            || !isAgentAvatarValid())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (rlvLimitsPictures())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = RLV_LIMITS_PICTURES;
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (!mLastPicture.valid)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "There is no picture to point into yet. Take one with build / picture; "
+                           "`pixels` count from its top-left corner.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const LLSD& px = params["pixels"];
+        if (!px.isArray() || px.size() < 2 || px.size() % 2 != 0 || px.size() > 16)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = llformat("`pixels` is x, y pairs in the last picture (%d x %d, counted "
+                                    "from the top-left) -- one to eight of them, as a flat list "
+                                    "like [320, 400] or [100, 200, 500, 210].",
+                                    mLastPicture.width, mLastPicture.height);
+            LLSD w; w["__error"] = e; return w;
+        }
+        const bool hide_location = rlv_handler_t::isEnabled() && !RlvActions::canShowLocation();
+
+        LumenAISight::View view;
+        view.origin = gAgent.getPosAgentFromGlobal(mLastPicture.origin);
+        view.at     = mLastPicture.at;
+        view.up     = mLastPicture.up;
+        view.fov    = mLastPicture.fov;
+        view.width  = mLastPicture.width;
+        view.height = mLastPicture.height;
+        const LLVector3 me = gAgent.getPositionAgent();
+        const F32 far_away = llmax(64.f, gAgentCamera.mDrawDistance);
+
+        auto regionCoords = [&](const LLVector3& agent, LLSD& out_region) -> LLSD
+        {
+            LLSD v = LLSD::emptyArray();
+            LLViewerRegion* r = LLWorld::getInstance()->getRegionFromPosAgent(agent);
+            if (!r) r = gAgent.getRegion();
+            if (!r) return v;
+            const LLVector3 rc = r->getPosRegionFromAgent(agent);
+            v.append(ll_round(rc.mV[VX], 0.01f));
+            v.append(ll_round(rc.mV[VY], 0.01f));
+            v.append(ll_round(rc.mV[VZ], 0.01f));
+            if (r != gAgent.getRegion()) out_region = r->getName();
+            return v;
+        };
+        auto bearingOf = [](const LLVector3& d) -> S32
+        {
+            S32 b = (S32)ll_round(atan2f(d.mV[VX], d.mV[VY]) * RAD_TO_DEG);
+            return (b + 360) % 360;
+        };
+        // What was hit, in words a model can act on.
+        std::vector<LLUUID> want;
+        auto describe = [&](LLViewerObject* o, S32 face, LLSD& out)
+        {
+            const LLPCode pc = o->getPCode();
+            if (pc == LLViewerObject::LL_VO_SURFACE_PATCH) { out["object"] = "the ground"; return; }
+            if (pc == LL_PCODE_LEGACY_TREE || pc == LL_PCODE_TREE_NEW) { out["object"] = "a tree"; return; }
+            if (pc == LL_PCODE_LEGACY_GRASS) { out["object"] = "grass"; return; }
+            if (pc != LL_PCODE_VOLUME) { out["object"] = "something that is not an object"; return; }
+            LLViewerObject* root = o->getRootEdit();
+            out["object_id"] = root->getID();
+            if (const ObjectLabel* lab = objectLabel(root->getID()))
+            {
+                out["name"] = safeUtf8(lab->name);
+            }
+            else
+            {
+                out["name"] = "(unnamed)";
+                if (!root->flagUsePhysics()) want.push_back(root->getID());
+            }
+            if (o != root)
+            {
+                // As inspect_object counts them: the root is 1, then its children in order.
+                S32 n = 2;
+                for (const LLViewerObject* child : root->getChildren())
+                {
+                    if (child == o) { out["link"] = n; break; }
+                    if (child && !child->isAvatar()) ++n;
+                }
+                out["prim_id"] = o->getID();
+            }
+            if (face >= 0) out["face"] = face;
+            if (rezzedByAssistant(root->getID())) out["rezzed_by_assistant"] = true;
+        };
+        // The first surface that faces up below a point, for standing things on.
+        auto floorBelow = [&](const LLVector3& from, LLVector3& floor, LLViewerObject*& on) -> bool
+        {
+            LLVector3 start = from;
+            for (S32 tries = 0; tries < 6; ++tries)
+            {
+                LLVector3 hit, n;
+                S32 f = -1;
+                LLViewerObject* o = LumenAISight::firstHit(start, start - LLVector3(0.f, 0.f, 60.f),
+                                                           0.f, hit, nullptr, &n, &f);
+                if (!o) return false;
+                if (n.mV[VZ] > 0.7f) { floor = hit; on = o; return true; }
+                start = hit - LLVector3(0.f, 0.f, 0.02f);   // an underside or a slope: keep going
+            }
+            return false;
+        };
+
+        LumenAISight::WithoutAvatars hidden;   // as the picture: avatars are not there
+        LLSD points = LLSD::emptyArray();
+        std::vector<LLVector3> hits;
+        std::vector<bool> got;
+        for (LLSD::Integer i = 0; i + 1 < px.size(); i += 2)
+        {
+            const F32 x = (F32)px[i].asReal(), y = (F32)px[i + 1].asReal();
+            LLSD p;
+            LLSD pix; pix.append((S32)ll_round(x)); pix.append((S32)ll_round(y));
+            p["pixel"] = pix;
+            if (x < 0.f || y < 0.f || x > (F32)view.width || y > (F32)view.height)
+            {
+                p["hit"] = false;
+                p["note"] = llformat("Outside the picture, which is %d x %d.", view.width, view.height);
+                points.append(p); hits.push_back(LLVector3()); got.push_back(false);
+                continue;
+            }
+            const LLVector3 dir = LumenAISight::rayThrough(view, x, y);
+            LLVector3 hit, n;
+            S32 face = -1;
+            LLViewerObject* o = LumenAISight::firstHit(view.origin, view.origin + dir * far_away,
+                                                       0.f, hit, nullptr, &n, &face);
+            if (!o)
+            {
+                p["hit"] = false;
+                p["note"] = llformat("Nothing there within %d m: sky, water, or further than the "
+                                     "viewer has been sent.", (S32)far_away);
+                points.append(p); hits.push_back(LLVector3()); got.push_back(false);
+                continue;
+            }
+            p["hit"] = true;
+            LLSD other_region;
+            if (!hide_location)
+            {
+                p["point"] = regionCoords(hit, other_region);
+                if (other_region.isDefined()) p["region"] = other_region;
+            }
+            p["distance_from_camera"] = ll_round((hit - view.origin).magVec(), 0.01f);
+            p["distance_from_user"]   = ll_round((hit - me).magVec(), 0.01f);
+            LLSD nv; nv.append(ll_round(n.mV[VX], 0.01f)); nv.append(ll_round(n.mV[VY], 0.01f));
+            nv.append(ll_round(n.mV[VZ], 0.01f));
+            p["normal"] = nv;
+            const bool upward = n.mV[VZ] > 0.85f;
+            if (upward)                    p["surface"] = "faces up -- a floor, the ground or a top";
+            else if (n.mV[VZ] < -0.85f)    p["surface"] = "faces down -- a ceiling or an underside";
+            else p["surface"] = llformat("a side facing %d degrees (0 north, 90 east)",
+                                         bearingOf(LLVector3(n.mV[VX], n.mV[VY], 0.f)));
+            describe(o, face, p);
+
+            if (upward)
+            {
+                // Standing on it: how much room there is, up and to each side.
+                LLVector3 above;
+                if (LumenAISight::firstHit(hit + LLVector3(0.f, 0.f, 0.05f), hit + LLVector3(0.f, 0.f, 30.f), 0.f, above))
+                    p["clear_above"] = ll_round(above.mV[VZ] - hit.mV[VZ], 0.01f);
+                else
+                    p["clear_above"] = "open, more than 30 m";
+                static const struct { const char* name; F32 x, y; } sides[] = {
+                    { "north", 0.f, 1.f }, { "east", 1.f, 0.f }, { "south", 0.f, -1.f }, { "west", -1.f, 0.f } };
+                LLSD walls;
+                const LLVector3 chest = hit + LLVector3(0.f, 0.f, 1.0f);
+                for (const auto& sd : sides)
+                {
+                    LLVector3 w;
+                    if (LumenAISight::firstHit(chest, chest + LLVector3(sd.x, sd.y, 0.f) * 30.f, 0.f, w))
+                        walls[sd.name] = ll_round((w - chest).magVec(), 0.01f);
+                }
+                if (walls.size() > 0)
+                {
+                    p["walls_around"] = walls;   // metres to the first thing each way, 1 m up
+                }
+            }
+            else
+            {
+                LLVector3 floor;
+                LLViewerObject* on = nullptr;
+                if (floorBelow(hit + n * 0.05f, floor, on))
+                {
+                    LLSD fb;
+                    fb["below_by"] = ll_round(hit.mV[VZ] - floor.mV[VZ], 0.01f);
+                    LLSD fr;
+                    if (!hide_location) fb["point"] = regionCoords(floor, fr);
+                    describe(on, -1, fb);
+                    p["floor_below"] = fb;
+                }
+            }
+            points.append(p);
+            hits.push_back(hit);
+            got.push_back(true);
+        }
+        askNames(want);
+
+        LLSD result;
+        result["points"] = points;
+        if (hits.size() > 1)
+        {
+            LLSD between = LLSD::emptyArray();
+            for (size_t i = 0; i + 1 < hits.size(); ++i)
+            {
+                if (!got[i] || !got[i + 1]) continue;
+                const LLVector3 d = hits[i + 1] - hits[i];
+                LLSD b;
+                b["from"] = (S32)i + 1;
+                b["to"]   = (S32)i + 2;
+                b["distance"]   = ll_round(d.magVec(), 0.01f);
+                b["horizontal"] = ll_round(LLVector3(d.mV[VX], d.mV[VY], 0.f).magVec(), 0.01f);
+                b["vertical"]   = ll_round(d.mV[VZ], 0.01f);
+                between.append(b);
+            }
+            if (between.size() > 0) result["between"] = between;
+        }
+        result["picture_age_seconds"] = (S32)(LLTimer::getTotalSeconds() - mLastPicture.taken);
+        result["note"] = "Each point is where a ray from the last picture's camera, through that "
+                         "pixel, first meets something -- passing through avatars, as the picture "
+                         "leaves them out. `point` is in region coordinates, as build / set takes "
+                         "a position; `normal` is the way the surface faces. A floor point says how "
+                         "much room is above it and how far the first thing is each way, 1 m up; "
+                         "any other point gives the floor below it. Something moved since the "
+                         "picture was taken is measured where it is now.";
+        if (!want.empty()) result["names_still_coming"] = (S32)want.size();
+        LL_INFOS("AICtl") << "point: " << points.size() << " pixel(s) in the last picture" << LL_ENDL;
         return result;
     }
     // </Lumen>

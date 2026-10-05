@@ -791,6 +791,7 @@ namespace
             if (action == "link")   return "Linking the objects";
             if (action == "unlink") return "Unlinking the object";
             if (action == "picture") return "Looking at the build";   // <Lumen> task 016
+            if (action == "point")   return "Measuring in the picture";   // <Lumen> task 017
         }
         if (group == "inventory")
         {

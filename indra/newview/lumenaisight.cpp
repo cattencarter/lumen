@@ -168,7 +168,7 @@ bool project(const View& view, const LLVector3& point, F32& px, F32& py)
 }
 
 LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
-                         const LLViewerObject* ignore)
+                         const LLViewerObject* ignore, LLVector3* normal, S32* face)
 {
     LLVector3 dir = to - from;
     const F32 len = dir.magVec();
@@ -186,16 +186,18 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
     // is not in the picture, so a hit on one is stepped past.
     for (S32 tries = 0; tries < 8; ++tries)
     {
-        LLVector4a s, e, hit;
+        LLVector4a s, e, hit, n;
         s.load3(start.mV);
         e.load3(end.mV);
+        n.clear();
+        S32 f = -1;
         LLViewerObject* o = gPipeline.lineSegmentIntersectInWorld(
             s, e,
             false,   // pick_transparent: an invisible prim hides nothing
             false,   // pick_rigged
             true,    // pick_unselectable: it is still in the way
             false,   // pick_reflection_probe
-            nullptr, nullptr, nullptr, &hit, nullptr, nullptr, nullptr);
+            &f, nullptr, nullptr, &hit, nullptr, &n, nullptr);
         if (!o)
         {
             return nullptr;
@@ -203,6 +205,14 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
         where.set(hit.getF32ptr());
         if (!o->isAvatar() && !o->isAttachment() && !(ignore && o->getRootEdit() == ignore))
         {
+            if (normal)
+            {
+                normal->set(n.getF32ptr());
+                if (normal->magVec() > 0.001f) normal->normVec();
+                // A surface is seen from the side the ray came from.
+                if (*normal * dir > 0.f) *normal = -*normal;
+            }
+            if (face) *face = f;
             return o;
         }
         start = where + dir * 0.02f;
@@ -212,6 +222,18 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
         }
     }
     return nullptr;
+}
+
+LLVector3 rayThrough(const View& view, F32 px, F32 py)
+{
+    const LLVector3 left = view.up % view.at;
+    const F32 half_v = tanf(view.fov * 0.5f);
+    const F32 aspect = (F32)view.width / (F32)view.height;
+    const F32 nx = 2.f * px / (F32)view.width - 1.f;
+    const F32 ny = 1.f - 2.f * py / (F32)view.height;
+    LLVector3 d = view.at - left * (nx * half_v * aspect) + view.up * (ny * half_v);
+    d.normVec();
+    return d;
 }
 
 void linksetBox(const LLViewerObject* root, LLVector3& min, LLVector3& max)

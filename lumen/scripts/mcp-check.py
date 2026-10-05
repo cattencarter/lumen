@@ -238,6 +238,9 @@ def main():
         # picture changes nothing, but it renders the world and returns a
         # picture; an object_id that cannot be found is refused before that.
         ("build",    "picture"):        {"object_id": NULL_UUID},
+        # point only reads, and without a picture taken first it is refused;
+        # odd pixels are refused even when there is one.
+        ("build",    "point"):          {"pixels": [1]},
 
         # There is no harmless landmark either -- every call makes one. A name
         # past Second Life's 63-character limit is refused by the handler
