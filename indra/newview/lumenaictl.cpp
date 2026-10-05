@@ -28211,7 +28211,8 @@ if (method == "camera")
         }
         notes.append("A picture rendered just now for this call, with every avatar left out -- the "
                      "user's own too -- and nothing on the user's screen changed. It is not saved "
-                     "anywhere.");
+                     "anywhere, and the user does not see it: only you do. Never tell them it was "
+                     "shown to them.");
         if (labels)
         {
             notes.append("Each number on a dark tag marks one object; `numbered` says which "
