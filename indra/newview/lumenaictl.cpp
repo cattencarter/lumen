@@ -146,6 +146,8 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
 #include "llmotion.h"
 #include "lllandmark.h"
 #include "llworld.h"
+#include "lldrawable.h"   // <Lumen> place: which parts are drawn solid
+#include "llface.h"       // <Lumen>
 #include "llworldmap.h"
 #include "llworldmapmessage.h"
 #include "llapr.h"
@@ -3869,6 +3871,7 @@ namespace
             if (action == "unlink") return "unlink_objects";
             if (action == "picture") return "build_picture";   // <Lumen> task 016
             if (action == "point")   return "build_point";     // <Lumen> task 017
+            if (action == "place")   return "build_place";     // <Lumen> task 018
             return std::string();
         }
         if (group == "inventory")
@@ -5508,7 +5511,7 @@ namespace
         // to guess why.
         static const char* const build_actions[] =
             { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink",
-              "picture", "point" };   // <Lumen> tasks 016, 017
+              "picture", "point", "place" };   // <Lumen> tasks 016, 017, 018
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -5558,6 +5561,17 @@ namespace
             "of a whole house. On a floor it says the room above and how far to the first thing "
             "each way; anywhere else, the floor below. Several points at once give the distances "
             "between them, for measuring a wall, a gap or a doorway.\n"
+            "- place: put an object where it belongs, measured by the viewer -- use it instead of "
+            "working out a position for set. `object_id`, and `wall`: one spot on the wall in the "
+            "LAST picture, x then y. It goes against that wall, centred on the spot, `gap` metres "
+            "off (default 0.02), squared to it, and stands on whatever is right below it. To turn "
+            "its front out from the wall, give `front`: a spot ON the object's front in the same "
+            "picture, x then y -- the seat side of a sofa, the doors of a cupboard -- so the "
+            "picture must show both the wall and that side. Without `front` the side already "
+            "facing out stays out. Without `wall` it only stands it on what "
+            "is below it: \"it is floating\", \"put it on the floor\", \"on the table\". Only the "
+            "parts drawn solid are measured, so an invisible shadow does not push it off the wall. "
+            "Then take a picture to check.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -5629,7 +5643,7 @@ namespace
             build_props["colour_name"]=bcn;
             build_props["position"]=bpo; build_props["rotation"]=bro;
             LLSD bid; bid["type"]="string";
-                bid["description"]="set, remove, take, list_contents, select, picture: the object to act "
+                bid["description"]="set, remove, take, list_contents, select, picture, place: the object to act "
                                    "on, as an object_id from movement / look_nearby or viewer / "
                                    "inspect_object. Pass it whenever the object already exists. "
                                    "Without it they work on what the user has selected, or -- "
@@ -5671,6 +5685,17 @@ namespace
                                    "pairs counted from its top-left -- [320, 400] for one, "
                                    "[100, 200, 500, 210] for two. At most eight.";
             build_props["pixels"]=bpx;
+            // <Lumen> task 018
+            LLSD bwl; bwl["type"]="array"; bwl["items"]=num_list;
+                bwl["description"]="place: one spot on the wall in the last picture, x then y "
+                                   "from its top-left, like [320, 200].";
+            LLSD bft; bft["type"]="array"; bft["items"]=num_list;
+                bft["description"]="place, with wall: a spot on the object's front in the last "
+                                   "picture, x then y -- the seat side of a sofa. It is turned so "
+                                   "that side faces out from the wall.";
+            LLSD bgp; bgp["type"]="number";
+                bgp["description"]="place: metres between it and the wall, 0 to 1. Default 0.02.";
+            build_props["wall"]=bwl; build_props["front"]=bft; build_props["gap"]=bgp;
             build_props["look"]=blk; build_props["from"]=bfr;
             build_props["detail"]=bdt; build_props["labels"]=blb;
             // </Lumen>
@@ -28665,6 +28690,367 @@ if (method == "camera")
                      briefOf(r));
         return r;
     }
+
+    // <Lumen> Task 018: put a piece of furniture where it belongs -- against a
+    // wall the model points at in the last picture, turned to face out from it
+    // when the model says which side is its front, and standing on what is
+    // right below it. The measuring is the viewer's, not the model's: on
+    // 2026-10-05 a couch stopped half a metre short of a wall, because an
+    // invisible shadow link made it look deeper, and floated 17 cm over the
+    // floor. Only the parts drawn solid are measured. The move itself goes
+    // through set, so its question, permissions and guards apply unchanged.
+    if (method == "build_place")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED
+            || !isAgentAvatarValid())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLViewerObject* obj = params.has("object_id")
+            ? gObjectList.findObject(params["object_id"].asUUID()) : nullptr;
+        if (obj) obj = obj->getRootEdit();
+        if (!obj || obj->isAvatar() || obj->isAttachment() || obj->getPCode() != LL_PCODE_VOLUME
+            || !obj->getRegion())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "place needs the object_id of an object standing in the world -- from "
+                           "movement / look_nearby or a picture's `numbered` list. Nothing was moved.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const bool wants_wall  = params.has("wall");
+        const bool wants_front = params["front"].isArray() ? params["front"].size() > 0
+                                                          : !params["front"].asString().empty();
+        if (wants_front && !wants_wall)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "`front` goes with `wall`: it says which side faces out from the wall. "
+                           "Nothing was moved.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (wants_wall && rlvLimitsPictures())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = RLV_LIMITS_PICTURES;
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (wants_wall && !mLastPicture.valid)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "There is no picture to point into yet. Take one with build / picture "
+                           "that shows the wall; `wall` is a spot on it, counted from the "
+                           "picture's top-left. Nothing was moved.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const F32 gap = params.has("gap") ? llclamp((F32)params["gap"].asReal(), 0.f, 1.f) : 0.02f;
+
+        // The parts drawn solid. A link every face of which is invisible, or
+        // drawn see-through (a shadow, a glow, a glass pane), does not count.
+        auto drawnSolid = [](LLViewerObject* p) -> bool
+        {
+            const LLDrawable* d = p->mDrawable.get();
+            for (U8 i = 0; i < p->getNumTEs(); ++i)
+            {
+                const LLTextureEntry* te = p->getTE(i);
+                if (!te || te->getColor().mV[VALPHA] < 0.05f) continue;
+                const LLFace* f = (d && i < d->getNumFaces()) ? d->getFace(i) : nullptr;
+                if (!f || !f->isInAlphaPool()) return true;
+            }
+            return false;
+        };
+        std::vector<LLViewerObject*> parts(1, obj);
+        for (LLViewerObject* c : obj->getChildren())
+        {
+            if (c && !c->isAvatar()) parts.push_back(c);
+        }
+        std::vector<LLViewerObject*> solid;
+        for (LLViewerObject* p : parts)
+        {
+            if (drawnSolid(p)) solid.push_back(p);
+        }
+        if (solid.empty()) solid = parts;
+        const S32 left_out = (S32)(parts.size() - solid.size());
+
+        const LLVector3 root_pos = obj->getPositionAgent();
+        std::vector<LLVector3> corners;   // relative to the root
+        for (LLViewerObject* p : solid)
+        {
+            const LLVector3 half = p->getScale() * 0.5f;
+            const LLQuaternion rot = p->getRenderRotation();
+            const LLVector3 centre = p->getPositionAgent();
+            for (S32 i = 0; i < 8; ++i)
+            {
+                const LLVector3 k((i & 1) ? half.mV[VX] : -half.mV[VX],
+                                  (i & 2) ? half.mV[VY] : -half.mV[VY],
+                                  (i & 4) ? half.mV[VZ] : -half.mV[VZ]);
+                corners.push_back(centre + k * rot - root_pos);
+            }
+        }
+
+        // The wall: a spot in the last picture, as build / point reads one.
+        LLVector3 wall_n, wall_p;
+        LLViewerObject* wall_obj = nullptr;
+        LumenAISight::View view;
+        if (wants_wall)
+        {
+            std::vector<F32> px;
+            const LLSD& w = params["wall"];
+            for (LLSD::array_const_iterator it = w.beginArray(); w.isArray() && it != w.endArray(); ++it)
+            {
+                if ((*it).isArray())
+                {
+                    for (LLSD::array_const_iterator j = (*it).beginArray(); j != (*it).endArray(); ++j)
+                        px.push_back((F32)(*j).asReal());
+                }
+                else px.push_back((F32)(*it).asReal());
+            }
+            if (px.size() != 2 || px[0] < 0.f || px[1] < 0.f
+                || px[0] > (F32)mLastPicture.width || px[1] > (F32)mLastPicture.height)
+            {
+                LLSD e; e["code"] = -32602;
+                e["message"] = llformat("`wall` is one spot on the wall in the last picture (%d x "
+                                        "%d), x then y from its top-left, like [320, 200]. Nothing "
+                                        "was moved.", mLastPicture.width, mLastPicture.height);
+                LLSD ww; ww["__error"] = e; return ww;
+            }
+            view.origin = gAgent.getPosAgentFromGlobal(mLastPicture.origin);
+            view.at     = mLastPicture.at;
+            view.up     = mLastPicture.up;
+            view.fov    = mLastPicture.fov;
+            view.width  = mLastPicture.width;
+            view.height = mLastPicture.height;
+            const LLVector3 dir = LumenAISight::rayThrough(view, px[0], px[1]);
+            const F32 far_away = llmax(64.f, gAgentCamera.mDrawDistance);
+            LLVector3 n;
+            {
+                LumenAISight::WithoutAvatars hide;
+                // The object itself is passed through: a spot just on it means the wall behind.
+                wall_obj = LumenAISight::firstHit(view.origin, view.origin + dir * far_away, 0.f,
+                                                  wall_p, obj, &n);
+            }
+            if (!wall_obj)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "Nothing is at that spot in the picture -- open sky or water. Point "
+                               "at the wall itself. Nothing was moved.";
+                LLSD ww; ww["__error"] = e; return ww;
+            }
+            wall_n.setVec(n.mV[VX], n.mV[VY], 0.f);
+            if (wall_n.magVec() < 0.6f)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That spot faces up or down -- a floor, a top or a ceiling -- not a "
+                               "wall. Point at the upright face of the wall. Nothing was moved.";
+                LLSD ww; ww["__error"] = e; return ww;
+            }
+            wall_n.normVec();
+        }
+
+        // The turn, about the vertical only. The object's own sides that lie
+        // flat, in the world; the one that should face out from the wall is
+        // either the front the model names, as seen in the picture, or the one
+        // already facing most that way -- squared to the wall, the least turn.
+        LLQuaternion turn;
+        F32 turned = 0.f;
+        if (wants_wall)
+        {
+            std::vector<LLVector3> sides;
+            const LLQuaternion r = obj->getRenderRotation();
+            static const LLVector3 AXES[6] = { LLVector3::x_axis, LLVector3::x_axis_neg,
+                                               LLVector3::y_axis, LLVector3::y_axis_neg,
+                                               LLVector3::z_axis, LLVector3::z_axis_neg };
+            for (const LLVector3& a : AXES)
+            {
+                LLVector3 d = a * r;
+                d.mV[VZ] = 0.f;
+                if (d.magVec() > 0.7f) { d.normVec(); sides.push_back(d); }
+            }
+            LLVector3 seen = wall_n;
+            if (wants_front && params["front"].isArray())
+            {
+                // A spot on the object's front in the picture: the way that
+                // surface faces is the way its front points. A word for it
+                // ("toward the camera") was tried first and was ambiguous the
+                // moment the object stood at an angle -- its end faced the
+                // camera as much as its front did.
+                std::vector<F32> fp;
+                const LLSD& fr = params["front"];
+                for (LLSD::array_const_iterator it = fr.beginArray(); it != fr.endArray(); ++it)
+                {
+                    if ((*it).isArray())
+                    {
+                        for (LLSD::array_const_iterator j = (*it).beginArray(); j != (*it).endArray(); ++j)
+                            fp.push_back((F32)(*j).asReal());
+                    }
+                    else fp.push_back((F32)(*it).asReal());
+                }
+                LLViewerObject* on = nullptr;
+                LLVector3 where, fn;
+                if (fp.size() == 2)
+                {
+                    const LLVector3 dir = LumenAISight::rayThrough(view, fp[0], fp[1]);
+                    LumenAISight::WithoutAvatars hide;
+                    on = LumenAISight::firstHit(view.origin, view.origin + dir * 64.f, 0.f, where,
+                                                nullptr, &fn);
+                }
+                LLVector3 fh(fn.mV[VX], fn.mV[VY], 0.f);
+                if (!on || on->getRootEdit() != obj || fh.magVec() < 0.3f)
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "`front` as a spot must be on the object's front in the last "
+                                   "picture -- a side of it, not its top -- x then y. That spot "
+                                   "is not. Nothing was moved.";
+                    LLSD ww; ww["__error"] = e; return ww;
+                }
+                fh.normVec();
+                seen = fh;
+            }
+            else if (wants_front)
+            {
+                LLVector3 at_h(view.at.mV[VX], view.at.mV[VY], 0.f);
+                LLVector3 left = view.up % view.at;
+                left.mV[VZ] = 0.f;
+                at_h.normVec();
+                left.normVec();
+                std::string f = params["front"].asString();
+                LLStringUtil::toLower(f);
+                std::replace(f.begin(), f.end(), ' ', '_');
+                if (f == "toward_camera" || f == "towards_camera")  seen = -at_h;
+                else if (f == "away_from_camera")                   seen = at_h;
+                else if (f == "left")                               seen = left;
+                else if (f == "right")                              seen = -left;
+                else
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "`front` is toward_camera, away_from_camera, left or right -- "
+                                   "which way the object's front points in the last picture. "
+                                   "Nothing was moved.";
+                    LLSD ww; ww["__error"] = e; return ww;
+                }
+            }
+            if (!sides.empty())
+            {
+                LLVector3 side = sides[0];
+                for (const LLVector3& s : sides) if (s * seen > side * seen) side = s;
+                const F32 yaw = atan2f((side % wall_n).mV[VZ], side * wall_n);
+                turn.setAngleAxis(yaw, 0.f, 0.f, 1.f);
+                turned = yaw * RAD_TO_DEG;
+            }
+        }
+        for (LLVector3& c : corners) c = c * turn;
+
+        LLVector3 new_root = root_pos;
+        F32 off_wall = 0.f;
+        if (wants_wall)
+        {
+            LLVector3 t = LLVector3::z_axis % wall_n;
+            t.normVec();
+            F32 dmin = 1.e9f, tmin = 1.e9f, tmax = -1.e9f;
+            for (const LLVector3& c : corners)
+            {
+                const LLVector3 v = root_pos + c - wall_p;
+                dmin = llmin(dmin, v * wall_n);
+                tmin = llmin(tmin, v * t);
+                tmax = llmax(tmax, v * t);
+            }
+            new_root += wall_n * (gap - dmin) - t * ((tmin + tmax) * 0.5f);
+            off_wall = gap;
+        }
+
+        // Onto what is right below it: rays down through its footprint -- the
+        // middle and four corners, a little in -- from just above its top. The
+        // highest surface facing up is what it stands on.
+        LLVector3 lo( 1.e9f,  1.e9f,  1.e9f), hi(-1.e9f, -1.e9f, -1.e9f);
+        for (const LLVector3& c : corners)
+        {
+            const LLVector3 v = new_root + c;
+            for (S32 a = 0; a < 3; ++a) { lo.mV[a] = llmin(lo.mV[a], v.mV[a]); hi.mV[a] = llmax(hi.mV[a], v.mV[a]); }
+        }
+        F32 support = -1.e9f;
+        LLViewerObject* support_obj = nullptr;
+        {
+            LumenAISight::WithoutAvatars hide;
+            const F32 ix = (hi.mV[VX] - lo.mV[VX]) * 0.15f, iy = (hi.mV[VY] - lo.mV[VY]) * 0.15f;
+            const F32 xs[5] = { (lo.mV[VX] + hi.mV[VX]) * 0.5f, lo.mV[VX] + ix, hi.mV[VX] - ix, lo.mV[VX] + ix, hi.mV[VX] - ix };
+            const F32 ys[5] = { (lo.mV[VY] + hi.mV[VY]) * 0.5f, lo.mV[VY] + iy, lo.mV[VY] + iy, hi.mV[VY] - iy, hi.mV[VY] - iy };
+            for (S32 i = 0; i < 5; ++i)
+            {
+                LLVector3 where, n;
+                LLViewerObject* o = LumenAISight::firstHit(LLVector3(xs[i], ys[i], hi.mV[VZ] + 0.05f),
+                                                           LLVector3(xs[i], ys[i], lo.mV[VZ] - 60.f),
+                                                           0.f, where, obj, &n);
+                if (o && n.mV[VZ] > 0.5f && where.mV[VZ] > support)
+                {
+                    support = where.mV[VZ];
+                    support_obj = o;
+                }
+            }
+        }
+        const F32 raised = support_obj ? support - lo.mV[VZ] : 0.f;
+        new_root.mV[VZ] += raised;
+
+        // Hand it to set.
+        LLViewerRegion* region = obj->getRegion();
+        const LLVector3 rpos = region->getPosRegionFromAgent(new_root);
+        LLSD sp;
+        sp["object_id"] = obj->getID();
+        LLSD pos = LLSD::emptyArray();
+        pos.append(rpos.mV[VX]); pos.append(rpos.mV[VY]); pos.append(rpos.mV[VZ]);
+        sp["position"] = pos;
+        if (fabsf(turned) > 0.05f)
+        {
+            F32 rx, ry, rz;
+            (obj->getRotation() * turn).getEulerAngles(&rx, &ry, &rz);
+            LLSD rot = LLSD::emptyArray();
+            rot.append(rx * RAD_TO_DEG); rot.append(ry * RAD_TO_DEG); rot.append(rz * RAD_TO_DEG);
+            sp["rotation"] = rot;
+        }
+        if (params.has("request_id")) sp["request_id"] = params["request_id"];
+        LLSD r = dispatch("set_object", sp);
+        if (r.has("__error")) return r;
+
+        LLSD placed;
+        placed["moved_by_metres"] = ll_round((new_root - root_pos).magVec(), 0.01f);
+        placed["turned_by_degrees"] = (S32)ll_round(turned);
+        if (wants_wall)
+        {
+            placed["gap_to_wall_metres"] = ll_round(off_wall, 0.01f);
+            if (wall_obj->getPCode() == LL_PCODE_VOLUME)
+            {
+                const ObjectLabel* wl = objectLabel(wall_obj->getRootEdit()->getID());
+                placed["wall"] = wl ? safeUtf8(wl->name) : std::string("(unnamed)");
+            }
+        }
+        if (support_obj)
+        {
+            if (support_obj->getPCode() == LLViewerObject::LL_VO_SURFACE_PATCH)
+            {
+                placed["standing_on"] = "the ground";
+            }
+            else
+            {
+                const ObjectLabel* sl = objectLabel(support_obj->getRootEdit()->getID());
+                placed["standing_on"] = sl ? safeUtf8(sl->name) : std::string("(unnamed)");
+            }
+            placed["raised_by_metres"] = ll_round(raised, 0.01f);   // negative: lowered
+        }
+        else
+        {
+            placed["standing_on"] = "nothing found below it -- its height was left as it was";
+        }
+        if (left_out > 0) placed["parts_not_measured"] = left_out;
+        r["placed"] = placed;
+        r["note"] = std::string("Placed by measuring the parts drawn solid") +
+                    (left_out > 0 ? " -- invisible or see-through links (a shadow, a glow) were "
+                                    "left out of its size" : "") +
+                    ". Take a new picture to check it before saying it is right, and say what "
+                    "was done. If it faces the wrong way, call place again with `front` from a "
+                    "picture that shows its front.";
+        LL_INFOS("AICtl") << "place: moved " << (new_root - root_pos).magVec() << " m, turned "
+                          << turned << " degrees, raised " << raised << " m, " << left_out
+                          << " part(s) not measured" << LL_ENDL;
+        return r;
+    }
+    // </Lumen>
 
     // ---- build: set, remove, link, unlink -----------------------------------
     if (method == "set_object" || method == "remove_object"
