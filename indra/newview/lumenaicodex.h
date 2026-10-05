@@ -108,6 +108,15 @@ public:
      */
     static std::vector<std::string> enabledPlugins();
 
+    /**
+     * <Lumen> The MCP servers the user's own Codex config defines, by name --
+     * `[mcp_servers.NAME]` and `[mcp_servers."NAME"]` headers, not their
+     * sub-tables. Lumen's threads switch every one of them off: one of them
+     * (`node_repl`, which ChatGPT's computer use installs) drove the user's
+     * screen from a Lumen thread on 2026-10-05.
+     */
+    static std::vector<std::string> configuredMcpServers();
+
     /** Connect and perform the WebSocket handshake. False sets `why`. */
     bool connect(std::string& why);
     void close();

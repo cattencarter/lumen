@@ -39,6 +39,7 @@
 #include "llsdserialize.h"
 
 #include "lumenaiwin.h"   // <Lumen>
+#include <algorithm>       // <Lumen> configuredMcpServers
 
 #if LL_WINDOWS
 // <Lumen> On Windows Lumen does not use Codex's daemon at all. It starts its
@@ -216,6 +217,43 @@ std::vector<std::string> LumenAICodex::enabledPlugins()
         const size_t c = line.find('"', b);
         if (c == std::string::npos || c == b) continue;
         out.push_back(line.substr(b, c - b));
+    }
+    return out;
+}
+
+std::vector<std::string> LumenAICodex::configuredMcpServers()
+{
+    std::vector<std::string> out;
+    const std::string home = homeDir();
+    if (home.empty()) return out;
+    const std::string s = gDirUtilp->getDirDelimiter();
+
+    llifstream in((home + s + ".codex" + s + "config.toml").c_str());
+    if (!in.is_open()) return out;
+
+    // `[mcp_servers.NAME]` or `[mcp_servers."NAME"]`; `[mcp_servers.NAME.env]`
+    // and the like are parts of one already counted.
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const size_t a = line.find_first_not_of(" \t");
+        if (a == std::string::npos || line.compare(a, 13, "[mcp_servers.") != 0) continue;
+        const size_t b = a + 13;
+        std::string name;
+        if (b < line.size() && line[b] == '"')
+        {
+            const size_t c = line.find('"', b + 1);
+            if (c == std::string::npos || line.find(']', c) != c + 1) continue;
+            name = line.substr(b + 1, c - b - 1);
+        }
+        else
+        {
+            const size_t c = line.find(']', b);
+            if (c == std::string::npos) continue;
+            name = line.substr(b, c - b);
+            if (name.find('.') != std::string::npos) continue;   // a sub-table
+        }
+        if (!name.empty() && std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
     }
     return out;
 }

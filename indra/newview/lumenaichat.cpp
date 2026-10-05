@@ -3391,6 +3391,25 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         LLSD cfg;
         cfg["mcp_servers"] = LLSD().with("second_life", server);
 
+        // <Lumen> **And every other MCP server the user's Codex has, switched
+        // off for OUR thread.** The plugins below were already off, but a
+        // server defined in config.toml is not a plugin: ChatGPT's computer use
+        // installs `node_repl`, whose `js` tool drives the screen. On
+        // 2026-10-05 a Lumen thread that Codex's background service resumed by
+        // itself after a restart -- with no viewer connected and nobody asking
+        // -- used it to take screenshots of Firestorm and of the test viewer,
+        // open Lumen from Applications and click at its login screen for two
+        // minutes. Lumen's threads get Lumen's tools and nothing else.
+        const std::vector<std::string> servers = LumenAICodex::configuredMcpServers();
+        for (size_t i = 0; i < servers.size(); ++i)
+        {
+            if (servers[i] == "second_life") continue;
+            cfg["mcp_servers"][servers[i]] = LLSD().with("enabled", false);
+        }
+        // Codex's built-in app connectors and computer use, by their own
+        // switches too -- belt and braces for whatever brings them next.
+        cfg["features"] = LLSD().with("apps", false).with("computer_use", false);
+
         // **Switch off Codex's own plugins for OUR thread, and the reason is
         // not tidiness.** Asked "hvad er min draw distance", the model called
         // `cua.getApp("org.firestormviewer...")` three times -- Codex's
@@ -3472,6 +3491,12 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         // Codex's safe list still runs plain reads without asking, so the
         // prompt's "do not run one" remains the last line against a read; the
         // app-server offers no documented switch for the shell tool itself.
+        // <Lumen> **Never saved, so never resumed.** Codex's background service
+        // resumes an unfinished thread by itself after it restarts ("Continue
+        // the unfinished work") -- that is how the thread above came back with
+        // nobody there. Lumen starts a fresh thread whenever it needs one and
+        // never resumes its own, so an ephemeral thread costs it nothing.
+        start["ephemeral"]         = true;
         start["sandbox"]           = "read-only";
         start["approvalPolicy"]    = "untrusted";
         start["approvalsReviewer"] = "user";
