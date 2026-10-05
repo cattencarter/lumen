@@ -386,7 +386,8 @@ namespace
                          const std::string& request_id, bool& is_error,
                          LLSD* structured = nullptr,
                          const std::function<bool()>& still_wanted = nullptr,
-                         const std::function<void()>& on_waiting = nullptr)
+                         const std::function<void()>& on_waiting = nullptr,
+                         LLSD* images = nullptr)
     {
         is_error = false;
 
@@ -481,13 +482,19 @@ namespace
             is_error = true;
         }
 
-        // MCP shape: content is a list of typed blocks; ours are all text.
+        // MCP shape: content is a list of typed blocks -- text, and (task 015)
+        // a picture, which each provider is handed in its own dialect.
         std::string text;
         if (result.has("content") && result["content"].isArray())
         {
             for (LLSD::array_const_iterator it = result["content"].beginArray();
                  it != result["content"].endArray(); ++it)
             {
+                if ((*it)["type"].asString() == "image")
+                {
+                    if (images) images->append(*it);
+                    continue;
+                }
                 if ((*it).has("text"))
                 {
                     if (!text.empty()) text += "\n";
@@ -836,6 +843,7 @@ namespace
             if (action == "remember")      return "Remembering";
             if (action == "forget")        return "Forgetting";
             if (action == "recall")        return "Reading what it remembers";
+            if (action == "test_picture")  return "Looking at a test picture";   // <Lumen>
             if (action == "music")         return "Seeing to the music";   // <Lumen>
         }
 
@@ -4274,6 +4282,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     sayAssistant(assistant_text);
                 }
 
+                LLSD turn_images = LLSD::emptyArray();   // <Lumen> task 015
                 for (LLSD::array_const_iterator it = message["tool_calls"].beginArray();
                      it != message["tool_calls"].endArray(); ++it)
                 {
@@ -4301,7 +4310,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     LLSD structured;   // <Lumen>
                     const std::string result = ok
                         ? callTool(name, args, call_id, is_error, &structured, stillMine,
-                                   [&]() { setActivity(ASK_WAITING_LABEL); })
+                                   [&]() { setActivity(ASK_WAITING_LABEL); }, &turn_images)
                         : std::string("Could not read the arguments for this call.");
                     if (!stillMine()) return;   // <Lumen> it may have waited for the user
                     // <Lumen> catch_up is drawn rather than described
@@ -4318,6 +4327,35 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     // pause read as a slow "Reviewing history".
                     thinkingAfterStep();
                 }
+                // <Lumen> Task 015. This dialect takes a picture only in a USER
+                // message, never in a tool message, so the pictures the calls
+                // returned follow them as one, in order. Mistral writes the
+                // address as a plain string; OpenAI and local servers as {url}.
+                if (turn_images.size() > 0)
+                {
+                    LLSD parts = LLSD::emptyArray();
+                    LLSD intro;
+                    intro["type"] = "text";
+                    intro["text"] = "The picture the tool call above returned"
+                                    + std::string(turn_images.size() > 1 ? "s, in order:" : ":");
+                    parts.append(intro);
+                    for (LLSD::array_const_iterator im = turn_images.beginArray();
+                         im != turn_images.endArray(); ++im)
+                    {
+                        const std::string url = "data:" + (*im)["mimeType"].asString()
+                                              + ";base64," + (*im)["data"].asString();
+                        LLSD part;
+                        part["type"] = "image_url";
+                        if (provider == LumenAIKeys::MISTRAL) part["image_url"] = url;
+                        else { LLSD u; u["url"] = url; part["image_url"] = u; }
+                        parts.append(part);
+                    }
+                    LLSD um;
+                    um["role"]    = "user";
+                    um["content"] = parts;
+                    mMessages.append(um);
+                }
+                // </Lumen>
             }
         }
         else
@@ -4356,9 +4394,10 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
 
                     bool is_error = false;
                     LLSD structured;   // <Lumen>
+                    LLSD images = LLSD::emptyArray();   // <Lumen> task 015
                     const std::string result =
                         callTool(name, (*it)["input"], call_id, is_error, &structured,
-                                 stillMine, [&]() { setActivity(ASK_WAITING_LABEL); });
+                                 stillMine, [&]() { setActivity(ASK_WAITING_LABEL); }, &images);
                     if (!stillMine()) return;   // <Lumen> it may have waited for the user
                     // <Lumen> catch_up is drawn rather than described
                     noteCatchUp(name, (*it)["input"], structured, is_error);
@@ -4368,6 +4407,25 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     tr["type"]        = "tool_result";
                     tr["tool_use_id"] = call_id;
                     tr["content"]     = result;
+                    // <Lumen> Task 015: a picture rides in the tool result itself.
+                    if (images.size() > 0)
+                    {
+                        LLSD blocks = LLSD::emptyArray();
+                        LLSD t; t["type"] = "text"; t["text"] = result;
+                        blocks.append(t);
+                        for (LLSD::array_const_iterator im = images.beginArray();
+                             im != images.endArray(); ++im)
+                        {
+                            LLSD src;
+                            src["type"]       = "base64";
+                            src["media_type"] = (*im)["mimeType"];
+                            src["data"]       = (*im)["data"];
+                            LLSD b; b["type"] = "image"; b["source"] = src;
+                            blocks.append(b);
+                        }
+                        tr["content"] = blocks;
+                    }
+                    // </Lumen>
                     if (is_error)
                     {
                         tr["is_error"] = true;

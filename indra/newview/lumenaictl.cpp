@@ -103,6 +103,8 @@
 #include "fspose.h"
 #include "lllogchat.h"
 #include "llimagepng.h"
+#include "llbase64.h"   // <Lumen> test_picture
+#include "llrand.h"     // <Lumen> test_picture
 #include "llsnapshotmodel.h"
 #include "llsnapshotlivepreview.h"
 #include "lltoolplacer.h"
@@ -3958,6 +3960,7 @@ namespace
             if (action == "remember")      return "remember";
             if (action == "forget")        return "forget";
             if (action == "recall")        return "recall";
+            if (action == "test_picture")  return "test_picture";   // <Lumen> task 015
             if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
@@ -5038,11 +5041,15 @@ namespace
               "answer_while_away", "read_scripts", "edit_script", "save_script", "lighting",
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
-              "open_script", "new_script", "remember", "forget", "recall", "music" };
+              "open_script", "new_script", "remember", "forget", "recall", "music",
+              "test_picture" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
             "What the viewer is doing, and what you have done through it. Pick one with `action`:\n"
+            "  `test_picture`: ONLY when the user asks to test whether you can see pictures. It "
+            "returns a small picture the viewer has just drawn: say which shape and which colour "
+            "you see in it, or plainly that no picture reached you.\n"
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
@@ -13219,8 +13226,25 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             return result;
         }
 
+        // <Lumen> A picture travels as its own content block, as MCP describes
+        // one -- never inside the text, where it would be a wall of base64.
+        LLSD image;
+        if (inner.isMap() && inner.has("__image"))
+        {
+            image = inner["__image"];
+            inner.erase("__image");
+        }
+        // </Lumen>
         text["text"] = llsdToJsonString(inner);
         content.append(text);
+        if (image.isMap() && image.has("data"))
+        {
+            LLSD block;
+            block["type"]     = "image";
+            block["data"]     = image["data"];
+            block["mimeType"] = image.has("mime") ? image["mime"] : LLSD("image/png");
+            content.append(block);
+        }
 
         LLSD result;
         result["content"] = content;
@@ -15310,6 +15334,67 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     // them, because the one real danger is a "remember that..." that did not
     // come from them. The away-responder is sent no tools at all, so it can
     // never reach this.
+    // <Lumen> Task 015: can the model see a picture a tool returns? One shape
+    // in one colour on a light ground, chosen at random each call so the
+    // answer cannot be guessed, and written to the log so it can be checked.
+    // Nothing of the world and nobody in it -- a picture of the world is 016.
+    if (method == "test_picture")
+    {
+        static const char* const shapes[]  = { "square", "circle", "triangle" };
+        struct Colour { const char* name; U8 r, g, b; };
+        static const Colour colours[] = {
+            { "red", 220, 40, 40 }, { "green", 40, 170, 60 }, { "blue", 40, 80, 220 },
+            { "yellow", 240, 210, 40 }, { "purple", 140, 60, 180 }, { "orange", 240, 140, 30 } };
+        const S32 shape = ll_rand(3);
+        const Colour& c = colours[ll_rand(6)];
+        const S32 W = 256, H = 256;
+        LLPointer<LLImageRaw> raw = new LLImageRaw(W, H, 3);
+        U8* px = raw->getData();
+        for (S32 y = 0; y < H; ++y)
+        {
+            for (S32 x = 0; x < W; ++x)
+            {
+                bool in = false;
+                const S32 dx = x - W / 2, dy = y - H / 2;
+                if (shape == 0) in = std::abs(dx) <= 64 && std::abs(dy) <= 64;
+                else if (shape == 1) in = dx * dx + dy * dy <= 70 * 70;
+                else
+                {
+                    // Point at the top of the picture (rows run bottom-up here).
+                    const S32 top = H / 2 + 70, base = H / 2 - 60;
+                    if (y >= base && y <= top)
+                    {
+                        const F32 half = 75.f * (F32)(top - y) / (F32)(top - base);
+                        in = std::abs(dx) <= half;
+                    }
+                }
+                U8* p = px + 3 * (y * W + x);
+                p[0] = in ? c.r : 245;
+                p[1] = in ? c.g : 245;
+                p[2] = in ? c.b : 245;
+            }
+        }
+        LLPointer<LLImagePNG> png = new LLImagePNG();
+        if (!png->encode(raw, 0.f))
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "The test picture could not be made.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LL_INFOS("AICtl") << "test_picture drew a " << c.name << " " << shapes[shape] << LL_ENDL;
+        LLSD result;
+        result["note"] = "A test picture the viewer drew for this call: one shape in one colour "
+                         "on a light ground, nothing else. Say which shape and colour you see -- "
+                         "the user is checking that pictures reach you. If no picture came with "
+                         "this, say so plainly rather than guessing.";
+        result["size"] = "256x256";
+        LLSD image;
+        image["data"] = LLBase64::encode(png->getData(), png->getDataSize());
+        image["mime"] = "image/png";
+        result["__image"] = image;
+        return result;
+    }
+    // </Lumen>
+
     if (method == "remember" || method == "forget" || method == "recall")
     {
         if (!LumenAIMemory::available())
