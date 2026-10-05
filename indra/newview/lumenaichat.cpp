@@ -798,6 +798,7 @@ namespace
             if (action == "picture") return "Looking at the build";   // <Lumen> task 016
             if (action == "point")   return "Measuring in the picture";   // <Lumen> task 017
             if (action == "place")   return "Placing it";   // <Lumen> task 018
+            if (action == "undo")    return "Putting things back";   // <Lumen> task 021
         }
         if (group == "inventory")
         {
@@ -1596,6 +1597,22 @@ void LumenAIChatFloater::refreshKeyNotice()
         sayNote("Now using " + now + ".");
     }
     mAnnounced = now;
+
+    // <Lumen> Once, for somebody on Codex who picked a model themselves before
+    // 0.1.7 made gpt-6.1-sol the default: a new default does not reach a
+    // setting they changed. The author: "can we make a short message in the
+    // agent telling that sol is both better and cheaper?" One click switches;
+    // saying nothing keeps theirs, and it is not said again.
+    static const char* const CODEX_RECOMMENDED = "gpt-6.1-sol";
+    if (provider == LumenAIKeys::CODEX && !model.empty() && model != CODEX_RECOMMENDED
+        && !gSavedSettings.getBOOL("LumenAICodexModelNoteShown"))
+    {
+        gSavedSettings.setBOOL("LumenAICodexModelNoteShown", true);
+        sayNote(std::string("Codex now recommends ") + CODEX_RECOMMENDED + ": it does better in "
+                "Lumen than " + model + " and uses less of your ChatGPT allowance. "
+                "[secondlife:///app/lumen_codex_model Switch to " + CODEX_RECOMMENDED + "] -- "
+                "or keep yours; this is only said once.");
+    }
 
     // **Two of the four providers have no key, and there is no such thing as a
     // "Codex key".** Codex signs in with the user's ChatGPT account and a local
@@ -3083,6 +3100,26 @@ namespace
         }
     };
     LumenCatchUpHandler gLumenCatchUpHandler;
+
+    /// secondlife:///app/lumen_codex_model -- the one-click half of the note
+    /// above. UNTRUSTED_BLOCK for the same reason: only the viewer's own window
+    /// may change which model the person pays for.
+    class LumenCodexModelHandler : public LLCommandHandler
+    {
+    public:
+        LumenCodexModelHandler() : LLCommandHandler("lumen_codex_model", UNTRUSTED_BLOCK) {}
+
+        bool handle(const LLSD&, const LLSD&, const std::string&, LLMediaCtrl*) override
+        {
+            gSavedSettings.setString("LumenAICodexModel", "gpt-6.1-sol");
+            // The next request starts a fresh conversation on it: the model is
+            // fixed per Codex thread, and a changed one starts a new thread.
+            LumenAIChatFloater::postFromViewer(std::string(),
+                "Switched: Codex now uses gpt-6.1-sol, from your next request.");
+            return true;
+        }
+    };
+    LumenCodexModelHandler gLumenCodexModelHandler;
 }
 // </Lumen>
 

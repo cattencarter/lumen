@@ -178,7 +178,19 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
     }
     dir /= len;
     LLVector3 start = from;
-    const LLVector3 end = to + dir * llmax(beyond, 0.f);
+    LLVector3 end = to + dir * llmax(beyond, 0.f);
+    // Second Life's land test walks a ray by its HORIZONTAL length
+    // (LLVOSurfacePatch::lineSegmentIntersect), so a ray straight down never
+    // meets the land at all -- a box floating over bare ground had "nothing
+    // under it". Leaning it 5 cm over its whole length is enough, and is less
+    // than a millimetre where it meets something a metre away.
+    if (fabsf(end.mV[VX] - from.mV[VX]) + fabsf(end.mV[VY] - from.mV[VY]) < 0.05f)
+    {
+        end.mV[VX] = from.mV[VX] + 0.05f;
+        end.mV[VY] = from.mV[VY];
+        dir = end - from;
+        dir.normVec();
+    }
 
     // The raycast honours the render-type switches, so with WithoutAvatars
     // alive it passes through avatars and what they wear -- but it tests every
@@ -292,6 +304,53 @@ namespace
         U8* p = raw->getData() + 3 * ((h - 1 - y) * w + x);
         p[0] = r; p[1] = g; p[2] = b;
     }
+}
+
+bool brighten(LLImageRaw* raw)
+{
+    if (!raw || raw->getComponents() < 3 || raw->getWidth() <= 0 || raw->getHeight() <= 0) return false;
+    U8* d = raw->getData();
+    const S32 comps = raw->getComponents();
+    const S32 n = raw->getWidth() * raw->getHeight();
+
+    // How bright it is: the luminance histogram, its mean and its 99th percentile.
+    S32 hist[256] = { 0 };
+    F64 sum = 0.0;
+    for (S32 i = 0; i < n; ++i)
+    {
+        const U8* p = d + i * comps;
+        const S32 y = (S32)(0.299f * p[0] + 0.587f * p[1] + 0.114f * p[2] + 0.5f);
+        ++hist[llclamp(y, 0, 255)];
+        sum += y;
+    }
+    const F32 mean = (F32)(sum / n);
+    if (mean >= 85.f) return false;   // light enough already: leave it exactly as drawn
+    S32 seen = 0, p99 = 255;
+    for (S32 v = 0; v < 256; ++v)
+    {
+        seen += hist[v];
+        if (seen >= n * 0.99) { p99 = v; break; }
+    }
+    // A gain that brings its bright end near white, at most four times, then a
+    // curve that lifts the middle towards a readable grey.
+    const F32 gain = llclamp(235.f / (F32)llmax(p99, 1), 1.f, 4.f);
+    const F32 lifted = llclamp(mean * gain / 255.f, 0.01f, 0.99f);
+    const F32 gamma = llclamp(logf(105.f / 255.f) / logf(lifted), 0.45f, 1.f);
+    if (gain < 1.05f && gamma > 0.97f) return false;
+    U8 lut[256];
+    for (S32 v = 0; v < 256; ++v)
+    {
+        const F32 x = llclamp(v * gain / 255.f, 0.f, 1.f);
+        lut[v] = (U8)llclamp((S32)(powf(x, gamma) * 255.f + 0.5f), 0, 255);
+    }
+    for (S32 i = 0; i < n; ++i)
+    {
+        U8* p = d + i * comps;
+        p[0] = lut[p[0]];
+        p[1] = lut[p[1]];
+        p[2] = lut[p[2]];
+    }
+    return true;
 }
 
 void label(LLImageRaw* raw, S32 x, S32 y, S32 number, S32 scale, bool draw, S32 rect[4])

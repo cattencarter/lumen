@@ -15735,6 +15735,27 @@ The assistant wants to delete [OBJECT] from the world.
   </notification>
   <notification
    icon="alert.tga"
+   label="Change more objects?"
+   name="LumenAskBuildMany"
+   type="alertmodal">
+The assistant has moved, turned or resized [COUNT] objects for this request, and now wants to change [NEXT] as well.
+
+Let it go on changing objects for the rest of this request? It can put them back with undo.
+    <tag>confirm</tag>
+    <form name="form">
+      <button
+       index="0"
+       name="Yes"
+       text="Let it go on"/>
+      <button
+       default="true"
+       index="1"
+       name="No"
+       text="Stop here"/>
+    </form>
+  </notification>
+  <notification
+   icon="alert.tga"
    label="Build?"
    name="LumenAskBuild"
    type="alertmodal">

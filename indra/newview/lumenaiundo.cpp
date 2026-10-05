@@ -1521,6 +1521,7 @@ void LumenAIUndo::beginRequest(const std::string& words)
     mInRequest = true;
     mWords = words;
     mRequestStep = 0;
+    ++mRequestSerial;   // <Lumen>
 }
 
 void LumenAIUndo::endRequest()

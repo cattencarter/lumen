@@ -124,6 +124,16 @@ namespace LumenAISight
      * that is worked out.
      */
     void label(LLImageRaw* raw, S32 x, S32 y, S32 number, S32 scale, bool draw, S32 rect[4]);
+
+    /**
+     * A dark scene made readable: when the picture's middle brightness is low,
+     * it is lifted -- a gain set by its bright end, then a curve that opens the
+     * shadows -- so the model can see what is in a dim room. Nothing in the
+     * world or on the user's screen changes; only this picture. Returns true
+     * when it changed anything. The author's cabin, 2026-10-05: the scene's own
+     * light is what the picture had.
+     */
+    bool brighten(LLImageRaw* raw);
 }
 
 #endif // LUMEN_AISIGHT_H

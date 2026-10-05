@@ -201,6 +201,8 @@ public:
      */
     void beginRequest(const std::string& words);
     void endRequest();
+    /** <Lumen> Which Assistant request is in progress: a new number for each, 0 outside one. */
+    U64  requestSerial() const { return mInRequest ? mRequestSerial : 0; }
 
     // ---- the assistant's changes ----------------------------------------------
     // `set_id` 0 is the step the request in progress writes to; a bulk run
@@ -326,6 +328,7 @@ private:
     bool        mInRequest = false;
     std::string mWords;
     U64         mRevision = 0;      // changes recorded, ever: an undo or redo checks none came meanwhile
+    U64         mRequestSerial = 0; // <Lumen> counts Assistant requests, for build / undo
 
     std::set<S64> mRunning;          // bulk runs still adding to these
     std::set<S64> mUnlisted;         // ...of those, runs outside a turn: not in the list

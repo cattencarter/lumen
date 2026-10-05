@@ -243,6 +243,8 @@ def main():
         ("build",    "point"):          {"pixels": [1]},
         # place moves things, so only the null uuid is used: refused before anything moves.
         ("build",    "place"):          {"object_id": NULL_UUID},
+        # undo with only the null uuid: nothing of the user's is here, refused before any question.
+        ("build",    "undo"):           {"object_ids": [NULL_UUID]},
 
         # There is no harmless landmark either -- every call makes one. A name
         # past Second Life's 63-character limit is refused by the handler

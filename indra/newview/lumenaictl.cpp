@@ -3872,6 +3872,7 @@ namespace
             if (action == "picture") return "build_picture";   // <Lumen> task 016
             if (action == "point")   return "build_point";     // <Lumen> task 017
             if (action == "place")   return "build_place";     // <Lumen> task 018
+            if (action == "undo")    return "build_undo";      // <Lumen> task 021
             return std::string();
         }
         if (group == "inventory")
@@ -5511,7 +5512,7 @@ namespace
         // to guess why.
         static const char* const build_actions[] =
             { "rez", "select", "set", "remove", "take", "list_contents", "link", "unlink",
-              "picture", "point", "place" };   // <Lumen> tasks 016, 017, 018
+              "picture", "point", "place", "undo" };   // <Lumen> tasks 016, 017, 018, 021
         LLSD build;
         build["name"] = "build";
         build["description"] =
@@ -5564,20 +5565,25 @@ namespace
             "- place: put an object where it belongs, measured by the viewer -- use it instead of "
             "working out a position for set. `object_id`, and `wall`: one spot on the wall in the "
             "LAST picture, x then y. It goes against that wall, centred on the spot, `gap` metres "
-            "off (default 0.02), squared to it, stood upright if it was tilted, and on whatever is "
-            "right below it. To turn "
+            "off (default 0.02), and on whatever is under its middle. It is never tilted. To turn "
             "its front out from the wall, give `front`: a spot on the object's front side in the "
             "same picture, x then y -- the seat side of a sofa, the doors of a cupboard; a spot on "
             "its seat near that side works too -- so the picture must show both the wall and "
-            "that side. Without `front` the side already facing out stays out. Without `wall` it "
-            "only stands it on what is below it: \"it is floating\", \"put it on the floor\", "
-            "\"on the table\". Only the parts drawn solid are measured, so an invisible shadow does "
+            "that side. Without `front` it keeps the turn it has. Without `wall` it "
+            "only puts it down on what is under its middle: \"it is floating\", \"put it on the "
+            "floor\" -- never lifts it onto something. Only the parts drawn solid are measured, so an invisible shadow does "
             "not push it off the wall. The answer says which of its sides is now against the wall "
             "-- a long side or a short end -- and a missed spot is answered with where its sides "
             "are in the picture, and its answer measures how high each corner stands and how far "
             "each end is from the wall. Then take a picture to check. When the person says it "
             "still does not look right, look again closely -- from the side and from above, detail "
             "high -- and at those numbers before changing anything, then look once more.\n"
+            "- undo: put back the objects the assistant moved, turned or resized in its newest "
+            "request -- \"undo that\", \"put it back\" after building. Second Life keeps each "
+            "object's recent changes, so it puts back exactly what was changed, even many objects at "
+            "once. With `object_ids` it puts back the last change of just those. The viewer asks "
+            "first. Things rezzed are taken away with remove, not undo; inventory changes have "
+            "inventory / undo.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -5666,7 +5672,8 @@ namespace
             LLSD bids; bids["type"]="array"; bids["items"]=str_items;
                 bids["description"]="link, unlink: the objects to act on, as object_ids. Leave "
                                     "it out right after rezzing and link joins the prims this "
-                                    "assistant just made.";
+                                    "assistant just made. undo: put back just these, once each; "
+                                    "left out, everything the newest request moved.";
             build_props["object_ids"]=bids;
             build_props["object_id"]=bid; build_props["add"]=bad; build_props["edit"]=bed;
             // <Lumen> task 016
@@ -10048,6 +10055,46 @@ namespace
         }
         return LLUUID::null;
     }
+
+    // <Lumen> What the assistant moved, turned or resized, per request, for
+    // build / undo. Second Life keeps each object's recent changes itself --
+    // the build tools' Edit > Undo asks it to put the selection back -- so all
+    // Lumen keeps is WHICH objects, and how many changes each. The author:
+    // "I'm pretty sure the viewer has undo built in -- for moving things".
+    struct BuildStep
+    {
+        U64                           request = 0;   // the Assistant request, 0 outside one
+        F64                           when = 0.0;
+        std::vector<LLUUID>           order;
+        std::map<LLUUID, S32>         times;
+        std::map<LLUUID, std::string> names;
+    };
+    std::deque<BuildStep> sBuildSteps;   // newest at the back, at most 20
+    bool sBuildUndoing = false;          // an undo under way is not itself recorded
+    std::set<U64> sBuildManyAllowed;     // requests the person let change more than three objects
+
+    void recordBuildChange(const LLUUID& id, const std::string& name)
+    {
+        if (sBuildUndoing) return;
+        const U64 req = LumenAIUndo::instanceExists() ? LumenAIUndo::instance().requestSerial() : 0;
+        const F64 now = LLTimer::getTotalSeconds();
+        // One step per Assistant request. Outside one -- Codex and Claude Code can
+        // call the endpoint between turns too -- changes a minute apart start anew.
+        if (sBuildSteps.empty()
+            || (req != 0 ? sBuildSteps.back().request != req
+                         : (sBuildSteps.back().request != 0 || now - sBuildSteps.back().when > 60.0)))
+        {
+            sBuildSteps.push_back(BuildStep());
+            sBuildSteps.back().request = req;
+            if (sBuildSteps.size() > 20) sBuildSteps.pop_front();
+        }
+        BuildStep& st = sBuildSteps.back();
+        st.when = now;
+        if (!st.times.count(id)) st.order.push_back(id);
+        ++st.times[id];
+        st.names[id] = name;
+    }
+    // </Lumen>
 
     // <Lumen> A build / take waiting for the region, by the call's fingerprint.
     //
@@ -28079,6 +28126,9 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = why;
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> A dark room made readable, in this picture only (task 016's
+        // "neutral light"): the model cannot place what it cannot see.
+        const bool brightened = LumenAISight::brighten(raw.get());
         // Kept for build / point, which turns a pixel of THIS picture into a
         // point in the world.
         mLastPicture.valid  = true;
@@ -28257,6 +28307,13 @@ if (method == "camera")
         }
         notes.append("Use it to build and arrange. Do not describe the picture to the user unless "
                      "they ask -- they can see the world themselves.");
+        if (brightened)
+        {
+            result["brightened"] = true;
+            notes.append("The scene is dim, so this picture was brightened for you to see it. "
+                         "The room really is darker, and its colours are not as the person sees "
+                         "them -- do not judge colours or how bright it is from it.");
+        }
         notes.append("Things away from where the user is looking can be blurry or not drawn yet: "
                      "the viewer loads most what the user faces. Say so rather than guessing if "
                      "something seems to be missing.");
@@ -28844,20 +28901,15 @@ if (method == "camera")
         const LLViewerObject* body = main_group->biggest;
         const LLQuaternion frame = body->getRotationEdit();
         const LLQuaternion to_local = ~frame;   // into its own frame, from the root
-        // Stood upright -- but only when most of it, by size, agrees which way
-        // is up. A tipped-over sofa has every part tipped the same way; a chair
-        // whose backrest leans back is not tipped, and a thing with no straight
-        // part has no up to restore. Those keep their tilt, and the answer says so.
-        // A couch knocked crooked was tilted too, and a model spent three calls
-        // straightening it with set before place could put it right.
-        LLQuaternion level;
-        F32 levelled = 0.f;
-        const bool parts_agree = main_group->weight >= 0.6f * all_weight;
-        if (parts_agree && main_group->up.mV[VZ] < 0.9999f)
-        {
-            level.shortestArc(main_group->up, LLVector3::z_axis);
-            levelled = acosf(llclamp(main_group->up.mV[VZ], -1.f, 1.f)) * RAD_TO_DEG;
-        }
+        // It is never tilted: which way is up can only be read from how the object
+        // was built, and a creator's axes can point anywhere -- a rug built off its
+        // own axes came out tipped across the room (the author, 2026-10-05: "we
+        // can't use the axis"; "it's fair that we don't expect the ai to be able to
+        // move things that are off axis"). place moves things and turns them about
+        // the vertical; a thing knocked over is for the model to see and set right.
+        const LLQuaternion level;   // none
+        const F32 levelled = 0.f;
+        (void)main_group;
         const LLQuaternion upright = frame * level;
         LLVector3 lmin( 1.e9f,  1.e9f,  1.e9f), lmax(-1.e9f, -1.e9f, -1.e9f);
         for (const LLVector3& c : corners)
@@ -28998,10 +29050,31 @@ if (method == "camera")
                 LLVector3 where, fn;
                 if (fp.size() == 2)
                 {
-                    const LLVector3 dir = LumenAISight::rayThrough(view, fp[0], fp[1]);
                     LumenAISight::WithoutAvatars hide;
+                    const LLVector3 dir = LumenAISight::rayThrough(view, fp[0], fp[1]);
                     on = LumenAISight::firstHit(view.origin, view.origin + dir * 64.f, 0.f, where,
                                                 nullptr, &fn);
+                    // The way that side faces, averaged over a small cross around the
+                    // spot: one point on a curved cushion can lean several degrees.
+                    if (on && on->getRootEdit() == obj)
+                    {
+                        static const F32 OFF[4][2] = { { 6.f, 0.f }, { -6.f, 0.f }, { 0.f, 6.f }, { 0.f, -6.f } };
+                        LLVector3 sum(fn.mV[VX], fn.mV[VY], 0.f);
+                        for (const auto& d : OFF)
+                        {
+                            LLVector3 w2, n2;
+                            const LLVector3 dir2 = LumenAISight::rayThrough(view, fp[0] + d[0], fp[1] + d[1]);
+                            LLViewerObject* o2 = LumenAISight::firstHit(view.origin, view.origin + dir2 * 64.f,
+                                                                        0.f, w2, nullptr, &n2);
+                            if (o2 && o2->getRootEdit() == obj) sum += LLVector3(n2.mV[VX], n2.mV[VY], 0.f);
+                        }
+                        if (sum.magVec() > 0.01f)
+                        {
+                            const F32 len = LLVector3(fn.mV[VX], fn.mV[VY], 0.f).magVec();
+                            sum.normVec();
+                            fn.setVec(sum.mV[VX] * len, sum.mV[VY] * len, fn.mV[VZ]);
+                        }
+                    }
                 }
                 LLVector3 fh(fn.mV[VX], fn.mV[VY], 0.f);
                 if (!on || on->getRootEdit() != obj)
@@ -29100,11 +29173,13 @@ if (method == "camera")
                     LLSD ww; ww["__error"] = e; return ww;
                 }
             }
-            if (!sides.empty())
+            // Only with a front to turn by, and by that front's own direction --
+            // never squared to the object's axes, which can point anywhere.
+            LLVector3 f(seen.mV[VX], seen.mV[VY], 0.f);
+            if (wants_front && f.magVec() > 0.3f)
             {
-                LLVector3 side = sides[0];
-                for (const LLVector3& s : sides) if (s * seen > side * seen) side = s;
-                const F32 yaw = atan2f((side % wall_n).mV[VZ], side * wall_n);
+                f.normVec();
+                const F32 yaw = atan2f((f % wall_n).mV[VZ], f * wall_n);
                 turn.setAngleAxis(yaw, 0.f, 0.f, 1.f);
                 turned = yaw * RAD_TO_DEG;
             }
@@ -29145,10 +29220,17 @@ if (method == "camera")
             const F32 ix = (hi.mV[VX] - lo.mV[VX]) * 0.15f, iy = (hi.mV[VY] - lo.mV[VY]) * 0.15f;
             const F32 xs[5] = { (lo.mV[VX] + hi.mV[VX]) * 0.5f, lo.mV[VX] + ix, hi.mV[VX] - ix, lo.mV[VX] + ix, hi.mV[VX] - ix };
             const F32 ys[5] = { (lo.mV[VY] + hi.mV[VY]) * 0.5f, lo.mV[VY] + iy, lo.mV[VY] + iy, hi.mV[VY] - iy, hi.mV[VY] - iy };
+            // From its own middle height, never from above it: from above, the top of
+            // a neighbour -- a plant basket, a shelf, a chair on a rug -- was "the
+            // floor", and a picnic basket was lifted a metre onto it in the author's
+            // house (2026-10-05). What is under its MIDDLE is what it stands on; the
+            // corners are a fallback when nothing is under the middle.
+            const F32 from_z = lo.mV[VZ] + llmax(0.05f, (hi.mV[VZ] - lo.mV[VZ]) * 0.5f);
             for (S32 i = 0; i < 5; ++i)
             {
+                if (i > 0 && support_obj) break;   // the middle answered
                 LLVector3 where, n;
-                LLViewerObject* o = LumenAISight::firstHit(LLVector3(xs[i], ys[i], hi.mV[VZ] + 0.05f),
+                LLViewerObject* o = LumenAISight::firstHit(LLVector3(xs[i], ys[i], from_z),
                                                            LLVector3(xs[i], ys[i], lo.mV[VZ] - 60.f),
                                                            0.f, where, obj, &n);
                 if (o && n.mV[VZ] > 0.5f && where.mV[VZ] > support)
@@ -29159,6 +29241,26 @@ if (method == "camera")
             }
         }
         const F32 raised = support_obj ? support - lo.mV[VZ] : 0.f;
+        // Do no harm. Searched from its middle, it can only rise less than half its
+        // height -- a thing sunk into the floor -- so the danger left is the other
+        // way: a thing over a gap (the edge of a skybox floor, a hole) dropped to
+        // whatever is far below. Further than 4 m is not "put it on the floor".
+        // Said, not done.
+        if (raised < -4.f)
+        {
+            std::string under = "the ground";
+            if (support_obj && support_obj->getPCode() == LL_PCODE_VOLUME)
+            {
+                const ObjectLabel* ul = objectLabel(support_obj->getRootEdit()->getID());
+                under = ul ? "\"" + safeUtf8(ul->name) + "\"" : std::string("an object");
+            }
+            LLSD e; e["code"] = -32000;
+            e["message"] = llformat("What is under its middle is %.1f m below it -- ", -raised) + under
+                         + ". Dropping it that far is not putting it on the floor it belongs on, "
+                           "so nothing was moved. Look at it in a picture; if it really belongs "
+                           "there, move it with set.";
+            LLSD w; w["__error"] = e; return w;
+        }
         new_root.mV[VZ] += raised;
 
         // What a picture cannot measure: how high each bottom corner of it will
@@ -29245,13 +29347,6 @@ if (method == "camera")
         LLSD placed;
         placed["moved_by_metres"] = ll_round((new_root - root_pos).magVec(), 0.01f);
         placed["turned_by_degrees"] = (S32)ll_round(turned);
-        if (levelled > 0.5f) placed["stood_upright_by_degrees"] = (S32)ll_round(levelled);
-        if (!parts_agree)
-        {
-            placed["tilt"] = "left as it was: its parts do not agree which way is up (a "
-                             "leaning backrest, a thing built at an angle), so it was not "
-                             "stood upright -- the corners below show how it stands";
-        }
         placed["corners_above_floor_cm"] = corners_cm;
         if (wants_wall) placed["gap_to_wall_cm"] = wall_cm;
         bool short_end = false;
@@ -29320,6 +29415,144 @@ if (method == "camera")
                           << turned << " degrees, raised " << raised << " m, " << left_out
                           << " part(s) not measured" << LL_ENDL;
         return r;
+    }
+    // </Lumen>
+
+    // <Lumen> build / undo: the objects the assistant moved, turned or resized
+    // in its newest request, put back by Second Life's own undo -- the one the
+    // build tools' Edit > Undo sends -- once for each change it made to each.
+    if (method == "build_undo")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        // Which: the ids given, once each; otherwise the newest step.
+        std::vector<std::pair<LLUUID, S32>> todo;
+        std::map<LLUUID, std::string> names;
+        const bool named = params["object_ids"].isArray() && params["object_ids"].size() > 0;
+        if (named)
+        {
+            for (LLSD::array_const_iterator it = params["object_ids"].beginArray();
+                 it != params["object_ids"].endArray(); ++it)
+            {
+                todo.push_back(std::make_pair((*it).asUUID(), 1));
+            }
+        }
+        else if (!sBuildSteps.empty())
+        {
+            const BuildStep& st = sBuildSteps.back();
+            for (const LLUUID& id : st.order)
+            {
+                todo.push_back(std::make_pair(id, st.times.at(id)));
+                names[id] = st.names.at(id);
+            }
+        }
+        // Only what is still here, and the user's to move.
+        std::vector<std::pair<LLViewerObject*, S32>> here;
+        std::vector<LLUUID> here_ids;   // as recorded or given -- a child's id, maybe
+        LLSD gone = LLSD::emptyArray();  // no longer here (returned, deleted) or not theirs to move
+        std::string list;
+        for (const auto& t : todo)
+        {
+            LLViewerObject* o = gObjectList.findObject(t.first);
+            if (o) o = o->getRootEdit();
+            if (!o || o->isAvatar() || o->isAttachment() || !o->permModify() || !o->permMove())
+            {
+                gone.append(names.count(t.first) ? LLSD(names[t.first]) : LLSD(t.first.asString()));
+                continue;
+            }
+            here.push_back(std::make_pair(o, t.second));
+            here_ids.push_back(t.first);
+            if (here.size() <= 6)
+            {
+                if (!list.empty()) list += ", ";
+                list += names.count(t.first) ? names[t.first] : askObjectName(o);
+            }
+        }
+        if (here.empty())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = named
+                ? std::string("None of those objects is here and the user's to move, so nothing was "
+                              "put back.")
+                : std::string("Nothing the assistant moved, turned or resized this login is here to "
+                              "put back. Something it rezzed is taken away with build / remove.");
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (here.size() > 6) list += llformat(" and %d more", (S32)here.size() - 6);
+        {
+            LLSD subs;
+            subs["ACTION"] = here.size() == 1
+                ? "Put " + list + " back the way it was before the assistant moved, turned or "
+                  "resized it?"
+                : llformat("Put %d objects back the way they were before the assistant moved, "
+                           "turned or resized them: ", (S32)here.size()) + list + "?";
+            LLSD ask;
+            if (!askUser("LumenAskBuild", subs, fingerprintOf(method, params), ask))
+            {
+                return ask;
+            }
+        }
+        // Once per change: the objects changed twice get a second undo.
+        S32 most = 0;
+        for (const auto& h : here) most = llmax(most, h.second);
+        sBuildUndoing = true;
+        for (S32 k = 1; k <= most; ++k)
+        {
+            LLSelectMgr::getInstance()->deselectAll();
+            for (const auto& h : here)
+            {
+                if (h.second >= k) LLSelectMgr::getInstance()->selectObjectAndFamily(h.first, true);
+            }
+            LLSelectMgr::getInstance()->undo();
+        }
+        LLSelectMgr::getInstance()->deselectAll();
+        sBuildUndoing = false;
+        if (!named && !sBuildSteps.empty()) sBuildSteps.pop_back();
+        // Named ones: that change is used up, so take it off the newest step holding it --
+        // or a later plain undo would undo them a second time, further back than meant.
+        if (named)
+        {
+            for (size_t i = 0; i < here.size(); ++i)
+            {
+                for (auto st = sBuildSteps.rbegin(); st != sBuildSteps.rend(); ++st)
+                {
+                    LLUUID id = here_ids[i];
+                    auto t = st->times.find(id);
+                    if (t == st->times.end()) { id = here[i].first->getID(); t = st->times.find(id); }
+                    if (t == st->times.end()) continue;
+                    if (--t->second <= 0)
+                    {
+                        st->times.erase(t);
+                        st->names.erase(id);
+                        st->order.erase(std::remove(st->order.begin(), st->order.end(), id),
+                                        st->order.end());
+                    }
+                    break;
+                }
+            }
+            sBuildSteps.erase(std::remove_if(sBuildSteps.begin(), sBuildSteps.end(),
+                                             [](const BuildStep& s) { return s.order.empty(); }),
+                              sBuildSteps.end());
+        }
+
+        LLSD result;
+        result["put_back"] = (S32)here.size();
+        if (gone.size() > 0)
+        {
+            result["not_put_back"] = gone;
+            result["not_put_back_note"] = "These are no longer here -- taken back, deleted or "
+                                          "returned by the land -- or not the user's to move, so "
+                                          "they were left out. Say so.";
+        }
+        result["note"] = "Asked Second Life to put them back -- it keeps each object's recent moves, "
+                         "turns and resizes, as the build tools' own Undo uses. Take a picture to "
+                         "check, and say what was put back.";
+        LL_INFOS("AICtl") << "build undo: " << here.size() << " object(s), up to " << most
+                          << " change(s) each" << LL_ENDL;
+        return result;
     }
     // </Lumen>
 
@@ -30042,6 +30275,31 @@ if (method == "camera")
                 }
             }
             // </Lumen>
+            // <Lumen> Task 021: one request changing many objects asks once, at the
+            // fourth. The author's house run moved 25 pieces of furniture without
+            // a question; undo can put them back, but a half-moved house is worth
+            // one question before it happens. Not remembered: every such request.
+            if (moving)
+            {
+                const U64 req = LumenAIUndo::instanceExists() ? LumenAIUndo::instance().requestSerial() : 0;
+                LLViewerObject* tgt = sel->getFirstRootObject();
+                if (req != 0 && tgt && !sBuildManyAllowed.count(req) && !sBuildSteps.empty()
+                    && sBuildSteps.back().request == req
+                    && sBuildSteps.back().times.count(tgt->getID()) == 0
+                    && sBuildSteps.back().order.size() >= 3)
+                {
+                    LLSD subs;
+                    subs["COUNT"] = (S32)sBuildSteps.back().order.size();
+                    subs["NEXT"] = askObjectName(tgt);
+                    LLSD ask;
+                    if (!askUser("LumenAskBuildMany", subs,
+                                 llformat("build_many:%llu", (unsigned long long)req), ask))
+                    {
+                        return ask;
+                    }
+                    sBuildManyAllowed.insert(req);
+                }
+            }
             // <Lumen> Asked once everything has been checked and before the
             // first change goes out, so a Yes is never spent on a call that
             // then refuses, and a No leaves the object exactly as it was.
@@ -30148,6 +30406,10 @@ if (method == "camera")
                     changed.append("rotation");
                 }
                 if (flags) LLSelectMgr::getInstance()->sendMultipleUpdate(flags);
+                if (flags & (UPD_POSITION | UPD_ROTATION | UPD_SCALE))
+                {
+                    recordBuildChange(obj->getID(), askObjectName(obj));   // <Lumen> build / undo
+                }
             }
 
             if (changed.size() == 0)
