@@ -5564,7 +5564,8 @@ namespace
             "- place: put an object where it belongs, measured by the viewer -- use it instead of "
             "working out a position for set. `object_id`, and `wall`: one spot on the wall in the "
             "LAST picture, x then y. It goes against that wall, centred on the spot, `gap` metres "
-            "off (default 0.02), squared to it, and stands on whatever is right below it. To turn "
+            "off (default 0.02), squared to it, stood upright if it was tilted, and on whatever is "
+            "right below it. To turn "
             "its front out from the wall, give `front`: a spot on the object's front side in the "
             "same picture, x then y -- the seat side of a sofa, the doors of a cupboard; a spot on "
             "its seat near that side works too -- so the picture must show both the wall and "
@@ -28777,7 +28778,9 @@ if (method == "camera")
         for (LLViewerObject* p : solid)
         {
             const LLVector3 half = p->getScale() * 0.5f;
-            const LLQuaternion rot = p->getRenderRotation();
+            // Its own rotation, not the drawn one: the drawn one lags a turn just
+            // sent by a frame, and a model often turns a thing and places it next.
+            const LLQuaternion rot = p->getRotationEdit();
             const LLVector3 centre = p->getPositionAgent();
             for (S32 i = 0; i < 8; ++i)
             {
@@ -28801,8 +28804,31 @@ if (method == "camera")
             std::string label;
         };
         std::vector<Side> sides4;
-        const LLQuaternion root_rot = obj->getRenderRotation();
+        const LLQuaternion root_rot = obj->getRotationEdit();
         const LLQuaternion to_local = ~root_rot;
+        // Stood upright: its own axis nearest the vertical becomes the vertical.
+        // A couch knocked crooked was tilted too, and a model spent three calls
+        // straightening it with set before place could put it right.
+        LLQuaternion level;
+        F32 levelled = 0.f;
+        {
+            LLVector3 up = LLVector3::z_axis;
+            F32 best = -2.f;
+            static const LLVector3 AX[6] = { LLVector3::x_axis, LLVector3::x_axis_neg,
+                                             LLVector3::y_axis, LLVector3::y_axis_neg,
+                                             LLVector3::z_axis, LLVector3::z_axis_neg };
+            for (const LLVector3& a : AX)
+            {
+                const LLVector3 d = a * root_rot;
+                if (d.mV[VZ] > best) { best = d.mV[VZ]; up = d; }
+            }
+            if (best < 0.9999f)
+            {
+                level.shortestArc(up, LLVector3::z_axis);
+                levelled = acosf(llclamp(best, -1.f, 1.f)) * RAD_TO_DEG;
+            }
+        }
+        const LLQuaternion upright = root_rot * level;
         LLVector3 lmin( 1.e9f,  1.e9f,  1.e9f), lmax(-1.e9f, -1.e9f, -1.e9f);
         for (const LLVector3& c : corners)
         {
@@ -28814,7 +28840,7 @@ if (method == "camera")
             for (S32 a = 0; a < 3; ++a)
             {
                 LLVector3 axis; axis.mV[a] = 1.f;
-                if (fabsf((axis * root_rot).mV[VZ]) < 0.7f) flat.push_back(a);
+                if (fabsf((axis * upright).mV[VZ]) < 0.7f) flat.push_back(a);
             }
             if (flat.size() == 2)
             {
@@ -28909,7 +28935,7 @@ if (method == "camera")
         if (wants_wall)
         {
             std::vector<LLVector3> sides;
-            const LLQuaternion r = obj->getRenderRotation();
+            const LLQuaternion r = upright;
             static const LLVector3 AXES[6] = { LLVector3::x_axis, LLVector3::x_axis_neg,
                                                LLVector3::y_axis, LLVector3::y_axis_neg,
                                                LLVector3::z_axis, LLVector3::z_axis_neg };
@@ -29053,7 +29079,7 @@ if (method == "camera")
                 turned = yaw * RAD_TO_DEG;
             }
         }
-        for (LLVector3& c : corners) c = c * turn;
+        for (LLVector3& c : corners) c = c * level * turn;
 
         LLVector3 new_root = root_pos;
         F32 off_wall = 0.f;
@@ -29113,10 +29139,10 @@ if (method == "camera")
         LLSD pos = LLSD::emptyArray();
         pos.append(rpos.mV[VX]); pos.append(rpos.mV[VY]); pos.append(rpos.mV[VZ]);
         sp["position"] = pos;
-        if (fabsf(turned) > 0.05f)
+        if (fabsf(turned) > 0.05f || levelled > 0.05f)
         {
             F32 rx, ry, rz;
-            (obj->getRotation() * turn).getEulerAngles(&rx, &ry, &rz);
+            (obj->getRotation() * level * turn).getEulerAngles(&rx, &ry, &rz);
             LLSD rot = LLSD::emptyArray();
             rot.append(rx * RAD_TO_DEG); rot.append(ry * RAD_TO_DEG); rot.append(rz * RAD_TO_DEG);
             sp["rotation"] = rot;
@@ -29128,6 +29154,7 @@ if (method == "camera")
         LLSD placed;
         placed["moved_by_metres"] = ll_round((new_root - root_pos).magVec(), 0.01f);
         placed["turned_by_degrees"] = (S32)ll_round(turned);
+        if (levelled > 0.5f) placed["stood_upright_by_degrees"] = (S32)ll_round(levelled);
         bool short_end = false;
         if (wants_wall)
         {
@@ -29135,7 +29162,7 @@ if (method == "camera")
             if (!sides4.empty())
             {
                 // Which of its sides now faces the wall, and which the room.
-                const LLQuaternion now_rot = root_rot * turn;
+                const LLQuaternion now_rot = upright * turn;
                 const Side* back = &sides4[0];
                 const Side* out  = &sides4[0];
                 F32 to_wall = -2.f, to_room = -2.f;
