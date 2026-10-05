@@ -404,6 +404,7 @@
             <combo_box.item label="gpt-5.6-terra (recommended)" name="ct"  value="gpt-5.6-terra" />
             <combo_box.item label="gpt-6-luna"                      name="c6l" value="gpt-6-luna" />
             <combo_box.item label="gpt-6-sol"                       name="c6s" value="gpt-6-sol" />
+            <combo_box.item label="gpt-6.1-sol"                     name="c61s" value="gpt-6.1-sol" />
             <combo_box.item label="gpt-5.5"                         name="c55" value="gpt-5.5" />
         </combo_box>
 
