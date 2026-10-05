@@ -29558,7 +29558,27 @@ if (method == "camera")
                 // </Lumen>
             }
 
-            if (!want.empty())
+            // <Lumen> A link waiting for the region keeps its selection: the
+            // details its checks read arrive a round trip after a selection,
+            // and the viewer drops a selection nobody holds every frame -- so
+            // selecting afresh and checking in one call could never pass, and
+            // link refused fresh objects on every try since 0.1.2 (task 020).
+            // Held here, as take holds its own, and carried on by the same
+            // call again (mSettle) until the details are here.
+            const std::string link_key = fingerprintOf(method, params);
+            std::map<std::string, PendingTake>::iterator link_wait = sPendingTakes.find(link_key);
+            if (link_wait != sPendingTakes.end()
+                && LLTimer::getTotalSeconds() > link_wait->second.until + 5.0)
+            {
+                sPendingTakes.erase(link_wait);   // nobody came back for it
+                link_wait = sPendingTakes.end();
+            }
+            if (!want.empty() && link_wait != sPendingTakes.end())
+            {
+                sel = LLSelectMgr::getInstance()->getSelection();
+                result["selected"] = sel.notNull() ? sel->getRootObjectCount() : 0;
+            }
+            else if (!want.empty())
             {
                 LLSelectMgr::getInstance()->deselectAll();
                 LLSD missing = LLSD::emptyArray();
@@ -29619,8 +29639,34 @@ if (method == "camera")
                 std::string why;
                 if (now_sel.isNull() || !sm->selectGetAllRootsValid())
                 {
-                    why = "Some of those objects have not finished loading in the viewer yet. Try "
-                          "again in a moment.";
+                    const F64 tnow = LLTimer::getTotalSeconds();
+                    std::map<std::string, PendingTake>::iterator w = sPendingTakes.find(link_key);
+                    if (w == sPendingTakes.end() && now_sel.notNull())
+                    {
+                        PendingTake fresh;
+                        fresh.sel = now_sel;
+                        fresh.until = tnow + TAKE_WAIT;
+                        for (LLObjectSelection::root_iterator it = now_sel->root_begin();
+                             it != now_sel->root_end(); ++it)
+                        {
+                            if ((*it)->getObject()) fresh.roots.insert((*it)->getObject()->getID());
+                        }
+                        w = sPendingTakes.insert(std::make_pair(link_key, fresh)).first;
+                        sweepPendingTakes();
+                    }
+                    if (w != sPendingTakes.end() && tnow <= w->second.until)
+                    {
+                        mSettle = llmax(0.5, w->second.until - tnow + 1.0);
+                        LLSD r;
+                        r["pending"] = true;
+                        r["settling"] = true;
+                        r["note"] = "Waiting for the region to send the objects' details, which "
+                                    "linking needs. If this comes back, call link again with the "
+                                    "same arguments.";
+                        return r;
+                    }
+                    why = "The region did not send those objects' details within ten seconds, and "
+                          "linking needs them.";
                 }
                 else if (linking
                          && now_sel->getObjectCount() > LLWorld::getInstance()->getMaxLinkedPrims() + 1)
@@ -29673,6 +29719,7 @@ if (method == "camera")
                               "take apart.";
                     }
                 }
+                sPendingTakes.erase(link_key);   // no longer waiting, either way
                 if (!why.empty())
                 {
                     LLSD e; e["code"] = -32000;
