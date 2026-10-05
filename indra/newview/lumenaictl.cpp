@@ -5565,13 +5565,15 @@ namespace
             "working out a position for set. `object_id`, and `wall`: one spot on the wall in the "
             "LAST picture, x then y. It goes against that wall, centred on the spot, `gap` metres "
             "off (default 0.02), squared to it, and stands on whatever is right below it. To turn "
-            "its front out from the wall, give `front`: a spot ON the object's front in the same "
-            "picture, x then y -- the seat side of a sofa, the doors of a cupboard -- so the "
-            "picture must show both the wall and that side. Without `front` the side already "
-            "facing out stays out. Without `wall` it only stands it on what "
-            "is below it: \"it is floating\", \"put it on the floor\", \"on the table\". Only the "
-            "parts drawn solid are measured, so an invisible shadow does not push it off the wall. "
-            "Then take a picture to check.\n"
+            "its front out from the wall, give `front`: a spot on the object's front side in the "
+            "same picture, x then y -- the seat side of a sofa, the doors of a cupboard; a spot on "
+            "its seat near that side works too -- so the picture must show both the wall and "
+            "that side. Without `front` the side already facing out stays out. Without `wall` it "
+            "only stands it on what is below it: \"it is floating\", \"put it on the floor\", "
+            "\"on the table\". Only the parts drawn solid are measured, so an invisible shadow does "
+            "not push it off the wall. The answer says which of its sides is now against the wall "
+            "-- a long side or a short end -- and a missed spot is answered with where its sides "
+            "are in the picture. Then take a picture to check.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -28786,6 +28788,59 @@ if (method == "camera")
             }
         }
 
+        // Its four upright sides, in its own frame: which way each faces,
+        // how long it is, and where its middle is. A model told "its short
+        // end is against the wall" sees the mistake without another picture --
+        // picking the end as the front was the commonest one, in three of six
+        // runs on 2026-10-05.
+        struct Side
+        {
+            LLVector3   local_n;    // outward, in the object's own frame
+            LLVector3   local_mid;  // the middle of that side, from the root
+            F32         length = 0.f, depth = 0.f;
+            std::string label;
+        };
+        std::vector<Side> sides4;
+        const LLQuaternion root_rot = obj->getRenderRotation();
+        const LLQuaternion to_local = ~root_rot;
+        LLVector3 lmin( 1.e9f,  1.e9f,  1.e9f), lmax(-1.e9f, -1.e9f, -1.e9f);
+        for (const LLVector3& c : corners)
+        {
+            const LLVector3 l = c * to_local;
+            for (S32 a = 0; a < 3; ++a) { lmin.mV[a] = llmin(lmin.mV[a], l.mV[a]); lmax.mV[a] = llmax(lmax.mV[a], l.mV[a]); }
+        }
+        {
+            std::vector<S32> flat;   // its own axes that lie flat in the world
+            for (S32 a = 0; a < 3; ++a)
+            {
+                LLVector3 axis; axis.mV[a] = 1.f;
+                if (fabsf((axis * root_rot).mV[VZ]) < 0.7f) flat.push_back(a);
+            }
+            if (flat.size() == 2)
+            {
+                for (S32 i = 0; i < 2; ++i)
+                {
+                    const S32 a = flat[i], b = flat[1 - i];
+                    for (S32 sgn = -1; sgn <= 1; sgn += 2)
+                    {
+                        Side s;
+                        s.local_n.mV[a] = (F32)sgn;
+                        s.local_mid = (lmin + lmax) * 0.5f;
+                        s.local_mid.mV[a] = sgn > 0 ? lmax.mV[a] : lmin.mV[a];
+                        s.length = lmax.mV[b] - lmin.mV[b];
+                        s.depth  = lmax.mV[a] - lmin.mV[a];
+                        s.label  = s.length >= s.depth * 1.15f ? "a long side"
+                                 : s.length * 1.15f <= s.depth ? "a short end" : "a side";
+                        sides4.push_back(s);
+                    }
+                }
+            }
+        }
+        auto sideWords = [](const Side& s)
+        {
+            return s.label + llformat(", %.1f m", s.length);
+        };
+
         // The wall: a spot in the last picture, as build / point reads one.
         LLVector3 wall_n, wall_p;
         LLViewerObject* wall_obj = nullptr;
@@ -28893,16 +28948,78 @@ if (method == "camera")
                                                 nullptr, &fn);
                 }
                 LLVector3 fh(fn.mV[VX], fn.mV[VY], 0.f);
-                if (!on || on->getRootEdit() != obj || fh.magVec() < 0.3f)
+                if (!on || on->getRootEdit() != obj)
                 {
+                    // Missed it -- in three of six runs on 2026-10-05, a spot just
+                    // below a sofa, on the floor. Say where its sides are in that
+                    // picture, so the next try lands instead of guessing again.
+                    std::string where_sides;
+                    bool long_seen = false, has_long = false;
+                    for (const Side& s : sides4)
+                    {
+                        if (s.label == "a long side") has_long = true;
+                        const LLVector3 n = s.local_n * root_rot;
+                        const LLVector3 mid = root_pos + s.local_mid * root_rot;
+                        LLVector3 to_cam = view.origin - mid;
+                        to_cam.normVec();
+                        if (n * to_cam < 0.25f) continue;   // turned away, or edge-on to the camera
+                        F32 sx, sy;
+                        if (!LumenAISight::project(view, mid + n * 0.02f, sx, sy)) continue;
+                        if (s.label == "a long side") long_seen = true;
+                        if (!where_sides.empty()) where_sides += "; ";
+                        where_sides += sideWords(s) + llformat(" at [%d, %d]", (S32)ll_round(sx),
+                                                               (S32)ll_round(sy));
+                    }
+                    if (has_long && !long_seen)
+                    {
+                        where_sides += std::string(where_sides.empty() ? "" : ". ") +
+                                       "Its long sides are edge-on or turned away in that picture: "
+                                       "if its front is one of them, take a picture from that side "
+                                       "first -- picture with its object_id and `from` left or right";
+                    }
                     LLSD e; e["code"] = -32602;
-                    e["message"] = "`front` as a spot must be on the object's front in the last "
-                                   "picture -- a side of it, not its top -- x then y. That spot "
-                                   "is not. Nothing was moved.";
+                    e["message"] = "That `front` spot is not on the object -- it missed. " +
+                                   (where_sides.empty()
+                                    ? std::string("None of its sides faces the camera in that "
+                                                  "picture; take one from the side its front is on.")
+                                    : "In that picture the sides of it facing the camera are: " +
+                                      where_sides + ". Give `front` as the spot of the side that "
+                                      "is its front -- a sofa's is the long side its seat opens "
+                                      "to.") +
+                                   " Nothing was moved.";
                     LLSD ww; ww["__error"] = e; return ww;
                 }
-                fh.normVec();
-                seen = fh;
+                if (fh.magVec() >= 0.7f)
+                {
+                    fh.normVec();
+                    seen = fh;
+                }
+                else if (!sides4.empty())
+                {
+                    // On its seat or top: the side the spot is nearest is the one meant.
+                    const LLVector3 l = (where - root_pos) * to_local;
+                    const LLVector3 mid = (lmin + lmax) * 0.5f;
+                    const Side* pick = &sides4[0];
+                    F32 best = -1.e9f;
+                    for (const Side& s : sides4)
+                    {
+                        const S32 a = fabsf(s.local_n.mV[VX]) > 0.5f ? VX : (fabsf(s.local_n.mV[VY]) > 0.5f ? VY : VZ);
+                        const F32 half = llmax((lmax.mV[a] - lmin.mV[a]) * 0.5f, 0.01f);
+                        const F32 t = (l.mV[a] - mid.mV[a]) / half * s.local_n.mV[a];
+                        if (t > best) { best = t; pick = &s; }
+                    }
+                    seen = pick->local_n * root_rot;
+                    seen.mV[VZ] = 0.f;
+                    seen.normVec();
+                }
+                else
+                {
+                    LLSD e; e["code"] = -32602;
+                    e["message"] = "`front` as a spot must be on a side of the object in the last "
+                                   "picture. That spot is on its top, and its sides could not be "
+                                   "worked out. Nothing was moved.";
+                    LLSD ww; ww["__error"] = e; return ww;
+                }
             }
             else if (wants_front)
             {
@@ -29011,9 +29128,28 @@ if (method == "camera")
         LLSD placed;
         placed["moved_by_metres"] = ll_round((new_root - root_pos).magVec(), 0.01f);
         placed["turned_by_degrees"] = (S32)ll_round(turned);
+        bool short_end = false;
         if (wants_wall)
         {
             placed["gap_to_wall_metres"] = ll_round(off_wall, 0.01f);
+            if (!sides4.empty())
+            {
+                // Which of its sides now faces the wall, and which the room.
+                const LLQuaternion now_rot = root_rot * turn;
+                const Side* back = &sides4[0];
+                const Side* out  = &sides4[0];
+                F32 to_wall = -2.f, to_room = -2.f;
+                for (const Side& sd : sides4)
+                {
+                    const LLVector3 n = sd.local_n * now_rot;
+                    if (-(n * wall_n) > to_wall) { to_wall = -(n * wall_n); back = &sd; }
+                    if (n * wall_n > to_room)    { to_room = n * wall_n;    out  = &sd; }
+                }
+                placed["against_the_wall"] = sideWords(*back) +
+                                             llformat(" along the wall, %.1f m deep", back->depth);
+                placed["facing_the_room"] = sideWords(*out);
+                short_end = back->label == "a short end";
+            }
             if (wall_obj->getPCode() == LL_PCODE_VOLUME)
             {
                 const ObjectLabel* wl = objectLabel(wall_obj->getRootEdit()->getID());
@@ -29042,9 +29178,14 @@ if (method == "camera")
         r["note"] = std::string("Placed by measuring the parts drawn solid") +
                     (left_out > 0 ? " -- invisible or see-through links (a shadow, a glow) were "
                                     "left out of its size" : "") +
-                    ". Take a new picture to check it before saying it is right, and say what "
-                    "was done. If it faces the wrong way, call place again with `front` from a "
-                    "picture that shows its front.";
+                    ". `against_the_wall` says which of its sides is now there." +
+                    (short_end ? std::string(" **Its SHORT END is against the wall.** A sofa, "
+                                 "bed, desk or cupboard stands with a long side there -- if this "
+                                 "is one, the front spot was on its end: call place again with a "
+                                 "spot on the long side that is its front.")
+                               : std::string()) +
+                    " Take a new picture to check it before saying it is right, and say what "
+                    "was done.";
         LL_INFOS("AICtl") << "place: moved " << (new_root - root_pos).magVec() << " m, turned "
                           << turned << " degrees, raised " << raised << " m, " << left_out
                           << " part(s) not measured" << LL_ENDL;
