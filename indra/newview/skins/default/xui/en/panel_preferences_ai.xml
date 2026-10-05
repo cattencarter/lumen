@@ -281,7 +281,7 @@
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="4" width="480" height="66" word_wrap="true">
-            Mistral Vibe is Mistral&apos;s own command-line tool. It signs in with your Mistral account, and a free Mistral plan works too. It cannot see pictures yet, so help that looks at your build needs another choice, such as Mistral with an API key.
+            Mistral Vibe is Mistral&apos;s own command-line tool. It signs in with your Mistral account, and a free Mistral plan works too. It can&apos;t see what you see yet, so for help that looks at your build, use Claude or ChatGPT.
         </text>
 
         <button follows="left|top" layout="topleft" name="vibe_setup"

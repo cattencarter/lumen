@@ -10408,10 +10408,13 @@ namespace
     {
         if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::VIBE)
         {
-            return "Pictures cannot reach Mistral Vibe: it passes on only the text of what a "
-                   "tool answers, so you cannot see this one. Tell the user that this needs an "
-                   "assistant that can see pictures -- Claude Code, Codex, or an Anthropic, "
-                   "OpenAI or Mistral key -- chosen in Preferences > AI.";
+            // The author's wording, 2026-10-05: short, and pointing at what
+            // they were trying to do rather than at the machinery.
+            return "You cannot see this: no picture reaches Mistral Vibe. Tell the user, in "
+                   "about these words, with what they asked for filled in: \"Mistral Vibe can't "
+                   "see what you see yet -- that's a limit in Mistral Vibe. To <what they asked "
+                   "for>, use Claude or ChatGPT instead; you choose them in Preferences > AI.\" "
+                   "Nothing more, and do not try to do it without the picture.";
         }
         return nullptr;
     }
