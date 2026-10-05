@@ -10402,6 +10402,20 @@ namespace
     // the viewer's own Web tab follows them at once too.
     const F64 SEARCH_GAP_SECONDS = 1.0;
     F64 sNextWebSearchAt = 0.0;
+    // <Lumen> Task 015: which assistants a picture from a tool cannot reach.
+    // Asked by every tool that answers with a picture, before it makes one.
+    const char* picturesCannotReach()
+    {
+        if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::VIBE)
+        {
+            return "Pictures cannot reach Mistral Vibe: it passes on only the text of what a "
+                   "tool answers, so you cannot see this one. Tell the user that this needs an "
+                   "assistant that can see pictures -- Claude Code, Codex, or an Anthropic, "
+                   "OpenAI or Mistral key -- chosen in Preferences > AI.";
+        }
+        return nullptr;
+    }
+
     const size_t SEARCHES_PER_MINUTE = 30;
     std::deque<F64> sSearchStarts;   // when each search of the last minute began
 
@@ -15340,6 +15354,15 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     // Nothing of the world and nobody in it -- a picture of the world is 016.
     if (method == "test_picture")
     {
+        // <Lumen> Mistral Vibe keeps only the text of a tool's answer (its MCP
+        // client reads `text` and nothing else, 2.25.8 included), so a picture
+        // would vanish on the way and the model would be left to explain a
+        // failure it cannot see. Said instead, in words the user can act on.
+        if (const char* why = picturesCannotReach())
+        {
+            LLSD e; e["code"] = -32000; e["message"] = why;
+            LLSD w; w["__error"] = e; return w;
+        }
         static const char* const shapes[]  = { "square", "circle", "triangle" };
         struct Colour { const char* name; U8 r, g, b; };
         static const Colour colours[] = {
