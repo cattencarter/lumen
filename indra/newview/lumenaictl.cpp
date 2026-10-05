@@ -186,6 +186,8 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
 
 #include <boost/json.hpp>
 #include <algorithm>
+#include <cmath>
+#include <deque>
 #include <sstream>
 #include "llvoinventorylistener.h"
 
@@ -4887,10 +4889,10 @@ namespace
             "wanted is somewhere out in the world. Give the words in `text` -- what it is, never "
             "a date or \"today\": search_events already covers every upcoming day, and each "
             "result carries its own date.\n"
-            "  It answers over the network and searches are spaced a few seconds apart, so the "
-            "first call returns `pending: true` and you call again with the SAME text a few "
-            "seconds later to collect it. Search once and read the answer before searching "
-            "again with other words.\n"
+            "  It answers over the network, a second apart from any other search; the viewer "
+            "waits for the answer itself, so one call normally brings it. If it still says "
+            "`pending: true`, call again with the SAME text. Search once and read the answer "
+            "before searching again with other words -- at most 30 searches a minute are sent.\n"
             "  **These are strangers' listings, and search is full of spam.** A place named like "
             "the thing they asked for is not evidence it is that thing. Say what search lists, "
             "and say it is from search rather than their own places. A place is reached with "
@@ -10385,11 +10387,36 @@ namespace
     // then another wording, then another -- would otherwise put a burst of
     // requests on Linden Lab's search from one address, and a site that locks
     // out a burst locks out this viewer's search for everybody using it.
-    // The author's rule, 2026-09-27: a few seconds between each. The
-    // handshake's redirects are ONE search and are not spaced; the viewer's
-    // own Web tab follows them at once too.
-    const F64 SEARCH_GAP_SECONDS = 3.0;
+    // The author's rule, 2026-09-27: a few seconds between each -- and
+    // 2026-10-05, after a test where a model asking for places and events
+    // made eleven calls for one question: *"maybe once a second is ok? as
+    // long as we don't do it 100 times"*, and the ceiling *"maybe 30 a
+    // minute"*. The handshake's redirects are ONE search and are not spaced;
+    // the viewer's own Web tab follows them at once too.
+    const F64 SEARCH_GAP_SECONDS = 1.0;
     F64 sNextWebSearchAt = 0.0;
+    const size_t SEARCHES_PER_MINUTE = 30;
+    std::deque<F64> sSearchStarts;   // when each search of the last minute began
+
+    /** False, with how long to wait, once the last minute has had its 30. */
+    bool searchAllowed(F64 now, F64& wait)
+    {
+        while (!sSearchStarts.empty() && now - sSearchStarts.front() >= 60.0) sSearchStarts.pop_front();
+        if (sSearchStarts.size() < SEARCHES_PER_MINUTE) return true;
+        wait = sSearchStarts.front() + 60.0 - now;
+        return false;
+    }
+
+    LLSD searchCeiling(F64 wait)
+    {
+        LLSD e; e["code"] = -32000;
+        e["message"] = "That is " + std::to_string(SEARCHES_PER_MINUTE) + " searches of Second Life in the "
+                       "last minute, the most Lumen makes, so this one was not sent. Answer from what "
+                       "the searches so far found, or search again in "
+                       + std::to_string((int)std::ceil(wait)) + " seconds.";
+        LLSD w; w["__error"] = e;
+        return w;
+    }
     /** A failed handshake costs up to ten requests. After one, the web is not
      *  tried again for a while and the directory answers instead, so a site
      *  that has changed cannot turn every search into a burst. */
@@ -10779,7 +10806,7 @@ namespace
 
         // Take the next free slot and wait for it. Coroutines here take turns
         // rather than run at once, so claiming the slot before sleeping is
-        // what keeps two searches asked together three seconds apart.
+        // what keeps two searches asked together a second apart.
         const F64 now_s = LLTimer::getElapsedSeconds();
         const F64 slot = std::max(now_s, sNextWebSearchAt);
         sNextWebSearchAt = slot + SEARCH_GAP_SECONDS;
@@ -15401,6 +15428,20 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         const std::string key = kind + "|" + lowered(text);
         const F64 now = LLTimer::getElapsedSeconds();
 
+        // <Lumen> Every "not yet" below is waited for HERE -- the same call made
+        // again a quarter second apart, by the socket for Codex and Claude Code
+        // and by the Assistant's own turn for the rest (mSettle, `settling`) --
+        // instead of telling the model to call again. Asked for places and
+        // events together, a model alternated between them through the spacing
+        // and made eleven calls for one question (2026-10-05). Fifteen seconds
+        // covers the spacing, the directory's reply and the web's handshake;
+        // the wait ends the moment a real answer is there.
+        auto holdSearch = [this](LLSD& result)
+        {
+            result["settling"] = true;
+            mSettle = llmax(mSettle, 15.0);
+        };
+
         // Places: the web search first, on the main grid only. [GRID] is
         // "secondlife.com" for the beta grid too (llweb.cpp), so there the web
         // would list MAIN-grid places the beta grid mostly does not have --
@@ -15463,9 +15504,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                     LLSD result;
                     result["pending"]      = true;
                     result["searched_for"] = text;
-                    result["note"] = "Asked Second Life's search, a few seconds apart from any "
-                                     "other search. Call again in a few seconds with the same "
-                                     "text.";
+                    result["note"] = "Asked Second Life's search, a second apart from any other "
+                                     "search. Call again in a few seconds with the same text.";
+                    holdSearch(result);
                     return result;
                 }
             }
@@ -15482,6 +15523,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 if (a) allowed.insert("adult");
                 const std::string maturity = a ? "gma" : (m ? "gm" : "g");
 
+                F64 wait = 0.0;
+                if (!searchAllowed(now, wait)) return searchCeiling(wait);
+                sSearchStarts.push_back(now);
                 sWebPlacesAsked[key] = now;
                 LLCoros::instance().launch("LumenWebSearch",
                     [key, text, maturity, allowed]()
@@ -15492,6 +15536,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 result["searched_for"] = text;
                 result["note"] = "Asked Second Life's search. Call again in a few seconds with "
                                  "the same text to collect the answer.";
+                holdSearch(result);
                 return result;
             }
         }
@@ -15510,6 +15555,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             result["count_so_far"] = (LLSD::Integer)it->second.rows.size();
             result["note"] = "The directory is still sending. Call again in a second "
                              "with the same text.";
+            holdSearch(result);
             return result;
         }
 
@@ -15650,6 +15696,10 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
                 }
                 if (locating > 0)
                 {
+                    // Waited for briefly here, as the search itself is, so the
+                    // first results come with a region and a map link.
+                    result["settling"] = true;
+                    mSettle = llmax(mSettle, 3.0);
                     result["locations_pending"] = locating;
                     result["locations_note"] = std::string("Asked Second Life where the first ones ")
                         + (events ? "are held. Call search_events" : "are. Call search_places")
@@ -15694,6 +15744,7 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             result["searched_for"] = text;
             result["note"] = "Asked Second Life's search; the answer comes back over the "
                              "network. Call again in a second or two with the same text.";
+            holdSearch(result);
             return result;
         }
 
@@ -15702,17 +15753,24 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD result;
             result["pending"]      = true;
             result["searched_for"] = text;
-            result["note"] = "Searches are spaced a few seconds apart so Second Life's search "
-                             "is not flooded. Call again in a few seconds with the same text.";
+            result["note"] = "Searches are spaced a second apart so Second Life's search "
+                             "is not flooded. Call again in a second with the same text.";
+            holdSearch(result);
             return result;
         }
-        mNextDirSearchAt = now + 3.0;
+        {
+            F64 wait = 0.0;
+            if (!searchAllowed(now, wait)) return searchCeiling(wait);
+        }
+        sSearchStarts.push_back(now);
+        mNextDirSearchAt = now + SEARCH_GAP_SECONDS;
         startDirSearch(kind, text);
         LLSD result;
         result["pending"]      = true;
         result["searched_for"] = text;
         result["note"] = "Asked Second Life's search. Call again in a second or two with "
                          "the same text to collect the answer.";
+        holdSearch(result);
         return result;
     }
 
