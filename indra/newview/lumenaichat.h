@@ -224,6 +224,13 @@ public:
     static bool postFromViewer(const std::string& status, const std::string& note);
     /** <Lumen> Whether a turn is running in the Assistant window right now. */
     static bool turnRunning();
+    /**
+     * <Lumen> Task 016, for debugging: a picture the assistant just took, shown
+     * small in the conversation when LumenAIShowPictures is on; a click opens the
+     * JPEG full size in the computer's own image viewer. Looked up, never created.
+     */
+    static void showPicture(const LLImageRaw* raw, const std::vector<U8>& jpeg,
+                            const std::string& caption);
 
     LumenAIChatFloater(const LLSD& key);
     ~LumenAIChatFloater() override;

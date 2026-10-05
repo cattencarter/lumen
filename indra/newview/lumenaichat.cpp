@@ -79,6 +79,11 @@
 #include "llavatariconctrl.h"    // <Lumen>
 #include "llgroupiconctrl.h"     // <Lumen>
 #include "llgroupactions.h"      // <Lumen> clickable cards
+#include "lliconctrl.h"          // <Lumen> the assistant's pictures, for debugging
+#include "llimage.h"             // <Lumen>
+#include "llviewertexture.h"     // <Lumen>
+#include "llviewerwindow.h"      // <Lumen>
+#include "llwindow.h"            // <Lumen>
 #include "llcommandhandler.h"    // <Lumen> the clickable offer
 #include "llcallingcard.h"      // <Lumen> LLAvatarTracker
 #include "llworld.h"   // <Lumen>
@@ -2522,6 +2527,83 @@ bool LumenAIChatFloater::turnRunning()
 {
     LumenAIChatFloater* self = LLFloaterReg::findTypedInstance<LumenAIChatFloater>("ai_chat");
     return self && self->mBusy;
+}
+
+// See the header. The author, 2026-10-05: "it's impossible to tell if it's
+// correct or not without seeing the pictures" -- and "yes, for debugging".
+void LumenAIChatFloater::showPicture(const LLImageRaw* raw, const std::vector<U8>& jpeg,
+                                     const std::string& caption)
+{
+    if (!raw || raw->getWidth() <= 0 || !gSavedSettings.getBOOL("LumenAIShowPictures")) return;
+    LumenAIChatFloater* self = LLFloaterReg::findTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self || !self->mTranscript) return;
+
+    // A local texture has to be a power of two on each side, and 640x480 is
+    // not: stretched to one here, it is drawn back at its own shape below.
+    LLPointer<LLImageRaw> pow2 = new LLImageRaw(raw->getData(), (U16)raw->getWidth(),
+                                                (U16)raw->getHeight(), raw->getComponents());
+    pow2->expandToPowerOfTwo();
+    LLPointer<LLViewerTexture> tex = LLViewerTextureManager::getLocalTexture(pow2.get(), false);
+    if (tex.isNull()) return;
+    gGL.getTexUnit(0)->bind(tex);
+    tex->setAddressMode(LLTexUnit::TAM_CLAMP);
+
+    const S32 GAP = 2;
+    const S32 width  = llmin(320, llmax(160, self->mTranscript->getRect().getWidth() - 28));
+    const S32 height = width * raw->getHeight() / raw->getWidth();
+
+    LLTextBox::Params tp;
+    tp.name("caption");
+    tp.font(LLFontGL::getFontSansSerifSmall());
+    tp.text_color(LLUIColorTable::instance().getColor("ChatTimestampColor"));
+    tp.wrap(true);
+    LLTextBox* text = LLUICtrlFactory::create<LLTextBox>(tp);
+    text->setRect(LLRect(0, 0, width, 0));
+    text->setValue(caption);
+    text->reshapeToFitText();
+    const S32 caption_h = llmax(14, text->getTextPixelHeight());
+
+    LLPanel::Params cp;
+    cp.name("ai_picture");
+    LLPanel* card = LLUICtrlFactory::create<LLPanel>(cp);
+    card->setRect(LLRect(0, caption_h + GAP + height, width, 0));
+    text->setRect(LLRect(0, caption_h + GAP + height, width, height + GAP));
+    card->addChild(text);
+
+    LLIconCtrl::Params ip;
+    ip.name("picture");
+    LLIconCtrl* icon = LLUICtrlFactory::create<LLIconCtrl>(ip);
+    icon->setRect(LLRect(0, height, width, 0));
+    icon->setImage(new LLUIImage("lumen_ai_picture", tex));
+    card->addChild(icon);
+
+    // Full size is the computer's own image viewer, from one file in the log
+    // folder that each click overwrites -- nothing is kept on disk otherwise.
+    LLButton::Params bp;
+    bp.name("open_full");
+    bp.label("");
+    bp.tool_tip("Open it full size");
+    LLButton* hit = LLUICtrlFactory::create<LLButton>(bp);
+    hit->setRect(LLRect(0, height, width, 0));
+    hit->setImageUnselected(LLUIImagePtr(NULL));
+    hit->setImageSelected(LLUIImagePtr(NULL));
+    hit->setImageHoverUnselected(LLUIImagePtr(NULL));
+    hit->setClickedCallback([jpeg](LLUICtrl*, const LLSD&)
+    {
+        const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_LOGS, "lumen-picture.jpg");
+        llofstream out(path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return;
+        out.write(reinterpret_cast<const char*>(jpeg.data()), (std::streamsize)jpeg.size());
+        out.close();
+        gViewerWindow->getWindow()->openFile(path);
+    });
+    card->addChild(hit);
+
+    LLInlineViewSegment::Params p;
+    p.view = card;
+    p.left_pad = 4;
+    p.right_pad = 4;
+    self->mTranscript->appendWidget(p, "\n", false);
 }
 // </Lumen>
 
