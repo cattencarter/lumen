@@ -5574,7 +5574,10 @@ namespace
             "\"on the table\". Only the parts drawn solid are measured, so an invisible shadow does "
             "not push it off the wall. The answer says which of its sides is now against the wall "
             "-- a long side or a short end -- and a missed spot is answered with where its sides "
-            "are in the picture. Then take a picture to check.\n"
+            "are in the picture, and its answer measures how high each corner stands and how far "
+            "each end is from the wall. Then take a picture to check. When the person says it "
+            "still does not look right, look again closely -- from the side and from above, detail "
+            "high -- and at those numbers before changing anything, then look once more.\n"
             "\n"
             "**Pass `object_id` to set, remove, take and list_contents whenever you mean an "
             "object that is already there** -- from movement / look_nearby (give it `find` with "
@@ -28804,42 +28807,56 @@ if (method == "camera")
             std::string label;
         };
         std::vector<Side> sides4;
-        // Its frame is its biggest part that is drawn -- the body of a sofa --
-        // never the root by itself: a root is often a helper, an invisible box or
-        // a pose ball turned any way at all. The author built one to show it
-        // (2026-10-05): squared and stood up by its root, the sofa came out
-        // crooked, one corner on the floor and one end at the wall.
-        const LLViewerObject* body = solid[0];
-        F32 biggest = -1.f;
+        // Which way is up, by its parts: each drawn part's own axis nearest the
+        // vertical, grouped where they agree, weighted by size. Its frame is the
+        // biggest part of the group that most of it agrees on -- the body of a
+        // sofa -- never the root by itself: a root is often a helper, an
+        // invisible box or a pose ball turned any way at all. The author built
+        // one to show it (2026-10-05): squared and stood up by its root, the
+        // sofa came out crooked, one corner on the floor and one end at the wall.
+        static const LLVector3 AX[6] = { LLVector3::x_axis, LLVector3::x_axis_neg,
+                                         LLVector3::y_axis, LLVector3::y_axis_neg,
+                                         LLVector3::z_axis, LLVector3::z_axis_neg };
+        struct UpGroup { LLVector3 up; F32 weight = 0.f, big = -1.f; const LLViewerObject* biggest = nullptr; };
+        std::vector<UpGroup> groups;
+        F32 all_weight = 0.f;
         for (const LLViewerObject* p : solid)
         {
+            const LLQuaternion pr = p->getRotationEdit();
+            LLVector3 up = LLVector3::z_axis;
+            F32 best = -2.f;
+            for (const LLVector3& a : AX)
+            {
+                const LLVector3 d = a * pr;
+                if (d.mV[VZ] > best) { best = d.mV[VZ]; up = d; }
+            }
             const LLVector3 sc = p->getScale();
-            const F32 vol = sc.mV[VX] * sc.mV[VY] * sc.mV[VZ];
-            if (vol > biggest) { biggest = vol; body = p; }
+            const F32 vol = llmax(sc.mV[VX] * sc.mV[VY] * sc.mV[VZ], 1.e-6f);
+            all_weight += vol;
+            UpGroup* g = nullptr;
+            for (UpGroup& h : groups) if (h.up * up > 0.9986f) { g = &h; break; }   // within 3 degrees
+            if (!g) { groups.push_back(UpGroup()); g = &groups.back(); g->up = up; }
+            g->weight += vol;
+            if (vol > g->big) { g->big = vol; g->biggest = p; }
         }
+        const UpGroup* main_group = &groups[0];
+        for (const UpGroup& h : groups) if (h.weight > main_group->weight) main_group = &h;
+        const LLViewerObject* body = main_group->biggest;
         const LLQuaternion frame = body->getRotationEdit();
         const LLQuaternion to_local = ~frame;   // into its own frame, from the root
-        // Stood upright: its own axis nearest the vertical becomes the vertical.
+        // Stood upright -- but only when most of it, by size, agrees which way
+        // is up. A tipped-over sofa has every part tipped the same way; a chair
+        // whose backrest leans back is not tipped, and a thing with no straight
+        // part has no up to restore. Those keep their tilt, and the answer says so.
         // A couch knocked crooked was tilted too, and a model spent three calls
         // straightening it with set before place could put it right.
         LLQuaternion level;
         F32 levelled = 0.f;
+        const bool parts_agree = main_group->weight >= 0.6f * all_weight;
+        if (parts_agree && main_group->up.mV[VZ] < 0.9999f)
         {
-            LLVector3 up = LLVector3::z_axis;
-            F32 best = -2.f;
-            static const LLVector3 AX[6] = { LLVector3::x_axis, LLVector3::x_axis_neg,
-                                             LLVector3::y_axis, LLVector3::y_axis_neg,
-                                             LLVector3::z_axis, LLVector3::z_axis_neg };
-            for (const LLVector3& a : AX)
-            {
-                const LLVector3 d = a * frame;
-                if (d.mV[VZ] > best) { best = d.mV[VZ]; up = d; }
-            }
-            if (best < 0.9999f)
-            {
-                level.shortestArc(up, LLVector3::z_axis);
-                levelled = acosf(llclamp(best, -1.f, 1.f)) * RAD_TO_DEG;
-            }
+            level.shortestArc(main_group->up, LLVector3::z_axis);
+            levelled = acosf(llclamp(main_group->up.mV[VZ], -1.f, 1.f)) * RAD_TO_DEG;
         }
         const LLQuaternion upright = frame * level;
         LLVector3 lmin( 1.e9f,  1.e9f,  1.e9f), lmax(-1.e9f, -1.e9f, -1.e9f);
@@ -29144,6 +29161,67 @@ if (method == "camera")
         const F32 raised = support_obj ? support - lo.mV[VZ] : 0.f;
         new_root.mV[VZ] += raised;
 
+        // What a picture cannot measure: how high each bottom corner of it will
+        // stand above what is under that corner, and how far each end will be
+        // from the wall. "It still does not look right" can then be checked in
+        // centimetres -- a chair left leaning stands on two corners, not four.
+        LLSD corners_cm = LLSD::emptyMap();
+        LLSD wall_cm = LLSD::emptyMap();
+        {
+            std::vector<LLVector3> box;   // its own box, where it will be
+            for (S32 i = 0; i < 8; ++i)
+            {
+                const LLVector3 l((i & 1) ? lmax.mV[VX] : lmin.mV[VX],
+                                  (i & 2) ? lmax.mV[VY] : lmin.mV[VY],
+                                  (i & 4) ? lmax.mV[VZ] : lmin.mV[VZ]);
+                box.push_back(new_root + ((l * frame) * level) * turn);
+            }
+            LLVector3 mid;
+            for (const LLVector3& b : box) mid += b * 0.125f;
+            std::sort(box.begin(), box.end(),
+                      [](const LLVector3& a, const LLVector3& b) { return a.mV[VZ] < b.mV[VZ]; });
+            LLVector3 t = LLVector3::z_axis % wall_n;   // to the right, seen from the room
+            if (wants_wall) t.normVec();
+            auto name = [&](const LLVector3& c) -> std::string
+            {
+                const LLVector3 d = c - mid;
+                if (wants_wall)
+                {
+                    return std::string(d * wall_n < 0.f ? "back " : "front ") + (d * t < 0.f ? "left" : "right");
+                }
+                return std::string(d.mV[VY] >= 0.f ? "north" : "south") + (d.mV[VX] >= 0.f ? "-east" : "-west");
+            };
+            LumenAISight::WithoutAvatars hide;
+            for (S32 i = 0; i < 4; ++i)
+            {
+                LLVector3 c = box[i];
+                LLVector3 in = mid - c;
+                in.mV[VZ] = 0.f;
+                if (in.magVec() > 0.1f) { in.normVec(); c += in * 0.05f; }   // just inside its edge
+                LLVector3 where, n;
+                if (LumenAISight::firstHit(c + LLVector3(0.f, 0.f, 0.3f), c - LLVector3(0.f, 0.f, 5.f),
+                                           0.f, where, obj, &n))
+                {
+                    corners_cm[name(box[i])] = (S32)ll_round((box[i].mV[VZ] - where.mV[VZ]) * 100.f);
+                }
+                else
+                {
+                    corners_cm[name(box[i])] = "nothing under it within 5 m";
+                }
+            }
+            if (wants_wall)
+            {
+                F32 left = 1.e9f, right = 1.e9f;
+                for (const LLVector3& c : box)
+                {
+                    const F32 d = (c - wall_p) * wall_n;
+                    if ((c - mid) * t < 0.f) left = llmin(left, d); else right = llmin(right, d);
+                }
+                wall_cm["left end"]  = (S32)ll_round(left * 100.f);
+                wall_cm["right end"] = (S32)ll_round(right * 100.f);
+            }
+        }
+
         // Hand it to set.
         LLViewerRegion* region = obj->getRegion();
         const LLVector3 rpos = region->getPosRegionFromAgent(new_root);
@@ -29168,6 +29246,14 @@ if (method == "camera")
         placed["moved_by_metres"] = ll_round((new_root - root_pos).magVec(), 0.01f);
         placed["turned_by_degrees"] = (S32)ll_round(turned);
         if (levelled > 0.5f) placed["stood_upright_by_degrees"] = (S32)ll_round(levelled);
+        if (!parts_agree)
+        {
+            placed["tilt"] = "left as it was: its parts do not agree which way is up (a "
+                             "leaning backrest, a thing built at an angle), so it was not "
+                             "stood upright -- the corners below show how it stands";
+        }
+        placed["corners_above_floor_cm"] = corners_cm;
+        if (wants_wall) placed["gap_to_wall_cm"] = wall_cm;
         bool short_end = false;
         if (wants_wall)
         {
@@ -29224,8 +29310,12 @@ if (method == "camera")
                                  "is one, the front spot was on its end: call place again with a "
                                  "spot on the long side that is its front.")
                                : std::string()) +
-                    " Take a new picture to check it before saying it is right, and say what "
-                    "was done.";
+                    " `corners_above_floor_cm` and `gap_to_wall_cm` are measured, not guessed: "
+                    "all corners near 0 means it stands flat; ends that differ mean it is askew. "
+                    "Take a new picture to check it before saying it is right, and say what was "
+                    "done. If the person says it still does not look right, believe them: look "
+                    "again closely -- pictures from the side and from above with detail high -- "
+                    "and at these numbers, before changing anything.";
         LL_INFOS("AICtl") << "place: moved " << (new_root - root_pos).magVec() << " m, turned "
                           << turned << " degrees, raised " << raised << " m, " << left_out
                           << " part(s) not measured" << LL_ENDL;
