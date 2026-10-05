@@ -28269,8 +28269,31 @@ if (method == "camera")
                            "`pixels` count from its top-left corner.";
             LLSD w; w["__error"] = e; return w;
         }
-        const LLSD& px = params["pixels"];
-        if (!px.isArray() || px.size() < 2 || px.size() % 2 != 0 || px.size() > 16)
+        // Pairs written as [[x, y], ...] are read too: a model may nest them, and
+        // an array read as a number is 0 -- a point in the corner, said as fact.
+        // Anything else that is not a number refuses the call.
+        const LLSD& asked = params["pixels"];
+        LLSD px = LLSD::emptyArray();
+        bool numbers_only = asked.isArray();
+        for (LLSD::array_const_iterator it = asked.beginArray(); numbers_only && it != asked.endArray(); ++it)
+        {
+            const LLSD& v = *it;
+            auto number = [](const LLSD& n) { return n.isReal() || n.isInteger(); };
+            if (number(v))
+            {
+                px.append(v);
+            }
+            else if (v.isArray() && v.size() == 2 && number(v[0]) && number(v[1]))
+            {
+                px.append(v[0]);
+                px.append(v[1]);
+            }
+            else
+            {
+                numbers_only = false;
+            }
+        }
+        if (!numbers_only || px.size() < 2 || px.size() % 2 != 0 || px.size() > 16)
         {
             LLSD e; e["code"] = -32000;
             e["message"] = llformat("`pixels` is x, y pairs in the last picture (%d x %d, counted "
