@@ -28804,8 +28804,21 @@ if (method == "camera")
             std::string label;
         };
         std::vector<Side> sides4;
-        const LLQuaternion root_rot = obj->getRotationEdit();
-        const LLQuaternion to_local = ~root_rot;
+        // Its frame is its biggest part that is drawn -- the body of a sofa --
+        // never the root by itself: a root is often a helper, an invisible box or
+        // a pose ball turned any way at all. The author built one to show it
+        // (2026-10-05): squared and stood up by its root, the sofa came out
+        // crooked, one corner on the floor and one end at the wall.
+        const LLViewerObject* body = solid[0];
+        F32 biggest = -1.f;
+        for (const LLViewerObject* p : solid)
+        {
+            const LLVector3 sc = p->getScale();
+            const F32 vol = sc.mV[VX] * sc.mV[VY] * sc.mV[VZ];
+            if (vol > biggest) { biggest = vol; body = p; }
+        }
+        const LLQuaternion frame = body->getRotationEdit();
+        const LLQuaternion to_local = ~frame;   // into its own frame, from the root
         // Stood upright: its own axis nearest the vertical becomes the vertical.
         // A couch knocked crooked was tilted too, and a model spent three calls
         // straightening it with set before place could put it right.
@@ -28819,7 +28832,7 @@ if (method == "camera")
                                              LLVector3::z_axis, LLVector3::z_axis_neg };
             for (const LLVector3& a : AX)
             {
-                const LLVector3 d = a * root_rot;
+                const LLVector3 d = a * frame;
                 if (d.mV[VZ] > best) { best = d.mV[VZ]; up = d; }
             }
             if (best < 0.9999f)
@@ -28828,7 +28841,7 @@ if (method == "camera")
                 levelled = acosf(llclamp(best, -1.f, 1.f)) * RAD_TO_DEG;
             }
         }
-        const LLQuaternion upright = root_rot * level;
+        const LLQuaternion upright = frame * level;
         LLVector3 lmin( 1.e9f,  1.e9f,  1.e9f), lmax(-1.e9f, -1.e9f, -1.e9f);
         for (const LLVector3& c : corners)
         {
@@ -28984,8 +28997,8 @@ if (method == "camera")
                     for (const Side& s : sides4)
                     {
                         if (s.label == "a long side") has_long = true;
-                        const LLVector3 n = s.local_n * root_rot;
-                        const LLVector3 mid = root_pos + s.local_mid * root_rot;
+                        const LLVector3 n = s.local_n * frame;
+                        const LLVector3 mid = root_pos + s.local_mid * frame;
                         LLVector3 to_cam = view.origin - mid;
                         to_cam.normVec();
                         if (n * to_cam < 0.25f) continue;   // turned away, or edge-on to the camera
@@ -29034,7 +29047,7 @@ if (method == "camera")
                         const F32 t = (l.mV[a] - mid.mV[a]) / half * s.local_n.mV[a];
                         if (t > best) { best = t; pick = &s; }
                     }
-                    seen = pick->local_n * root_rot;
+                    seen = pick->local_n * frame;
                     seen.mV[VZ] = 0.f;
                     seen.normVec();
                 }
