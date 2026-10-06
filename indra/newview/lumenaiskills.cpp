@@ -41,6 +41,7 @@
 #include "llinventorymodel.h"
 #include "llinventorymodelbackgroundfetch.h"
 #include "llinventoryobserver.h"
+#include "llnotifications.h"
 #include "llsdjson.h"
 #include "llstartup.h"
 #include "lltimer.h"
@@ -558,6 +559,24 @@ public:
             }
         }
 
+        // While teaching: what came into the inventory, for the model to see.
+        if ((mask & LLInventoryObserver::ADD) && self.mTeaching)
+        {
+            for (const LLUUID& id : gInventory.getAddedIDs())
+            {
+                if (LLViewerInventoryItem* item = gInventory.getItem(id))
+                {
+                    LLSD e;
+                    e["kind"] = "item_arrived";
+                    e["item_id"] = id;
+                    e["name"] = item->getName();
+                    if (const LLViewerInventoryCategory* c = gInventory.getCategory(item->getParentUUID()))
+                        e["folder"] = c->getName();
+                    self.noteTeachEvent(e);
+                }
+            }
+        }
+
         // A card in the skills folder added, changed, renamed or taken away.
         const LLUUID folder = self.skillsFolder();
         bool ours = false;
@@ -806,6 +825,7 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
         if (step.has("as")) known.insert(trim(step["as"].asString()));
     }
     s.steps = card["steps"];
+    s.card = card;
     s.tool = std::string(TOOL_PREFIX) + slugFor(s.name);
     if (s.summary.empty()) s.summary = plainSummary(s);
     out = s;
@@ -885,6 +905,7 @@ LLSD LumenAISkills::describe() const
         one["asks_first"] = s.ask_first;
         if (!s.trigger.empty()) one["trigger"] = s.trigger;
         one["summary"] = s.summary;
+        one["card"] = s.card;   // to change it: change this and save it again
         if (!s.problem.empty()) one["card_problem"] = s.problem;
         list.append(one);
     }
@@ -1139,6 +1160,369 @@ void LumenAISkills::loadNow()
     mLoaded = true;
     LL_INFOS("AISkills") << mSkills.size() << " skill(s) ready, " << problems.size()
                          << " card(s) refused" << (folder.isNull() ? " (no #Lumen/Skills folder)" : "") << LL_ENDL;
+}
+
+// ---- writing a card ------------------------------------------------------------
+
+namespace
+{
+    std::string jsonString(const std::string& s)
+    {
+        return boost::json::serialize(boost::json::value(boost::json::string(s)));
+    }
+
+    /** The keys of a map in the order a person reads them, the rest after. */
+    std::vector<std::string> keyOrder(const LLSD& map, const std::vector<std::string>& first,
+                                      const std::vector<std::string>& last)
+    {
+        std::vector<std::string> out;
+        for (const std::string& k : first) if (map.has(k)) out.push_back(k);
+        for (LLSD::map_const_iterator it = map.beginMap(); it != map.endMap(); ++it)
+        {
+            if (std::find(first.begin(), first.end(), it->first) == first.end()
+                && std::find(last.begin(), last.end(), it->first) == last.end())
+                out.push_back(it->first);
+        }
+        for (const std::string& k : last) if (map.has(k)) out.push_back(k);
+        return out;
+    }
+
+    bool isFlat(const LLSD& v)
+    {
+        if (v.isArray())
+        {
+            for (LLSD::array_const_iterator it = v.beginArray(); it != v.endArray(); ++it)
+                if (it->isMap() || it->isArray()) return false;
+            return true;
+        }
+        return !v.isMap();
+    }
+
+    void writeJson(const LLSD& v, const std::string& pad, std::string& out, bool is_step = false, bool top = false)
+    {
+        if (v.isMap())
+        {
+            const std::vector<std::string> keys = top
+                ? keyOrder(v, { "name", "about", "examples", "trigger", "ask_first", "inputs", "tables", "summary" }, { "steps" })
+                : is_step ? keyOrder(v, { "do", "about" }, { "as" })
+                          : keyOrder(v, { "name", "about" }, {});
+            if (keys.empty()) { out += "{}"; return; }
+            // A short map of plain values fits on one line.
+            bool one_line = !top && !is_step && keys.size() <= 4;
+            for (const std::string& k : keys) one_line = one_line && isFlat(v[k]) && !v[k].isArray();
+            if (is_step)
+            {
+                one_line = true;
+                for (const std::string& k : keys) one_line = one_line && (isFlat(v[k]) || (v[k].isMap() && v[k].size() <= 4));
+            }
+            if (one_line)
+            {
+                out += "{ ";
+                for (size_t i = 0; i < keys.size(); ++i)
+                {
+                    out += (i ? ", " : "") + jsonString(keys[i]) + ": ";
+                    writeJson(v[keys[i]], pad, out);
+                }
+                out += " }";
+                return;
+            }
+            out += "{\n";
+            for (size_t i = 0; i < keys.size(); ++i)
+            {
+                out += pad + "  " + jsonString(keys[i]) + ": ";
+                const bool steps = top && keys[i] == "steps";
+                if (steps && v[keys[i]].isArray())
+                {
+                    out += "[\n";
+                    const LLSD& list = v[keys[i]];
+                    for (S32 j = 0; j < (S32)list.size(); ++j)
+                    {
+                        out += pad + "    ";
+                        writeJson(list[j], pad + "    ", out, true);
+                        out += (j + 1 < (S32)list.size() ? ",\n" : "\n");
+                    }
+                    out += pad + "  ]";
+                }
+                else
+                {
+                    writeJson(v[keys[i]], pad + "  ", out);
+                }
+                out += (i + 1 < keys.size() ? ",\n" : "\n");
+            }
+            out += pad + "}";
+            return;
+        }
+        if (v.isArray())
+        {
+            if (isFlat(v))
+            {
+                out += "[";
+                for (S32 i = 0; i < (S32)v.size(); ++i)
+                {
+                    out += (i ? ", " : "");
+                    writeJson(v[i], pad, out);
+                }
+                out += "]";
+                return;
+            }
+            out += "[\n";
+            for (S32 i = 0; i < (S32)v.size(); ++i)
+            {
+                out += pad + "  ";
+                writeJson(v[i], pad + "  ", out);
+                out += (i + 1 < (S32)v.size() ? ",\n" : "\n");
+            }
+            out += pad + "]";
+            return;
+        }
+        if (v.isBoolean()) { out += v.asBoolean() ? "true" : "false"; return; }
+        if (v.isInteger()) { out += llformat("%d", v.asInteger()); return; }
+        if (v.isReal())
+        {
+            const F64 r = v.asReal();
+            out += (r == (F64)(S64)r && fabs(r) < 1e9) ? llformat("%lld", (long long)r) : llformat("%g", r);
+            return;
+        }
+        if (v.isUndefined()) { out += "null"; return; }
+        out += jsonString(v.asString());
+    }
+}
+
+// static
+std::string LumenAISkills::cardText(const LLSD& card)
+{
+    std::string out = std::string(CARD_HEADER) + "\n";
+    writeJson(card, std::string(), out, false, true);
+    return out + "\n";
+}
+
+LLUUID LumenAISkills::cardFor(const std::string& name) const
+{
+    for (const Skill& s : mSkills)
+        if (lower(s.name) == lower(trim(name))) return s.item_id;
+    return LLUUID::null;
+}
+
+// ---- teaching ----------------------------------------------------------------------
+
+namespace
+{
+    /** The name a person would know a thing by: a worn one by its item, else as the viewer has it. */
+    std::string thingName(LLViewerObject* root)
+    {
+        if (!root) return std::string();
+        if (root->isAttachment())
+        {
+            if (LLViewerInventoryItem* item = gInventory.getItem(root->getAttachmentItemID()))
+                return item->getName();
+        }
+        return LumenAIControl::instanceExists() ? LumenAIControl::instance().objectNameFor(root->getID())
+                                                : std::string();
+    }
+
+    S32 linkNumber(LLViewerObject* prim)
+    {
+        LLViewerObject* root = prim ? prim->getRootEdit() : nullptr;
+        if (!root || root == prim) return 1;
+        S32 n = 2;
+        for (const LLViewerObject* child : root->getChildren())
+        {
+            if (child == prim) return n;
+            if (child && !child->isAvatar()) ++n;
+        }
+        return 1;
+    }
+}
+
+void LumenAISkills::noteTeachEvent(LLSD event)
+{
+    event["t"] = ll_round((F32)(LLTimer::getTotalSeconds() - mTeachStarted), 0.1f);
+    mTeachEvents.append(event);
+    // A routine is minutes, not hours; a recording left on is cut, not grown.
+    if (mTeachEvents.size() > 400)
+    {
+        LLSD kept = LLSD::emptyArray();
+        for (S32 i = (S32)mTeachEvents.size() - 400; i < (S32)mTeachEvents.size(); ++i) kept.append(mTeachEvents[i]);
+        mTeachEvents = kept;
+    }
+}
+
+// static
+void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const LLVector2& uv, S32 face)
+{
+    if (!object || gStepRunning || !LumenAISkills::instanceExists()) return;
+    LumenAISkills& self = LumenAISkills::instance();
+    if (!self.mTeaching) return;
+    LLViewerObject* root = object->getRootEdit();
+    LLSD e;
+    e["kind"] = "touch";
+    e["object_id"] = root->getID();
+    e["link"] = linkNumber(object);
+    if (object != root) e["prim_id"] = object->getID();
+    e["face"] = face;
+    LLSD spot; spot.append(ll_round(st.mV[VX], 0.001f)); spot.append(ll_round(st.mV[VY], 0.001f));
+    e["spot"] = spot;
+    if (root->isHUDAttachment()) e["hud"] = true;
+    else if (root->isAttachment()) e["worn"] = true;
+    const std::string name = thingName(root);
+    if (!name.empty()) e["name"] = name;
+    (void)uv;
+    self.noteTeachEvent(e);
+}
+
+void LumenAISkills::startTeaching()
+{
+    mTeaching = true;
+    mTeachStarted = LLTimer::getTotalSeconds();
+    mTeachEvents = LLSD::emptyArray();
+    mTeachMenus.clear();
+    mTeachMenuPtrs.clear();
+    mTeachRoots.clear();
+    const S32 count = gObjectList.getNumObjects();
+    for (S32 i = 0; i < count; ++i)
+    {
+        LLViewerObject* o = gObjectList.getObject(i);
+        if (o && !o->isDead() && o->getRootEdit() == o) mTeachRoots.insert(o->getID());
+    }
+    watchFolder();   // the same watcher notes what comes into the inventory
+
+    // Menus: as they come up, and which button the user pressed.
+    if (LLNotificationChannelPtr visible = LLNotifications::instance().getChannel("Visible"))
+    {
+        mTeachMenuListener = visible->connectChanged([](const LLSD& payload) -> bool
+        {
+            if (!LumenAISkills::instanceExists()) return false;
+            LumenAISkills& self = LumenAISkills::instance();
+            if (!self.mTeaching || gStepRunning) return false;
+            const std::string sig = payload["sigtype"].asString();
+            const LLUUID id = payload["id"].asUUID();
+            if (sig == "add")
+            {
+                LLNotificationPtr n = LLNotifications::instance().find(id);
+                if (!n) return false;
+                const std::string kind = n->getName();
+                if (kind.compare(0, 12, "ScriptDialog") != 0 && kind != "ScriptTextBox"
+                    && kind.compare(0, 14, "ScriptQuestion") != 0 && kind.compare(0, 13, "ObjectGiveItem") != 0)
+                    return false;
+                LLSD e;
+                e["kind"] = kind.compare(0, 14, "ScriptQuestion") == 0 ? "permission_request"
+                          : kind.compare(0, 13, "ObjectGiveItem") == 0 ? "item_offered" : "menu";
+                e["text"] = n->getMessage();
+                const LLSD subs = n->getSubstitutions();
+                if (subs.has("TITLE")) e["from"] = subs["TITLE"];
+                else if (subs.has("OBJECTNAME")) e["from"] = subs["OBJECTNAME"];
+                LLSD buttons = LLSD::emptyArray();
+                if (LLNotificationFormPtr form = n->getForm())
+                {
+                    for (S32 i = 0; i < form->getNumElements(); ++i)
+                    {
+                        const LLSD el = form->getElement(i);
+                        if (el["type"].asString() == "button")
+                            buttons.append(el.has("text") ? el["text"] : el["name"]);
+                    }
+                }
+                if (buttons.size() > 0) e["buttons"] = buttons;
+                self.noteTeachEvent(e);
+                self.mTeachMenus[id] = (S32)self.mTeachEvents.size() - 1;
+                self.mTeachMenuPtrs[id] = n;
+            }
+            else if (sig == "delete")
+            {
+                std::map<LLUUID, S32>::iterator m = self.mTeachMenus.find(id);
+                std::map<LLUUID, LLNotificationPtr>::iterator p = self.mTeachMenuPtrs.find(id);
+                if (m != self.mTeachMenus.end() && p != self.mTeachMenuPtrs.end() && p->second
+                    && m->second < (S32)self.mTeachEvents.size())
+                {
+                    const std::string pressed = LLNotification::getSelectedOptionName(p->second->getResponse());
+                    if (!pressed.empty()) self.mTeachEvents[m->second]["pressed"] = pressed;
+                    else if (p->second->getResponse().has("message"))
+                        self.mTeachEvents[m->second]["typed"] = p->second->getResponse()["message"];
+                    self.mTeachEvents[m->second]["answered_after"] =
+                        ll_round((F32)(LLTimer::getTotalSeconds() - self.mTeachStarted), 0.1f);
+                }
+                if (m != self.mTeachMenus.end()) self.mTeachMenus.erase(m);
+                if (p != self.mTeachMenuPtrs.end()) self.mTeachMenuPtrs.erase(p);
+            }
+            return false;
+        });
+    }
+
+    // Objects that come and go, a few times a second.
+    LLEventPumps::instance().obtain("mainloop").stopListening("LumenAISkillsTeach");
+    LLEventPumps::instance().obtain("mainloop").listen("LumenAISkillsTeach", [](const LLSD&)
+    {
+        static F64 next = 0.0;
+        const F64 now = LLTimer::getTotalSeconds();
+        if (now < next) return false;
+        next = now + 0.5;
+        if (LumenAISkills::instanceExists()) LumenAISkills::instance().pollTeaching();
+        return false;
+    });
+    LL_INFOS("AISkills") << "teaching: watching what the user does" << LL_ENDL;
+}
+
+void LumenAISkills::pollTeaching()
+{
+    if (!mTeaching) return;
+    // Ten minutes is a long routine; a recording forgotten is stopped.
+    if (LLTimer::getTotalSeconds() - mTeachStarted > 900.0)
+    {
+        stopTeaching();
+        return;
+    }
+    const LLVector3d me = gAgent.getPositionGlobal();
+    std::set<LLUUID> now;
+    const S32 count = gObjectList.getNumObjects();
+    for (S32 i = 0; i < count; ++i)
+    {
+        LLViewerObject* o = gObjectList.getObject(i);
+        if (!o || o->isDead() || o->getRootEdit() != o || o->isAvatar() || o->isAttachment()) continue;
+        if (o->getPCode() != LL_PCODE_VOLUME) continue;
+        now.insert(o->getID());
+        if (mTeachRoots.count(o->getID())) continue;
+        mTeachRoots.insert(o->getID());
+        const F32 d = (F32)(o->getPositionGlobal() - me).magVec();
+        if (d > 40.f) continue;   // far off is somebody else's business
+        LLSD e;
+        e["kind"] = "object_appeared";
+        e["object_id"] = o->getID();
+        e["owner"] = o->permYouOwner() ? "you" : "someone else";
+        e["distance"] = ll_round(d, 0.1f);
+        const std::string name = thingName(o);
+        if (!name.empty()) e["name"] = name;
+        noteTeachEvent(e);
+    }
+}
+
+LLSD LumenAISkills::stopTeaching()
+{
+    LLSD out;
+    if (!mTeaching && mTeachEvents.size() == 0)
+    {
+        out["recorded"] = false;
+        return out;
+    }
+    mTeaching = false;
+    mTeachMenuListener.disconnect();
+    LLEventPumps::instance().obtain("mainloop").stopListening("LumenAISkillsTeach");
+
+    // Names that had not arrived when the thing happened.
+    for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
+    {
+        LLSD& e = mTeachEvents[i];
+        if (!e.has("object_id") || e.has("name")) continue;
+        LLViewerObject* o = gObjectList.findObject(e["object_id"].asUUID());
+        const std::string name = o ? thingName(o) : std::string();
+        if (!name.empty()) e["name"] = name;
+        if (!o && e["kind"].asString() == "object_appeared") e["gone_since"] = true;
+    }
+    out["recorded"] = true;
+    out["seconds"] = ll_round((F32)(LLTimer::getTotalSeconds() - mTeachStarted), 0.1f);
+    out["events"] = mTeachEvents;
+    LL_INFOS("AISkills") << "teaching: stopped, " << mTeachEvents.size() << " things noted" << LL_ENDL;
+    mTeachMenus.clear();
+    mTeachMenuPtrs.clear();
+    return out;
 }
 
 // ---- running ---------------------------------------------------------------------

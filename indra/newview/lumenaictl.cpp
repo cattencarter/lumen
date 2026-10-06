@@ -3981,6 +3981,10 @@ namespace
             if (action == "recall")        return "recall";
             if (action == "test_picture")  return "test_picture";   // <Lumen> task 015
             if (action == "skills")        return "list_skills";    // <Lumen> task 022
+            if (action == "teach_start")   return "teach_start";    // <Lumen> task 022
+            if (action == "teach_stop")    return "teach_stop";     // <Lumen> task 022
+            if (action == "test_skill")    return "test_skill";     // <Lumen> task 022
+            if (action == "save_skill")    return "save_skill";     // <Lumen> task 022
             if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
@@ -5068,7 +5072,7 @@ namespace
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall", "music",
-              "test_picture", "skills" };
+              "test_picture", "skills", "teach_start", "teach_stop", "test_skill", "save_skill" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -5078,6 +5082,14 @@ namespace
             "you see in it, or plainly that no picture reached you.\n"
             "- skills: the routines the user has taught Lumen, each also a tool of its own named "
             "skill_..., and any skill notecard that could not be read and why.\n"
+            "- teach_start / teach_stop: when the user wants to TEACH Lumen a routine (\"I want to "
+            "teach you how to make a potion\"). teach_start, then they do it once by hand and say "
+            "when done; teach_stop gives what they did and how to write it up as a skill.\n"
+            "- test_skill: run a skill from `card` (with `inputs`) before it is saved; the viewer "
+            "shows the user its steps and asks first.\n"
+            "- save_skill: save `card` as one of their skills; the viewer shows the steps and asks. "
+            "The same name changes that skill -- to change one (\"use the herbs from the barrel "
+            "first\"), take its `card` from `skills`, change it, test it and save it.\n"
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
@@ -5478,6 +5490,15 @@ namespace
             LLSD lurl; lurl["type"]="string";
                 lurl["description"]="music: a new stream address for the parcel -- everybody on it hears it.";
             view_props["play"]=lplay; view_props["url"]=lurl;
+            // <Lumen> Task 022
+            LLSD vcard; vcard["type"]="object";
+                vcard["description"]="test_skill, save_skill: the skill -- name, about, examples, "
+                                     "inputs, tables, steps -- as teach_stop's how_to_write_it "
+                                     "describes, or a skill's `card` from `skills`, changed.";
+            LLSD vinp; vinp["type"]="object";
+                vinp["description"]="test_skill: the skill's inputs by name, e.g. {\"sickness\": "
+                                    "\"fever\"}.";
+            view_props["card"]=vcard; view_props["inputs"]=vinp;
             // </Lumen>
             struct { const char* key; const char* desc; } nums[] = {
                 { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
@@ -6921,6 +6942,15 @@ bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& 
     label.desc = desc;
     self.mNameGaveUp.erase(object_id);
     return self.mNameAsked.erase(object_id) > 0;
+}
+
+std::string LumenAIControl::objectNameFor(const LLUUID& id)
+{
+    if (const ObjectLabel* label = objectLabel(id)) return label->name;
+    std::vector<LLUUID> want;
+    want.push_back(id);
+    askNames(want);
+    return std::string();
 }
 
 const LumenAIControl::ObjectLabel* LumenAIControl::objectLabel(const LLUUID& id) const
@@ -28771,6 +28801,234 @@ if (method == "camera")
         }
         return result;
     }
+
+    // <Lumen> Task 022, teaching: watch the user do it once by hand.
+    if (method == "teach_start" || method == "teach_stop")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LumenAISkills& skills = LumenAISkills::instance();
+        if (method == "teach_start")
+        {
+            skills.startTeaching();
+            LLSD result;
+            result["watching"] = true;
+            result["note"] = "Watching now: clicks on HUDs and objects, menus and the button pressed, "
+                             "objects that appear, things that come into the inventory. Tell the user "
+                             "to do it once by hand, the way they always do, and to say when they are "
+                             "done -- then call teach_stop. Do nothing in the world yourself meanwhile.";
+            return result;
+        }
+        LLSD result = skills.stopTeaching();
+        if (!result["recorded"].asBoolean())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "Nothing was being watched. Call teach_start first, then let the user do it.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        result["how_to_write_it"] =
+            "Turn this into a skill with the user. Ask ONLY what you cannot see: which part changes "
+            "each time (that becomes an input, e.g. the sickness), where things should come from "
+            "first, and when the skill should be used. Then write the card and run it once with "
+            "test_skill; when it works and they are happy, save_skill. The card is an object: "
+            "{\"name\": short, in their words; \"about\": when to use it, in their words; "
+            "\"examples\": a few phrases they would say; \"inputs\": [{\"name\": \"sickness\", "
+            "\"about\": \"which sickness\", \"choices\": [...]}]; \"tables\": {\"recipes\": "
+            "{\"fever\": {\"potion\": \"...\", \"herbs\": [\"...\", \"...\"]}}} for anything looked "
+            "up; \"ask_first\": true to ask before each run; \"steps\": [...]}. Each step is "
+            "{\"do\": ..., \"about\": plain words for the progress line, and its own fields}, in "
+            "order. {name} or {name.part} fills in an input or what an earlier step found (its "
+            "\"as\"); {today} is today's date. The steps: "
+            "lookup {table, key, as}; "
+            "find_item {name (words, or a pattern with *), kind, folder, in: [\"inventory\", "
+            "{\"near\": \"Barrel\"}], date: {format: \"YYYY-MM-DD\", pattern: a regex whose first "
+            "group is the date, keep: \"unexpired\"} to skip what has expired and take the soonest, "
+            "as} -- gives {as.item_id, as.name}; "
+            "touch {object, link, face, spot} -- object is {\"worn\": \"HUD name\"}, {\"near\": "
+            "\"name\", \"owner\": \"me\"} or an earlier result; use the link, face and spot from the "
+            "touch you saw; "
+            "dialog {text (part of the menu's words), press (the button), wait}; "
+            "rez {item: an earlier find_item, near: an object, as}; "
+            "wait_for_object {name, owner: \"me\" or \"anyone\", within, wait, as}; "
+            "take {object, how: \"take\" or \"touch\"}; "
+            "verify {item: a name, wait} -- checks it came into the inventory; "
+            "say {text}. Waits are seconds. A step may have \"optional\": true, and \"fail\": "
+            "words for when it fails. There is no step that gives, pays or deletes, and a "
+            "script's permission request is always the user's to answer. Write the steps from "
+            "what happened above, in that order -- the same clicks, menus and buttons.";
+        return result;
+    }
+
+    // <Lumen> Task 022: try a skill that is not saved yet, or save one.
+    if (method == "test_skill" || method == "save_skill")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLSD card = params["card"];
+        if (card.isString())
+        {
+            boost::system::error_code ec;
+            const boost::json::value jv = boost::json::parse(card.asString(), ec);
+            card = ec ? LLSD() : LlsdFromJson(jv);
+        }
+        if (!card.isMap())
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "`card` is the skill as an object -- name, about, steps and the rest, as "
+                           "teach_stop's how_to_write_it describes.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string text = LumenAISkills::cardText(card);
+        if (text.size() > 60000)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "That skill is too long for a notecard. Make it shorter.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LumenAISkills::Skill skill;
+        std::string why;
+        if (!LumenAISkills::parse(text, skill, why))
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "The skill cannot be used as it is: " + why + ". Fix that and call again.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LumenAISkills& skills = LumenAISkills::instance();
+        const std::string fingerprint = llformat("%zx", std::hash<std::string>()(text));
+        const std::string summary = skill.summary.size() > 900 ? skill.summary.substr(0, 900) + "..." : skill.summary;
+
+        if (method == "test_skill")
+        {
+            skill.tool = "test_" + skill.tool;   // never mistaken for the saved one
+            const LLSD given = params["inputs"].isMap() ? params["inputs"] : LLSD::emptyMap();
+            LLSD inputs = LLSD::emptyMap();
+            for (const LumenAISkills::Input& in : skill.inputs)
+            {
+                if (given.has(in.name) && !given[in.name].asString().empty())
+                    inputs[in.name] = given[in.name].asString();
+            }
+            if (!skills.hasRun(skill, inputs))
+            {
+                const std::string ask = skills.checkInputs(skill, inputs);
+                if (!ask.empty())
+                {
+                    LLSD e; e["code"] = -32602; e["message"] = ask;
+                    LLSD w; w["__error"] = e; return w;
+                }
+                LLSD subs;
+                subs["NAME"] = askQuote(skill.name, 80);
+                subs["SUMMARY"] = summary;
+                LLSD out;
+                if (!askUser("LumenAskSkillTest", subs,
+                             "skill_test:" + fingerprint + "|" + llsdToJsonString(inputs), out))
+                    return out;
+            }
+            LLSD result = skills.run(skill, inputs);
+            if (result.isMap() && result["settling"].asBoolean()) mSettle = llmax(mSettle, 45.0);
+            return result;
+        }
+
+        // Saving: the person sees, in plain words, what it will do.
+        const LLUUID existing = skills.cardFor(skill.name);
+        {
+            LLSD subs;
+            subs["NAME"] = askQuote(skill.name, 80);
+            subs["SUMMARY"] = summary;
+            subs["WHAT"] = existing.notNull() ? std::string("change your skill") : std::string("save a new skill");
+            LLSD out;
+            if (!askUser("LumenAskSkillSave", subs, "skill_save:" + fingerprint, out)) return out;
+        }
+
+        LLViewerRegion* region = gAgent.getRegion();
+        if (!region)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not in a region, so nothing can be saved now.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        if (existing.notNull())
+        {
+            // The same card, new text -- as Save in the notecard window does.
+            const std::string url = region->getCapability("UpdateNotecardAgentInventory");
+            if (url.empty())
+            {
+                LLSD e; e["code"] = -32000; e["message"] = "This region cannot save notecards right now.";
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLNotecard notecard(LLNotecard::MAX_SIZE);
+            notecard.setText(text);
+            std::stringstream stream;
+            notecard.exportStream(stream);
+            LLResourceUploadInfo::ptr_t info = std::make_shared<LLBufferedAssetUploadInfo>(
+                existing, LLAssetType::AT_NOTECARD, stream.str(),
+                [](LLUUID item_id, LLUUID new_asset_id, LLUUID new_item_id, LLSD)
+                {
+                    LL_INFOS("AISkills") << "skill card saved: " << item_id << LL_ENDL;
+                    LLPreviewNotecard::finishInventoryUpload(item_id, new_asset_id, new_item_id);
+                },
+                nullptr);
+            LLViewerAssetUpload::EnqueueInventoryUpload(url, info);
+        }
+        else
+        {
+            std::string card_name = skill.name;
+            LLInventoryObject::correctInventoryName(card_name);
+            // A new card in #Lumen/Skills, making the folders the first time.
+            auto makeCard = [text, card_name](const LLUUID& folder)
+            {
+                if (folder.isNull())
+                {
+                    LL_WARNS("AISkills") << "no skills folder came back; the skill was not saved" << LL_ENDL;
+                    return;
+                }
+                LumenAIControl::suppressAutoOpen(card_name);
+                LLTransactionID tid;
+                tid.generate();
+                create_inventory_item(gAgent.getID(), gAgent.getSessionID(), folder, tid,
+                                      card_name, LLStringUtil::null,
+                                      LLAssetType::AT_NOTECARD, LLInventoryType::IT_NOTECARD,
+                                      NO_INV_SUBTYPE, PERM_ALL,
+                                      new FSNotecardText(text, std::string()));
+            };
+            auto inLumen = [makeCard](const LLUUID& lumen)
+            {
+                if (lumen.isNull()) return;
+                LLInventoryModel::cat_array_t* cats = nullptr;
+                LLInventoryModel::item_array_t* items = nullptr;
+                gInventory.getDirectDescendentsOf(lumen, cats, items);
+                if (cats)
+                {
+                    for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
+                    {
+                        if (c && c->getName() == "Skills") { makeCard(c->getUUID()); return; }
+                    }
+                }
+                gInventory.createNewCategory(lumen, LLFolderType::FT_NONE, "Skills", makeCard);
+            };
+            const LLUUID lumen = gInventory.findCategoryByName(LumenFolders::LUMEN_FOLDER);
+            if (lumen.notNull()) inLumen(lumen);
+            else gInventory.createNewCategory(gInventory.getRootFolderID(), LLFolderType::FT_NONE,
+                                              LumenFolders::LUMEN_FOLDER, inLumen);
+        }
+
+        LL_INFOS("AISkills") << (existing.notNull() ? "changing" : "saving") << " the skill \""
+                             << skill.name << "\"" << LL_ENDL;
+        LLSD result;
+        result["saving"] = true;
+        result["name"] = skill.name;
+        result["tool"] = skill.tool;
+        result["changed_existing"] = existing.notNull();
+        result["note"] = "Being saved into #Lumen/Skills, where it follows them to any computer. In a "
+                         "few seconds it is a tool of its own (" + skill.tool + "). Tell them briefly, "
+                         "and how they can ask for it.";
+        return result;
+    }
+    // </Lumen>
 
     // <Lumen> Task 022: which skills there are, and any card that was refused.
     if (method == "list_skills")

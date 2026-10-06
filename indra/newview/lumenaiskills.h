@@ -52,15 +52,22 @@
 #ifndef LUMEN_AISKILLS_H
 #define LUMEN_AISKILLS_H
 
+#include "llevents.h"
 #include "llsingleton.h"
 #include "llsd.h"
 #include "lluuid.h"
+#include "v2math.h"
 
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "llnotificationptr.h"
+
 class LLInventoryObserver;
+class LLViewerObject;
 
 class LumenAISkills : public LLSingleton<LumenAISkills>
 {
@@ -88,6 +95,7 @@ public:
         LLSD        tables;               //< name -> { key -> value }
         LLSD        steps;                //< checked when the card was read
         bool        ask_first = true;     //< a one-line question before every run
+        LLSD        card;                 //< the card as read, for changing it by chat
         LLUUID      item_id, asset_id, creator_id;
         std::string card_name;
         std::string problem;              //< the card on the server was refused; this is an older one
@@ -128,6 +136,20 @@ public:
     /** True while the runner is making one of its own calls. */
     static bool stepRunning();
 
+    // ---- teaching --------------------------------------------------------
+    /** Start noting what the user does by hand: clicks, menus, objects, items. */
+    void startTeaching();
+    /** Stop, and hand back what was noted, oldest first, with names filled in. */
+    LLSD stopTeaching();
+    bool teaching() const { return mTeaching; }
+    /** The viewer sending a touch -- the user's own click (lltoolgrab.cpp). */
+    static void noteTouch(LLViewerObject* object, const LLVector2& st, const LLVector2& uv, S32 face);
+
+    /** The text a card is written as: the header line, then the JSON, keys in a sensible order. */
+    static std::string cardText(const LLSD& card);
+    /** The card in #Lumen/Skills that holds the skill of this name, if one does. */
+    LLUUID cardFor(const std::string& name) const;
+
     /** The card's text read into a skill; false with `error` saying what is wrong, in plain words. */
     static bool parse(const std::string& text, Skill& out, std::string& error);
     /** What the skill does, one short line per step, in everyday words. */
@@ -155,6 +177,16 @@ private:
     bool   mLoaded = false;
     LLInventoryObserver* mObserver = nullptr;   //< the folder watcher; the inventory model deletes it at logout
     std::shared_ptr<Run> mRun;   //< the one running, or the last one finished
+
+    bool   mTeaching = false;
+    F64    mTeachStarted = 0.0;
+    LLSD   mTeachEvents;                     //< what was noted, oldest first
+    std::set<LLUUID> mTeachRoots;            //< objects in view when it started, or noted since
+    std::map<LLUUID, S32> mTeachMenus;       //< a menu on screen -> its event
+    std::map<LLUUID, LLNotificationPtr> mTeachMenuPtrs;
+    LLTempBoundListener mTeachMenuListener;
+    void noteTeachEvent(LLSD event);
+    void pollTeaching();
     friend class LumenSkillsObserver;
 };
 

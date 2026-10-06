@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lltoolgrab.h"
+#include "lumenaiskills.h"   // <Lumen> task 022: teaching a skill
 
 // library headers
 #include "indra_constants.h"        // for agent control flags
@@ -1205,6 +1206,10 @@ void send_ObjectGrab_message(LLViewerObject* object, const LLPickInfo & pick, co
     msg->addVector3("Normal", pick.mNormal);
     msg->addVector3("Binormal", pick.mBinormal);
     msg->sendMessage( object->getRegion()->getHost());
+
+    // <Lumen> A click the user makes while teaching Lumen a skill: which part,
+    // face and spot, so the skill can press the same button later.
+    LumenAISkills::noteTouch(object, pick.mSTCoords, pick.mUVCoords, pick.mObjectFace);
 
     /*  Diagnostic code
     LL_INFOS() << "mUVCoords: " << pick.mUVCoords

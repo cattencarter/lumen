@@ -119,6 +119,13 @@ public:
      */
     std::string handleRequest(const std::string& body);
 
+    /**
+     * <Lumen> Task 022: what the viewer knows an object to be called -- its
+     * root's name, as look_nearby has it -- asking the region in the
+     * background when it does not know yet (empty until the answer lands).
+     */
+    std::string objectNameFor(const LLUUID& id);
+
     // <Lumen> worn_by and creator links.
     //
     // A reply from the in-world bridge arrives later, over HTTP, so it is

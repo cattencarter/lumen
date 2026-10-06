@@ -15328,6 +15328,58 @@ Run it? You will only be asked this once for this version of it.
 
   <notification
    icon="alert.tga"
+   name="LumenAskSkillTest"
+   type="alertmodal">
+The assistant wants to try out the skill [NAME] before it is saved. This is what it will do:
+[SUMMARY]
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to try out a skill it is writing"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Try it"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Not now"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   name="LumenAskSkillSave"
+   type="alertmodal">
+The assistant wants to [WHAT] [NAME]. This is what it will do:
+[SUMMARY]
+
+It is kept as a notecard in #Lumen/Skills, so it goes with you to any computer.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to save one of your skills"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Save it"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Not now"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
    label="Send an instant message?"
    name="LumenAskFriendship"
    type="alertmodal">
