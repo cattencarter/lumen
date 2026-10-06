@@ -53,6 +53,7 @@
 #include "llviewerobject.h"
 #include "llviewerobjectlist.h"
 #include "llvoavatarself.h"
+#include "llviewerjointattachment.h"
 #include "lumenaichat.h"
 #include "lumenaictl.h"
 #include "lumenfolders.h"
@@ -854,6 +855,13 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
                 return false;
             }
         }
+        if (what == "touch" && step["object"].isMap() && step["object"].has("worn")
+            && (!step.has("link") || !step.has("face")))
+        {
+            error = llformat("step %d clicks something worn without its link and face -- a HUD's "
+                             "button is a part and a face; copy the step teaching noted (as_step)", n);
+            return false;
+        }
         if (what == "lookup" && !s.tables.has(step["table"].asString()))
         {
             error = llformat("step %d looks in a table called \"%s\", and there is none", n,
@@ -1453,13 +1461,50 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
     e["link"] = linkNumber(object);
     if (object != root) e["prim_id"] = object->getID();
     e["face"] = face;
+    // Both places on the face: across it (llDetectedTouchST) and on its
+    // picture (llDetectedTouchUV). They differ when the picture is a sheet of
+    // buttons shifted per face, and a HUD reading the second pressed another
+    // button when only the first was played back (the author's HUD, 2026-10-06).
     LLSD spot; spot.append(ll_round(st.mV[VX], 0.001f)); spot.append(ll_round(st.mV[VY], 0.001f));
     e["spot"] = spot;
-    if (root->isHUDAttachment()) e["hud"] = true;
-    else if (root->isAttachment()) e["worn"] = true;
+    LLSD uvs; uvs.append(ll_round(uv.mV[VX], 0.001f)); uvs.append(ll_round(uv.mV[VY], 0.001f));
+    e["uv"] = uvs;
+    S32 parts = 1;
+    for (const LLViewerObject* c : root->getChildren()) if (c && !c->isAvatar()) ++parts;
+    e["parts"] = parts;
     const std::string name = thingName(root);
     if (!name.empty()) e["name"] = name;
-    (void)uv;
+
+    // The step it becomes, to copy as it is.
+    LLSD step;
+    step["do"] = "touch";
+    LLSD ref;
+    if (root->isAttachment())
+    {
+        // Worn: by the exact name it has in the inventory, which is what is worn.
+        std::string worn_name = name;
+        if (const LLViewerInventoryItem* item = gInventory.getItem(root->getAttachmentItemID()))
+            worn_name = item->getName();
+        ref["worn"] = worn_name;
+        e["worn_as"] = worn_name;
+        if (root->isHUDAttachment()) e["hud"] = true;
+        else e["worn"] = true;
+        if (isAgentAvatarValid())
+            if (LLViewerJointAttachment* at = gAgentAvatarp->getTargetAttachmentPoint(root))
+                e["attached_to"] = at->getName();
+    }
+    else
+    {
+        ref["near"] = name;
+        if (root->permYouOwner()) ref["owner"] = "me";
+    }
+    step["object"] = ref;
+    step["link"] = e["link"];
+    step["face"] = face;
+    step["spot"] = spot;
+    step["uv"] = uvs;
+    step["parts"] = parts;
+    e["as_step"] = step;
     self.noteTeachEvent(e);
 }
 
@@ -1652,20 +1697,35 @@ namespace
     }
 
     /** Something worn, by the name of its item -- a HUD, most often. */
-    LLViewerObject* wornByName(const std::string& pattern)
+    LLViewerObject* wornByName(const std::string& pattern, std::string& error)
     {
         if (!isAgentAvatarValid()) return nullptr;
         LLInventoryModel::cat_array_t cats;
         LLInventoryModel::item_array_t items;
         gInventory.collectDescendents(LLAppearanceMgr::instance().getCOF(), cats, items, LLInventoryModel::EXCLUDE_TRASH);
+        std::vector<std::pair<std::string, LLViewerObject*>> fits;
         for (const LLPointer<LLViewerInventoryItem>& link : items)
         {
             if (!link) continue;
             const LLViewerInventoryItem* item = link->getLinkedItem() ? link->getLinkedItem() : link.get();
             if (!item || item->getType() != LLAssetType::AT_OBJECT) continue;
-            if (!nameMatches(item->getName(), pattern)) continue;
-            if (LLViewerObject* o = gAgentAvatarp->getWornAttachment(item->getUUID())) return o;
+            LLViewerObject* o = gAgentAvatarp->getWornAttachment(item->getUUID());
+            if (!o) continue;
+            if (lower(item->getName()) == lower(trim(pattern))) return o;   // its exact name
+            if (nameMatches(item->getName(), pattern)) fits.push_back(std::make_pair(item->getName(), o));
         }
+        if (fits.size() == 1) return fits[0].second;
+        if (fits.size() > 1)
+        {
+            // A body and its HUD from one maker share words; pressing the
+            // wrong one is worse than asking.
+            std::string names;
+            for (size_t i = 0; i < fits.size() && i < 5; ++i) names += (i ? ", \"" : "\"") + fits[i].first + "\"";
+            error = "more than one thing worn fits \"" + pattern + "\": " + names +
+                    " -- the step must give the exact name of the one to click";
+            return nullptr;
+        }
+        error = "nothing worn is called \"" + pattern + "\" -- is the HUD on?";
         return nullptr;
     }
 }
@@ -1883,8 +1943,7 @@ namespace
         if (ref.isMap() && ref.has("id")) return byId(ref["id"].asString());
         if (ref.isMap() && ref.has("worn"))
         {
-            if (LLViewerObject* o = wornByName(ref["worn"].asString())) return o->getID();
-            error = "nothing worn is called \"" + ref["worn"].asString() + "\" -- is the HUD on?";
+            if (LLViewerObject* o = wornByName(ref["worn"].asString(), error)) return o->getID();
             return LLUUID::null;
         }
         if (ref.isMap() && ref.has("near"))
@@ -2322,20 +2381,54 @@ namespace
         {
             const LLUUID obj = objectFor(run, step["object"], error);
             if (obj.isNull()) return false;
+            LLViewerObject* found = gObjectList.findObject(obj);
+            if (found && step.has("parts"))
+            {
+                // The same thing it was taught on: a worn thing with another
+                // number of parts is another thing, whatever it is called.
+                S32 parts = 1;
+                for (const LLViewerObject* c : found->getRootEdit()->getChildren()) if (c && !c->isAvatar()) ++parts;
+                if (parts != step["parts"].asInteger())
+                {
+                    error = llformat("the one found has %d parts, and the one it was taught on had %d -- "
+                                     "it is not the same thing", parts, step["parts"].asInteger());
+                    return false;
+                }
+            }
             LLSD args;
             args["action"] = "touch";
             args["object_id"] = obj;
             if (step.has("link")) args["link"] = step["link"];
             if (step.has("face")) args["face"] = step["face"];
             if (step.has("spot")) args["spot"] = step["spot"];
+            if (step.has("uv"))   args["uv"] = step["uv"];
+            LL_INFOS("AISkills") << "step " << index + 1 << ": touch " << obj << " link "
+                                 << step["link"].asInteger() << " face " << step["face"].asInteger()
+                                 << " spot " << step["spot"] << " uv " << step["uv"] << LL_ENDL;
             callTool("movement", args, stepRequestId(run, index, "touch"), error);
             return error.empty();
         }
 
         if (what == "dialog")
         {
-            const std::string text = lower(step["text"].asString());
+            // Words compared with their spacing evened out: a menu's own line
+            // breaks are spaces in a card.
+            auto evened = [](const std::string& in)
+            {
+                std::string o;
+                bool space = false;
+                for (char c : lower(in))
+                {
+                    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') { space = true; continue; }
+                    if (space && !o.empty()) o += ' ';
+                    space = false;
+                    o += c;
+                }
+                return o;
+            };
+            const std::string text = evened(step["text"].asString());
             const std::string press = step["press"].asString();
+            std::string came_up;   // what did come up, for the reason if none fits
             const F64 until = LLTimer::getTotalSeconds() + waitFor(step);
             while (true)
             {
@@ -2346,7 +2439,13 @@ namespace
                 {
                     const LLUUID id = (*it)["id"].asUUID();
                     if (run.dialogues_before.count(id) || run.answered.count(id)) continue;
-                    if (lower((*it)["text"].asString()).find(text) == std::string::npos) continue;
+                    if (evened((*it)["text"].asString()).find(text) == std::string::npos)
+                    {
+                        const std::string t = evened((*it)["text"].asString());
+                        if (came_up.find(t.substr(0, 40)) == std::string::npos)
+                            came_up += (came_up.empty() ? "\"" : "; \"") + t.substr(0, 80) + "\"";
+                        continue;
+                    }
                     if ((*it).has("assistant_may_answer") && !(*it)["assistant_may_answer"].asBoolean())
                     {
                         error = "the window that came up is one only the user answers -- " +
@@ -2373,7 +2472,10 @@ namespace
                 if (LLTimer::getTotalSeconds() > until) break;
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
-            error = "no menu saying \"" + step["text"].asString() + llformat("\" came up within %.0f seconds", waitFor(step));
+            error = "no menu saying \"" + step["text"].asString() + llformat("\" came up within %.0f seconds", waitFor(step))
+                  + (came_up.empty() ? std::string(" -- no menu came up at all, so the click before it "
+                                                   "probably did not press what it should")
+                                     : " -- what came up was " + came_up);
             may_retry = false;   // pressing the HUD again is the step before, not this one
             return false;
         }
@@ -2397,6 +2499,24 @@ namespace
                 const LLUUID beside = objectFor(run, step["near"], error);
                 if (beside.isNull()) return false;
                 args["near"] = beside;
+            }
+            // An item whose details have not come from the server cannot be
+            // rezzed yet: asked for, and waited for, rather than failing.
+            if (LLUUID::validate(item_id))
+            {
+                if (LLViewerInventoryItem* inv = gInventory.getItem(LLUUID(item_id)))
+                {
+                    if (LLViewerInventoryItem* real = inv->getLinkedItem()) inv = real;
+                    if (!inv->isFinished())
+                    {
+                        inv->fetchFromServer();
+                        const F64 give_up = LLTimer::getTotalSeconds() + 20.0;
+                        while (!inv->isFinished() && LLTimer::getTotalSeconds() < give_up)
+                        {
+                            if (!run.pause(0.5)) { error = "stopped"; return false; }
+                        }
+                    }
+                }
             }
             const std::set<LLUUID> before = rootsNow();
             const F64 sent = LLTimer::getTotalSeconds();

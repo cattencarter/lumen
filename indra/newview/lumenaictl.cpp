@@ -5000,6 +5000,10 @@ namespace
                                  "-- for a panel with several buttons on one face. Leave it out "
                                  "otherwise.";
         move_props["spot"]=mspot;
+        LLSD muv; muv["type"]="array"; { LLSD n; n["type"]="number"; muv["items"]=n; }
+            muv["description"]="touch, in a skill: the same place on the face's picture, as a "
+                               "click noted it (llDetectedTouchUV). Leave it out otherwise.";
+        move_props["uv"]=muv;
         // </Lumen>
         // Read by worn_by and pose, and declared on no tool they belong to:
         // worn_by says "call again with the same agent_id" and pose's refusal
@@ -19828,6 +19832,12 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             pick.mSTCoords.set(st_s, st_t);
             pick.mUVCoords.set(st_s, st_t);
         }
+        // The place on the face's picture, when a skill noted it: it differs
+        // from the place on the face when the picture is shifted or repeated.
+        if (params["uv"].isArray() && params["uv"].size() >= 2)
+        {
+            pick.mUVCoords.set((F32)params["uv"][0].asReal(), (F32)params["uv"][1].asReal());
+        }
         send_ObjectGrab_message(obj, pick, LLVector3::zero);
         send_ObjectDeGrab_message(obj, pick);
 
@@ -27511,9 +27521,12 @@ if (method == "camera")
             // first (lltooldraganddrop.cpp, dad3dRezObjectOnLand).
             if (!item->isFinished())
             {
+                // Asked for now: nothing else asks, and "try again in a moment"
+                // failed the same way twice in a skill (2026-10-06, the beta grid).
+                item->fetchFromServer();
                 LLSD e; e["code"] = -32000;
-                e["message"] = "That item has not finished loading from the server yet. Nothing "
-                               "was rezzed; try again in a moment.";
+                e["message"] = "That item has not finished loading from the server yet; the viewer "
+                               "has asked for it. Nothing was rezzed; try again in a moment.";
                 LLSD w; w["__error"] = e; return w;
             }
             if (isAgentAvatarValid() && gAgentAvatarp->isWearingAttachment(item->getUUID()))
@@ -29182,9 +29195,10 @@ if (method == "camera")
             "{\"near\": \"Barrel\"}], date: {format: \"YYYY-MM-DD\", pattern: a regex whose first "
             "group is the date, keep: \"unexpired\"} to skip what has expired and take the soonest, "
             "as} -- gives {as.item_id, as.name}; "
-            "touch {object, link, face, spot} -- object is {\"worn\": \"HUD name\"}, {\"near\": "
-            "\"name\", \"owner\": \"me\"} or an earlier result; use the link, face and spot from the "
-            "touch you saw; "
+            "touch {object, link, face, spot, uv, parts} -- COPY the touch's `as_step` as it is: "
+            "a HUD's button is a part, a face and a place on that face, and the exact worn name "
+            "keeps it from pressing another thing worn; for an object out in the world, or an "
+            "earlier result, object may be {\"near\": \"name\", \"owner\": \"me\"}; "
             "dialog {text (part of the menu's words), press (the button), wait}; "
             "rez {item: an earlier find_item, near: an object, as}; "
             "wait_for_object {name, owner: \"me\" or \"anyone\", within, wait, as}; "
