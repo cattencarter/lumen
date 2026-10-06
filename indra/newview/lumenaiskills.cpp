@@ -671,6 +671,7 @@ struct LumenAISkills::Run
     bool        collected = false;   //< its ending has been handed back; the same request runs again
     std::set<LLUUID> roots_before, dialogues_before, answered;
     std::map<LLUUID, std::string> rezzed;   //< what this run rezzed, with the item's name
+    std::map<LLUUID, F64> rezzed_at;        //< and when it arrived
     // Items that came into the inventory, and when. The step that finds one
     // uses it up, so a second verify waits for a second potion.
     struct Arrival
@@ -2644,6 +2645,22 @@ namespace
             if (lower(item->getName()) == lower(trim(pattern))) return o;   // its exact name
             if (nameMatches(item->getName(), pattern)) fits.push_back(std::make_pair(item->getName(), o));
         }
+        // Worn without being in the inventory at all -- a HUD a script or an
+        // experience put on for a while -- is known only by its own name, which
+        // is what teaching wrote down (thingName). The author's potion HUD is
+        // called "."; a run looked for it among the inventory's names only, and
+        // "." fitted five other worn things there (2026-10-06, the main grid).
+        for (const auto& point : gAgentAvatarp->mAttachmentPoints)
+        {
+            const LLViewerJointAttachment* at = point.second;
+            if (!at) continue;
+            for (const LLPointer<LLViewerObject>& worn : at->mAttachedObjects)
+            {
+                LLViewerObject* o = worn.get();
+                if (!o || o->isDead() || gInventory.getItem(o->getAttachmentItemID())) continue;
+                if (lower(thingName(o)) == lower(trim(pattern))) return o;
+            }
+        }
         if (fits.size() == 1) return fits[0].second;
         if (fits.size() > 1)
         {
@@ -3684,6 +3701,19 @@ namespace
                     return false;
                 }
             }
+            // Something this run has just rezzed: its scripts start a moment
+            // after it arrives, and a click before that is lost. Clicked at once,
+            // the author's herbs barrel never brought its menu; told to wait, it
+            // did (2026-10-06, the main grid).
+            const auto rz = run.rezzed_at.find(obj);
+            if (rz != run.rezzed_at.end())
+            {
+                const F64 ready = rz->second + 4.0;
+                while (LLTimer::getTotalSeconds() < ready)
+                {
+                    if (!run.pause(0.25)) { error = "stopped"; return false; }
+                }
+            }
             LLSD args;
             args["action"] = "touch";
             args["object_id"] = obj;
@@ -3893,6 +3923,7 @@ namespace
                     if ((o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec() > 15.0) continue;
                     run.roots_before.insert(o->getID());   // ours now, never "new" again
                     run.rezzed[o->getID()] = name;          // ...but what a later step waits for
+                    run.rezzed_at[o->getID()] = LLTimer::getTotalSeconds();
                     LLSD v; v["object_id"] = o->getID(); v["name"] = name;
                     if (as.isDefined()) run.vars[trim(as.asString())] = v;
                     return true;

@@ -29877,6 +29877,8 @@ if (method == "camera")
                                        "sits are left out only past a thousand things noted.";
         }
         // </Lumen>
+        // A touch is written as a click: a barrel clicked each time was written up
+        // as "Open the herbs barrel" each time (2026-10-06, the main grid).
         result["how_to_write_it"] =
             "Turn this into a skill with the user. Ask ONLY what you cannot see: which part changes "
             "each time (that becomes an input, e.g. the sickness), where things should come from "
@@ -29884,7 +29886,8 @@ if (method == "camera")
             "test_skill; when it works and they are happy, save_skill. Write the name, about, "
             "examples and every step's \"about\" in the user's own language -- they are what the "
             "user reads in the questions and the progress lines, and what you match their request "
-            "against later. The card is an object: "
+            "against later. Say what the user DID, not what you think it does: a touch is a click "
+            "(\"Click the herbs barrel\"), never \"open\" or \"use\". The card is an object: "
             "{\"name\": short, in their words; \"about\": when to use it, in their words; "
             "\"examples\": a few phrases they would say; \"inputs\": [{\"name\": \"sickness\", "
             "\"about\": \"which sickness\", \"choices\": [...]}]; \"tables\": {\"recipes\": "
