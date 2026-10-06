@@ -66,6 +66,7 @@
 #include <functional>
 #include <regex>
 #include <set>
+#include <sstream>
 
 namespace
 {
@@ -384,6 +385,8 @@ namespace
             { "take",            { "object" },             "pick up {object}" },
             { "verify",          { "item" },               "check that {item} is in the inventory" },
             { "accept_offer",    { "from" },               "accept what {from} offers" },
+            { "sit",             { "object" },             "sit on {object}" },
+            { "stand",           { },                      "stand up" },
             { "web_call",        { "url" },                "call {url}" },
             { "say",             { "text" },               "say: {text}" },
         };
@@ -552,6 +555,7 @@ struct LumenAISkills::Run
     bool        stop = false;
     bool        collected = false;   //< its ending has been handed back; the same request runs again
     std::set<LLUUID> roots_before, dialogues_before, answered;
+    std::map<LLUUID, std::string> rezzed;   //< what this run rezzed, with the item's name
     std::vector<std::pair<LLUUID, std::string>> arrived;   // items that came into the inventory
 
     bool stopped() const
@@ -1421,6 +1425,15 @@ namespace
                                                 : std::string();
     }
 
+    // What the avatar sits on: the root of its seat, or null (standing, or on the ground).
+    LLUUID seatNow()
+    {
+        if (!isAgentAvatarValid() || !gAgentAvatarp->isSitting()) return LLUUID::null;
+        const LLViewerObject* seat = (const LLViewerObject*)gAgentAvatarp->getParent();
+        const LLViewerObject* root = seat ? seat->getRootEdit() : nullptr;
+        return root ? root->getID() : LLUUID::null;
+    }
+
     S32 linkNumber(LLViewerObject* prim)
     {
         LLViewerObject* root = prim ? prim->getRootEdit() : nullptr;
@@ -1454,6 +1467,7 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
     if (!object || gStepRunning || !LumenAISkills::instanceExists()) return;
     LumenAISkills& self = LumenAISkills::instance();
     if (!self.mTeaching) return;
+    self.pollTeaching();   // what came before it, noted first (see the menus)
     LLViewerObject* root = object->getRootEdit();
     LLSD e;
     e["kind"] = "touch";
@@ -1516,6 +1530,7 @@ void LumenAISkills::startTeaching()
     mTeachMenus.clear();
     mTeachMenuPtrs.clear();
     mTeachRoots.clear();
+    mTeachSeat = seatNow();
     const S32 count = gObjectList.getNumObjects();
     for (S32 i = 0; i < count; ++i)
     {
@@ -1538,6 +1553,12 @@ void LumenAISkills::startTeaching()
             {
                 LLNotificationPtr n = LLNotifications::instance().find(id);
                 if (!n) return false;
+                // In the order it happened. The seat and new objects are looked
+                // for twice a second, but a seat's script sends its menu the
+                // moment the avatar sits: noted as "menu, then sat on", and a
+                // skill written that way waited for a menu that only sitting
+                // brings (2026-10-06, the beta grid). Catch up first.
+                self.pollTeaching();
                 const std::string kind = n->getName();
                 if (kind.compare(0, 12, "ScriptDialog") != 0 && kind != "ScriptTextBox"
                     && kind.compare(0, 14, "ScriptQuestion") != 0 && kind.compare(0, 13, "ObjectGiveItem") != 0)
@@ -1602,6 +1623,35 @@ void LumenAISkills::startTeaching()
 void LumenAISkills::pollTeaching()
 {
     if (!mTeaching) return;
+    // Sitting down on something, and standing up: a seat's menu often comes
+    // with sitting, and a routine without the sit cannot bring it up.
+    const LLUUID seat = seatNow();
+    if (seat != mTeachSeat)
+    {
+        LLSD e, step;
+        if (seat.notNull())
+        {
+            e["kind"] = "sat_on";
+            e["object_id"] = seat;
+            LLViewerObject* o = gObjectList.findObject(seat);
+            const std::string name = o ? thingName(o) : std::string();
+            if (!name.empty()) e["name"] = name;
+            step["do"] = "sit";
+            LLSD ref;
+            ref["near"] = name;
+            if (o && o->permYouOwner()) ref["owner"] = "me";
+            step["object"] = ref;
+            e["as_step"] = step;
+        }
+        else
+        {
+            e["kind"] = "stood_up";
+            step["do"] = "stand";
+            e["as_step"] = step;
+        }
+        mTeachSeat = seat;
+        noteTeachEvent(e);
+    }
     // Ten minutes is a long routine; a recording forgotten is stopped.
     if (LLTimer::getTotalSeconds() - mTeachStarted > 900.0)
     {
@@ -1658,6 +1708,20 @@ LLSD LumenAISkills::stopTeaching()
     out["seconds"] = ll_round((F32)(LLTimer::getTotalSeconds() - mTeachStarted), 0.1f);
     out["events"] = mTeachEvents;
     LL_INFOS("AISkills") << "teaching: stopped, " << mTeachEvents.size() << " things noted" << LL_ENDL;
+    // What was noted, one line each, for when a skill made from it fails.
+    // Kinds, names and menus' words: no chat, nothing anybody said.
+    for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
+    {
+        const LLSD& e = mTeachEvents[i];
+        std::ostringstream line;
+        line << "teaching: " << i + 1 << ". " << e["kind"].asString();
+        if (e.has("name")) line << " \"" << e["name"].asString() << "\"";
+        if (e["kind"].asString() == "touch")
+            line << " link " << e["link"].asInteger() << " face " << e["face"].asInteger();
+        if (e.has("text")) line << " \"" << e["text"].asString().substr(0, 60) << "\"";
+        if (e.has("pressed")) line << " pressed \"" << e["pressed"].asString() << "\"";
+        LL_INFOS("AISkills") << line.str() << LL_ENDL;
+    }
     mTeachMenus.clear();
     mTeachMenuPtrs.clear();
     return out;
@@ -1831,7 +1895,13 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
     }
     r->roots_before = rootsNow();
     mRun = r;
-    LL_INFOS("AISkills") << "running \"" << skill.name << "\" (" << skill.steps.size() << " steps)" << LL_ENDL;
+    {
+        std::string list;
+        for (LLSD::array_const_iterator it = skill.steps.beginArray(); it != skill.steps.endArray(); ++it)
+            list += (list.empty() ? "" : ", ") + (*it)["do"].asString();
+        LL_INFOS("AISkills") << "running \"" << skill.name << "\" (" << skill.steps.size() << " steps: "
+                             << list << ")" << LL_ENDL;
+    }
 
     LLCoros::instance().launch("LumenAISkillRun", [r]()
     {
@@ -2409,6 +2479,48 @@ namespace
             return error.empty();
         }
 
+        if (what == "sit")
+        {
+            const LLUUID obj = objectFor(run, step["object"], error);
+            if (obj.isNull()) return false;
+            if (seatNow() == obj) return true;
+            if (isAgentAvatarValid() && gAgentAvatarp->isSitting())
+            {
+                // Somewhere else first: up, then down on this.
+                LLSD up; up["action"] = "stand";
+                callTool("movement", up, stepRequestId(run, index, "stand"), error);
+                if (!error.empty()) return false;
+                if (!run.pause(1.0)) { error = "stopped"; return false; }
+            }
+            LLSD args;
+            args["action"] = "sit";
+            args["object_id"] = obj;
+            callTool("movement", args, stepRequestId(run, index, "sit"), error);
+            if (!error.empty()) return false;
+            const F64 until = LLTimer::getTotalSeconds() + waitFor(step, 10.0);
+            while (LLTimer::getTotalSeconds() < until)
+            {
+                if (seatNow() == obj) return true;
+                if (!run.pause(0.25)) { error = "stopped"; return false; }
+            }
+            error = "it did not sit down on it -- the seat may be taken, or too far away";
+            return false;
+        }
+
+        if (what == "stand")
+        {
+            if (!isAgentAvatarValid() || !gAgentAvatarp->isSitting()) return true;
+            LLSD args; args["action"] = "stand";
+            callTool("movement", args, stepRequestId(run, index, "stand"), error);
+            if (!error.empty()) return false;
+            const F64 until = LLTimer::getTotalSeconds() + 5.0;
+            while (gAgentAvatarp->isSitting() && LLTimer::getTotalSeconds() < until)
+            {
+                if (!run.pause(0.25)) { error = "stopped"; return false; }
+            }
+            return true;
+        }
+
         if (what == "dialog")
         {
             // Words compared with their spacing evened out: a menu's own line
@@ -2538,6 +2650,7 @@ namespace
                     if (!o->permYouOwner() || o->isAttachment()) continue;
                     if ((o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec() > 15.0) continue;
                     run.roots_before.insert(o->getID());   // ours now, never "new" again
+                    run.rezzed[o->getID()] = name;          // ...but what a later step waits for
                     LLSD v; v["object_id"] = o->getID(); v["name"] = name;
                     if (as.isDefined()) run.vars[trim(as.asString())] = v;
                     return true;
@@ -2552,6 +2665,23 @@ namespace
         if (what == "wait_for_object")
         {
             const std::string pattern = step["name"].asString();
+            // A thing this run rezzed itself has appeared: teaching notes both
+            // the rez and the thing appearing, and a skill waiting for a second
+            // blanket after rezzing one waited for nothing (2026-10-06, the
+            // beta grid). By its own name or the item's, so its punctuation
+            // never stands in the way.
+            for (const auto& rz : run.rezzed)
+            {
+                LLViewerObject* o = gObjectList.findObject(rz.first);
+                if (!o || o->isDead()) continue;
+                const std::string called = thingName(o);
+                if (!nameMatches(rz.second, pattern) && (called.empty() || !nameMatches(called, pattern)))
+                    continue;
+                LLSD v; v["object_id"] = rz.first; v["name"] = called.empty() ? rz.second : called;
+                v["distance"] = (F32)(o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec();
+                if (as.isDefined()) run.vars[trim(as.asString())] = v;
+                return true;
+            }
             LLSD ref;
             ref["near"] = pattern;
             ref["owner"] = step.has("owner") ? step["owner"] : LLSD("anyone");

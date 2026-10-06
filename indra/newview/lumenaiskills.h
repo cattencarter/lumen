@@ -184,6 +184,7 @@ private:
     F64    mTeachStarted = 0.0;
     LLSD   mTeachEvents;                     //< what was noted, oldest first
     std::set<LLUUID> mTeachRoots;            //< objects in view when it started, or noted since
+    LLUUID mTeachSeat;                       //< what the user sat on when last looked, or null
     std::map<LLUUID, S32> mTeachMenus;       //< a menu on screen -> its event
     std::map<LLUUID, LLNotificationPtr> mTeachMenuPtrs;
     LLTempBoundListener mTeachMenuListener;
