@@ -1089,6 +1089,16 @@ namespace
     // How often a reply held for the REGION is tried again. A round trip is
     // usually well under a second, so this is a few tries, not a busy loop.
     const F64 SETTLE_RETRY = 0.25;
+
+    // <Lumen> Whether a question of the viewer's would actually come up on the
+    // screen: false when the user has told the viewer to answer it by itself
+    // ("Always allow" or "Always refuse") -- add() then answers it at once,
+    // with no window -- and false for one that does not exist.
+    bool askComesUp(const std::string& notification)
+    {
+        LLNotifications& all = LLNotifications::instance();
+        return all.templateExists(notification) && !all.getIgnored(notification);
+    }
 }
 
 bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
@@ -1098,7 +1108,11 @@ bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
     // the skill as a whole is what the user started, and it may ask once
     // before it begins. A script's permission request is never answered by
     // anything here; answer_dialogue refuses those before any question.
-    if (LumenAISkills::stepRunning())
+    // Only a question that would come up on the screen is skipped: one the
+    // user has told the viewer always to answer goes the ordinary way below,
+    // so a standing "Always refuse" holds inside a skill too (the review,
+    // 2026-10-06), and a missing one still fails closed.
+    if (LumenAISkills::stepRunning() && askComesUp(notification))
     {
         sApprovedHow = "part of a skill the user started";
         return true;
@@ -27658,6 +27672,38 @@ if (method == "camera")
                               << from << LL_ENDL;
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> A skill's own steps press script menus and keep item offers,
+        // and nothing else gets past the question below unasked (the review,
+        // 2026-10-06): any other window -- a group invitation, a teleport or
+        // friendship offer -- is the user's question as if no skill were
+        // running, and a skill does not stop to wait for one on the screen.
+        // Anything about money is refused outright: a skill never pays,
+        // whatever its card says.
+        if (LumenAISkills::stepRunning())
+        {
+            const bool script_menu = kind == "ScriptDialog" || kind == "ScriptDialogGroup";
+            const bool item_offer = kind == "ObjectGiveItem" || kind == "OwnObjectGiveItem"
+                                 || kind.compare(0, 12, "UserGiveItem") == 0;
+            if (n->matchesTag("funds"))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That window is about money, and a skill never pays or spends. "
+                               "Nothing was answered; it is the user's to answer.";
+                LL_INFOS("AICtl") << "answer_dialogue: a skill step was refused " << kind << LL_ENDL;
+                LLSD w; w["__error"] = e; return w;
+            }
+            // The quit box is never asked about at all, so it is never a skill's.
+            if (!script_menu && !item_offer && (kind == "ConfirmQuit" || askComesUp("LumenAskDialog")))
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "A skill only presses script menus and keeps item offers. This is "
+                               "another kind of window, so nothing was answered; it is the user's "
+                               "to answer.";
+                LL_INFOS("AICtl") << "answer_dialogue: a skill step was refused " << kind << LL_ENDL;
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
+        // </Lumen>
         if (kind != "ConfirmQuit")
         {
             std::string label = choice;

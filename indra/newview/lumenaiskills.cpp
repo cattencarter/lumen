@@ -71,9 +71,13 @@
 namespace
 {
     // The runner's own calls skip the viewer's per-act questions: the skill as
-    // a whole is what the person approved. Set only around one synchronous
-    // call on the main thread, so nothing else can slip in under it.
+    // a whole is what the person approved. Set only around one call, by a
+    // scope guard (StepFlag), and it counts only inside the coroutine that
+    // set it: a step can start somebody else's coroutine that pauses while
+    // the flag is still on, and a socket call or the away reply landing in
+    // that gap is not the skill's (the review, 2026-10-06).
     bool gStepRunning = false;
+    std::string gStepCoro;   //< the coroutine whose call it is
 
     const char* const CARD_HEADER = "Lumen skill 1";
     const char* const TOOL_PREFIX = "skill_";
@@ -178,10 +182,15 @@ namespace
             const size_t dot = path.find('.', at);
             const std::string part = trim(path.substr(at, dot == std::string::npos ? std::string::npos : dot - at));
             if (part.empty()) return false;
+            // An index is digits only, and few enough that strtoul cannot
+            // overflow: std::stoi threw on eleven digits, nothing caught it,
+            // and {found.items.10000000000} took the viewer down (the review,
+            // 2026-10-06).
             if (cur.isMap() && cur.has(part)) cur = cur[part];
-            else if (cur.isArray() && std::all_of(part.begin(), part.end(), ::isdigit)
-                     && (size_t)std::stoi(part) < (size_t)cur.size())
-                cur = cur[std::stoi(part)];
+            else if (cur.isArray() && part.size() <= 9
+                     && std::all_of(part.begin(), part.end(), [](unsigned char c) { return std::isdigit(c) != 0; })
+                     && strtoul(part.c_str(), nullptr, 10) < (unsigned long)cur.size())
+                cur = cur[(size_t)strtoul(part.c_str(), nullptr, 10)];
             else return false;
             if (dot == std::string::npos) break;
             at = dot + 1;
@@ -465,6 +474,26 @@ namespace
 
     // ---- a call through the viewer's own front door -----------------------------
 
+    /** gStepRunning on for one call, in this coroutine, and back off however the call ends. */
+    struct StepFlag
+    {
+        StepFlag() : mWas(gStepRunning), mWasCoro(gStepCoro)
+        {
+            gStepRunning = true;
+            gStepCoro = LLCoros::getName();
+        }
+        ~StepFlag()
+        {
+            gStepRunning = mWas;
+            gStepCoro = mWasCoro;
+        }
+        StepFlag(const StepFlag&) = delete;
+        StepFlag& operator=(const StepFlag&) = delete;
+
+        bool mWas;
+        std::string mWasCoro;
+    };
+
     /**
      * One of the endpoint's tools, as a person's assistant would call it -- so
      * every guard, the replay of a repeated request and the action log all
@@ -491,9 +520,11 @@ namespace
                 error = "the viewer is closing";
                 return LLSD();
             }
-            gStepRunning = true;
-            const std::string reply = LumenAIControl::instance().handleRequest(body);
-            gStepRunning = false;
+            std::string reply;
+            {
+                StepFlag flag;
+                reply = LumenAIControl::instance().handleRequest(body);
+            }
 
             LLSD r;
             std::string parse_error;
@@ -556,7 +587,17 @@ struct LumenAISkills::Run
     bool        collected = false;   //< its ending has been handed back; the same request runs again
     std::set<LLUUID> roots_before, dialogues_before, answered;
     std::map<LLUUID, std::string> rezzed;   //< what this run rezzed, with the item's name
-    std::vector<std::pair<LLUUID, std::string>> arrived;   // items that came into the inventory
+    // Items that came into the inventory, and when. The step that finds one
+    // uses it up, so a second verify waits for a second potion.
+    struct Arrival
+    {
+        LLUUID      id;
+        std::string name;
+        F64         at = 0.0;
+    };
+    std::vector<Arrival> arrived;
+    time_t      started_utc = 0;       //< on the server's clock, as an item's creation date is
+    bool        all_fetched = false;   //< the whole inventory had loaded when it started
 
     bool stopped() const
     {
@@ -584,15 +625,28 @@ public:
         if (!LumenAISkills::instanceExists()) return;
         LumenAISkills& self = LumenAISkills::instance();
 
-        // What arrives while a skill runs is how `verify` knows it worked.
+        // What arrives while a skill runs is how `verify` knows it worked. The
+        // inventory also calls an item "added" when it is merely loaded -- the
+        // background fetch, a folder opened -- and an old potion fetched soon
+        // after login passed the verify of a brew that had failed (the review,
+        // 2026-10-06). So an item counts only when it was made after the run
+        // started, or when the whole inventory had loaded by then and nothing
+        // can arrive by being fetched. Never a link, never the Library.
         if ((mask & LLInventoryObserver::ADD) && self.mRun && self.mRun->state == LumenAISkills::Run::RUNNING)
         {
+            LumenAISkills::Run& run = *self.mRun;
             for (const LLUUID& id : gInventory.getAddedIDs())
             {
-                if (LLViewerInventoryItem* item = gInventory.getItem(id))
-                {
-                    self.mRun->arrived.emplace_back(id, item->getName());
-                }
+                LLViewerInventoryItem* item = gInventory.getItem(id);
+                if (!item || item->getIsLinkType()) continue;
+                if (gInventory.isObjectDescendentOf(id, gInventory.getLibraryRootFolderID())) continue;
+                // A minute's grace for the two clocks.
+                if (!run.all_fetched && item->getCreationDate() < run.started_utc - 60) continue;
+                LumenAISkills::Run::Arrival a;
+                a.id = id;
+                a.name = item->getName();
+                a.at = LLTimer::getTotalSeconds();
+                run.arrived.push_back(a);
             }
         }
 
@@ -669,7 +723,8 @@ LumenAISkills::~LumenAISkills()
 // static
 bool LumenAISkills::stepRunning()
 {
-    return gStepRunning;
+    // Only inside the runner's own call, in its own coroutine: see gStepCoro.
+    return gStepRunning && !gStepCoro.empty() && LLCoros::getName() == gStepCoro;
 }
 
 // static
@@ -2014,6 +2069,23 @@ namespace
         return tool + "|" + toJson(inputs);
     }
 
+    /**
+     * A step in the words of this run: "find Mint", not "find {recipe.herbs.0}".
+     * Filled in here for the line alone, `about` included; when its `about`
+     * names something that has no value, the step's plain words instead.
+     */
+    std::string stepLine(const LLSD& step, const LLSD& vars)
+    {
+        std::string unknown;
+        const LLSD shown = resolve(step, vars, unknown);
+        if (unknown.empty()) return stepWords(shown);
+        LLSD bare = step;
+        bare.erase("about");
+        unknown.clear();
+        const LLSD plain = resolve(bare, vars, unknown);
+        return stepWords(unknown.empty() ? plain : step);
+    }
+
     /** Ids of every root object in view, so a step can tell what is new. */
     std::set<LLUUID> rootsNow()
     {
@@ -2153,12 +2225,24 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
                        "finish, or the user can stop it with Clear in the Assistant window.";
         LLSD w; w["__error"] = e; return w;
     }
+    // While Lumen is watching to learn a skill, a run's clicks and menus would
+    // be noted as the user's own (the review, 2026-10-06).
+    if (teaching())
+    {
+        LLSD e; e["code"] = -32000;
+        e["message"] = "Lumen is watching what the user does, to learn a new skill, and a skill run "
+                       "now would be noted as if they had done it. Finish or stop the teaching "
+                       "first, then run it.";
+        LLSD w; w["__error"] = e; return w;
+    }
 
     std::shared_ptr<Run> r = std::make_shared<Run>();
     r->key = key;
     r->skill = skill;
     r->inputs = inputs;
     r->started = now;
+    r->started_utc = time_corrected();
+    r->all_fetched = LLInventoryModelBackgroundFetch::instance().isEverythingFetched();
     r->vars = LLSD::emptyMap();
     for (const Input& in : skill.inputs)
     {
@@ -2181,7 +2265,7 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
                              << list << ")" << LL_ENDL;
     }
 
-    LLCoros::instance().launch("LumenAISkillRun", [r]()
+    auto steps = [r]()
     {
         r->dialogues_before = dialoguesNow();
         progress(r->skill.name + ": starting.");
@@ -2193,11 +2277,8 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             const LLSD& step = r->skill.steps[r->step];
             if (step["do"].asString() != "say")
             {
-                // In the words of this run: "find Mint", not "find {recipe.herbs.0}".
-                std::string unknown;
-                const LLSD shown = resolve(step, r->vars, unknown);
                 progress(llformat("%s: %d/%d -- %s", r->skill.name.c_str(), r->step + 1, count,
-                                  stepWords(unknown.empty() ? shown : step).c_str()));
+                                  stepLine(step, r->vars).c_str()));
             }
             std::string error;
             bool may_retry = false;
@@ -2242,11 +2323,9 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             else
             {
                 const LLSD& step = r->skill.steps[r->step];
-                std::string unknown;
-                const LLSD shown = resolve(step, r->vars, unknown);
                 progress(llformat("%s: stopped during step %d of %d (%s); nothing after it was done.",
                                   r->skill.name.c_str(), r->step + 1, count,
-                                  stepWords(unknown.empty() ? shown : step).c_str()));
+                                  stepLine(step, r->vars).c_str()));
             }
         }
         else
@@ -2255,6 +2334,44 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
                              << (r->state == LumenAISkills::Run::DONE ? "done" :
                                  r->state == LumenAISkills::Run::STOPPED ? "stopped" : "failed")
                              << " at step " << r->step + 1 << (r->failure.empty() ? "" : ": " + r->failure) << LL_ENDL;
+    };
+    LLCoros::instance().launch("LumenAISkillRun", [r, steps]()
+    {
+        // Not one step inside the skill_run call that started it: every step
+        // goes through the front door again, which begins a new request and
+        // wiped that call's own state, its `approved` among it (the review,
+        // 2026-10-06). The first step waits for the next frame.
+        try
+        {
+            llcoro::suspend();
+            steps();
+        }
+        catch (const LLCoros::Stop&)
+        {
+            // The viewer is closing; LLCoros ends the coroutine itself.
+            if (r->state == LumenAISkills::Run::RUNNING) r->state = LumenAISkills::Run::STOPPED;
+            if (r->finished <= 0.0) r->finished = LLTimer::getTotalSeconds();
+            throw;
+        }
+        catch (const std::exception& e)
+        {
+            // A fault of the viewer's own. Never out of here, where it would be
+            // thrown again on the main loop and close the viewer -- a long
+            // number in a value did -- and never a run left "running" until a
+            // restart (the review, 2026-10-06).
+            LL_WARNS("AISkills") << "\"" << r->skill.name << "\" hit a fault at step " << r->step + 1
+                                 << ": " << e.what() << LL_ENDL;
+            const S32 count = (S32)r->skill.steps.size();
+            if (r->step >= count) r->step = count - 1;
+            if (r->step < 0) r->step = 0;
+            if (r->finished <= 0.0) r->finished = LLTimer::getTotalSeconds();
+            if (r->state == LumenAISkills::Run::RUNNING)
+            {
+                r->state = LumenAISkills::Run::FAILED;
+                r->failure = "the viewer ran into a fault of its own while doing it";
+                progress(r->skill.name + ": stopped at step " + llformat("%d", r->step + 1) + " -- " + r->failure + ".");
+            }
+        }
     });
     return report();
 }
@@ -2270,6 +2387,97 @@ namespace
     std::string stepRequestId(const LumenAISkills::Run& run, S32 index, const char* what)
     {
         return llformat("skill:%s:%.0f:%d:%s", run.skill.tool.c_str(), run.started * 1000.0, index, what);
+    }
+
+    /**
+     * A step checked again once its values are filled in: empty when it will
+     * do, else why not. The card is checked as written, but an optional input
+     * left out becomes "", and a field that is only {name} becomes whatever
+     * that holds, maps included. A rez of "" made the default plywood box and
+     * called it done, an accept_offer from "" kept anything from anyone, and a
+     * dialog text of "" matched any window (the review, 2026-10-06).
+     */
+    std::string filledInProblem(const std::string& what, const LLSD& step)
+    {
+        // Words: text or a number, with something in it -- never a map, a list or nothing.
+        auto words = [](const LLSD& v)
+        {
+            return !v.isUndefined() && !v.isMap() && !v.isArray() && !trim(v.asString()).empty();
+        };
+        auto field = [&step](const char* key) -> LLSD
+        {
+            return step.has(key) ? step[key] : LLSD();
+        };
+        auto blank = [](const char* key)
+        {
+            return std::string("its \"") + key + "\" came out empty once the values were filled in "
+                   "-- was an input left out?";
+        };
+        auto wrong = [](const char* key, const char* want)
+        {
+            return std::string("its \"") + key + "\" is not " + want + " once the values are filled in";
+        };
+
+        // Every field a step of its kind must have. Not `as`, which names a
+        // result and is never filled in, and not for `say`: a line with
+        // nothing in it does no harm.
+        if (what != "say")
+        {
+            if (const BlockRule* rule = blockRule(what))
+            {
+                for (const char* key : rule->required)
+                {
+                    if (std::string(key) == "as") continue;
+                    const LLSD v = field(key);
+                    if (v.isUndefined() || ((v.isMap() || v.isArray()) ? v.size() == 0 : trim(v.asString()).empty()))
+                        return blank(key);
+                }
+            }
+        }
+
+        // ...and in the shape the step uses it.
+        if (what == "dialog")
+        {
+            if (!words(field("text"))) return wrong("text", "the words of a menu");
+            if (!words(field("press"))) return wrong("press", "the label of a button");
+        }
+        else if (what == "touch" || what == "sit" || what == "take")
+        {
+            const LLSD o = field("object");
+            bool named = words(o);
+            if (o.isMap())
+            {
+                for (const char* k : { "object_id", "id", "worn", "near" })
+                    if (o.has(k) && words(o[k])) named = true;
+            }
+            if (!named) return wrong("object", "an object");
+        }
+        else if (what == "rez")
+        {
+            const LLSD item = field("item");
+            if (item.isMap())
+            {
+                LLUUID id;
+                const std::string s = item["item_id"].asString();
+                if (!LLUUID::validate(s) || !id.set(s) || id.isNull()) return wrong("item", "an item found in the inventory");
+            }
+            else if (!words(item)) return wrong("item", "an item");
+        }
+        else if (what == "accept_offer")
+        {
+            const LLSD from = field("from");
+            if (!(from.isMap() ? words(from["name"]) : words(from))) return wrong("from", "the name of who offers it");
+        }
+        else if (what == "verify")
+        {
+            const LLSD item = field("item");
+            if (!(item.isMap() ? words(item["name"]) : words(item))) return wrong("item", "the name of an item");
+        }
+        else if (what == "find_item" || what == "wait_for_object")
+        {
+            if (!words(field("name"))) return wrong("name", "a name");
+        }
+        return std::string();
     }
 
     LLUUID objectFor(LumenAISkills::Run& run, const LLSD& ref_in, std::string& error,
@@ -2299,6 +2507,27 @@ namespace
             const std::string pattern = ref["near"].asString();
             const bool mine = lower(ref["owner"].asString()) == "me";
             const F32 within = ref.has("within") ? (F32)ref["within"].asReal() : 20.f;
+            // What this run rezzed comes first: a skill seldom tidies up after
+            // itself, so yesterday's cauldron is often still standing, and it
+            // may be the nearer one -- the run rezzed a fresh one and then
+            // touched the old (the review, 2026-10-06). By its own name or the
+            // item's.
+            {
+                LLUUID best;
+                F32 best_d = 1.e9f;
+                for (const auto& rz : run.rezzed)
+                {
+                    if (skip && skip->count(rz.first)) continue;
+                    LLViewerObject* o = gObjectList.findObject(rz.first);
+                    if (!o || o->isDead()) continue;
+                    const std::string called = thingName(o);
+                    if (!nameMatches(rz.second, pattern) && (called.empty() || !nameMatches(called, pattern)))
+                        continue;
+                    const F32 d = (F32)(o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec();
+                    if (d <= within && d < best_d) { best_d = d; best = rz.first; }
+                }
+                if (best.notNull()) return best;
+            }
             for (S32 tries = 0; tries < 8; ++tries)
             {
                 LLSD args;
@@ -2874,6 +3103,15 @@ namespace
             return false;
         }
 
+        {
+            const std::string shape = filledInProblem(what, step);
+            if (!shape.empty())
+            {
+                error = shape;
+                return false;
+            }
+        }
+
         if (what == "lookup")
         {
             const LLSD& table = run.skill.tables[step["table"].asString()];
@@ -2988,6 +3226,12 @@ namespace
             };
             const std::string text = evened(step["text"].asString());
             const std::string press = step["press"].asString();
+            if (text.empty() || trim(press).empty())
+            {
+                // Empty words are found in every window's text.
+                error = "the step does not say which menu, or which button";
+                return false;
+            }
             std::string came_up;   // what did come up, for the reason if none fits
             const F64 until = LLTimer::getTotalSeconds() + waitFor(step);
             while (true)
@@ -2999,11 +3243,19 @@ namespace
                 {
                     const LLUUID id = (*it)["id"].asUUID();
                     if (run.dialogues_before.count(id) || run.answered.count(id)) continue;
-                    if (evened((*it)["text"].asString()).find(text) == std::string::npos)
+                    // Script menus only, an llTextBox among them. Any other
+                    // window could be a group invitation with its fee box
+                    // after it, a teleport or a friendship offer (the review,
+                    // 2026-10-06) -- and only a script menu's words are quoted
+                    // in the reason, never somebody's message.
+                    const std::string kind = (*it)["kind"].asString();
+                    if (kind != "ScriptDialog" && kind != "ScriptDialogGroup") continue;
+                    const std::string t = evened((*it)["text"].asString());
+                    if (t.find(text) == std::string::npos)
                     {
-                        const std::string t = evened((*it)["text"].asString());
-                        if (came_up.find(t.substr(0, 40)) == std::string::npos)
-                            came_up += (came_up.empty() ? "\"" : "; \"") + t.substr(0, 80) + "\"";
+                        // Cut whole characters, never half of one.
+                        if (came_up.find(utf8str_truncate(t, 40)) == std::string::npos)
+                            came_up += (came_up.empty() ? "\"" : "; \"") + utf8str_truncate(t, 80) + "\"";
                         continue;
                     }
                     if ((*it).has("assistant_may_answer") && !(*it)["assistant_may_answer"].asBoolean())
@@ -3064,17 +3316,26 @@ namespace
             // rezzed yet: asked for, and waited for, rather than failing.
             if (LLUUID::validate(item_id))
             {
-                if (LLViewerInventoryItem* inv = gInventory.getItem(LLUUID(item_id)))
+                // Looked up by its id every time round, never a pointer kept
+                // across a pause: the item can be purged in the meantime, and
+                // the next look would read freed memory (the review, 2026-10-06).
+                const LLUUID want(item_id);
+                auto itemNow = [&want]() -> LLViewerInventoryItem*
                 {
-                    if (LLViewerInventoryItem* real = inv->getLinkedItem()) inv = real;
-                    if (!inv->isFinished())
+                    LLViewerInventoryItem* inv = gInventory.getItem(want);
+                    if (inv && inv->getLinkedItem()) inv = inv->getLinkedItem();
+                    return inv;
+                };
+                LLViewerInventoryItem* inv = itemNow();
+                if (inv && !inv->isFinished())
+                {
+                    inv->fetchFromServer();
+                    const F64 give_up = LLTimer::getTotalSeconds() + 20.0;
+                    while (LLTimer::getTotalSeconds() < give_up)
                     {
-                        inv->fetchFromServer();
-                        const F64 give_up = LLTimer::getTotalSeconds() + 20.0;
-                        while (!inv->isFinished() && LLTimer::getTotalSeconds() < give_up)
-                        {
-                            if (!run.pause(0.5)) { error = "stopped"; return false; }
-                        }
+                        if (!run.pause(0.5)) { error = "stopped"; return false; }
+                        inv = itemNow();
+                        if (!inv || inv->isFinished()) break;
                     }
                 }
             }
@@ -3198,15 +3459,18 @@ namespace
             const F64 until = LLTimer::getTotalSeconds() + waitFor(step);
             while (true)
             {
-                for (const auto& a : run.arrived)
+                for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
                 {
-                    if (nameMatches(a.second, pattern))
+                    if (nameMatches(a->name, pattern))
                     {
                         if (as.isDefined())
                         {
-                            LLSD v; v["item_id"] = a.first; v["name"] = a.second;
+                            LLSD v; v["item_id"] = a->id; v["name"] = a->name;
                             run.vars[trim(as.asString())] = v;
                         }
+                        // Used up: a second verify of the same name waits for a
+                        // second one (the review, 2026-10-06).
+                        run.arrived.erase(a);
                         return true;
                     }
                 }
@@ -3228,22 +3492,27 @@ namespace
             // An inventory offer from an object or a person: Keep, as the user
             // would press it -- or nothing to press, when the viewer took it by
             // itself and it has simply arrived.
-            const std::string from = lower(trim(step["from"].asString()));
+            // Who offers it: a name, or something found earlier ({cauldron}) by its name.
+            const LLSD from_v = step["from"];
+            const std::string from = trim(from_v.isMap() ? from_v["name"].asString() : from_v.asString());
             const std::string item = step["item"].isMap() ? step["item"]["name"].asString() : step["item"].asString();
-            const F64 until = LLTimer::getTotalSeconds() + waitFor(step, 60.0);
+            // Only what arrives from now on: an earlier arrival is not this offer.
+            const F64 began = LLTimer::getTotalSeconds();
+            const F64 until = began + waitFor(step, 60.0);
             bool kept = false;
             while (true)
             {
                 if (!item.empty())
                 {
-                    for (const auto& a : run.arrived)
+                    for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
                     {
-                        if (!nameMatches(a.second, item)) continue;
+                        if (a->at < began || !nameMatches(a->name, item)) continue;
                         if (as.isDefined())
                         {
-                            LLSD v; v["item_id"] = a.first; v["name"] = a.second;
+                            LLSD v; v["item_id"] = a->id; v["name"] = a->name;
                             run.vars[trim(as.asString())] = v;
                         }
+                        run.arrived.erase(a);   // used up, as verify does
                         return true;
                     }
                 }
@@ -3257,11 +3526,28 @@ namespace
                         const LLUUID id = (*it)["id"].asUUID();
                         const std::string kind = (*it)["kind"].asString();
                         if (run.dialogues_before.count(id) || run.answered.count(id)) continue;
-                        if (kind != "ObjectGiveItem" && kind.compare(0, 12, "UserGiveItem") != 0) continue;
-                        const std::string text = lower((*it)["text"].asString());
-                        if (text.find(from) == std::string::npos) continue;
+                        // An object's offer, one from the user's own object
+                        // (a kind of its own, once skipped, so the step waited
+                        // out an offer that was on the screen), or a person's
+                        // (the review, 2026-10-06).
+                        if (kind != "ObjectGiveItem" && kind != "OwnObjectGiveItem"
+                            && kind.compare(0, 12, "UserGiveItem") != 0) continue;
+                        // Who it is from, as the offer itself has it -- the
+                        // object's name, else the person's -- not anywhere in
+                        // its text, where any offer mentioning the word did.
+                        std::string giver;
+                        if (LLNotificationPtr n = LLNotifications::instance().find(id))
+                        {
+                            const LLSD& subs = n->getSubstitutions();
+                            giver = subs["OBJECTFROMNAME"].asString();
+                            if (giver.empty()) giver = subs["NAME"].asString();
+                        }
+                        if (giver.empty() || !nameMatches(giver, from)) continue;
+                        const std::string text = (*it)["text"].asString();
                         if (!item.empty() && !nameMatches(text, item)) continue;
-                        LLSD a; a["action"] = "answer_dialogue"; a["id"] = id; a["choice"] = "Keep";
+                        // The older form of a person's offer says Accept, not Keep.
+                        LLSD a; a["action"] = "answer_dialogue"; a["id"] = id;
+                        a["choice"] = kind == "UserGiveItemLegacy" ? "Accept" : "Keep";
                         callTool("viewer", a, stepRequestId(run, index, "keep"), error);
                         run.answered.insert(id);
                         if (!error.empty()) return false;
@@ -3274,7 +3560,7 @@ namespace
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
             error = kept ? "\"" + item + "\" was kept but has not come into the inventory"
-                         : "no offer from \"" + step["from"].asString() + "\" came";
+                         : "no offer from \"" + from + "\" came";
             may_retry = !kept;
             return false;
         }
