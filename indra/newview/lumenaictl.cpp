@@ -5621,7 +5621,10 @@ namespace
             "not push it off the wall. The space it would fill is checked first: if it would cut "
             "into something standing there -- a fireplace, a wall, another piece of furniture -- "
             "nothing is moved and the answer says what is in the way and how far; `overlap: true` "
-            "places it anyway, only when the person says so. The answer says which of its sides is now against the wall "
+            "places it anyway, only when the person says so. Against a wall, `slide` \"left\" or "
+            "\"right\" (seen facing the wall) pushes it along the wall until it meets what is "
+            "there -- \"in the corner\" -- and the answer says how much room the wall has each "
+            "way (`room_along_wall`). The answer says which of its sides is now against the wall "
             "-- a long side or a short end -- and a missed spot is answered with where its sides "
             "are in the picture, and its answer measures how high each corner stands and how far "
             "each end is from the wall. Then take a picture to check. When the person says it "
@@ -5769,6 +5772,11 @@ namespace
                                    "they want it there anyway.";
             build_props["wall"]=bwl; build_props["front"]=bft; build_props["gap"]=bgp;
             build_props["overlap"]=bov;
+            LLSD bsl; bsl["type"]="string";
+                bsl["description"]="place, with wall: \"left\" or \"right\", as seen facing the "
+                                   "wall -- push it along the wall until it meets what is there: "
+                                   "into a corner, up to a cupboard.";
+            build_props["slide"]=bsl;
             build_props["look"]=blk; build_props["from"]=bfr;
             build_props["detail"]=bdt; build_props["labels"]=blb;
             // </Lumen>
@@ -6956,6 +6964,304 @@ bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& 
     label.desc = desc;
     self.mNameGaveUp.erase(object_id);
     return self.mNameAsked.erase(object_id) > 0;
+}
+
+// <Lumen> place and set: whether a part is drawn solid. A link every face of
+// which is invisible, or drawn see-through (a shadow, a glow, a glass pane),
+// does not count as part of a thing's size.
+static bool lumenDrawnSolid(LLViewerObject* p)
+{
+    const LLDrawable* d = p->mDrawable.get();
+    for (U8 i = 0; i < p->getNumTEs(); ++i)
+    {
+        const LLTextureEntry* te = p->getTE(i);
+        if (!te || te->getColor().mV[VALPHA] < 0.05f) continue;
+        const LLFace* f = (d && i < d->getNumFaces()) ? d->getFace(i) : nullptr;
+        if (!f || !f->isInAlphaPool()) return true;
+    }
+    return false;
+}
+
+// <Lumen> What solid things stand inside the space an object would fill at a
+// new spot. place measured the floor under it and the wall behind it, but not
+// what stands BESIDE it, and a corner sofa 3.95 m long went into a corner with
+// 3.56 m to the fireplace -- 30 cm of it inside the fireplace, and nothing
+// said (the author's house, 2026-10-06). Rays across the space it will fill,
+// both ways, at three heights, find anything solid inside it. A hit counts
+// only where the object itself has something in that column -- the empty
+// quarter of an L-shaped thing is room -- and never on a small thing lying on
+// it now (its own cushions). `frame` and the box [lmin, lmax] are its own
+// frame and size, from its root as it stands now; `to_new` turns that frame
+// to where it would be, around `new_root`. With a wall (`wall_n` not zero) its
+// sides are named as seen from the room, otherwise by the compass. One entry
+// per thing, deepest first; `words` puts the first four in a sentence.
+LLSD LumenAIControl::inTheWay(LLViewerObject* obj, const std::vector<LLViewerObject*>& solid,
+                              const LLQuaternion& frame, const LLVector3& lmin, const LLVector3& lmax,
+                              const LLVector3& new_root, const LLQuaternion& to_new,
+                              const LLVector3& wall_n, std::string& words) const
+{
+    // Per thing, along each of its two flat axes: how far it would have to move
+    // forward along that axis to be clear of it, and how far back. The least of
+    // the four is how far in it reaches, and at which side.
+    struct Clash
+    {
+        std::string name;
+        bool seen[2] = { false, false };
+        F32  fwd[2] = { 0.f, 0.f }, back[2] = { 0.f, 0.f };
+        LLVector3 dir[2];
+    };
+    std::map<LLUUID, Clash> clashes;
+    const LLVector3 root_pos = obj->getPositionAgent();
+    const LLQuaternion to_local = ~frame;
+    const LLQuaternion from_new = ~to_new;
+    const bool wants_wall = wall_n.magVecSquared() > 0.5f;
+
+    // Its own axes: the one nearest the vertical, and the two lying flat.
+    S32 ua = VZ;
+    F32 upness = -1.f;
+    for (S32 a = 0; a < 3; ++a)
+    {
+        LLVector3 axis; axis.mV[a] = 1.f;
+        const F32 z = fabsf((axis * to_new).mV[VZ]);
+        if (z > upness) { upness = z; ua = a; }
+    }
+    LLVector3 ua_axis; ua_axis.mV[ua] = 1.f;
+    const F32 usign  = (ua_axis * to_new).mV[VZ] > 0.f ? 1.f : -1.f;
+    const S32 fa = (ua + 1) % 3, fb = (ua + 2) % 3;
+    const F32 M = 0.04f;   // a touch is not a clash
+    const F32 height = lmax.mV[ua] - lmin.mV[ua];
+    const F32 bottom = usign > 0.f ? lmin.mV[ua] : lmax.mV[ua];
+    const F32 top    = usign > 0.f ? lmax.mV[ua] : lmin.mV[ua];
+    auto newWorld = [&](const LLVector3& l) { return new_root + l * to_new; };
+
+    // Whether it has anything in the column through this spot of its
+    // footprint, as it stands now.
+    auto occupied = [&](F32 a, F32 b) -> bool
+    {
+        LLVector3 hi_l, lo_l;
+        hi_l.mV[fa] = a; hi_l.mV[fb] = b; hi_l.mV[ua] = top + usign * 0.05f;
+        lo_l = hi_l;     lo_l.mV[ua] = bottom - usign * 0.05f;
+        LLVector4a s4, e4;
+        s4.load3((root_pos + hi_l * frame).mV);
+        e4.load3((root_pos + lo_l * frame).mV);
+        for (LLViewerObject* p : solid)
+        {
+            if (p->lineSegmentIntersect(s4, e4, -1, false, false, true)) return true;
+        }
+        return false;
+    };
+    // Lying on it now: smaller than it, and its middle inside its box.
+    const F32 biggest = llmax(llmax(lmax.mV[VX] - lmin.mV[VX], lmax.mV[VY] - lmin.mV[VY]),
+                              lmax.mV[VZ] - lmin.mV[VZ]);
+    auto ridesOnIt = [&](LLViewerObject* root) -> bool
+    {
+        const LLVector3 sc = root->getScale();
+        if (llmax(llmax(sc.mV[VX], sc.mV[VY]), sc.mV[VZ]) >= biggest) return false;
+        const LLVector3 l = (root->getPositionAgent() - root_pos) * to_local;
+        for (S32 a = 0; a < 3; ++a)
+        {
+            if (l.mV[a] < lmin.mV[a] - 0.05f || l.mV[a] > lmax.mV[a] + 0.05f) return false;
+        }
+        return true;
+    };
+    auto samples = [&](S32 axis)
+    {
+        std::vector<F32> v;
+        const F32 a0 = lmin.mV[axis] + M, a1 = lmax.mV[axis] - M;
+        if (a1 <= a0)
+        {
+            v.push_back((lmin.mV[axis] + lmax.mV[axis]) * 0.5f);
+            return v;
+        }
+        const S32 n = llclamp((S32)ceilf((a1 - a0) / 0.3f) + 1, 2, 12);
+        for (S32 i = 0; i < n; ++i) v.push_back(a0 + (a1 - a0) * (F32)i / (F32)(n - 1));
+        return v;
+    };
+    // Which of its sides a thing comes in at.
+    LLVector3 t_right = LLVector3::z_axis % wall_n;   // to the right, facing the wall
+    if (wants_wall) t_right.normVec();
+    auto sideOf = [&](const LLVector3& dir) -> std::string
+    {
+        if (wants_wall)
+        {
+            if (fabsf(dir * t_right) > fabsf(dir * wall_n))
+                return dir * t_right > 0.f ? "at its right end" : "at its left end";
+            return dir * wall_n > 0.f ? "at its front" : "at its back";
+        }
+        if (fabsf(dir.mV[VX]) > fabsf(dir.mV[VY]))
+            return dir.mV[VX] > 0.f ? "on its east side" : "on its west side";
+        return dir.mV[VY] > 0.f ? "on its north side" : "on its south side";
+    };
+    // One line through the space it would fill, from `p0_l` to `p1_l` in its
+    // own frame (its box less M at each end): where each thing it crosses
+    // begins and ends along it. The viewer's raycast sees a face from the front
+    // only (llvolumeoctree.cpp), so a ray that starts inside a thing never sees
+    // it: the line is walked both ways, and the faces met coming back are where
+    // things end. Counted only over the stretch where the object itself has
+    // something in that column; a wall it would poke right through is a thing
+    // in its middle, not one "4.34 m into it" (2026-10-06, the beta grid).
+    auto line = [&](const LLVector3& p0_l, const LLVector3& p1_l, S32 dirn)
+    {
+        const LLVector3 from = newWorld(p0_l), to = newWorld(p1_l);
+        const F32 len = (to - from).magVec();
+        if (len < 0.01f) return;
+        const LLVector3 dir = (to - from) / len;
+        const F32 span = len + 2.f * M;   // the box itself, end to end
+        struct Seen
+        {
+            LLViewerObject* root = nullptr;
+            F32 first_in = 1.e9f, last_in = -1.e9f, first_out = 1.e9f, last_out = -1.e9f;
+        };
+        std::map<LLUUID, Seen> along;
+        // x is measured from the box's own end, forward.
+        auto walk = [&](const LLVector3& start, const LLVector3& end, bool forward)
+        {
+            LLVector3 at = start;
+            const LLVector3 d = forward ? dir : -dir;
+            for (S32 k = 0; k < 16; ++k)
+            {
+                LLVector3 where;
+                bool leaving = false;
+                LLViewerObject* o = LumenAISight::firstHit(at, end, 0.f, where, obj, nullptr, nullptr,
+                                                           &leaving);
+                if (!o) break;
+                const F32 met = (where - start) * d;
+                if (met > len) break;
+                at = where + d * 0.01f;
+                if (o->getPCode() == LL_PCODE_VOLUME)
+                {
+                    LLViewerObject* root = o->getRootEdit();
+                    if (root && root != obj && !root->isAvatar())
+                    {
+                        Seen& sn = along[root->getID()];
+                        sn.root = root;
+                        const F32 x = forward ? met + M : span - (met + M);
+                        // Going forward a front face is a way in; coming back, a way out.
+                        // A face met from behind (a two-sided mesh) is the other.
+                        if (forward != leaving)
+                        {
+                            sn.first_in = llmin(sn.first_in, x);
+                            sn.last_in  = llmax(sn.last_in, x);
+                        }
+                        else
+                        {
+                            sn.first_out = llmin(sn.first_out, x);
+                            sn.last_out  = llmax(sn.last_out, x);
+                        }
+                    }
+                }
+                if ((at - start) * d >= len) break;
+            }
+        };
+        walk(from, to, true);
+        walk(to, from, false);
+        for (auto& kv : along)
+        {
+            Seen& sn = kv.second;
+            // Out before any way in: it began inside it. In after the last way
+            // out: it is still inside it at the far end.
+            F32 a = sn.first_in, b = sn.last_out;
+            if (sn.first_out < sn.first_in) a = 0.f;
+            if (sn.last_in > sn.last_out)   b = span;
+            if (a > span) a = 0.f;
+            if (b < 0.f)  b = span;
+            if (b <= a || ridesOnIt(sn.root)) continue;
+            // Only where the object itself is: the first and last spot of
+            // [a, b] over which it has something in that column.
+            F32 first = -1.f, last = -1.f;
+            const S32 steps = llclamp((S32)ceilf((b - a) / 0.1f), 1, 40);
+            for (S32 i = 0; i <= steps; ++i)
+            {
+                const F32 x = a + (b - a) * (F32)i / (F32)steps;
+                const LLVector3 l = (from + dir * (x - M) - new_root) * from_new;
+                if (occupied(l.mV[fa], l.mV[fb]))
+                {
+                    if (first < 0.f) first = x;
+                    last = x;
+                }
+            }
+            if (first < 0.f) continue;
+            Clash& cl = clashes[kv.first];
+            if (cl.name.empty()) cl.name = askObjectName(sn.root);
+            cl.seen[dirn] = true;
+            cl.fwd[dirn]  = llmax(cl.fwd[dirn], last);          // forward until its back end passes it
+            cl.back[dirn] = llmax(cl.back[dirn], span - first); // back until its front end clears it
+            LLVector3 hd = dir;
+            hd.mV[VZ] = 0.f;
+            if (hd.magVec() > 0.001f) hd.normVec();
+            cl.dir[dirn] = hd;
+        }
+    };
+    const std::vector<F32> as = samples(fa), bs = samples(fb);
+    std::vector<F32> levels;
+    for (F32 t : { 0.15f, 0.5f, 0.85f })
+    {
+        const F32 up = llclamp(height * t, 0.06f, llmax(height - 0.03f, 0.06f));
+        levels.push_back(bottom + usign * up);
+    }
+    {
+        LumenAISight::WithoutAvatars hide;
+        for (F32 u : levels)
+        {
+            for (S32 dirn = 0; dirn < 2; ++dirn)
+            {
+                // Along one flat axis, at each spot along the other.
+                const S32 alongx = dirn ? fb : fa, across = dirn ? fa : fb;
+                for (F32 c : (dirn ? as : bs))
+                {
+                    LLVector3 p0, p1;
+                    p0.mV[ua] = p1.mV[ua] = u;
+                    p0.mV[across] = p1.mV[across] = c;
+                    p0.mV[alongx] = lmin.mV[alongx] + M;
+                    p1.mV[alongx] = lmax.mV[alongx] - M;
+                    if (p1.mV[alongx] > p0.mV[alongx]) line(p0, p1, dirn);
+                }
+            }
+        }
+    }
+
+    LLSD list = LLSD::emptyArray();
+    words.clear();
+    std::vector<std::pair<F32, LLUUID>> order;
+    std::map<LLUUID, std::pair<F32, std::string>> least;   // how far, and at which side
+    for (const auto& kv : clashes)
+    {
+        const Clash& cl = kv.second;
+        F32 best = 1.e9f;
+        std::string side;
+        for (S32 d = 0; d < 2; ++d)
+        {
+            if (!cl.seen[d]) continue;
+            // Backing away clears a thing at its forward end, and the other way round.
+            if (cl.back[d] < best) { best = cl.back[d]; side = sideOf(cl.dir[d]); }
+            if (cl.fwd[d]  < best) { best = cl.fwd[d];  side = sideOf(-cl.dir[d]); }
+        }
+        if (best >= 1.e8f) continue;
+        least[kv.first] = std::make_pair(best, side);
+        order.push_back(std::make_pair(-best, kv.first));
+    }
+    std::sort(order.begin(), order.end());
+    for (const auto& od : order)
+    {
+        const Clash& cl = clashes[od.second];
+        const F32 depth = least[od.second].first;
+        const std::string& where_side = least[od.second].second;
+        std::string plain = cl.name;   // askObjectName's, in quotes
+        if (plain.size() >= 2 && plain.front() == '"' && plain.back() == '"')
+            plain = plain.substr(1, plain.size() - 2);
+        LLSD one;
+        one["object_id"] = od.second;
+        one["name"] = plain;
+        one["metres_into_it"] = ll_round(depth, 0.01f);
+        one["side"] = where_side;
+        list.append(one);
+        if (list.size() <= 4)
+        {
+            if (!words.empty()) words += "; ";
+            words += cl.name + llformat(", about %.2f m into it ", depth) + where_side;
+        }
+    }
+    return list;
 }
 
 std::string LumenAIControl::objectNameFor(const LLUUID& id)
@@ -29300,6 +29606,16 @@ if (method == "camera")
                            "Nothing was moved.";
             LLSD w; w["__error"] = e; return w;
         }
+        std::string slide = params["slide"].asString();
+        LLStringUtil::toLower(slide);
+        if (!slide.empty() && (!wants_wall || (slide != "left" && slide != "right")))
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "`slide` goes with `wall`, and is \"left\" or \"right\" as seen facing "
+                           "the wall: it pushes it along the wall until it meets what is there. "
+                           "Nothing was moved.";
+            LLSD w; w["__error"] = e; return w;
+        }
         if (wants_wall && rlvLimitsPictures())
         {
             LLSD e; e["code"] = -32000; e["message"] = RLV_LIMITS_PICTURES;
@@ -29315,20 +29631,7 @@ if (method == "camera")
         }
         const F32 gap = params.has("gap") ? llclamp((F32)params["gap"].asReal(), 0.f, 1.f) : 0.02f;
 
-        // The parts drawn solid. A link every face of which is invisible, or
-        // drawn see-through (a shadow, a glow, a glass pane), does not count.
-        auto drawnSolid = [](LLViewerObject* p) -> bool
-        {
-            const LLDrawable* d = p->mDrawable.get();
-            for (U8 i = 0; i < p->getNumTEs(); ++i)
-            {
-                const LLTextureEntry* te = p->getTE(i);
-                if (!te || te->getColor().mV[VALPHA] < 0.05f) continue;
-                const LLFace* f = (d && i < d->getNumFaces()) ? d->getFace(i) : nullptr;
-                if (!f || !f->isInAlphaPool()) return true;
-            }
-            return false;
-        };
+        // The parts drawn solid (lumenDrawnSolid).
         std::vector<LLViewerObject*> parts(1, obj);
         for (LLViewerObject* c : obj->getChildren())
         {
@@ -29337,7 +29640,7 @@ if (method == "camera")
         std::vector<LLViewerObject*> solid;
         for (LLViewerObject* p : parts)
         {
-            if (drawnSolid(p)) solid.push_back(p);
+            if (lumenDrawnSolid(p)) solid.push_back(p);
         }
         if (solid.empty()) solid = parts;
         const S32 left_out = (S32)(parts.size() - solid.size());
@@ -29697,20 +30000,118 @@ if (method == "camera")
 
         LLVector3 new_root = root_pos;
         F32 off_wall = 0.f;
+        // The room along the wall at its back: from its middle to the first
+        // thing each way -- a corner, a fireplace, a cupboard already there.
+        F32 room_l = -1.f, room_r = -1.f, along_len = 0.f;
+        std::string to_l, to_r;
         if (wants_wall)
         {
-            LLVector3 t = LLVector3::z_axis % wall_n;
+            LLVector3 t = LLVector3::z_axis % wall_n;   // to the right, facing the wall
             t.normVec();
-            F32 dmin = 1.e9f, tmin = 1.e9f, tmax = -1.e9f;
+            F32 dmin = 1.e9f, dmax = -1.e9f, tmin = 1.e9f, tmax = -1.e9f, zlo = 1.e9f, zhi = -1.e9f;
             for (const LLVector3& c : corners)
             {
                 const LLVector3 v = root_pos + c - wall_p;
                 dmin = llmin(dmin, v * wall_n);
+                dmax = llmax(dmax, v * wall_n);
                 tmin = llmin(tmin, v * t);
                 tmax = llmax(tmax, v * t);
+                zlo = llmin(zlo, root_pos.mV[VZ] + c.mV[VZ]);
+                zhi = llmax(zhi, root_pos.mV[VZ] + c.mV[VZ]);
             }
             new_root += wall_n * (gap - dmin) - t * ((tmin + tmax) * 0.5f);
             off_wall = gap;
+            along_len = tmax - tmin;
+
+            // A line along the wall a little out from it, through its middle,
+            // at two heights above the floor there -- not above where it stands
+            // now, which may be another floor or a dip in the ground; the nearer
+            // thing each way. The ground counts only where it is all there is:
+            // a sandbox rising toward a corner wall was "the end of the room".
+            const F32 dline = gap + llmin(0.15f, llmax((dmax - dmin) * 0.5f, 0.02f));
+            const F32 h = zhi - zlo;
+            F32 floor_z = zlo;
+            {
+                LumenAISight::WithoutAvatars hide;
+                LLVector3 down = wall_p + wall_n * dline, where, fn;
+                if (LumenAISight::firstHit(down, down - LLVector3(0.f, 0.f, 60.f), 0.f, where, obj, &fn)
+                    && fn.mV[VZ] > 0.5f)
+                {
+                    floor_z = where.mV[VZ];
+                }
+            }
+            const F32 heights[2] = { floor_z + llclamp(h * 0.3f, 0.15f, 0.5f),
+                                     floor_z + llclamp(h * 0.7f, 0.3f, 1.2f) };
+            // Its own cushions, lying on it, are not the end of the room.
+            const F32 biggest = llmax(llmax(lmax.mV[VX] - lmin.mV[VX], lmax.mV[VY] - lmin.mV[VY]),
+                                      lmax.mV[VZ] - lmin.mV[VZ]);
+            auto ridesOnIt = [&](LLViewerObject* root) -> bool
+            {
+                const LLVector3 sc = root->getScale();
+                if (llmax(llmax(sc.mV[VX], sc.mV[VY]), sc.mV[VZ]) >= biggest) return false;
+                const LLVector3 l = (root->getPositionAgent() - root_pos) * to_local;
+                for (S32 a = 0; a < 3; ++a)
+                {
+                    if (l.mV[a] < lmin.mV[a] - 0.05f || l.mV[a] > lmax.mV[a] + 0.05f) return false;
+                }
+                return true;
+            };
+            auto reach = [&](const LLVector3& from, const LLVector3& dir, std::string& what) -> F32
+            {
+                LLVector3 where, at = from;
+                LLViewerObject* o = nullptr;
+                for (S32 tries = 0; tries < 6; ++tries)
+                {
+                    o = LumenAISight::firstHit(at, from + dir * 20.f, 0.f, where, obj, nullptr);
+                    if (!o || o->getPCode() != LL_PCODE_VOLUME || !o->getRootEdit()
+                        || !ridesOnIt(o->getRootEdit()))
+                    {
+                        break;
+                    }
+                    at = where + dir * 0.02f;
+                    o = nullptr;
+                }
+                if (!o) return -1.f;
+                if (o->getPCode() == LLViewerObject::LL_VO_SURFACE_PATCH) what = "@ground";
+                else if (o->getPCode() == LL_PCODE_VOLUME)
+                    what = askObjectName(o->getRootEdit());   // in quotes already
+                else what = "something";
+                return (where - from) * dir;
+            };
+            {
+                LumenAISight::WithoutAvatars hide;
+                F32 land_l = -1.f, land_r = -1.f;
+                for (F32 hz : heights)
+                {
+                    LLVector3 base = wall_p + wall_n * dline;
+                    base.mV[VZ] = hz;
+                    std::string wl, wr;
+                    const F32 l = reach(base, -t, wl), r = reach(base, t, wr);
+                    if (l >= 0.f && wl == "@ground") { if (land_l < 0.f || l < land_l) land_l = l; }
+                    else if (l >= 0.f && (room_l < 0.f || l < room_l)) { room_l = l; to_l = wl; }
+                    if (r >= 0.f && wr == "@ground") { if (land_r < 0.f || r < land_r) land_r = r; }
+                    else if (r >= 0.f && (room_r < 0.f || r < room_r)) { room_r = r; to_r = wr; }
+                }
+                if (room_l < 0.f && land_l >= 0.f) { room_l = land_l; to_l = "the ground"; }
+                if (room_r < 0.f && land_r >= 0.f) { room_r = land_r; to_r = "the ground"; }
+            }
+            // "Into the corner": along the wall until it meets what is there.
+            if (!slide.empty())
+            {
+                const bool left = slide == "left";
+                const F32 room = left ? room_l : room_r;
+                if (room < 0.f)
+                {
+                    LLSD e; e["code"] = -32000;
+                    e["message"] = "Nothing stands to the " + slide + " along that wall within 20 m "
+                                   "to slide it against. Nothing was moved.";
+                    LLSD w; w["__error"] = e; return w;
+                }
+                const F32 sft = (room - along_len * 0.5f - gap) * (left ? -1.f : 1.f);
+                new_root += t * sft;
+                room_l += sft;
+                room_r -= sft;
+            }
         }
 
         // Onto what is right below it: rays down through its footprint -- the
@@ -29833,202 +30234,46 @@ if (method == "camera")
             }
         }
 
-        // What already stands where it is going. The floor under its middle and
-        // the wall behind it were measured; what stands BESIDE it was not, and
-        // a corner sofa 3.95 m long went into a corner with 3.56 m to the
-        // fireplace -- 30 cm of it inside the fireplace, and nothing said (the
-        // author's house, 2026-10-06). Rays across the space it will fill, both
-        // ways, at three heights, find anything solid inside it. A hit counts
-        // only where the object itself has something in that column -- the
-        // empty quarter of an L-shaped sofa is room, not sofa -- and never on a
-        // thing lying on it now, its own cushions.
+        // What already stands in the space it would fill (inTheWay).
         const bool may_overlap = params["overlap"].asBoolean();
-        struct Clash { std::string name, side; F32 depth = 0.f; };
-        std::map<LLUUID, Clash> clashes;
-        {
-            // Its own axes: the one nearest the vertical, and the two lying flat.
-            S32 ua = VZ;
-            F32 upness = -1.f;
-            for (S32 a = 0; a < 3; ++a)
-            {
-                LLVector3 axis; axis.mV[a] = 1.f;
-                const F32 z = fabsf((axis * upright).mV[VZ]);
-                if (z > upness) { upness = z; ua = a; }
-            }
-            LLVector3 ua_axis; ua_axis.mV[ua] = 1.f;
-            const F32 usign  = (ua_axis * upright).mV[VZ] > 0.f ? 1.f : -1.f;
-            const S32 fa = (ua + 1) % 3, fb = (ua + 2) % 3;
-            const F32 M = 0.04f;   // a touch is not a clash
-            const F32 height = lmax.mV[ua] - lmin.mV[ua];
-            const F32 bottom = usign > 0.f ? lmin.mV[ua] : lmax.mV[ua];
-            const F32 top    = usign > 0.f ? lmax.mV[ua] : lmin.mV[ua];
-            const LLQuaternion to_new = frame * level * turn;   // its own frame, where it will be
-            const LLQuaternion from_new = ~to_new;
-            auto newWorld = [&](const LLVector3& l) { return new_root + l * to_new; };
-
-            // Whether it has anything in the column through this spot of its
-            // footprint, as it stands now.
-            auto occupied = [&](F32 a, F32 b) -> bool
-            {
-                LLVector3 hi_l, lo_l;
-                hi_l.mV[fa] = a; hi_l.mV[fb] = b; hi_l.mV[ua] = top + usign * 0.05f;
-                lo_l = hi_l;     lo_l.mV[ua] = bottom - usign * 0.05f;
-                LLVector4a s4, e4;
-                s4.load3((root_pos + hi_l * frame).mV);
-                e4.load3((root_pos + lo_l * frame).mV);
-                for (LLViewerObject* p : solid)
-                {
-                    if (p->lineSegmentIntersect(s4, e4, -1, false, false, true)) return true;
-                }
-                return false;
-            };
-            // Lying on it now: smaller than it, and its middle inside its box.
-            const F32 biggest = llmax(llmax(lmax.mV[VX] - lmin.mV[VX], lmax.mV[VY] - lmin.mV[VY]),
-                                      lmax.mV[VZ] - lmin.mV[VZ]);
-            auto ridesOnIt = [&](LLViewerObject* root) -> bool
-            {
-                const LLVector3 sc = root->getScale();
-                if (llmax(llmax(sc.mV[VX], sc.mV[VY]), sc.mV[VZ]) >= biggest) return false;
-                const LLVector3 l = (root->getPositionAgent() - root_pos) * to_local;
-                for (S32 a = 0; a < 3; ++a)
-                {
-                    if (l.mV[a] < lmin.mV[a] - 0.05f || l.mV[a] > lmax.mV[a] + 0.05f) return false;
-                }
-                return true;
-            };
-            auto samples = [&](S32 axis)
-            {
-                std::vector<F32> v;
-                const F32 a0 = lmin.mV[axis] + M, a1 = lmax.mV[axis] - M;
-                if (a1 <= a0)
-                {
-                    v.push_back((lmin.mV[axis] + lmax.mV[axis]) * 0.5f);
-                    return v;
-                }
-                const S32 n = llclamp((S32)ceilf((a1 - a0) / 0.3f) + 1, 2, 12);
-                for (S32 i = 0; i < n; ++i) v.push_back(a0 + (a1 - a0) * (F32)i / (F32)(n - 1));
-                return v;
-            };
-            // Which of its sides a thing comes in at, in the words its answer uses.
-            LLVector3 t_right = LLVector3::z_axis % wall_n;
-            if (wants_wall) t_right.normVec();
-            auto sideOf = [&](const LLVector3& dir) -> std::string
-            {
-                if (wants_wall)
-                {
-                    if (fabsf(dir * t_right) > fabsf(dir * wall_n))
-                        return dir * t_right > 0.f ? "at its right end" : "at its left end";
-                    return dir * wall_n > 0.f ? "at its front" : "at its back";
-                }
-                if (fabsf(dir.mV[VX]) > fabsf(dir.mV[VY]))
-                    return dir.mV[VX] > 0.f ? "on its east side" : "on its west side";
-                return dir.mV[VY] > 0.f ? "on its north side" : "on its south side";
-            };
-            // One ray from `from_l` to `to_l` in its own frame, where it will be:
-            // what it meets inside it, and how far that reaches in from the far side.
-            auto cast = [&](const LLVector3& from_l, const LLVector3& to_l,
-                            LLUUID& hit_id, F32& depth, std::string& side)
-            {
-                hit_id.setNull();
-                const LLVector3 from = newWorld(from_l), to = newWorld(to_l);
-                LLVector3 where;
-                LLViewerObject* o = LumenAISight::firstHit(from, to, 0.f, where, obj, nullptr);
-                if (!o || o->getPCode() != LL_PCODE_VOLUME) return;
-                LLViewerObject* root = o->getRootEdit();
-                if (!root || root == obj || root->isAvatar()) return;
-                const LLVector3 l = (where - new_root) * from_new;
-                if (!occupied(l.mV[fa], l.mV[fb]) || ridesOnIt(root)) return;
-                hit_id = root->getID();
-                depth = (to - from).magVec() - (where - from).magVec() + M;
-                LLVector3 dir = to - from;
-                dir.mV[VZ] = 0.f;
-                if (dir.magVec() > 0.001f) dir.normVec();
-                side = sideOf(dir);
-                if (clashes.find(hit_id) == clashes.end()) clashes[hit_id].name = askObjectName(root);
-            };
-            const std::vector<F32> as = samples(fa), bs = samples(fb);
-            std::vector<F32> levels;
-            for (F32 t : { 0.15f, 0.5f, 0.85f })
-            {
-                const F32 up = llclamp(height * t, 0.06f, llmax(height - 0.03f, 0.06f));
-                levels.push_back(bottom + usign * up);
-            }
-            LumenAISight::WithoutAvatars hide;
-            for (F32 u : levels)
-            {
-                for (S32 dirn = 0; dirn < 2; ++dirn)
-                {
-                    // Along one flat axis, at each spot along the other.
-                    const S32 along = dirn ? fb : fa, across = dirn ? fa : fb;
-                    for (F32 c : (dirn ? as : bs))
-                    {
-                        LLVector3 p0, p1;
-                        p0.mV[ua] = p1.mV[ua] = u;
-                        p0.mV[across] = p1.mV[across] = c;
-                        p0.mV[along] = lmin.mV[along] + M;
-                        p1.mV[along] = lmax.mV[along] - M;
-                        if (p1.mV[along] <= p0.mV[along]) continue;
-                        // Both ways: a ray that starts inside a thing may not
-                        // see it, and the shorter way out is how far it is in.
-                        LLUUID id1, id2;
-                        F32 d1 = 0.f, d2 = 0.f;
-                        std::string s1, s2;
-                        cast(p0, p1, id1, d1, s1);
-                        cast(p1, p0, id2, d2, s2);
-                        auto note = [&](const LLUUID& id, F32 d, const std::string& sd)
-                        {
-                            Clash& cl = clashes[id];
-                            if (d > cl.depth) { cl.depth = d; cl.side = sd; }
-                        };
-                        if (id1.notNull() && id1 == id2)
-                        {
-                            if (d1 <= d2) note(id1, d1, s1); else note(id2, d2, s2);
-                        }
-                        else
-                        {
-                            if (id1.notNull()) note(id1, d1, s1);
-                            if (id2.notNull()) note(id2, d2, s2);
-                        }
-                    }
-                }
-            }
-        }
-        LLSD in_the_way = LLSD::emptyArray();
         std::string clash_words;
+        const LLSD in_the_way = inTheWay(obj, solid, frame, lmin, lmax, new_root, frame * level * turn,
+                                         wants_wall ? wall_n : LLVector3::zero, clash_words);
+        std::string room_words;
+        bool fits_along = false;
+        if (wants_wall && (room_l >= 0.f || room_r >= 0.f))
         {
-            std::vector<std::pair<F32, LLUUID>> order;
-            for (const auto& kv : clashes) order.push_back(std::make_pair(-kv.second.depth, kv.first));
-            std::sort(order.begin(), order.end());
-            for (const auto& od : order)
-            {
-                const Clash& cl = clashes[od.second];
-                LLSD one;
-                one["object_id"] = od.second;
-                one["name"] = safeUtf8(cl.name);
-                one["metres_into_it"] = ll_round(cl.depth, 0.01f);
-                one["side"] = cl.side;
-                in_the_way.append(one);
-                if (in_the_way.size() <= 4)
-                {
-                    if (!clash_words.empty()) clash_words += "; ";
-                    clash_words += "\"" + safeUtf8(cl.name) + "\"" +
-                                   llformat(", about %.2f m into it ", cl.depth) + cl.side;
-                }
-            }
+            fits_along = room_l >= 0.f && room_r >= 0.f
+                         ? room_l + room_r >= along_len + 2.f * gap - 0.01f : true;
+            room_words = " Along that wall, at its back, "
+                       + (room_l >= 0.f && room_r >= 0.f
+                          ? llformat("there is %.2f m from ", room_l + room_r) + to_l + " to " + to_r
+                          : room_l >= 0.f
+                          ? llformat("there is %.2f m from ", room_l) + to_l + " to its middle, and "
+                            "nothing to the right within 20 m"
+                          : llformat("there is %.2f m from its middle to ", room_r) + to_r + ", and "
+                            "nothing to the left within 20 m")
+                       + llformat("; it is %.2f m long, so it ", along_len)
+                       + (fits_along ? "would fit along this wall." : "does NOT fit along this wall.");
         }
         if (in_the_way.size() > 0 && !may_overlap)
         {
             LL_INFOS("AICtl") << "place: refused, " << in_the_way.size()
-                              << " thing(s) in the way: " << clash_words << LL_ENDL;
+                              << " thing(s) in the way: " << clash_words << room_words << LL_ENDL;
             LLSD e; e["code"] = -32000;
             e["message"] = "It does not fit there: where that puts it, it would cut into " +
-                           clash_words + ". Nothing was moved. Tell the person plainly what is in "
-                           "the way and offer what would work -- further along the wall, another "
-                           "wall, another turn, or moving the other thing first. Only if they want "
-                           "it there anyway, call again with overlap: true.";
+                           clash_words + ". Nothing was moved." + room_words +
+                           (fits_along && slide.empty()
+                            ? " Calling place again with the same wall and front and `slide` "
+                              "\"left\" or \"right\" -- away from what is in the way -- is the one "
+                              "thing to try without asking. Anything else, ask first."
+                            : " STOP here: tell the person plainly what is in the way and how much "
+                              "room there is, and ask what they want.") +
+                           " Do not fit it in some other way on your own -- not with set, not by "
+                           "pulling it out from the wall, not by turning it. Only if they want it "
+                           "there anyway, call again with overlap: true.";
             LLSD w; w["__error"] = e; return w;
         }
-
         // Hand it to set.
         LLViewerRegion* region = obj->getRegion();
         const LLVector3 rpos = region->getPosRegionFromAgent(new_root);
@@ -30046,7 +30291,9 @@ if (method == "camera")
             sp["rotation"] = rot;
         }
         if (params.has("request_id")) sp["request_id"] = params["request_id"];
+        mPlacing = true;   // set need not look again: the space was checked here
         LLSD r = dispatch("set_object", sp);
+        mPlacing = false;
         if (r.has("__error")) return r;
 
         LLSD placed;
@@ -30102,6 +30349,16 @@ if (method == "camera")
         if (left_out > 0) placed["parts_not_measured"] = left_out;
         if (in_the_way.size() > 0) placed["cutting_into"] = in_the_way;   // overlap: true
         else placed["in_the_way"] = "nothing -- the space it fills was checked";
+        if (wants_wall && (room_l >= 0.f || room_r >= 0.f))
+        {
+            LLSD room;
+            if (room_l >= 0.f) { room["left_metres"]  = ll_round(room_l, 0.01f); room["left_to"]  = to_l; }
+            if (room_r >= 0.f) { room["right_metres"] = ll_round(room_r, 0.01f); room["right_to"] = to_r; }
+            room["its_length_metres"] = ll_round(along_len, 0.01f);
+            room["measured"] = "along the wall at its back, from its middle to the first thing each "
+                               "way, seen facing the wall";
+            placed["room_along_wall"] = room;
+        }
         r["placed"] = placed;
         r["note"] = std::string("Placed by measuring the parts drawn solid") +
                     (left_out > 0 ? " -- invisible or see-through links (a shadow, a glow) were "
@@ -31017,6 +31274,67 @@ if (method == "camera")
                     sBuildManyAllowed.insert(req);
                 }
             }
+            // <Lumen> A move or turn of one thing: what it would cut into where
+            // it is going, worked out before it moves (what lies on it is read
+            // where it stands now). It still moves -- building overlaps on
+            // purpose -- but the answer says so: a model refused by place
+            // once moved a sofa with set instead, and said nothing.
+            LLSD set_in_the_way;
+            std::string set_clash_words;
+            if ((has_position || has_rotation) && size_vals.empty() && !mPlacing
+                && sel->getRootObjectCount() == 1)
+            {
+                LLViewerObject* mover = sel->getFirstRootObject(true);
+                if (mover && !mover->isAttachment() && mover->getRegion()
+                    && mover->getPCode() == LL_PCODE_VOLUME)
+                {
+                    std::vector<LLViewerObject*> parts(1, mover), mine;
+                    for (LLViewerObject* ch : mover->getChildren())
+                    {
+                        if (ch && !ch->isAvatar()) parts.push_back(ch);
+                    }
+                    for (LLViewerObject* pp : parts) if (lumenDrawnSolid(pp)) mine.push_back(pp);
+                    if (mine.empty()) mine = parts;
+                    const LLQuaternion fr = mover->getRotationEdit();
+                    const LLVector3 here = mover->getPositionAgent();
+                    LLVector3 bmin( 1.e9f,  1.e9f,  1.e9f), bmax(-1.e9f, -1.e9f, -1.e9f);
+                    for (LLViewerObject* pp : mine)
+                    {
+                        const LLVector3 half = pp->getScale() * 0.5f;
+                        const LLQuaternion rot = pp->getRotationEdit();
+                        const LLVector3 centre = pp->getPositionAgent();
+                        for (S32 i = 0; i < 8; ++i)
+                        {
+                            const LLVector3 k((i & 1) ? half.mV[VX] : -half.mV[VX],
+                                              (i & 2) ? half.mV[VY] : -half.mV[VY],
+                                              (i & 4) ? half.mV[VZ] : -half.mV[VZ]);
+                            const LLVector3 l = (centre + k * rot - here) * ~fr;
+                            for (S32 a = 0; a < 3; ++a)
+                            {
+                                bmin.mV[a] = llmin(bmin.mV[a], l.mV[a]);
+                                bmax.mV[a] = llmax(bmax.mV[a], l.mV[a]);
+                            }
+                        }
+                    }
+                    LLVector3 to_root = here;
+                    if (has_position)
+                    {
+                        to_root = mover->getRegion()->getPosAgentFromRegion(
+                            LLVector3((F32)params["position"][0].asReal(),
+                                      (F32)params["position"][1].asReal(),
+                                      (F32)params["position"][2].asReal()));
+                    }
+                    LLQuaternion to_rot = fr;
+                    if (has_rotation)
+                    {
+                        to_rot.setEulerAngles((F32)(params["rotation"][0].asReal() * DEG_TO_RAD),
+                                              (F32)(params["rotation"][1].asReal() * DEG_TO_RAD),
+                                              (F32)(params["rotation"][2].asReal() * DEG_TO_RAD));
+                    }
+                    set_in_the_way = inTheWay(mover, mine, fr, bmin, bmax, to_root, to_rot,
+                                              LLVector3::zero, set_clash_words);
+                }
+            }
             // <Lumen> Asked once everything has been checked and before the
             // first change goes out, so a Yes is never spent on a call that
             // then refuses, and a No leaves the object exactly as it was.
@@ -31140,6 +31458,14 @@ if (method == "camera")
             result["note"] = "Sent the change to the simulator. Say what was changed rather "
                              "than that it now looks a certain way -- the object is updated "
                              "by the server and this call only asked.";
+            if (set_in_the_way.size() > 0)
+            {
+                result["cutting_into"] = set_in_the_way;
+                result["note"] = result["note"].asString() + " **Where it is now, it cuts into "
+                                 + set_clash_words + ".** If that was not meant -- furniture "
+                                 "inside a fireplace, a wall or another piece of furniture -- tell "
+                                 "the person; never call it placed or right.";
+            }
         }
 
         recordAction(params.has("request_id") ? params["request_id"].asString() : "",

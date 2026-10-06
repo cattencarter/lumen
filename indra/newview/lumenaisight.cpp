@@ -168,8 +168,9 @@ bool project(const View& view, const LLVector3& point, F32& px, F32& py)
 }
 
 LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
-                         const LLViewerObject* ignore, LLVector3* normal, S32* face)
+                         const LLViewerObject* ignore, LLVector3* normal, S32* face, bool* leaving)
 {
+    if (leaving) *leaving = false;
     LLVector3 dir = to - from;
     const F32 len = dir.magVec();
     if (len < 0.001f)
@@ -217,6 +218,12 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
         where.set(hit.getF32ptr());
         if (!o->isAvatar() && !o->isAttachment() && !(ignore && o->getRootEdit() == ignore))
         {
+            if (leaving)
+            {
+                // Met from behind: the raycast finds a face from either side.
+                const LLVector3 raw(n.getF32ptr());
+                *leaving = raw.magVecSquared() > 1.e-6f && raw * dir > 0.f;
+            }
             if (normal)
             {
                 normal->set(n.getF32ptr());

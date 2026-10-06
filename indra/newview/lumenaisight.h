@@ -105,11 +105,14 @@ namespace LumenAISight
      * middle of a table still finds the table. Hits on `ignore`'s linked set
      * are stepped past too, for a ray that starts inside an object.
      * `normal` and `face`, when given, get which way the surface faces there
-     * (unit length) and the face of the prim it hit.
+     * (unit length, toward where the ray came from) and the face of the prim
+     * it hit. `leaving`, when given, says the surface was met from behind:
+     * the ray started inside that thing and was on its way out.
      */
     LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
                              const LLViewerObject* ignore = nullptr,
-                             LLVector3* normal = nullptr, S32* face = nullptr);
+                             LLVector3* normal = nullptr, S32* face = nullptr,
+                             bool* leaving = nullptr);
 
     /** The direction from the camera through a pixel of the picture, counted from the top-left. */
     LLVector3 rayThrough(const View& view, F32 px, F32 py);

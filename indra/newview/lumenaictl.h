@@ -33,6 +33,7 @@
 #include "llhttpnode.h"   // <Lumen> a socket reply held while the user is asked
 #include "v3dmath.h"
 #include "v3math.h"
+#include "llquaternion.h"
 
 #include <boost/signals2.hpp>
 #include <deque>
@@ -125,6 +126,17 @@ public:
      * background when it does not know yet (empty until the answer lands).
      */
     std::string objectNameFor(const LLUUID& id);
+
+    /**
+     * <Lumen> place and set: the solid things inside the space `obj` would
+     * fill with its root at `new_root`, its own frame (`frame`, box
+     * [lmin, lmax] from its root, as it stands now) turned to `to_new`.
+     * Deepest first; `words` names the first four for a sentence.
+     */
+    LLSD inTheWay(LLViewerObject* obj, const std::vector<LLViewerObject*>& solid,
+                  const LLQuaternion& frame, const LLVector3& lmin, const LLVector3& lmax,
+                  const LLVector3& new_root, const LLQuaternion& to_new,
+                  const LLVector3& wall_n, std::string& words) const;
 
     // <Lumen> worn_by and creator links.
     //
@@ -461,6 +473,7 @@ private:
         F64        taken = 0.0;
     };
     PictureCamera mLastPicture;
+    bool mPlacing = false;   //< <Lumen> place is moving it through set; the space was checked
 
     /**
      * Second Life's own search -- places and events.
