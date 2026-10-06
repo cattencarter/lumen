@@ -373,6 +373,7 @@ namespace
             { "wait_for_object", { "name", "as" },         "wait for \"{name}\" to appear" },
             { "take",            { "object" },             "pick up {object}" },
             { "verify",          { "item" },               "check that {item} is in the inventory" },
+            { "accept_offer",    { "from" },               "accept what {from} offers" },
             { "say",             { "text" },               "say: {text}" },
         };
         return rules;
@@ -407,7 +408,7 @@ namespace
         const BlockRule* rule = blockRule(step["do"].asString());
         if (!rule) return step["do"].asString();
         std::string out = rule->plain;
-        for (const char* key : { "key", "table", "name", "text", "press", "item" })
+        for (const char* key : { "key", "table", "name", "text", "press", "item", "from" })
         {
             const std::string token = std::string("{") + key + "}";
             const size_t at = out.find(token);
@@ -2197,6 +2198,62 @@ namespace
             }
             error = "\"" + pattern + "\" has not come into the inventory";
             may_retry = true;
+            return false;
+        }
+
+        if (what == "accept_offer")
+        {
+            // An inventory offer from an object or a person: Keep, as the user
+            // would press it -- or nothing to press, when the viewer took it by
+            // itself and it has simply arrived.
+            const std::string from = lower(trim(step["from"].asString()));
+            const std::string item = step["item"].isMap() ? step["item"]["name"].asString() : step["item"].asString();
+            const F64 until = LLTimer::getTotalSeconds() + waitFor(step, 60.0);
+            bool kept = false;
+            while (true)
+            {
+                if (!item.empty())
+                {
+                    for (const auto& a : run.arrived)
+                    {
+                        if (!nameMatches(a.second, item)) continue;
+                        if (as.isDefined())
+                        {
+                            LLSD v; v["item_id"] = a.first; v["name"] = a.second;
+                            run.vars[trim(as.asString())] = v;
+                        }
+                        return true;
+                    }
+                }
+                if (!kept)
+                {
+                    std::string rerr;
+                    LLSD args; args["action"] = "read_dialogues"; args["limit"] = 50;
+                    const LLSD r = callTool("viewer", args, std::string(), rerr);
+                    for (LLSD::array_const_iterator it = r["dialogues"].beginArray(); it != r["dialogues"].endArray(); ++it)
+                    {
+                        const LLUUID id = (*it)["id"].asUUID();
+                        const std::string kind = (*it)["kind"].asString();
+                        if (run.dialogues_before.count(id) || run.answered.count(id)) continue;
+                        if (kind != "ObjectGiveItem" && kind.compare(0, 12, "UserGiveItem") != 0) continue;
+                        const std::string text = lower((*it)["text"].asString());
+                        if (text.find(from) == std::string::npos) continue;
+                        if (!item.empty() && !nameMatches(text, item)) continue;
+                        LLSD a; a["action"] = "answer_dialogue"; a["id"] = id; a["choice"] = "Keep";
+                        callTool("viewer", a, stepRequestId(run, index, "keep"), error);
+                        run.answered.insert(id);
+                        if (!error.empty()) return false;
+                        kept = true;
+                        if (item.empty()) return true;   // nothing named to wait for
+                        break;
+                    }
+                }
+                if (LLTimer::getTotalSeconds() > until) break;
+                if (!run.pause(0.5)) { error = "stopped"; return false; }
+            }
+            error = kept ? "\"" + item + "\" was kept but has not come into the inventory"
+                         : "no offer from \"" + step["from"].asString() + "\" came";
+            may_retry = !kept;
             return false;
         }
 

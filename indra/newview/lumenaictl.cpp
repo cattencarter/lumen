@@ -28855,6 +28855,8 @@ if (method == "camera")
             "wait_for_object {name, owner: \"me\" or \"anyone\", within, wait, as}; "
             "take {object, how: \"take\" or \"touch\"}; "
             "verify {item: a name, wait} -- checks it came into the inventory; "
+            "accept_offer {from: part of the giver's name, item: what it is, wait, as} -- presses "
+            "Keep on an inventory offer, or finds it already arrived; "
             "say {text}. Waits are seconds. A step may have \"optional\": true, and \"fail\": "
             "words for when it fails. There is no step that gives, pays or deletes, and a "
             "script's permission request is always the user's to answer. Write the steps from "
