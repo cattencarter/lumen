@@ -2275,18 +2275,149 @@ namespace
         return *answer;
     }
 
-    bool webCall(LumenAISkills::Run& run, const LLSD& step, const LLSD& as, std::string& error, bool& may_retry)
+    /**
+     * The card's address with its {values} written in. A value that opens the
+     * address IS the address, and is used as it is; every value pasted into
+     * one is escaped, so it stays in its own place and cannot add a "?", an
+     * "&name=", a "#" or an "@" that sends the call, or the key, somewhere
+     * else (the review, 2026-10-06). The same names as resolve(), which has
+     * already checked that every one of them has a value.
+     */
+    std::string fillAddress(const std::string& s, const LLSD& vars)
     {
-        std::string url = trim(step["url"].asString());
+        std::string res;
+        size_t at = 0;
+        while (true)
+        {
+            const size_t open = s.find('{', at);
+            if (open == std::string::npos) { res += s.substr(at); break; }
+            const size_t close = s.find('}', open);
+            if (close == std::string::npos) { res += s.substr(at); break; }
+            res += s.substr(at, open - at);
+            if (!isRef(s.substr(open + 1, close - open - 1)))
+            {
+                res += s.substr(open, close - open + 1);
+                at = close + 1;
+                continue;
+            }
+            LLSD val;
+            if (lookupPath(vars, s.substr(open + 1, close - open - 1), val))
+            {
+                const std::string text = val.isMap() && val.has("name") ? val["name"].asString() : val.asString();
+                res += open == 0 ? text : LLURI::escape(text);
+            }
+            at = close + 1;
+        }
+        return res;
+    }
+
+    /**
+     * The host an address will be called at, in lower case, or empty with the
+     * reason in `error`. Lumen reads the host with LLURI and curl reads it its
+     * own way, and the two disagree about "#", "@" and "\": in
+     * https://evil.example#@good.example/x Lumen saw good.example, approved it
+     * and bound the key to it, while curl called evil.example (the review,
+     * 2026-10-06). Without those, without spaces or control characters, and
+     * with a host of plain letters, digits, dots and hyphens, both read the
+     * same host. Never quotes the address: it can carry the key.
+     */
+    std::string addressHost(const std::string& url, std::string& error)
+    {
         if (url.compare(0, 8, "https://") != 0)
         {
             error = "a skill may only call https:// addresses";
-            return false;
+            return std::string();
+        }
+        for (const char c : url)
+        {
+            const U8 u = (U8)c;
+            if (u <= 0x20 || u == 0x7f)
+            {
+                error = "a skill's web address may not have spaces or control characters in it";
+                return std::string();
+            }
+            if (c == '#' || c == '@' || c == '\\')
+            {
+                error = std::string("a skill's web address may not have \"") + c + "\" in it";
+                return std::string();
+            }
+        }
+        const size_t end = url.find_first_of("/?", 8);
+        const std::string authority = url.substr(8, end == std::string::npos ? std::string::npos : end - 8);
+        const size_t colon = authority.find(':');
+        const std::string name = authority.substr(0, colon);
+        const std::string port = colon == std::string::npos ? std::string() : authority.substr(colon + 1);
+        const bool name_ok = !name.empty() && std::all_of(name.begin(), name.end(), [](char c)
+            { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'; });
+        const bool port_ok = std::all_of(port.begin(), port.end(), [](char c) { return c >= '0' && c <= '9'; });
+        if (!name_ok || !port_ok)
+        {
+            error = "a skill's web address must name its site in plain letters a-z, digits, dots and hyphens "
+                    "(a name in another alphabet in its xn-- form)";
+            return std::string();
         }
         const std::string host = lower(LLURI(url).hostName());
+        if (host != lower(name))
+        {
+            error = "the web address could not be read the same way twice, so it was not called";
+            return std::string();
+        }
+        return host;
+    }
+
+    // The most of a web answer that is kept.
+    const size_t WEB_ANSWER_MOST = 65536;
+
+    /**
+     * The answer to a skill's web call, handed back to the run without a word
+     * in the log. Second Life's own coroutine helper writes the whole address
+     * to the log whenever a call fails -- a 401 from a mistyped key, a 404, a
+     * timeout -- and a skill's address carries its key and the card's values
+     * in the query (the review, 2026-10-06). So the call is made here, the way
+     * that helper makes it, and nothing of the address is kept: {ok, code, raw}.
+     */
+    class WebCallHandler : public LLCore::HttpHandler
+    {
+    public:
+        WebCallHandler(LLEventStream& reply) : mReply(reply) {}
+
+        void onCompleted(LLCore::HttpHandle, LLCore::HttpResponse* response) override
+        {
+            const LLCore::HttpStatus status = response->getStatus();
+            // The answer to a call already given up, before the library has
+            // seen that it was: the helper waits for the next one, and so do we.
+            if (status == LLCore::HttpStatus(LLCore::HttpStatus::LLCORE, LLCore::HE_HANDLE_NOT_FOUND))
+            {
+                return;
+            }
+            LLSD::Binary bytes;
+            LLCore::BufferArray* body = response->getBody();
+            if (body && body->size())
+            {
+                bytes.resize(std::min(body->size(), WEB_ANSWER_MOST));
+                bytes.resize(body->read(0, &bytes[0], bytes.size()));
+            }
+            LLSD answer = LLSD::emptyMap();
+            answer["ok"] = (bool)status;
+            // LLCore keeps an HTTP code as the status's TYPE; below 100 nothing answered.
+            answer["code"] = (S32)status.getType();
+            answer["raw"] = bytes;
+            mReply.post(answer);
+        }
+
+    private:
+        LLEventStream& mReply;
+    };
+
+    bool webCall(LumenAISkills::Run& run, const LLSD& written, const LLSD& step, const LLSD& as,
+                 std::string& error, bool& may_retry)
+    {
+        // From the card's own words, not from `step`, whose values were pasted
+        // in as they are.
+        std::string url = trim(fillAddress(trim(written["url"].asString()), run.vars));
+        const std::string host = addressHost(url, error);
         if (host.empty())
         {
-            error = "\"" + url + "\" is not a web address";
             return false;
         }
 
@@ -2313,9 +2444,9 @@ namespace
         // in the log.
         const std::string key_name = trim(step["key"].asString());
         std::string key;
+        std::string key_host;
         if (!key_name.empty())
         {
-            std::string key_host;
             key = skillKey(key_name, key_host);
             if (!key.empty() && key_host != host)
             {
@@ -2338,6 +2469,7 @@ namespace
                     return false;
                 }
                 saveSkillKey(key_name, key, host);
+                key_host = host;
             }
         }
         // In the address, where the user could see it -- never in a header.
@@ -2358,6 +2490,17 @@ namespace
             url += (url.find('?') == std::string::npos ? "?" : "&") + LLURI::escape(it->first) + "="
                  + LLURI::escape(it->second.asString());
         }
+        // The address as it will be called, read again: still the host the
+        // user approved, and the one the key was given for.
+        std::string final_error;
+        const std::string final_host = addressHost(url, final_error);
+        if (final_host != host || (!key.empty() && final_host != key_host))
+        {
+            error = final_error.empty() ? "the web address no longer named " + host + " once its values were "
+                                          "added, so it was not called"
+                                        : final_error;
+            return false;
+        }
 
         LLCore::HttpHeaders::ptr_t headers(new LLCore::HttpHeaders);
         headers->append("User-Agent", "Lumen");
@@ -2366,11 +2509,42 @@ namespace
         options->setTimeout((S32)llclamp(step.has("wait") ? step["wait"].asReal() : 20.0, 1.0, 60.0));
         options->setFollowRedirects(false);   // never on to an address nobody approved
         options->setRetries(0);
+        // The certificate must be this host's, not only someone's that is
+        // trusted: the viewer leaves the name to curl and curl does not check
+        // it by default, and this call can carry the user's key (the review,
+        // 2026-10-06).
+        options->setSSLVerifyPeer(true);
+        options->setSSLVerifyHost(true);
 
         static const LLCore::HttpRequest::policy_t policy = LLCore::HttpRequest::createPolicyClass();
-        LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenAISkillWeb", policy);
         LLCore::HttpRequest::ptr_t request(new LLCore::HttpRequest);
-        const LLSD raw = adapter.getRawAndSuspend(request, url, options, headers);
+        LLEventStream reply("LumenAISkillWeb", true);
+        std::shared_ptr<WebCallHandler> handler = std::make_shared<WebCallHandler>(reply);
+        const LLCore::HttpHandle handle = request->requestGet(policy, url, options, headers, handler);
+        if (handle == LLCORE_HTTP_HANDLE_INVALID)
+        {
+            error = host + " did not answer";
+            may_retry = true;
+            return false;
+        }
+        LLSD answer;
+        {
+            // The library hands back an answer only when asked: once a frame,
+            // as the helper does, for as long as this waits.
+            LLTempBoundListener pumping(LLEventPumps::instance().obtain("mainloop").listen(
+                LLEventPump::ANONYMOUS, [request](const LLSD&) { request->update(0L); return false; }));
+            try
+            {
+                answer = llcoro::suspendUntilEventOn(reply);
+            }
+            catch (...)
+            {
+                // Leaving without an answer (the viewer quitting): let the
+                // call go, as the helper does.
+                request->requestCancel(handle, handler);
+                throw;
+            }
+        }
         if (run.stopped())
         {
             error = "stopped";
@@ -2378,18 +2552,13 @@ namespace
         }
 
         std::string text;
-        for (const std::string& k : { LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW,
-                                      LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_CONTENT })
+        if (answer["raw"].isBinary())
         {
-            if (raw.has(k) && raw[k].isBinary())
-            {
-                const LLSD::Binary& bytes = raw[k].asBinary();
-                if (!bytes.empty()) { text.assign(bytes.begin(), bytes.begin() + std::min(bytes.size(), (size_t)65536)); break; }
-            }
+            const LLSD::Binary& bytes = answer["raw"].asBinary();
+            text.assign(bytes.begin(), bytes.end());
         }
-        const LLSD http = raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
-        const S32 code = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_TYPE].asInteger();
-        const bool ok = LLCoreHttpUtil::HttpCoroutineAdapter::getStatusFromLLSD(http);
+        const S32 code = answer["code"].asInteger();
+        const bool ok = answer["ok"].asBoolean();
         // The host only: an address can carry a key in its query.
         LL_INFOS("AISkills") << "web call to " << host << " answered "
                              << code << ", " << text.size() << " bytes" << LL_ENDL;
@@ -2404,7 +2573,7 @@ namespace
         LLSD parsed;
         std::string perr;
         if (!text.empty() && fromJson(text, parsed, perr)) v["json"] = parsed;
-        v["text"] = text.size() > 2000 ? text.substr(0, 2000) : text;
+        v["text"] = utf8str_truncate(text, 2000);   // never in the middle of a letter
         if (as.isDefined()) run.vars[trim(as.asString())] = v;
         return true;
     }
@@ -2772,7 +2941,7 @@ namespace
 
         if (what == "web_call")
         {
-            return webCall(run, step, as, error, may_retry);
+            return webCall(run, step_in, step, as, error, may_retry);
         }
 
         if (what == "accept_offer")
