@@ -7131,8 +7131,24 @@ static F32 lumenShapeHit(LLViewerObject* p, const LLVector3& from, const LLVecto
     LLVector4a s, e, hit;
     s.load3(a.mV);
     e.load3(b.mV);
-    if (vol->lineSegmentIntersect(s, e, -1, &hit) < 0) return -1.f;
-    return (v->volumePositionToAgent(LLVector3(hit.getF32ptr())) - from).magVec();
+    // Face by face, as the pick does, leaving out what is not drawn solid: a
+    // face fully transparent, or drawn see-through -- a shadow plane, a glow.
+    // Tested whole, an invisible shadow under a sofa counted as solid, and
+    // place refused to put it anywhere near its own shadow's neighbours (the
+    // review of the fixes, 2026-10-06).
+    const LLDrawable* d = v->mDrawable.get();
+    F32 nearest = -1.f;
+    for (S32 i = 0; i < vol->getNumVolumeFaces(); ++i)
+    {
+        const LLTextureEntry* te = v->getTE(i);
+        if (te && te->getColor().mV[VALPHA] < 0.05f) continue;
+        const LLFace* f = (d && i < d->getNumFaces()) ? d->getFace(i) : nullptr;
+        if (f && f->isInAlphaPool()) continue;
+        if (vol->lineSegmentIntersect(s, e, i, &hit) < 0) continue;
+        const F32 dist = (v->volumePositionToAgent(LLVector3(hit.getF32ptr())) - from).magVec();
+        if (nearest < 0.f || dist < nearest) nearest = dist;
+    }
+    return nearest;
 }
 
 // <Lumen> Whether a prim's shape is there to be tested -- a mesh still on its
@@ -7210,8 +7226,12 @@ static bool lumenLiesOn(LLViewerObject* other, const LLVector3& root_pos, const 
         if (mid.mV[a] < lmin.mV[a] - 0.05f || mid.mV[a] > lmax.mV[a] + 0.05f) return false;
     }
     const F32 bottom  = usign > 0.f ? lmin.mV[ua] : lmax.mV[ua];
+    const F32 top     = usign > 0.f ? lmax.mV[ua] : lmin.mV[ua];
     const F32 obottom = usign > 0.f ? omin.mV[ua] : omax.mV[ua];
-    return (obottom - bottom) * usign >= 0.03f;
+    // Up off its bottom, and no higher than resting on its top: a lamp hanging
+    // above a table, or a shelf over a sofa, is not lying on it (the review of
+    // the fixes, 2026-10-06).
+    return (obottom - bottom) * usign >= 0.03f && (obottom - top) * usign <= 0.05f;
 }
 
 // <Lumen> What a space check could not do, as a sentence for the model; empty
@@ -7326,13 +7346,6 @@ LLSD LumenAIControl::inTheWay(LLViewerObject* obj, const std::vector<LLViewerObj
         }
         own.push_back(pt);
     }
-    if (own_missing > 0)
-    {
-        how.unseen.push_back(own.empty()
-            ? std::string("its own shape has not finished loading, so nothing could be matched "
-                          "against it")
-            : llformat("%d of its own parts have not finished loading", own_missing));
-    }
 
     // Whether it has anything in the column through a spot of its footprint,
     // as it stands now. Worked out once for each 10 cm square and kept: the
@@ -7445,12 +7458,30 @@ LLSD LumenAIControl::inTheWay(LLViewerObject* obj, const std::vector<LLViewerObj
             }
             LLViewerObject* r = o->getRootEdit();
             if (!r || r == obj || r->isAvatar() || r->isAttachment()) continue;
-            const LLVector3 half = o->getScale() * 0.5f;
-            const LLVector3 c = o->getPositionAgent();
+            // What it really fills as drawn, when the viewer knows: a sheared
+            // prim, a twisted torus or a flexible one draws outside its nominal
+            // box, and was skipped (the review of the fixes, 2026-10-06).
+            LLVector3 half = o->getScale() * 0.5f;
+            LLVector3 c = o->getPositionAgent();
+            LLQuaternion rot = o->getRotationEdit();
+            if (o->mDrawable.notNull() && !o->mDrawable->isDead())
+            {
+                const LLVector4a* ext = o->mDrawable->getSpatialExtents();
+                const LLVector3 emin(ext[0].getF32ptr()), emax(ext[1].getF32ptr());
+                const LLVector3 esize = emax - emin;
+                if (esize.mV[VX] >= 0.f && esize.mV[VY] >= 0.f && esize.mV[VZ] >= 0.f
+                    && esize.magVec() > 0.001f && esize.magVec() < 1024.f)
+                {
+                    // Agent-aligned, so a little larger than a turned prim's
+                    // own box: more lines cast, none missed.
+                    c = (emin + emax) * 0.5f;
+                    half = esize * 0.5f;
+                    rot = LLQuaternion::DEFAULT;
+                }
+            }
             const F32 reach = half.magVec() + nrad;
             if ((c - ncentre).magVecSquared() > reach * reach) continue;
             // Its box, in the object's own frame where the object would be.
-            const LLQuaternion rot = o->getRotationEdit();
             LLVector3 pmin( 1.e9f,  1.e9f,  1.e9f), pmax(-1.e9f, -1.e9f, -1.e9f);
             for (S32 k = 0; k < 8; ++k)
             {
@@ -7489,6 +7520,16 @@ LLSD LumenAIControl::inTheWay(LLViewerObject* obj, const std::vector<LLViewerObj
             how.unseen.push_back(llformat("%d more things near it have not finished loading",
                                           (S32)unloaded.size() - 3));
         }
+    }
+    // Its own shape not loaded matters only when there was something near to
+    // match it against: said with nothing near, it doubted a clear move (the
+    // review of the fixes, 2026-10-06).
+    if (own_missing > 0 && any_near)
+    {
+        how.unseen.push_back(own.empty()
+            ? std::string("its own shape has not finished loading, so nothing could be matched "
+                          "against it")
+            : llformat("%d of its own parts have not finished loading", own_missing));
     }
     // One line through the space it would fill, from `p0_l` to `p1_l` in its
     // own frame (its box less M at each end): where each thing it crosses
@@ -30649,20 +30690,19 @@ if (method == "camera")
             F32 floor_z = zlo;
             {
                 LumenAISight::WithoutAvatars hide;
-                F32 xlo = 1.e9f, xhi = -1.e9f, ylo = 1.e9f, yhi = -1.e9f;
-                for (const LLVector3& c : corners)
-                {
-                    const LLVector3 v = new_root + c;
-                    xlo = llmin(xlo, v.mV[VX]); xhi = llmax(xhi, v.mV[VX]);
-                    ylo = llmin(ylo, v.mV[VY]); yhi = llmax(yhi, v.mV[VY]);
-                }
-                const F32 ix = (xhi - xlo) * 0.15f, iy = (yhi - ylo) * 0.15f;
-                const F32 xs[5] = { (xlo + xhi) * 0.5f, xlo + ix, xhi - ix, xlo + ix, xhi - ix };
-                const F32 ys[5] = { (ylo + yhi) * 0.5f, ylo + iy, ylo + iy, yhi - iy, yhi - iy };
+                // In the wall's own directions -- along it and out from it --
+                // not the world's: on a wall at an angle, a box squared to the
+                // world put two of the five probes behind the wall (the review
+                // of the fixes, 2026-10-06).
+                const F32 depth = dmax - dmin, halfw = along_len * 0.5f;
+                const F32 tt[5] = { 0.f, -halfw * 0.7f, halfw * 0.7f, -halfw * 0.7f, halfw * 0.7f };
+                const F32 nn[5] = { gap + depth * 0.5f, gap + depth * 0.15f, gap + depth * 0.15f,
+                                    gap + depth * 0.85f, gap + depth * 0.85f };
                 std::vector<F32> found;
                 for (S32 i = 0; i < 5; ++i)
                 {
-                    const LLVector3 down(xs[i], ys[i], wall_p.mV[VZ]);
+                    LLVector3 down = wall_p + t * tt[i] + wall_n * nn[i];
+                    down.mV[VZ] = wall_p.mV[VZ];
                     LLVector3 where, fn;
                     if (LumenAISight::firstHit(down, down - LLVector3(0.f, 0.f, 60.f), 0.f, where, obj, &fn)
                         && fn.mV[VZ] > 0.5f)
@@ -30876,7 +30916,11 @@ if (method == "camera")
                 const F32 zr = zb + llclamp((zt - zb) * 0.5f, 0.05f, 0.5f);
                 const F32 in_end = llmin(0.05f, (thi - tlo) * 0.25f);
                 const F32 at_t[3] = { tlo + in_end, (tlo + thi) * 0.5f, thi - in_end };
-                const F32 back_d[3] = { left, llmin(left, right), right };
+                // Where its back stands at each spot: an end's own, and between
+                // them for the middle -- the nearer end's was used, so a sofa at
+                // an angle reported its near end's gap as the middle's (the review
+                // of the fixes, 2026-10-06).
+                const F32 back_d[3] = { left, (left + right) * 0.5f, right };
                 static const char* const SPOTS[3] = { "left end", "middle", "right end" };
                 for (S32 k = 0; k < 3; ++k)
                 {
@@ -30910,6 +30954,10 @@ if (method == "camera")
             {
                 const std::string v = utf8str_tolower(ov.asString());
                 may_overlap = v == "true" || v == "1";
+            }
+            else if (ov.isInteger() || ov.isReal())
+            {
+                may_overlap = ov.asReal() == 1.0;   // the number 1, as JSON may send it
             }
         }
         std::string clash_words;

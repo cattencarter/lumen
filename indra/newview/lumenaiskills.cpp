@@ -626,6 +626,19 @@ namespace
         }
     }
 
+    /**
+     * Teaching starting and stopping: in the Assistant, or, when its window is
+     * hidden, as a notice on the screen. Watching what the user does is never
+     * silent (the review of the fixes, 2026-10-06).
+     */
+    void teachNotice(const std::string& line)
+    {
+        if (LumenAIChatFloater::postFromViewer(std::string(), line)) return;
+        LLSD args;
+        args["MESSAGE"] = line;
+        LLNotificationsUtil::add("SystemMessageTip", args);
+    }
+
     void progress(const std::string& note)
     {
         if (!LumenAIChatFloater::postFromViewer(std::string(), note))
@@ -819,8 +832,11 @@ std::string LumenAISkills::toolForTrigger(const std::string& typed) const
 {
     const std::string t = lower(trim(typed));
     if (t.empty()) return std::string();
+    // Only a card the user has looked at: a stranger's card in the folder
+    // would otherwise take over whatever phrase it names, before the model
+    // sees the message (the review of the fixes, 2026-10-06).
     for (const Skill& s : mSkills)
-        if (!s.trigger.empty() && lower(trim(s.trigger)) == t) return s.tool;
+        if (!s.trigger.empty() && lower(trim(s.trigger)) == t && !needsTrust(s)) return s.tool;
     return std::string();
 }
 
@@ -1307,7 +1323,33 @@ LLSD LumenAISkills::toolDescriptors() const
         // A card the user has not looked at is not put in front of the model
         // on every turn, in words its author chose, as one of the user's own
         // (the review, 2026-10-06): skills lists it as waiting instead.
-        if (needsTrust(s)) continue;
+        // Nor does it vanish: every card saved before trust was the viewer's own
+        // list, and every card on a second computer, would have dropped out of
+        // every tool list with nothing pointing the way back (the review of the
+        // fixes, 2026-10-06). It is listed by name alone, in the viewer's words.
+        if (needsTrust(s))
+        {
+            LLSD props = LLSD::emptyMap();
+            for (const Input& in : s.inputs)
+            {
+                LLSD p;
+                p["type"] = "string";
+                p["description"] = "an input of this skill";
+                props[in.name] = p;
+            }
+            LLSD schema;
+            schema["type"] = "object";
+            schema["properties"] = props;
+            LLSD tool;
+            tool["name"] = s.tool;
+            tool["description"] = "\"" + cutChars(s.name, 60) + "\" is a skill in the user's skills folder that "
+                                  "they have not looked at yet -- on this computer, or not since it changed. "
+                                  "Calling it shows them its steps in the viewer and asks once. Use it only "
+                                  "when the user asks for this to be done.";
+            tool["inputSchema"] = schema;
+            tools.append(tool);
+            continue;
+        }
         std::string d = s.about;
         if (!s.examples.empty())
         {
@@ -1852,8 +1894,15 @@ namespace
         return 1;
     }
 
-    // Requests the endpoint is carrying out right now (LumenAISkills::EndpointActing).
-    S32 gEndpointActing = 0;
+    // Requests the endpoint is carrying out right now (LumenAISkills::EndpointActing),
+    // by the coroutine each runs on: a request that pauses inside -- a skill's
+    // step waiting on the region -- must not make the user's own clicks in the
+    // meantime look like the assistant's (the review of the fixes, 2026-10-06).
+    std::multiset<std::string> gEndpointActing;
+    bool endpointActingHere()
+    {
+        return !gEndpointActing.empty() && gEndpointActing.count(LLCoros::getName()) > 0;
+    }
 
     // Fifteen minutes is a long routine; a recording forgotten stops by itself.
     const F64 TEACH_LONGEST = 900.0;
@@ -1915,7 +1964,7 @@ namespace
         {
             const LLSD& e = events[i];   // read through const: a missing field is not added
             if (e["kind"].asString() != "object_appeared" || e["object_id"].asUUID() != id) continue;
-            if (e["owner"].asString() != "you") return 0;
+            if (e["owner"].asString() != "you" || !e["rezzed_here"].asBoolean()) return 0;
             const S32 n = e["n"].asInteger();
             events[i]["used_later"] = true;
             return n;
@@ -1957,13 +2006,15 @@ namespace
 }
 
 LumenAISkills::EndpointActing::EndpointActing()
+    : mCoro(LLCoros::getName())
 {
-    ++gEndpointActing;
+    gEndpointActing.insert(mCoro);
 }
 
 LumenAISkills::EndpointActing::~EndpointActing()
 {
-    --gEndpointActing;
+    auto it = gEndpointActing.find(mCoro);
+    if (it != gEndpointActing.end()) gEndpointActing.erase(it);
 }
 
 void LumenAISkills::noteTeachEvent(LLSD event)
@@ -1986,7 +2037,7 @@ void LumenAISkills::noteTeachEvent(LLSD event)
             const LLSD& e = mTeachEvents[i];
             const std::string kind = e["kind"].asString();
             if (kind == "item_arrived" || kind == "items_loaded"
-                || (kind == "object_appeared" && !e.has("used_later")))
+                || (kind == "object_appeared" && !e.has("used_later") && !e["rezzed_here"].asBoolean()))
             {
                 drop = i;
                 break;
@@ -2015,7 +2066,7 @@ void LumenAISkills::noteArrivals()
     // date is when it reached this inventory -- what the item's "Acquired"
     // and the Recent tab show -- and a server clock a little off is allowed for.
     const time_t began = time_corrected() - (time_t)(LLTimer::getTotalSeconds() - mTeachStarted) - 120;
-    std::vector<LLSD> fresh;
+    std::vector<LLSD> fresh, undated;
     for (const LLUUID& id : gInventory.getAddedIDs())
     {
         LLViewerInventoryItem* item = gInventory.getItem(id);
@@ -2030,18 +2081,23 @@ void LumenAISkills::noteArrivals()
         e["name"] = item->getName();
         if (const LLViewerInventoryCategory* c = gInventory.getCategory(item->getParentUUID()))
             e["folder"] = c->getName();
-        fresh.push_back(e);
+        if (item->getCreationDate() == 0) undated.push_back(e);
+        else fresh.push_back(e);
     }
-    if ((S32)fresh.size() > TEACH_BURST)
+    // An item dated after teaching began really came: a box unpacking nine
+    // things is nine arrivals, and was once one bare count (the review of the
+    // fixes). Only items with no date may be a folder loading -- many of those
+    // at once are one line for all.
+    for (const LLSD& e : fresh) noteTeachEvent(e);
+    if ((S32)undated.size() > TEACH_BURST)
     {
-        // Many at once is a folder loading, not something given: one line for all.
         LLSD e;
         e["kind"] = "items_loaded";
-        e["count"] = (S32)fresh.size();
+        e["count"] = (S32)undated.size();
         noteTeachEvent(e);
         return;
     }
-    for (const LLSD& e : fresh) noteTeachEvent(e);
+    for (const LLSD& e : undated) noteTeachEvent(e);
 }
 
 // static
@@ -2049,7 +2105,7 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
 {
     // A touch the endpoint sends -- a model's through the touch tool, or a
     // skill's step -- is the assistant's, not the user's (the review, 2026-10-06).
-    if (!object || gStepRunning || gEndpointActing > 0 || !LumenAISkills::instanceExists()) return;
+    if (!object || stepRunning() || endpointActingHere() || !LumenAISkills::instanceExists()) return;
     LumenAISkills& self = LumenAISkills::instance();
     if (!self.mTeaching) return;
     self.pollTeaching();   // what came before it, noted first (see the menus)
@@ -2145,6 +2201,8 @@ std::string LumenAISkills::startTeaching()
     mTeachMenuPtrs.clear();
     mTeachRoots.clear();
     mTeachSeat = seatNow();
+    mTeachLastPos.clear();
+    mTeachSettleUntil = 0.0;
     const S32 count = gObjectList.getNumObjects();
     for (S32 i = 0; i < count; ++i)
     {
@@ -2272,7 +2330,7 @@ std::string LumenAISkills::startTeaching()
                         (*event)["answered_after"] =
                             ll_round((F32)(LLTimer::getTotalSeconds() - self.mTeachStarted), 0.1f);
                         // Answered by the endpoint (answer_dialogue): the assistant's, not the user's.
-                        if (gEndpointActing > 0) (*event)["answered_by_assistant"] = true;
+                        if (endpointActingHere()) (*event)["answered_by_assistant"] = true;
                     }
                 }
                 if (m != self.mTeachMenus.end()) self.mTeachMenus.erase(m);
@@ -2296,7 +2354,7 @@ std::string LumenAISkills::startTeaching()
     LL_INFOS("AISkills") << "teaching: watching what the user does" << LL_ENDL;
     // On the screen, not only in the model's reply: that it watches, what, and
     // how to stop it. It began on a model's word alone (the review, 2026-10-06).
-    LumenAIChatFloater::postFromViewer(std::string(),
+    teachNotice(
         "Lumen is watching what you do, to learn it as a skill: your clicks, the menus and the "
         "buttons you press, what appears and what comes into your inventory. Say when you are "
         "done. Clear stops it.");
@@ -2363,6 +2421,14 @@ void LumenAISkills::pollTeaching()
         return;
     }
     const LLVector3d me = gAgent.getPositionGlobal();
+    // After a teleport or a long jump, everything round about streams in, the
+    // user's own house included: none of that was rezzed, and a click on a
+    // chair that "appeared" so was written as a click on something the run
+    // would rez (the review of the fixes, 2026-10-06).
+    const F64 now = LLTimer::getTotalSeconds();
+    if (!mTeachLastPos.isExactlyZero() && (me - mTeachLastPos).magVec() > 20.0)
+        mTeachSettleUntil = now + 15.0;
+    mTeachLastPos = me;
     const S32 count = gObjectList.getNumObjects();
     for (S32 i = 0; i < count; ++i)
     {
@@ -2378,6 +2444,10 @@ void LumenAISkills::pollTeaching()
         e["object_id"] = o->getID();
         e["owner"] = o->permYouOwner() ? "you" : "someone else";
         e["distance"] = ll_round(d, 0.1f);
+        // Likely rezzed by the user: theirs, close by, and not in the rush
+        // after arriving somewhere. Only such a thing makes a later click or sit
+        // a step on what the run itself rezzes.
+        if (o->permYouOwner() && d <= 10.f && now >= mTeachSettleUntil) e["rezzed_here"] = true;
         const std::string name = thingName(o);
         if (!name.empty()) e["name"] = name;
         noteTeachEvent(e);
@@ -2431,19 +2501,18 @@ void LumenAISkills::endTeaching(const std::string& how)
         LLCoros::instance().launch("LumenAISkillsTeachCleared", []()
         {
             llcoro::suspendUntilTimeout(0.2f);
-            LumenAIChatFloater::postFromViewer(std::string(),
-                "Lumen has stopped watching what you do, and forgotten what it saw.");
+            teachNotice("Lumen has stopped watching what you do, and forgotten what it saw.");
         });
     }
     else if (how == "time")
     {
-        LumenAIChatFloater::postFromViewer(std::string(),
+        teachNotice(
             llformat("Lumen stopped watching what you do after %d minutes. What it saw until "
                      "then is kept for the assistant.", (S32)(TEACH_LONGEST / 60.0)));
     }
     else
     {
-        LumenAIChatFloater::postFromViewer(std::string(), "Lumen has stopped watching what you do.");
+        teachNotice("Lumen has stopped watching what you do.");
     }
 }
 
@@ -2721,7 +2790,10 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             if (!ok && may_retry && !r->stopped())
             {
                 // Once, and only for a wait that ran out -- lag, not a wrong guess.
-                LL_INFOS("AISkills") << "step " << r->step + 1 << " failed (" << error << "), trying once more" << LL_ENDL;
+                // The reason can quote names, inputs and a menu's words: in the
+                // log only with LumenAITest debugging on (the review of the fixes).
+                LL_INFOS("AISkills") << "step " << r->step + 1 << " failed, trying once more" << LL_ENDL;
+                LL_DEBUGS("LumenAITest") << "step " << r->step + 1 << " failed: " << error << LL_ENDL;
                 error.clear();
                 ok = runStep(*r, step, r->step, error, may_retry);
             }
@@ -2768,7 +2840,9 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
         LL_INFOS("AISkills") << "\"" << r->skill.name << "\" ended "
                              << (r->state == LumenAISkills::Run::DONE ? "done" :
                                  r->state == LumenAISkills::Run::STOPPED ? "stopped" : "failed")
-                             << " at step " << r->step + 1 << (r->failure.empty() ? "" : ": " + r->failure) << LL_ENDL;
+                             << " at step " << r->step + 1 << LL_ENDL;
+        if (!r->failure.empty())
+            LL_DEBUGS("LumenAITest") << "\"" << r->skill.name << "\" failed: " << r->failure << LL_ENDL;
     };
     LLCoros::instance().launch("LumenAISkillRun", [r, steps]()
     {
@@ -2901,7 +2975,8 @@ namespace
         else if (what == "accept_offer")
         {
             const LLSD from = field("from");
-            if (!(from.isMap() ? words(from["name"]) : words(from))) return wrong("from", "the name of who offers it");
+            if (!(from.isMap() ? (words(from["name"]) || words(from["near"])) : words(from)))
+                return wrong("from", "the name of who offers it");
         }
         else if (what == "verify")
         {
@@ -3928,29 +4003,41 @@ namespace
             // would press it -- or nothing to press, when the viewer took it by
             // itself and it has simply arrived.
             // Who offers it: a name, or something found earlier ({cauldron}) by its name.
+            // Who offers it: a name, something found earlier, or an object
+            // reference like a touch's -- {near: "Cauldron"} -- by its name.
             const LLSD from_v = step["from"];
-            const std::string from = trim(from_v.isMap() ? from_v["name"].asString() : from_v.asString());
+            const std::string from = trim(!from_v.isMap() ? from_v.asString()
+                                          : from_v.has("name") ? from_v["name"].asString()
+                                                               : from_v["near"].asString());
             const std::string item = step["item"].isMap() ? step["item"]["name"].asString() : step["item"].asString();
-            // Only what arrives from now on: an earlier arrival is not this offer.
             const F64 began = LLTimer::getTotalSeconds();
             const F64 until = began + waitFor(step, 60.0);
             bool kept = false;
+            // What arrived: after Keep, only from then on; with no offer on the
+            // screen, anything not yet used since the run began -- with the
+            // viewer accepting by itself (auto-accept, a person's offer taken
+            // before its window shows), the item can land during an earlier step
+            // and there is nothing to press (the review of the fixes, 2026-10-06).
+            auto takeArrival = [&](F64 since) -> bool
+            {
+                if (item.empty()) return false;
+                for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
+                {
+                    if (a->offered || a->at < since || !nameMatches(a->name, item)) continue;
+                    if (as.isDefined())
+                    {
+                        LLSD v; v["item_id"] = a->id; v["name"] = a->name;
+                        run.vars[trim(as.asString())] = v;
+                    }
+                    a->offered = true;   // used up by this kind of step, as verify does
+                    return true;
+                }
+                return false;
+            };
             while (true)
             {
-                if (!item.empty())
-                {
-                    for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
-                    {
-                        if (a->offered || a->at < began || !nameMatches(a->name, item)) continue;
-                        if (as.isDefined())
-                        {
-                            LLSD v; v["item_id"] = a->id; v["name"] = a->name;
-                            run.vars[trim(as.asString())] = v;
-                        }
-                        a->offered = true;   // used up by this kind of step, as verify does
-                        return true;
-                    }
-                }
+                if (kept && takeArrival(began)) return true;
+                bool offer_up = false;
                 if (!kept)
                 {
                     std::string rerr;
@@ -3973,13 +4060,18 @@ namespace
                         std::string giver;
                         if (LLNotificationPtr n = LLNotifications::instance().find(id))
                         {
+                            // As teaching read it: under RLV's @shownames, the
+                            // name the user was shown, so a skill taught then
+                            // matches when run (the review of the fixes).
                             const LLSD& subs = n->getSubstitutions();
-                            giver = subs["OBJECTFROMNAME"].asString();
+                            if (!n->getPayload()["rlv_shownames"].asBoolean())
+                                giver = subs["OBJECTFROMNAME"].asString();
                             if (giver.empty()) giver = subs["NAME"].asString();
                         }
                         if (giver.empty() || !nameMatches(giver, from)) continue;
                         const std::string text = (*it)["text"].asString();
                         if (!item.empty() && !nameMatches(text, item)) continue;
+                        offer_up = true;
                         // The older form of a person's offer says Accept, not Keep.
                         LLSD a; a["action"] = "answer_dialogue"; a["id"] = id;
                         a["choice"] = kind == "UserGiveItemLegacy" ? "Accept" : "Keep";
@@ -3990,6 +4082,8 @@ namespace
                         if (item.empty()) return true;   // nothing named to wait for
                         break;
                     }
+                    // Nothing to press: it may already be here.
+                    if (!kept && !offer_up && takeArrival(run.started)) return true;
                 }
                 if (LLTimer::getTotalSeconds() > until) break;
                 if (!run.pause(0.5)) { error = "stopped"; return false; }

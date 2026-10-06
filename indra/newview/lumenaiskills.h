@@ -57,6 +57,7 @@
 #include "llsd.h"
 #include "lluuid.h"
 #include "v2math.h"
+#include "v3dmath.h"
 
 #include <map>
 #include <memory>
@@ -171,6 +172,8 @@ public:
         ~EndpointActing();
         EndpointActing(const EndpointActing&) = delete;
         EndpointActing& operator=(const EndpointActing&) = delete;
+    private:
+        std::string mCoro;   //< the coroutine the request runs on
     };
 
     /** The text a card is written as: the header line, then the JSON, keys in a sensible order. */
@@ -218,6 +221,8 @@ private:
     bool   mTeachTruncated = false;          //< something was left out to keep it short
     std::set<LLUUID> mTeachRoots;            //< objects in view when it started, or noted since
     LLUUID mTeachSeat;                       //< what the user sat on when last looked, or null
+    LLVector3d mTeachLastPos;                //< where the avatar was at the last look round
+    F64    mTeachSettleUntil = 0.0;          //< after a teleport or a long jump, what appears streamed in
     std::map<LLUUID, S32> mTeachMenus;       //< a menu on screen -> its event's number
     std::map<LLUUID, LLNotificationPtr> mTeachMenuPtrs;
     LLTempBoundListener mTeachMenuListener;
