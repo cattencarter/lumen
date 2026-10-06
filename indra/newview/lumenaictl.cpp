@@ -5599,7 +5599,11 @@ namespace
             "\"above\"`, down on the area around them (`distance` metres around, default 8). "
             "With an object_id it looks at that object, `from` near (their side, the default), "
             "far, left, right or above, from as far as fits it unless `distance` says. "
-            "`detail: \"high\"` for a bigger picture when the small one is not enough. Nothing "
+            "Leave `detail` out: the small picture is enough to arrange, point and check, and "
+            "much quicker for you to read. `detail: \"high\"` only for small text or a thing too "
+            "small to make out -- it takes several times as long. Do not take one after every "
+            "step: place and set answer with measured numbers, so a look before you start and "
+            "one at the end is the usual. Nothing "
             "on the user's screen changes and nothing is saved. Do not describe it to them "
             "unless they ask -- they can see the world.\n"
             "- point: what is at a spot in the LAST picture -- `pixels`, x then y from its "
@@ -5627,9 +5631,10 @@ namespace
             "way (`room_along_wall`). The answer says which of its sides is now against the wall "
             "-- a long side or a short end -- and a missed spot is answered with where its sides "
             "are in the picture, and its answer measures how high each corner stands and how far "
-            "each end is from the wall. Then take a picture to check. When the person says it "
-            "still does not look right, look again closely -- from the side and from above, detail "
-            "high -- and at those numbers before changing anything, then look once more.\n"
+            "each end is from the wall. Those numbers are measured: trust them rather than taking a "
+            "picture after each step, and look once, small, when you are done. When the person "
+            "says it still does not look right, look again closely -- from the side and from "
+            "above -- and at those numbers before changing anything.\n"
             "- undo: put back the objects the assistant moved, turned or resized in its newest "
             "request -- \"undo that\", \"put it back\" after building. Second Life keeps each "
             "object's recent changes, so it puts back exactly what was changed, even many objects at "
@@ -30371,10 +30376,11 @@ if (method == "camera")
                                : std::string()) +
                     " `corners_above_floor_cm` and `gap_to_wall_cm` are measured, not guessed: "
                     "all corners near 0 means it stands flat; ends that differ mean it is askew. "
-                    "Take a new picture to check it before saying it is right, and say what was "
+                    "Trust them: do not take a picture after each step. When everything asked "
+                    "for is done, one small picture (no `detail`) to check it, then say what was "
                     "done. If the person says it still does not look right, believe them: look "
-                    "again closely -- pictures from the side and from above with detail high -- "
-                    "and at these numbers, before changing anything.";
+                    "again closely -- pictures from the side and from above -- and at these "
+                    "numbers, before changing anything.";
         LL_INFOS("AICtl") << "place: moved " << (new_root - root_pos).magVec() << " m, turned "
                           << turned << " degrees, raised " << raised << " m, " << left_out
                           << " part(s) not measured" << LL_ENDL;
