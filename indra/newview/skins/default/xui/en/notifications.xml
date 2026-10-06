@@ -15358,7 +15358,7 @@ The assistant wants to try out the skill [NAME] before it is saved. This is what
 The assistant wants to [WHAT] [NAME]. This is what it will do:
 [SUMMARY]
 
-It is kept as a notecard in #Lumen/Skills, so it goes with you to any computer.
+It is kept as a notecard in #Lumen/#Skills, so it goes with you to any computer.
     <tag>confirm</tag>
     <form name="form">
       <ignore name="ignore"

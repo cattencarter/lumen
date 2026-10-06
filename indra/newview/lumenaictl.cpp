@@ -6099,7 +6099,7 @@ void LumenAIControl::watchForLogin()
             // background: teleporting is what people do the moment they arrive.
             startLandmarkFill();
 
-            // <Lumen> Task 022: the skills the user taught, from #Lumen/Skills.
+            // <Lumen> Task 022: the skills the user taught, from #Lumen/#Skills.
             LumenAISkills::instance().startLoading();
 
             restoreAOPausedForPose();   // <Lumen> a pose last session left it off
@@ -28745,7 +28745,7 @@ if (method == "camera")
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "There is no such skill any more. Skills come from the notecards in "
-                           "#Lumen/Skills and change when those do; viewer / skills lists them now.";
+                           "#Lumen/#Skills and change when those do; viewer / skills lists them now.";
             LLSD w; w["__error"] = e; return w;
         }
         const LumenAISkills::Skill skill = *found;   // a copy: the list may be read again while it runs
@@ -28996,7 +28996,7 @@ if (method == "camera")
         {
             std::string card_name = skill.name;
             LLInventoryObject::correctInventoryName(card_name);
-            // A new card in #Lumen/Skills, making the folders the first time.
+            // A new card in #Lumen/#Skills, making the folders the first time.
             auto makeCard = [text, card_name](const LLUUID& folder)
             {
                 if (folder.isNull())
@@ -29023,10 +29023,10 @@ if (method == "camera")
                 {
                     for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
                     {
-                        if (c && c->getName() == "Skills") { makeCard(c->getUUID()); return; }
+                        if (c && c->getName() == "#Skills") { makeCard(c->getUUID()); return; }
                     }
                 }
-                gInventory.createNewCategory(lumen, LLFolderType::FT_NONE, "Skills", makeCard);
+                gInventory.createNewCategory(lumen, LLFolderType::FT_NONE, "#Skills", makeCard);
             };
             const LLUUID lumen = gInventory.findCategoryByName(LumenFolders::LUMEN_FOLDER);
             if (lumen.notNull()) inLumen(lumen);
@@ -29041,7 +29041,7 @@ if (method == "camera")
         result["name"] = skill.name;
         result["tool"] = skill.tool;
         result["changed_existing"] = existing.notNull();
-        result["note"] = "Being saved into #Lumen/Skills, where it follows them to any computer. In a "
+        result["note"] = "Being saved into #Lumen/#Skills, where it follows them to any computer. In a "
                          "few seconds it is a tool of its own (" + skill.tool + "). Tell them briefly, "
                          "and how they can ask for it.";
         return result;
@@ -29095,7 +29095,7 @@ if (method == "camera")
     {
         LLSD result = LumenAISkills::instance().describe();
         result["note"] = "Each skill is also a tool of its own (`tool`), which runs it. Skills are "
-                         "notecards in #Lumen/Skills. A card listed under cards_refused could not "
+                         "notecards in #Lumen/#Skills. A card listed under cards_refused could not "
                          "be read; say why in plain words -- an older version of it may still be "
                          "in use (card_problem).";
         return result;

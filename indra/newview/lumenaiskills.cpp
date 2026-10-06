@@ -75,7 +75,11 @@ namespace
 
     const char* const CARD_HEADER = "Lumen skill 1";
     const char* const TOOL_PREFIX = "skill_";
-    const char* const SKILLS_FOLDER = "Skills";
+    // A # name, as the viewer's own folders have: the assistant's ordinary
+    // inventory tools leave every # folder inside #Lumen alone.
+    const char* const SKILLS_FOLDER = "#Skills";
+    // What it was called before 2026-10-06 -- only ever on test accounts.
+    const char* const OLD_SKILLS_FOLDER = "Skills";
     const char* const LAST_GOOD_FILE = "lumen_skills_last_good.json";
     const char* const TRUSTED_FILE   = "lumen_skills_trusted.json";
 
@@ -617,7 +621,7 @@ public:
             }
             if (LLViewerInventoryCategory* cat = gInventory.getCategory(id))
             {
-                if (cat->getName() == SKILLS_FOLDER) { ours = true; break; }
+                if (cat->getName() == SKILLS_FOLDER || cat->getName() == OLD_SKILLS_FOLDER) { ours = true; break; }
             }
         }
         // A card moved out leaves no trace in the folder; any skill whose card
@@ -1061,6 +1065,16 @@ LLUUID LumenAISkills::skillsFolder() const
     if (!cats) return LLUUID::null;
     for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
         if (c && c->getName() == SKILLS_FOLDER) return mFolder = c->getUUID();
+    // The old name, renamed once: the folder keeps its id, its cards come along.
+    for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
+    {
+        if (c && c->getName() == OLD_SKILLS_FOLDER)
+        {
+            LL_INFOS("AISkills") << "renaming #Lumen/Skills to #Lumen/#Skills" << LL_ENDL;
+            rename_category(&gInventory, c->getUUID(), SKILLS_FOLDER);
+            return mFolder = c->getUUID();
+        }
+    }
     return LLUUID::null;
 }
 
@@ -1238,7 +1252,7 @@ void LumenAISkills::loadNow()
     mProblems = problems;
     mLoaded = true;
     LL_INFOS("AISkills") << mSkills.size() << " skill(s) ready, " << problems.size()
-                         << " card(s) refused" << (folder.isNull() ? " (no #Lumen/Skills folder)" : "") << LL_ENDL;
+                         << " card(s) refused" << (folder.isNull() ? " (no #Lumen/#Skills folder)" : "") << LL_ENDL;
 }
 
 // ---- writing a card ------------------------------------------------------------

@@ -33,7 +33,7 @@
  * and the viewer carries the steps out top to bottom, checking each before
  * the next and stopping with a reason when one fails.
  *
- * A skill is a notecard in `#Lumen/Skills`, so it follows the person to any
+ * A skill is a notecard in `#Lumen/#Skills`, so it follows the person to any
  * computer and survives a reinstall. Inside: a first line `Lumen skill 1`,
  * then JSON. The person never needs to read it -- they teach a skill by
  * doing it once -- but a card broken by a hand edit is refused with the
@@ -101,11 +101,11 @@ public:
         std::string problem;              //< the card on the server was refused; this is an older one
     };
 
-    /** After login: read every card in #Lumen/Skills, then follow the folder for changes. */
+    /** After login: read every card in #Lumen/#Skills, then follow the folder for changes. */
     void startLoading();
 
     static bool isSkillTool(const std::string& name);
-    /** #Lumen/Skills, or null when there is none yet. */
+    /** #Lumen/#Skills, or null when there is none yet. */
     LLUUID folderId() const { return skillsFolder(); }
     const Skill* find(const std::string& tool) const;
     /** By its tool name or by the name the user gave it. */
@@ -149,7 +149,7 @@ public:
 
     /** The text a card is written as: the header line, then the JSON, keys in a sensible order. */
     static std::string cardText(const LLSD& card);
-    /** The card in #Lumen/Skills that holds the skill of this name, if one does. */
+    /** The card in #Lumen/#Skills that holds the skill of this name, if one does. */
     LLUUID cardFor(const std::string& name) const;
 
     /** The card's text read into a skill; false with `error` saying what is wrong, in plain words. */
@@ -170,7 +170,7 @@ private:
     void writeTrusted() const;
 
     std::vector<Skill> mSkills;
-    mutable LLUUID mFolder;      //< #Lumen/Skills, kept while it still is that
+    mutable LLUUID mFolder;      //< #Lumen/#Skills, kept while it still is that
     LLSD   mProblems;            //< card name -> why it was refused
     LLSD   mLastGood;            //< item id -> { asset, text }, kept on disk per account
     LLSD   mTrusted;             //< asset id -> true, kept on disk per account
