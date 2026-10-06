@@ -43,6 +43,10 @@
 #include "llinventoryobserver.h"
 #include "llnotifications.h"
 #include "llsdjson.h"
+#include "llcorehttputil.h"
+#include "llnotificationsutil.h"
+#include "llsecapi.h"
+#include "lluri.h"
 #include "llstartup.h"
 #include "lltimer.h"
 #include "llviewerinventory.h"
@@ -375,6 +379,7 @@ namespace
             { "take",            { "object" },             "pick up {object}" },
             { "verify",          { "item" },               "check that {item} is in the inventory" },
             { "accept_offer",    { "from" },               "accept what {from} offers" },
+            { "web_call",        { "url" },                "call {url}" },
             { "say",             { "text" },               "say: {text}" },
         };
         return rules;
@@ -430,7 +435,7 @@ namespace
         const BlockRule* rule = blockRule(step["do"].asString());
         if (!rule) return step["do"].asString();
         std::string out = rule->plain;
-        for (const char* key : { "key", "table", "name", "text", "press", "item", "from" })
+        for (const char* key : { "key", "table", "name", "text", "press", "item", "from", "url" })
         {
             const std::string token = std::string("{") + key + "}";
             const size_t at = out.find(token);
@@ -784,8 +789,26 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
         const std::string what = step["do"].asString();
         if (what == "web_call")
         {
-            error = llformat("step %d calls a web address, which Lumen cannot do yet", n);
-            return false;
+            const std::string url = trim(step["url"].asString());
+            if (url.compare(0, 8, "https://") != 0 && url.compare(0, 1, "{") != 0)
+            {
+                error = llformat("step %d calls an address that is not https://, which a skill may not", n);
+                return false;
+            }
+            const std::string method = step.has("method") ? lower(step["method"].asString()) : std::string("get");
+            if (method != "get" && method != "post")
+            {
+                error = llformat("step %d: a web call is GET or POST", n);
+                return false;
+            }
+            const std::string key = step["key"].asString();
+            if (!key.empty() && !std::all_of(key.begin(), key.end(), [](unsigned char c)
+                                             { return std::islower(c) || std::isdigit(c) || c == '_'; }))
+            {
+                error = llformat("step %d names its key \"%s\"; a key's name is lowercase letters, digits and _ "
+                                 "-- the key itself is never in the card", n, key.c_str());
+                return false;
+            }
         }
         if (what == "give" || what == "pay" || what == "delete" || what == "remove")
         {
@@ -1983,6 +2006,225 @@ namespace
         return true;
     }
 
+    // ---- the web call ----------------------------------------------------------
+
+    const char* const WEB_FILE = "lumen_skills_web.json";      // addresses the user said yes to
+    const char* const SKILL_KEY_STORE = "lumen_skill_key";     // in the protected store, like the AI keys
+
+    LLSD readAccountJson(const char* file)
+    {
+        const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, file);
+        llifstream in(path.c_str());
+        if (!in.is_open()) return LLSD::emptyMap();
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        LLSD v;
+        std::string error;
+        return fromJson(text, v, error) && v.isMap() ? v : LLSD::emptyMap();
+    }
+
+    void writeAccountJson(const char* file, const LLSD& v)
+    {
+        const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, file);
+        llofstream out(path.c_str());
+        if (out.is_open()) out << toJson(v);
+    }
+
+    /**
+     * A key by its name, for this avatar, and the one site it was given for --
+     * a key is only ever sent there, so a shared skill naming the same key
+     * cannot carry it off to an address of its own. Empty when there is none.
+     */
+    std::string skillKey(const std::string& name, std::string& for_host)
+    {
+        for_host.clear();
+        if (!gSecAPIHandler) return std::string();
+        const LLSD record = gSecAPIHandler->getProtectedData(SKILL_KEY_STORE, gAgent.getID().asString() + ":" + name);
+        if (!record.isMap()) return std::string();
+        for_host = record["host"].asString();
+        return record["key"].asString();
+    }
+
+    void saveSkillKey(const std::string& name, const std::string& value, const std::string& host)
+    {
+        if (!gSecAPIHandler) return;
+        LLSD record = LLSD::emptyMap();
+        record["key"] = value;
+        record["host"] = host;
+        gSecAPIHandler->setProtectedData(SKILL_KEY_STORE, gAgent.getID().asString() + ":" + name, record);
+        gSecAPIHandler->syncProtectedMap();   // without it the key is gone at exit
+        LL_INFOS("AISkills") << "saved the skill key \"" << name << "\"" << LL_ENDL;
+    }
+
+    /**
+     * A question of the viewer's own, waited for: 0 for the first button, 1
+     * for any other, -1 when nobody answered in time or the run was stopped.
+     * A remembered answer comes back at once, inside add().
+     */
+    S32 askAndWait(LumenAISkills::Run& run, const std::string& name, const LLSD& subs,
+                   LLSD* response_out, F64 seconds)
+    {
+        std::shared_ptr<S32> answer = std::make_shared<S32>(-1);
+        std::shared_ptr<LLSD> said = std::make_shared<LLSD>();
+        LLNotificationPtr n = LLNotificationsUtil::add(name, subs, LLSD(),
+            [answer, said](const LLSD& notification, const LLSD& response)
+            {
+                *answer = LLNotificationsUtil::getSelectedOption(notification, response) == 0 ? 0 : 1;
+                *said = response;
+            });
+        const F64 until = LLTimer::getTotalSeconds() + seconds;
+        while (*answer < 0 && LLTimer::getTotalSeconds() < until)
+        {
+            if (!run.pause(0.25)) break;
+        }
+        if (*answer < 0 && n) LLNotifications::instance().cancel(n);
+        if (response_out) *response_out = *said;
+        return *answer;
+    }
+
+    bool webCall(LumenAISkills::Run& run, const LLSD& step, const LLSD& as, std::string& error, bool& may_retry)
+    {
+        std::string url = trim(step["url"].asString());
+        if (url.compare(0, 8, "https://") != 0)
+        {
+            error = "a skill may only call https:// addresses";
+            return false;
+        }
+        const std::string host = lower(LLURI(url).hostName());
+        if (host.empty())
+        {
+            error = "\"" + url + "\" is not a web address";
+            return false;
+        }
+
+        // The first time an address is used, the user says whether it may be.
+        LLSD approved = readAccountJson(WEB_FILE);
+        if (!approved[host].asBoolean())
+        {
+            LLSD subs;
+            subs["HOST"] = host;
+            subs["NAME"] = "\"" + run.skill.name + "\"";
+            const S32 a = askAndWait(run, "LumenAskWebAddress", subs, nullptr, 300.0);
+            if (a != 0)
+            {
+                error = a < 0 ? "nobody answered whether it may use " + host
+                              : "the user said no to using " + host;
+                return false;
+            }
+            approved[host] = true;
+            writeAccountJson(WEB_FILE, approved);
+        }
+
+        // Its key, if it needs one: asked for the first time, then kept on this
+        // computer. Never in the card, never in what the model is told, never
+        // in the log.
+        const std::string key_name = trim(step["key"].asString());
+        std::string key;
+        if (!key_name.empty())
+        {
+            std::string key_host;
+            key = skillKey(key_name, key_host);
+            if (!key.empty() && key_host != host)
+            {
+                error = "the key \"" + key_name + "\" was given for " + key_host + ", not for " + host +
+                        ", so it was not sent there";
+                return false;
+            }
+            if (key.empty())
+            {
+                LLSD subs;
+                subs["KEY"] = key_name;
+                subs["HOST"] = host;
+                subs["NAME"] = "\"" + run.skill.name + "\"";
+                LLSD response;
+                const S32 a = askAndWait(run, "LumenSetupSkillKey", subs, &response, 300.0);
+                key = trim(response["key"].asString());
+                if (a != 0 || key.empty())
+                {
+                    error = "it needs the key \"" + key_name + "\" for " + host + ", and none was given";
+                    return false;
+                }
+                saveSkillKey(key_name, key, host);
+            }
+        }
+        const std::string key_as = lower(step.has("key_as") ? step["key_as"].asString() : std::string("bearer"));
+
+        // The address's own values, and the key if it goes there.
+        LLSD query = step["query"].isMap() ? step["query"] : LLSD::emptyMap();
+        if (!key.empty() && key_as.compare(0, 6, "query:") == 0) query[key_as.substr(6)] = key;
+        for (LLSD::map_const_iterator it = query.beginMap(); it != query.endMap(); ++it)
+        {
+            url += (url.find('?') == std::string::npos ? "?" : "&") + LLURI::escape(it->first) + "="
+                 + LLURI::escape(it->second.asString());
+        }
+
+        LLCore::HttpHeaders::ptr_t headers(new LLCore::HttpHeaders);
+        headers->append("User-Agent", "Lumen");
+        headers->append("Accept", "application/json, text/plain;q=0.9, */*;q=0.5");
+        if (!key.empty())
+        {
+            if (key_as == "bearer") headers->append("Authorization", "Bearer " + key);
+            else if (key_as.compare(0, 7, "header:") == 0) headers->append(step["key_as"].asString().substr(7), key);
+        }
+        LLCore::HttpOptions::ptr_t options(new LLCore::HttpOptions);
+        options->setTimeout((S32)llclamp(step.has("wait") ? step["wait"].asReal() : 20.0, 1.0, 60.0));
+        options->setFollowRedirects(false);   // never on to an address nobody approved
+        options->setRetries(0);
+
+        static const LLCore::HttpRequest::policy_t policy = LLCore::HttpRequest::createPolicyClass();
+        LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenAISkillWeb", policy);
+        LLCore::HttpRequest::ptr_t request(new LLCore::HttpRequest);
+        const bool post = lower(step["method"].asString()) == "post";
+        LLSD raw;
+        if (post)
+        {
+            const std::string body = step.has("json") ? toJson(step["json"]) : std::string("{}");
+            LLCore::BufferArray::ptr_t buffer(new LLCore::BufferArray);
+            buffer->append(body.data(), body.size());
+            headers->append("Content-Type", "application/json");
+            raw = adapter.postRawAndSuspend(request, url, buffer, options, headers);
+        }
+        else
+        {
+            raw = adapter.getRawAndSuspend(request, url, options, headers);
+        }
+        if (run.stopped())
+        {
+            error = "stopped";
+            return false;
+        }
+
+        std::string text;
+        for (const std::string& k : { LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_RAW,
+                                      LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_CONTENT })
+        {
+            if (raw.has(k) && raw[k].isBinary())
+            {
+                const LLSD::Binary& bytes = raw[k].asBinary();
+                if (!bytes.empty()) { text.assign(bytes.begin(), bytes.begin() + std::min(bytes.size(), (size_t)65536)); break; }
+            }
+        }
+        const LLSD http = raw[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS];
+        const S32 code = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_TYPE].asInteger();
+        const bool ok = LLCoreHttpUtil::HttpCoroutineAdapter::getStatusFromLLSD(http);
+        // The host only: an address can carry a key in its query.
+        LL_INFOS("AISkills") << "web call to " << host << (post ? " (POST)" : " (GET)") << " answered "
+                             << code << ", " << text.size() << " bytes" << LL_ENDL;
+        if (!ok)
+        {
+            error = code >= 100 ? llformat("%s answered %d", host.c_str(), code) : host + " did not answer";
+            may_retry = !post && (code < 100 || code >= 500);   // a POST might have been done once already
+            return false;
+        }
+        LLSD v;
+        v["status"] = code;
+        LLSD parsed;
+        std::string perr;
+        if (!text.empty() && fromJson(text, parsed, perr)) v["json"] = parsed;
+        v["text"] = text.size() > 2000 ? text.substr(0, 2000) : text;
+        if (as.isDefined()) run.vars[trim(as.asString())] = v;
+        return true;
+    }
+
     bool runStep(LumenAISkills::Run& run, const LLSD& step_in, S32 index, std::string& error, bool& may_retry)
     {
         may_retry = false;
@@ -2221,6 +2463,11 @@ namespace
             error = "\"" + pattern + "\" has not come into the inventory";
             may_retry = true;
             return false;
+        }
+
+        if (what == "web_call")
+        {
+            return webCall(run, step, as, error, may_retry);
         }
 
         if (what == "accept_offer")
