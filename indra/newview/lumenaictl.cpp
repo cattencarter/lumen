@@ -4000,6 +4000,7 @@ namespace
             if (action == "test_skill")    return "test_skill";     // <Lumen> task 022
             if (action == "save_skill")    return "save_skill";     // <Lumen> task 022
             if (action == "forget_skill")  return "forget_skill";   // <Lumen> task 022
+            if (action == "run_skill")     return "run_skill";      // <Lumen> a skill by its name
             if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
@@ -5091,7 +5092,8 @@ namespace
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall", "music",
-              "test_picture", "skills", "teach_start", "teach_stop", "test_skill", "save_skill", "forget_skill" };
+              "test_picture", "skills", "teach_start", "teach_stop", "test_skill", "save_skill", "forget_skill",
+              "run_skill" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -5111,6 +5113,9 @@ namespace
             "first\"), take its `card` from `skills`, change it, test it and save it.\n"
             "- forget_skill: when the user wants a skill gone -- `skill` is its name or tool; its "
             "notecard goes to the Trash after the viewer asks.\n"
+            "- run_skill: run one of their skills, `skill` being its name or tool, with `inputs` -- "
+            "exactly as calling its own skill_... tool. Use it when that tool is not in your list, "
+            "e.g. a skill saved a moment ago.\n"
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
@@ -5517,11 +5522,11 @@ namespace
                                      "inputs, tables, steps -- as teach_stop's how_to_write_it "
                                      "describes, or a skill's `card` from `skills`, changed.";
             LLSD vinp; vinp["type"]="object";
-                vinp["description"]="test_skill: the skill's inputs by name, e.g. {\"sickness\": "
-                                    "\"fever\"}.";
+                vinp["description"]="test_skill, run_skill: the skill's inputs by name, e.g. "
+                                    "{\"sickness\": \"fever\"}.";
             view_props["card"]=vcard; view_props["inputs"]=vinp;
             LLSD vskill; vskill["type"]="string";
-                vskill["description"]="forget_skill: the skill's name, or its tool (skill_...).";
+                vskill["description"]="forget_skill, run_skill: the skill's name, or its tool (skill_...).";
             view_props["skill"]=vskill;
             // </Lumen>
             struct { const char* key; const char* desc; } nums[] = {
@@ -29558,6 +29563,33 @@ if (method == "camera")
     }
     // </Lumen>
 
+    // <Lumen> A skill by its name, through the same door as its own tool. A
+    // skill is otherwise only a tool of its own, and a host keeps the tool
+    // list it read -- Codex until Clear, Claude Code for a turn -- so one
+    // saved mid-conversation could not be called yet (the review, 2026-10-06).
+    if (method == "run_skill")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string asked = params["skill"].asString();
+        const LumenAISkills::Skill* found = LumenAISkills::instance().findAny(asked);
+        if (!found)
+        {
+            LLSD e; e["code"] = -32602;
+            e["message"] = "There is no skill called \"" + asked + "\". viewer / skills lists the "
+                           "user's skills, each with its name and its tool.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LLSD call = LLSD::emptyMap();
+        call["skill"] = found->tool;
+        call["inputs"] = params["inputs"].isMap() ? params["inputs"] : LLSD::emptyMap();
+        return dispatch("skill_run", call);
+    }
+    // </Lumen>
+
     // <Lumen> Task 022: run a skill the user taught -- see lumenaiskills.h.
     // Each skill reaches here from its own tool, skill_<name>.
     if (method == "skill_run")
@@ -29998,7 +30030,9 @@ if (method == "camera")
         result["note"] = "It is being saved into #Lumen/#Skills, where it follows them to any computer -- "
                          "not saved yet: if Second Life does not take it, the viewer says so in the "
                          "Assistant window. Once saved, in a few seconds, it is a tool of its own (" +
-                         skill.tool + "). Tell them it is being saved, and how they can ask for it.";
+                         skill.tool + "); if that tool is not in your list yet, call viewer / run_skill "
+                         "with skill \"" + skill.name + "\". Tell them it is being saved, and how they "
+                         "can ask for it.";
         return result;
     }
     // </Lumen>

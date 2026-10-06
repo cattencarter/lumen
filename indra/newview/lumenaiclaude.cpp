@@ -292,19 +292,19 @@ bool LumenAIClaude::start(const std::string& prompt,
     // granted it yet", and asked the user to approve a prompt that does not
     // exist. actions-check.py now fails when a tool the viewer declares is
     // not named on this list.
+    //
+    // <Lumen> And the whole server, `mcp__second_life` -- a rule with no tool
+    // name is every tool of that server, as Claude Code's own rule matcher
+    // reads it (checked in 2.1.283). Every skill the user taught is a tool of
+    // its own, and naming them here once per turn refused one saved during
+    // the turn, or still loading when it began (the review, 2026-10-06). The
+    // five stay named so that actions-check.py still holds this line to the
+    // tools the viewer declares.
     add("--allowedTools");
-    {
-        std::string allowed = "mcp__second_life__inventory,mcp__second_life__chat,"
-                              "mcp__second_life__movement,mcp__second_life__viewer,"
-                              "mcp__second_life__build";
-        // <Lumen> Task 022: every skill the user taught is a tool of its own.
-        if (LumenAISkills::instanceExists())
-        {
-            for (const std::string& tool : LumenAISkills::instance().toolNames())
-                allowed += ",mcp__second_life__" + tool;
-        }
-        add(allowed);
-    }
+    add("mcp__second_life,"
+        "mcp__second_life__inventory,mcp__second_life__chat,"
+        "mcp__second_life__movement,mcp__second_life__viewer,"
+        "mcp__second_life__build");
 
     // The endpoint, as a config string rather than a file, so there is no
     // temporary file to write, leave behind, or have somebody else edit.
