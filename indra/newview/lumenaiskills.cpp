@@ -55,6 +55,12 @@
 #include "llviewerobjectlist.h"
 #include "llvoavatarself.h"
 #include "llviewerjointattachment.h"
+#include "llviewerparcelmgr.h"
+#include "llparcel.h"
+#include "llviewerregion.h"
+#include "message.h"
+#include "llcircuit.h"
+#include "llregionflags.h"
 #include "lumenaichat.h"
 #include "lumenaictl.h"
 #include "lumenfolders.h"
@@ -672,6 +678,7 @@ struct LumenAISkills::Run
     std::set<LLUUID> roots_before, dialogues_before, answered;
     std::map<LLUUID, std::string> rezzed;   //< what this run rezzed, with the item's name
     std::map<LLUUID, F64> rezzed_at;        //< and when it arrived
+    U64 region = 0;                         //< the region it began in, by handle
     // Items that came into the inventory, and when. The step that finds one
     // uses it up, so a second verify waits for a second potion.
     struct Arrival
@@ -1996,6 +2003,56 @@ namespace
         return 0;
     }
 
+    /**
+     * The user picking something up: a thing of theirs that appeared while
+     * teaching is gone, and an item of its name -- or its name and more, as a
+     * script adds a date -- came into the inventory after it appeared. Nothing
+     * else notes a take: the potion the author picked up was missing from the
+     * card, and its last check waited for a potion still on the ground
+     * (2026-10-06, the main grid). The arrival says so, with the steps to copy.
+     */
+    void notePickups(LLSD& events)
+    {
+        for (S32 i = 0; i < (S32)events.size(); ++i)
+        {
+            const LLSD& arrived = events[i];   // read through const: a missing field is not added
+            if (arrived["kind"].asString() != "item_arrived" || arrived.has("picked_up")) continue;
+            const std::string item = lower(trim(arrived["name"].asString()));
+            if (item.empty()) continue;
+            for (S32 j = i - 1; j >= 0; --j)
+            {
+                const LLSD& a = events[j];
+                if (a["kind"].asString() != "object_appeared" || a["owner"].asString() != "you"
+                    || a.has("picked_up_in")) continue;
+                const std::string thing = lower(trim(a["name"].asString()));
+                if (thing.empty()) continue;
+                if (item.compare(0, thing.size(), thing) != 0 && thing.compare(0, item.size(), item) != 0) continue;
+                LLViewerObject* o = gObjectList.findObject(a["object_id"].asUUID());
+                if (o && !o->isDead()) continue;   // still out there: not the one taken
+                const S32 n = a["n"].asInteger();
+                const std::string as = llformat("picked_%d", n);
+                LLSD wait;
+                wait["do"] = "wait_for_object";
+                wait["about"] = "Wait for " + a["name"].asString();
+                wait["name"] = a["name"].asString() + "*";
+                wait["owner"] = "me";
+                wait["wait"] = 60;
+                wait["as"] = as;
+                LLSD take;
+                take["do"] = "take";
+                take["about"] = "Pick up " + a["name"].asString();
+                take["object"] = "{" + as + "}";
+                LLSD steps = LLSD::emptyArray();
+                steps.append(wait);
+                steps.append(take);
+                events[j]["picked_up_in"] = arrived["n"];
+                events[i]["picked_up"] = n;
+                events[i]["as_steps"] = steps;
+                break;
+            }
+        }
+    }
+
     /** Names that had not arrived when the thing happened, and the steps copied from them. */
     void fillNames(LLSD& events)
     {
@@ -2491,6 +2548,7 @@ void LumenAISkills::endTeaching(const std::string& how)
     mTeachMenuPtrs.clear();
     // Names, now, while the things are still in view.
     fillNames(mTeachEvents);
+    notePickups(mTeachEvents);
 
     // What was noted, for when a skill made from it fails: kinds and counts in
     // the log; the names and menus' words only for LumenAITest, since a menu
@@ -2557,6 +2615,7 @@ LLSD LumenAISkills::stopTeaching()
     else
     {
         fillNames(mTeachEvents);   // any that arrived since it stopped
+        notePickups(mTeachEvents);
         out["recorded"] = true;
         out["seconds"] = ll_round((F32)(mTeachStopped - mTeachStarted), 0.1f);
         if (mTeachEnded == "time")
@@ -2614,6 +2673,76 @@ namespace
             if (o && !o->isDead() && o->getRootEdit() == o) out.insert(o->getID());
         }
         return out;
+    }
+
+    /**
+     * The region turning a rez down, in its own words, from a notice that came
+     * since `before` -- "Can't rez object ... because the parcel is too full",
+     * "... the owner of this land does not allow it", "failed to calculate rez
+     * position" -- or "". A rez it refuses used to be waited out for twenty
+     * seconds and then put down to "the land may not allow it, or the region
+     * is slow" (task 024).
+     */
+    std::string rezRefusal(const std::set<LLUUID>& before)
+    {
+        std::string error;
+        LLSD args; args["action"] = "read_dialogues"; args["limit"] = 50;
+        const LLSD r = callTool("viewer", args, std::string(), error);
+        for (LLSD::array_const_iterator it = r["dialogues"].beginArray(); it != r["dialogues"].endArray(); ++it)
+        {
+            if (before.count((*it)["id"].asUUID())) continue;
+            const std::string text = (*it)["text"].asString();
+            const std::string t = lower(text);
+            const bool about = t.find("rez") != std::string::npos || t.find("create object") != std::string::npos
+                               || t.find("parcel is too full") != std::string::npos;
+            const bool refused = t.find("can't") != std::string::npos || t.find("cannot") != std::string::npos
+                                 || t.find("can not") != std::string::npos || t.find("unable") != std::string::npos
+                                 || t.find("not allow") != std::string::npos || t.find("too full") != std::string::npos;
+            if (about && refused) return utf8str_truncate(trim(text), 200);
+        }
+        return std::string();
+    }
+
+    /**
+     * Why a skill cannot be run where the user stands, before it takes or rezzes
+     * anything -- or "". A skill that rezzes on land that forbids it, or that
+     * is full, used to get as far as fetching the herbs and then stop halfway,
+     * with a barrel to clear away (task 024). Only what is certain stops it:
+     * the parcel not known yet, or a little room left, is left to the rez,
+     * which now says the region's own reason.
+     */
+    std::string cannotRunHere(const LumenAISkills::Skill& skill)
+    {
+        S32 rezzes = 0;
+        bool clicks = false;
+        for (LLSD::array_const_iterator it = skill.steps.beginArray(); it != skill.steps.endArray(); ++it)
+        {
+            const std::string what = (*it)["do"].asString();
+            if (what == "rez") ++rezzes;
+            if (what == "touch" || what == "dialog") clicks = true;
+        }
+        if (rezzes == 0) return std::string();
+        LLViewerParcelMgr& pm = LLViewerParcelMgr::instance();
+        LLViewerRegion* region = gAgent.getRegion();
+        LLParcel* parcel = pm.getAgentParcel();
+        if (!region || !parcel) return std::string();
+        if (!pm.allowAgentBuild(parcel))
+            return "this land does not let you rez things, and the skill rezzes -- nothing was done; "
+                   "run it where building is allowed";
+        const S32 room = parcel->getSimWideMaxPrimCapacity() - parcel->getSimWidePrimCount();
+        if (parcel->getSimWideMaxPrimCapacity() > 0 && room < rezzes)
+            return llformat("this land is full (room for %d more), and the skill rezzes %d thing%s -- "
+                            "nothing was done", llmax(room, 0), rezzes, rezzes == 1 ? "" : "s");
+        // The user's own scripts run on their own land, and on group land that
+        // lets group scripts run, whatever the land says about other people's.
+        const bool region_off = region->getRegionFlag(REGION_FLAGS_SKIP_SCRIPTS)
+                                || region->getRegionFlag(REGION_FLAGS_ESTATE_SKIP_SCRIPTS);
+        const bool land_off = !parcel->getAllowOtherScripts() && parcel->getOwnerID() != gAgent.getID()
+                              && !(parcel->getAllowGroupScripts() && gAgent.isInGroup(parcel->getGroupID()));
+        if (clicks && (region_off || land_off))
+            return "scripts are switched off here, so what the skill rezzes would not answer its "
+                   "clicks -- nothing was done";
+        return std::string();
     }
 
     std::set<LLUUID> dialoguesNow()
@@ -2834,12 +2963,39 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
     auto steps = [r]()
     {
         r->dialogues_before = dialoguesNow();
-        progress(r->skill.name + ": starting.");
         const S32 count = (S32)r->skill.steps.size();
+        {
+            const std::string not_here = cannotRunHere(r->skill);
+            if (!not_here.empty())
+            {
+                r->step = 0;
+                r->failure = not_here;
+                r->state = LumenAISkills::Run::FAILED;
+                r->finished = LLTimer::getTotalSeconds();
+                progress(r->skill.name + ": not started -- " + not_here + ".");
+                LL_INFOS("AISkills") << "\"" << r->skill.name << "\" not started: the land here" << LL_ENDL;
+                return;
+            }
+        }
+        if (LLViewerRegion* region = gAgent.getRegion()) r->region = region->getHandle();
+        progress(r->skill.name + ": starting.");
         bool between = false;   //< stopped before a step began, not during one
         for (r->step = 0; r->step < count; ++r->step)
         {
             if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; between = true; break; }
+            // Somewhere else now -- a teleport, a crossing, a region restart:
+            // the rest would rez and click in the wrong place (task 024).
+            {
+                LLViewerRegion* region = gAgent.getRegion();
+                if (!region || (r->region && region->getHandle() != r->region)
+                    || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE)
+                {
+                    r->failure = "the avatar is no longer in the region it began in -- a teleport or a "
+                                 "crossing -- and the rest would happen in the wrong place";
+                    r->state = LumenAISkills::Run::FAILED;
+                    break;
+                }
+            }
             const LLSD& step = r->skill.steps[r->step];
             // What the log keeps of a step: never its words (see progress()).
             LL_INFOS("AISkills") << "step " << r->step + 1 << "/" << count << " " << step["do"].asString() << LL_ENDL;
@@ -2951,10 +3107,35 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
 
 namespace
 {
+    /**
+     * How much slower than usual things are right now, 1 to 3: every wait is
+     * stretched by it. A busy region runs its scripts and physics slower (time
+     * dilation under 1), and a slow line delays every menu, offer and object on
+     * its way (the ping). A wait sized for a quiet evening ran out in a crowd
+     * (task 024, docs/SKILLS-LAG.md).
+     */
+    F64 lagFactor()
+    {
+        F64 f = 1.0;
+        LLViewerRegion* region = gAgent.getRegion();
+        if (!region) return f;
+        const F32 dilation = region->getTimeDilation();
+        if (dilation > 0.05f && dilation < 0.95f) f /= (F64)dilation;
+        if (gMessageSystem)
+        {
+            if (LLCircuitData* cd = gMessageSystem->mCircuitInfo.findCircuit(region->getHost()))
+            {
+                const F64 ping = (F64)cd->getPingDelayAveraged().value() / 1000.0;
+                if (ping > 0.3) f *= 1.0 + (ping - 0.3);
+            }
+        }
+        return llclamp(f, 1.0, 3.0);
+    }
+
     F64 waitFor(const LLSD& step, F64 fallback = DEFAULT_WAIT)
     {
         const F64 w = step.has("wait") ? step["wait"].asReal() : fallback;
-        return llclamp(w, 1.0, LONGEST_WAIT);
+        return llclamp(w * lagFactor(), 1.0, LONGEST_WAIT);
     }
 
     std::string stepRequestId(const LumenAISkills::Run& run, S32 index, const char* what)
@@ -3061,11 +3242,38 @@ namespace
         const LLSD ref = resolve(ref_in, run.vars, missing);
         if (!missing.empty()) { error = "nothing has given " + missing + " a value yet"; return LLUUID::null; }
 
-        auto byId = [&error](const std::string& s) -> LLUUID
+        auto byId = [&error, &run](const std::string& s) -> LLUUID
         {
             LLUUID id;
             if (!LLUUID::validate(s) || !id.set(s) || id.isNull()) { error = "\"" + s + "\" is not an object"; return LLUUID::null; }
-            if (!gObjectList.findObject(id)) { error = "that object is not in view any more"; return LLUUID::null; }
+            if (!gObjectList.findObject(id))
+            {
+                error = "that object is not in view any more";
+                // Something this run rezzed, taken back by the land: a sandbox's
+                // auto-return can clear a barrel away in the middle of a run, and
+                // "not in view" did not say why (task 024, the beta grid's notices).
+                auto rz = run.rezzed.find(id);
+                if (rz != run.rezzed.end() && !rz->second.empty())
+                {
+                    std::string rerr;
+                    LLSD args; args["action"] = "read_dialogues"; args["limit"] = 50;
+                    const LLSD r = callTool("viewer", args, std::string(), rerr);
+                    const std::string want = lower("'" + rz->second + "' has been returned");
+                    for (LLSD::array_const_iterator it = r["dialogues"].beginArray(); it != r["dialogues"].endArray(); ++it)
+                    {
+                        const std::string t = lower((*it)["text"].asString());
+                        if (t.find(want) != std::string::npos || (t.find("returned") != std::string::npos
+                            && t.find("auto return") != std::string::npos && t.find(lower(rz->second)) != std::string::npos))
+                        {
+                            error = "\"" + rz->second + "\" was taken back by the land's auto-return (it is in "
+                                    "Lost and Found) -- this land returns things after a while, so the skill "
+                                    "is best run where things may stay longer";
+                            break;
+                        }
+                    }
+                }
+                return LLUUID::null;
+            }
             return id;
         };
         if (ref.isString()) return byId(ref.asString());
@@ -3749,7 +3957,7 @@ namespace
             const auto rz = run.rezzed_at.find(obj);
             if (rz != run.rezzed_at.end())
             {
-                const F64 ready = rz->second + 4.0;
+                const F64 ready = rz->second + 4.0 * lagFactor();
                 while (LLTimer::getTotalSeconds() < ready)
                 {
                     if (!run.pause(0.25)) { error = "stopped"; return false; }
@@ -3837,7 +4045,8 @@ namespace
                 return false;
             }
             std::string came_up;   // what did come up, for the reason if none fits
-            const F64 until = LLTimer::getTotalSeconds() + waitFor(step);
+            F64 until = LLTimer::getTotalSeconds() + waitFor(step);
+            bool clicked_again = false;
             while (true)
             {
                 std::string rerr;
@@ -3885,12 +4094,47 @@ namespace
                     error = "the menu came up, but has no \"" + press + "\" -- it offers " + labels;
                     return false;
                 }
-                if (LLTimer::getTotalSeconds() > until) break;
+                if (LLTimer::getTotalSeconds() > until)
+                {
+                    // No menu at all after a click: in a busy region a click
+                    // can be lost on its way, or meet a script still waking.
+                    // Clicked once more, as a person would -- once, and only
+                    // when nothing came up, so a menu that did come is never
+                    // answered twice (task 024). A request id of its own: the
+                    // first click's would be taken as already done.
+                    const S32 before_i = index - 1;
+                    if (!clicked_again && came_up.empty() && before_i >= 0
+                        && run.skill.steps[before_i]["do"].asString() == "touch")
+                    {
+                        clicked_again = true;
+                        std::string missing;
+                        const LLSD prev = resolve(run.skill.steps[before_i], run.vars, missing);
+                        std::string terr;
+                        const LLUUID obj = missing.empty() ? objectFor(run, prev["object"], terr) : LLUUID::null;
+                        if (obj.notNull())
+                        {
+                            LLSD a;
+                            a["action"] = "touch";
+                            a["object_id"] = obj;
+                            for (const char* k : { "link", "face", "spot", "uv" })
+                                if (prev.has(k)) a[k] = prev[k];
+                            LL_INFOS("AISkills") << "step " << index + 1 << ": no menu came, clicking again once" << LL_ENDL;
+                            callTool("movement", a, stepRequestId(run, index, "click-again"), terr);
+                            if (terr.empty())
+                            {
+                                until = LLTimer::getTotalSeconds() + waitFor(step);
+                                continue;
+                            }
+                        }
+                    }
+                    break;
+                }
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
             error = "no menu saying \"" + step["text"].asString() + llformat("\" came up within %.0f seconds", waitFor(step))
-                  + (came_up.empty() ? std::string(" -- no menu came up at all, so the click before it "
-                                                   "probably did not press what it should")
+                  + (came_up.empty() ? std::string(" -- no menu came up at all")
+                                       + (clicked_again ? ", though it was clicked twice," : ",")
+                                       + " so the click before it probably did not press what it should"
                                      : " -- what came up was " + came_up);
             may_retry = false;   // pressing the HUD again is the step before, not this one
             return false;
@@ -3944,9 +4188,11 @@ namespace
                 }
             }
             const std::set<LLUUID> before = rootsNow();
+            const std::set<LLUUID> notes_before = dialoguesNow();
             const F64 sent = LLTimer::getTotalSeconds();
             callTool("build", args, stepRequestId(run, index, "rez"), error);
             if (!error.empty()) return false;
+            F64 next_look = sent + 1.0;
 
             // What came of it: a new object of the user's own, of that name.
             std::string name = item_name;
@@ -3968,6 +4214,17 @@ namespace
                     LLSD v; v["object_id"] = o->getID(); v["name"] = name;
                     if (as.isDefined()) run.vars[trim(as.asString())] = v;
                     return true;
+                }
+                if (LLTimer::getTotalSeconds() >= next_look)
+                {
+                    next_look = LLTimer::getTotalSeconds() + 1.0;
+                    const std::string refused = rezRefusal(notes_before);
+                    if (!refused.empty())
+                    {
+                        error = "the region would not rez it -- it said: " + refused;
+                        may_retry = false;
+                        return false;
+                    }
                 }
                 if (!run.pause(0.25)) { error = "stopped"; return false; }
             }
