@@ -97,6 +97,7 @@ public:
         bool        ask_first = true;     //< a one-line question before every run
         LLSD        card;                 //< the card as read, for changing it by chat
         LLUUID      item_id, asset_id, creator_id;
+        LLUUID      card_asset_id;        //< what the card holds now, which may be a refused version
         std::string card_name;
         std::string problem;              //< the card on the server was refused; this is an older one
     };
@@ -120,9 +121,21 @@ public:
 
     /** Empty when the inputs will do; otherwise what to ask the person, for the model. */
     std::string checkInputs(const Skill& skill, const LLSD& inputs) const;
-    /** A card somebody else made: shown and asked once per version before it first runs. */
+    /**
+     * A card this viewer did not write itself, through save_skill: what its
+     * steps do is shown and asked about once per version before it runs, and
+     * until then it is not one of the model's tools.
+     */
     bool needsTrust(const Skill& skill) const;
     void trust(const Skill& skill);
+    /** A card's new version, just written by save_skill after the user said yes. */
+    void noteWritten(const LLUUID& asset_id);
+    /**
+     * What the steps do, read by the viewer from their own fields -- what is
+     * clicked, pressed, rezzed, called -- for the questions that guard a
+     * skill; then the card's own words, marked as its author's.
+     */
+    static std::string questionText(const Skill& skill);
 
     /**
      * Start a run, or say how the one already running for these same inputs is
@@ -168,12 +181,15 @@ private:
     void writeLastGood() const;
     void readTrusted();
     void writeTrusted() const;
+    void readOwn();
+    void writeOwn() const;
 
     std::vector<Skill> mSkills;
     mutable LLUUID mFolder;      //< #Lumen/#Skills, kept while it still is that
     LLSD   mProblems;            //< card name -> why it was refused
     LLSD   mLastGood;            //< item id -> { asset, text }, kept on disk per account
     LLSD   mTrusted;             //< asset id -> true, kept on disk per account
+    LLSD   mOwn;                 //< asset id -> true: cards save_skill wrote, kept on disk per account
     bool   mLoading = false;
     bool   mReloadWanted = false;
     bool   mLoaded = false;

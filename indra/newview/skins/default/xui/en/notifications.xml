@@ -15297,29 +15297,33 @@ It carries out the steps you taught it, in order, and stops if one does not work
     </form>
   </notification>
 
+  <!-- <Lumen> No "Always choose this option" on the four questions that
+       stand in for every other one while a skill runs: trusting a card,
+       trying one, saving one, and a web address (the review, 2026-10-06).
+       A remembered Yes was kept per question name, for every account on the
+       computer, and let any card through unseen. With no ignore element the
+       viewer never answers them itself, so a Yes saved before this is not
+       used either. The text under [SUMMARY] is the viewer's own reading of
+       the steps, then the card's own words. -->
   <notification
    icon="alert.tga"
+   label="Run a skill Lumen did not write?"
    name="LumenAskSkillNew"
    type="alertmodal">
-The assistant wants to run the skill [NAME] for the first time. [CREATOR] made it, not you.
+The assistant wants to run the skill [NAME]. Its notecard was not written by Lumen on this computer: [CREATOR].
 
-This is what it will do:
+What its steps do, as the viewer reads them:
 [SUMMARY]
 
-Run it? You will only be asked this once for this version of it.
+While it runs, the viewer does not ask about each step. Run it? You are asked once for each version of it.
     <tag>confirm</tag>
     <form name="form">
-      <ignore name="ignore"
-       save_option="true"
-       text="When the assistant wants to run a skill somebody else made, the first time"/>
       <button
-       ignore="Always allow"
        index="0"
        name="Yes"
        text="Run it"/>
       <button
        default="true"
-       ignore="Always refuse"
        index="1"
        name="No"
        text="Not now"/>
@@ -15328,23 +15332,21 @@ Run it? You will only be asked this once for this version of it.
 
   <notification
    icon="alert.tga"
+   label="Try out a skill?"
    name="LumenAskSkillTest"
    type="alertmodal">
-The assistant wants to try out the skill [NAME] before it is saved. This is what it will do:
+The assistant wants to try out the skill [NAME] before it is saved. What its steps do, as the viewer reads them:
 [SUMMARY]
+
+While it runs, the viewer does not ask about each step.
     <tag>confirm</tag>
     <form name="form">
-      <ignore name="ignore"
-       save_option="true"
-       text="When the assistant wants to try out a skill it is writing"/>
       <button
-       ignore="Always allow"
        index="0"
        name="Yes"
        text="Try it"/>
       <button
        default="true"
-       ignore="Always refuse"
        index="1"
        name="No"
        text="Not now"/>
@@ -15353,25 +15355,21 @@ The assistant wants to try out the skill [NAME] before it is saved. This is what
 
   <notification
    icon="alert.tga"
+   label="Save a skill?"
    name="LumenAskSkillSave"
    type="alertmodal">
-The assistant wants to [WHAT] [NAME]. This is what it will do:
+The assistant wants to [WHAT] [NAME]. What its steps do, as the viewer reads them:
 [SUMMARY]
 
-It is kept as a notecard in #Lumen/#Skills, so it goes with you to any computer.
+It is kept as a notecard in #Lumen/#Skills, so it goes with you to any computer. When it runs, the viewer does not ask about each step.
     <tag>confirm</tag>
     <form name="form">
-      <ignore name="ignore"
-       save_option="true"
-       text="When the assistant wants to save one of your skills"/>
       <button
-       ignore="Always allow"
        index="0"
        name="Yes"
        text="Save it"/>
       <button
        default="true"
-       ignore="Always refuse"
        index="1"
        name="No"
        text="Not now"/>
@@ -15404,8 +15402,10 @@ Its notecard goes to the Trash, so you can still take it back from there.
     </form>
   </notification>
 
+  <!-- <Lumen> No remember box: see LumenAskSkillNew above. -->
   <notification
    icon="alert.tga"
+   label="Let a skill use a web address?"
    name="LumenAskWebAddress"
    type="alertmodal">
 Your skill [NAME] wants to use the web address [HOST] for the first time.
@@ -15413,17 +15413,12 @@ Your skill [NAME] wants to use the web address [HOST] for the first time.
 It may send that site what the skill says to send. Only allow addresses you trust.
     <tag>confirm</tag>
     <form name="form">
-      <ignore name="ignore"
-       save_option="true"
-       text="When one of your skills wants to use a web address for the first time"/>
       <button
-       ignore="Always allow"
        index="0"
        name="Yes"
        text="Allow"/>
       <button
        default="true"
-       ignore="Always refuse"
        index="1"
        name="No"
        text="Not now"/>
