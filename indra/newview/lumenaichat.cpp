@@ -1267,6 +1267,12 @@ namespace
         // refusal.
         options->setTimeout((S32)timeout_seconds);
         options->setRetries(0);
+        // The provider's API key travels with this, so the certificate must be
+        // the provider's own, not only one somebody trusted signed: the viewer
+        // leaves the name to curl, and curl does not check it by default (the
+        // review, 2026-10-06). A local model over plain http is not affected.
+        options->setSSLVerifyPeer(true);
+        options->setSSLVerifyHost(true);
 
         for (LLSD::map_const_iterator it = header_pairs.beginMap();
              it != header_pairs.endMap(); ++it)
