@@ -4111,7 +4111,7 @@ namespace
                         // Who it is from, as the offer itself has it -- the
                         // object's name, else the person's -- not anywhere in
                         // its text, where any offer mentioning the word did.
-                        std::string giver;
+                        std::string giver, offered;
                         if (LLNotificationPtr n = LLNotifications::instance().find(id))
                         {
                             // As teaching read it: under RLV's @shownames, the
@@ -4121,10 +4121,27 @@ namespace
                             if (!n->getPayload()["rlv_shownames"].asBoolean())
                                 giver = subs["OBJECTFROMNAME"].asString();
                             if (giver.empty()) giver = subs["NAME"].asString();
+                            // The item's own name (llimprocessing.cpp): an object's
+                            // offer has it bare, in quotes; a person's, in an
+                            // inventory link's "name=". Matched against the whole
+                            // sentence, a pattern like "Barberry*" -- anchored at
+                            // its start -- never fitted, and a potion skill waited
+                            // out both herbs on the screen (2026-10-06, the main grid).
+                            offered = subs["ITEM_SLURL"].asString();
+                            if (offered.compare(0, 11, "secondlife:") == 0)
+                            {
+                                const size_t q = offered.find("name=");
+                                offered = q == std::string::npos ? std::string()
+                                                                 : LLURI::unescape(offered.substr(q + 5));
+                            }
+                            offered = trim(offered);
+                            while (!offered.empty() && offered.front() == '\'') offered.erase(0, 1);
+                            while (!offered.empty() && offered.back() == '\'') offered.pop_back();
+                            offered = trim(offered);
                         }
                         if (giver.empty() || !nameMatches(giver, from)) continue;
                         const std::string text = (*it)["text"].asString();
-                        if (!item.empty() && !nameMatches(text, item)) continue;
+                        if (!item.empty() && !nameMatches(offered.empty() ? text : offered, item)) continue;
                         offer_up = true;
                         // The older form of a person's offer says Accept, not Keep.
                         LLSD a; a["action"] = "answer_dialogue"; a["id"] = id;
