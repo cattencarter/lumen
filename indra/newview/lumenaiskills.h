@@ -108,6 +108,8 @@ public:
     /** #Lumen/Skills, or null when there is none yet. */
     LLUUID folderId() const { return skillsFolder(); }
     const Skill* find(const std::string& tool) const;
+    /** By its tool name or by the name the user gave it. */
+    const Skill* findAny(const std::string& tool_or_name) const;
     /** One MCP tool per skill, for tools/list. */
     LLSD toolDescriptors() const;
     std::vector<std::string> toolNames() const;

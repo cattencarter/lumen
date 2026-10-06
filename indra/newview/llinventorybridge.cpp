@@ -4289,7 +4289,8 @@ LLFolderType::EType LLFolderBridge::getPreferredType() const
         //               folders, which is not desired.
         //preferred_type = cat->getPreferredType();
         std::string catName(cat->getName());
-        if (catName == ROOT_FIRESTORM_FOLDER) preferred_type = LLFolderType::FT_FIRESTORM;
+        if (catName == ROOT_FIRESTORM_FOLDER || catName == LumenFolders::LUMEN_FOLDER)   // <Lumen> both
+            preferred_type = LLFolderType::FT_FIRESTORM;
         else if (catName == RLV_ROOT_FOLDER) preferred_type = LLFolderType::FT_RLV;
         else if (catName == "#Phoenix") preferred_type = LLFolderType::FT_PHOENIX;
         else preferred_type = cat->getPreferredType();
@@ -5663,7 +5664,8 @@ EInventorySortGroup LLFolderBridge::getSortGroup() const
         if(cat)
         {
             std::string catName(cat->getName());
-            if ((catName == ROOT_FIRESTORM_FOLDER) || (catName == RLV_ROOT_FOLDER) || (catName == "#Phoenix"))
+            if ((catName == ROOT_FIRESTORM_FOLDER) || (catName == RLV_ROOT_FOLDER) || (catName == "#Phoenix")
+                || (catName == LumenFolders::LUMEN_FOLDER))   // <Lumen>
             {
                 return SG_NORMAL_FOLDER;
             }

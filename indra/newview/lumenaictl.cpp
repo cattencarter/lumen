@@ -3985,6 +3985,7 @@ namespace
             if (action == "teach_stop")    return "teach_stop";     // <Lumen> task 022
             if (action == "test_skill")    return "test_skill";     // <Lumen> task 022
             if (action == "save_skill")    return "save_skill";     // <Lumen> task 022
+            if (action == "forget_skill")  return "forget_skill";   // <Lumen> task 022
             if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
@@ -5072,7 +5073,7 @@ namespace
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall", "music",
-              "test_picture", "skills", "teach_start", "teach_stop", "test_skill", "save_skill" };
+              "test_picture", "skills", "teach_start", "teach_stop", "test_skill", "save_skill", "forget_skill" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -5090,6 +5091,8 @@ namespace
             "- save_skill: save `card` as one of their skills; the viewer shows the steps and asks. "
             "The same name changes that skill -- to change one (\"use the herbs from the barrel "
             "first\"), take its `card` from `skills`, change it, test it and save it.\n"
+            "- forget_skill: when the user wants a skill gone -- `skill` is its name or tool; its "
+            "notecard goes to the Trash after the viewer asks.\n"
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
@@ -5499,6 +5502,9 @@ namespace
                 vinp["description"]="test_skill: the skill's inputs by name, e.g. {\"sickness\": "
                                     "\"fever\"}.";
             view_props["card"]=vcard; view_props["inputs"]=vinp;
+            LLSD vskill; vskill["type"]="string";
+                vskill["description"]="forget_skill: the skill's name, or its tool (skill_...).";
+            view_props["skill"]=vskill;
             // </Lumen>
             struct { const char* key; const char* desc; } nums[] = {
                 { "brightness",     "lighting: 1.0 normal, higher brighter. 0.1 to 10." },
@@ -29041,6 +29047,48 @@ if (method == "camera")
         return result;
     }
     // </Lumen>
+
+    // <Lumen> Task 022: forget a skill -- its card to the Trash, where it can be
+    // taken back. The assistant's ordinary delete cannot reach the skills
+    // folder, by design; this is the one way, and the viewer asks first.
+    if (method == "forget_skill")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const LumenAISkills::Skill* found = LumenAISkills::instance().findAny(params["skill"].asString());
+        if (!found)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "There is no skill by that name. viewer / skills lists the ones there are.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const std::string name = found->name;
+        const LLUUID item_id = found->item_id;
+        LLViewerInventoryItem* item = gInventory.getItem(item_id);
+        if (!item)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "That skill's notecard is not in the inventory any more.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        {
+            LLSD subs;
+            subs["NAME"] = askQuote(name, 80);
+            LLSD out;
+            if (!askUser("LumenAskSkillForget", subs, "skill_forget:" + item_id.asString(), out)) return out;
+        }
+        const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+        change_item_parent(item_id, trash);
+        LL_INFOS("AISkills") << "forgot the skill \"" << name << "\": its card is in the Trash" << LL_ENDL;
+        LLSD result;
+        result["forgotten"] = name;
+        result["note"] = "Its notecard is in the Trash, so it is no longer a skill -- and it can be "
+                         "taken back from there, until the Trash is emptied. Tell them that.";
+        return result;
+    }
 
     // <Lumen> Task 022: which skills there are, and any card that was refused.
     if (method == "list_skills")

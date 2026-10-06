@@ -907,6 +907,7 @@ namespace
             if (action == "teach_stop")    return "Looking at what you did";
             if (action == "test_skill")    return "Trying the skill";
             if (action == "save_skill")    return "Saving the skill";
+            if (action == "forget_skill")  return "Forgetting the skill";
             if (action == "music")         return "Seeing to the music";   // <Lumen>
         }
 

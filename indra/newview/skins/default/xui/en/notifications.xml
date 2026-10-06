@@ -15380,6 +15380,32 @@ It is kept as a notecard in #Lumen/Skills, so it goes with you to any computer.
 
   <notification
    icon="alert.tga"
+   name="LumenAskSkillForget"
+   type="alertmodal">
+The assistant wants to forget your skill [NAME].
+
+Its notecard goes to the Trash, so you can still take it back from there.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to forget one of your skills"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Forget it"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Keep it"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
    name="LumenAskWebAddress"
    type="alertmodal">
 Your skill [NAME] wants to use the web address [HOST] for the first time.

@@ -673,6 +673,14 @@ const LumenAISkills::Skill* LumenAISkills::find(const std::string& tool) const
     return nullptr;
 }
 
+const LumenAISkills::Skill* LumenAISkills::findAny(const std::string& tool_or_name) const
+{
+    if (const Skill* s = find(trim(tool_or_name))) return s;
+    for (const Skill& s : mSkills)
+        if (lower(s.name) == lower(trim(tool_or_name)) || lower(s.card_name) == lower(trim(tool_or_name))) return &s;
+    return nullptr;
+}
+
 std::vector<std::string> LumenAISkills::toolNames() const
 {
     std::vector<std::string> out;
