@@ -152,13 +152,26 @@ public:
     static bool stepRunning();
 
     // ---- teaching --------------------------------------------------------
-    /** Start noting what the user does by hand: clicks, menus, objects, items. */
-    void startTeaching();
-    /** Stop, and hand back what was noted, oldest first, with names filled in. */
+    /** Start noting what the user does by hand: clicks, menus, objects, items.
+        Empty, or why it cannot start now (a skill is running). */
+    std::string startTeaching();
+    /** Stop, and hand back what was noted, oldest first, with names filled in -- once. */
     LLSD stopTeaching();
     bool teaching() const { return mTeaching; }
     /** The viewer sending a touch -- the user's own click (lltoolgrab.cpp). */
     static void noteTouch(LLViewerObject* object, const LLVector2& st, const LLVector2& uv, S32 face);
+    /**
+     * Held by the endpoint while it carries out a request (lumenaictl.cpp,
+     * handleRequest): a touch it sends or a menu it answers in that time is
+     * the assistant's, and teaching does not note it as the user's.
+     */
+    struct EndpointActing
+    {
+        EndpointActing();
+        ~EndpointActing();
+        EndpointActing(const EndpointActing&) = delete;
+        EndpointActing& operator=(const EndpointActing&) = delete;
+    };
 
     /** The text a card is written as: the header line, then the JSON, keys in a sensible order. */
     static std::string cardText(const LLSD& card);
@@ -197,15 +210,21 @@ private:
     std::shared_ptr<Run> mRun;   //< the one running, or the last one finished
 
     bool   mTeaching = false;
-    F64    mTeachStarted = 0.0;
+    F64    mTeachStarted = 0.0;              //< 0 once what was noted has been handed back
+    F64    mTeachStopped = 0.0;              //< when watching ended
+    std::string mTeachEnded;                 //< "" when teach_stop ended it; "time" or "cleared"
     LLSD   mTeachEvents;                     //< what was noted, oldest first
+    S32    mTeachNext = 0;                   //< the number the last event got
+    bool   mTeachTruncated = false;          //< something was left out to keep it short
     std::set<LLUUID> mTeachRoots;            //< objects in view when it started, or noted since
     LLUUID mTeachSeat;                       //< what the user sat on when last looked, or null
-    std::map<LLUUID, S32> mTeachMenus;       //< a menu on screen -> its event
+    std::map<LLUUID, S32> mTeachMenus;       //< a menu on screen -> its event's number
     std::map<LLUUID, LLNotificationPtr> mTeachMenuPtrs;
     LLTempBoundListener mTeachMenuListener;
     void noteTeachEvent(LLSD event);
     void pollTeaching();
+    void noteArrivals();
+    void endTeaching(const std::string& how);
     friend class LumenSkillsObserver;
 };
 
