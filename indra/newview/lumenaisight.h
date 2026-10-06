@@ -106,13 +106,18 @@ namespace LumenAISight
      * are stepped past too, for a ray that starts inside an object.
      * `normal` and `face`, when given, get which way the surface faces there
      * (unit length, toward where the ray came from) and the face of the prim
-     * it hit. `leaving`, when given, says the surface was met from behind:
-     * the ray started inside that thing and was on its way out.
+     * it hit. `leaving`, when given, says the normal its maker gave the
+     * surface there points well along the ray: the raycast only ever meets
+     * the front of a triangle, so this is a mesh turned inside out -- drawn
+     * to be seen from inside, its normals still saying which side is out --
+     * and the ray was on its way out of it. `gave_up`, when given, is set
+     * when it stopped stepping past avatars, name tags or `ignore` before
+     * the end of the ray: null then means "not looked at", not "nothing".
      */
     LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
                              const LLViewerObject* ignore = nullptr,
                              LLVector3* normal = nullptr, S32* face = nullptr,
-                             bool* leaving = nullptr);
+                             bool* leaving = nullptr, bool* gave_up = nullptr);
 
     /** The direction from the camera through a pixel of the picture, counted from the top-left. */
     LLVector3 rayThrough(const View& view, F32 px, F32 py);

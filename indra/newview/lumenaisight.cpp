@@ -168,9 +168,11 @@ bool project(const View& view, const LLVector3& point, F32& px, F32& py)
 }
 
 LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
-                         const LLViewerObject* ignore, LLVector3* normal, S32* face, bool* leaving)
+                         const LLViewerObject* ignore, LLVector3* normal, S32* face, bool* leaving,
+                         bool* gave_up)
 {
     if (leaving) *leaving = false;
+    if (gave_up) *gave_up = false;
     LLVector3 dir = to - from;
     const F32 len = dir.magVec();
     if (len < 0.001f)
@@ -197,7 +199,15 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
     // alive it passes through avatars and what they wear -- but it tests every
     // avatar's NAME TAG regardless (pipeline.cpp, "silly, isn't it?"). A tag
     // is not in the picture, so a hit on one is stepped past.
-    for (S32 tries = 0; tries < 8; ++tries)
+    // Two budgets. Tags and worn things: a few, then it gives up. `ignore`'s
+    // own faces: as many as the ray meets on its way out of it -- a bookshelf
+    // of thirty linked books or a sofa of cushions has more than eight, and
+    // when one shared budget of eight ran out there it answered "nothing", so
+    // the space check stopped short of what lay beyond (the review,
+    // 2026-10-06). Each step moves on 2 cm, so the cap on those is only a
+    // guard; running into either is said through `gave_up`.
+    S32 tags = 0, own = 0;
+    while (tags < 8 && own < 1024)
     {
         LLVector4a s, e, hit, n;
         s.load3(start.mV);
@@ -216,13 +226,25 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
             return nullptr;
         }
         where.set(hit.getF32ptr());
-        if (!o->isAvatar() && !o->isAttachment() && !(ignore && o->getRootEdit() == ignore))
+        const bool mine = ignore && o->getRootEdit() == ignore;
+        if (!o->isAvatar() && !o->isAttachment() && !mine)
         {
             if (leaving)
             {
-                // Met from behind: the raycast finds a face from either side.
+                // The raycast meets a triangle from its front only
+                // (LLTriangleRayIntersect), so by the triangle's own normal no
+                // face is ever met from behind -- and that normal is not handed
+                // back. What is handed back is the smoothed normal the maker
+                // gave the mesh. It points along the ray where the two
+                // disagree: a mesh turned inside out, whose normals still say
+                // which side is out -- there the ray really is leaving it --
+                // or a ray grazing a smooth-shaded curve, where the smoothing
+                // leans a few degrees past the edge. Only a normal well along
+                // the ray counts, so the second is not read as the first (the
+                // review, 2026-10-06).
                 const LLVector3 raw(n.getF32ptr());
-                *leaving = raw.magVecSquared() > 1.e-6f && raw * dir > 0.f;
+                const F32 len_n = raw.magVec();
+                *leaving = len_n > 0.001f && (raw * dir) > 0.5f * len_n;
             }
             if (normal)
             {
@@ -234,12 +256,14 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
             if (face) *face = f;
             return o;
         }
+        if (mine) ++own; else ++tags;
         start = where + dir * 0.02f;
         if ((start - from).magVec() >= (end - from).magVec())
         {
             return nullptr;
         }
     }
+    if (gave_up) *gave_up = true;
     return nullptr;
 }
 
