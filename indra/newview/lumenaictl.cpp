@@ -17815,6 +17815,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             }
             LLSD you;
             you["modify"]   = root->permModify();
+            // <Lumen> Moving and turning need only this: no-modify furniture
+            // is still the owner's to place.
+            you["move"]     = root->permMove() && !root->isPermanentEnforced();
             you["copy"]     = root->permCopy();
             you["transfer"] = root->permTransfer();
             LLSD perm;
@@ -27708,8 +27711,12 @@ if (method == "camera")
                          + " to set, remove, take or list_contents, or put it in `object_ids` "
                            "for link."
                          + (obj->permModify() ? ""
-                            : " The user may NOT modify this object, so `set` will be refused "
-                              "-- say so rather than trying.");
+                            : obj->permMove() && !obj->isPermanentEnforced()
+                            ? " The user may NOT modify this object: `set` may move and turn it "
+                              "(position, rotation) and `place` it, but not resize, rename or "
+                              "recolour it."
+                            : " The user may neither modify nor move this object, so `set` and "
+                              "`place` will be refused -- say so rather than trying.");
         recordAction(params.has("request_id") ? params["request_id"].asString() : "",
                      fingerprintOf("select_object", params), "select_object", "ok", result, LLSD());
         return result;
@@ -29952,7 +29959,7 @@ if (method == "camera")
         {
             LLViewerObject* o = gObjectList.findObject(t.first);
             if (o) o = o->getRootEdit();
-            if (!o || o->isAvatar() || o->isAttachment() || !o->permModify() || !o->permMove())
+            if (!o || o->isAvatar() || o->isAttachment() || !o->permMove())
             {
                 gone.append(names.count(t.first) ? LLSD(names[t.first]) : LLSD(t.first.asString()));
                 continue;
@@ -30707,23 +30714,33 @@ if (method == "camera")
             // word, a resize still showed in their own view, and this reported
             // every one of them as changed. The build tools grey these fields
             // out for such an object; here it is refused and said.
+            // As the Object panel draws the line: size, name, description and
+            // colour need modify; position and rotation need only move, so
+            // the owner of no-modify furniture can still place it (the
+            // author's sofa, 2026-10-06, refused "for its permissions").
             const bool has_position = params.has("position") && params["position"].isArray()
                                       && params["position"].size() >= 3;
             const bool has_rotation = params.has("rotation") && params["rotation"].isArray()
                                       && params["rotation"].size() >= 3;
             const bool moving = has_position || has_rotation || !size_vals.empty();
+            const bool editing = !size_vals.empty() || have_colour || params.has("description")
+                                 || (params.has("name") && !params["name"].asString().empty());
             for (LLObjectSelection::root_iterator it = sel->root_begin();
                  it != sel->root_end(); ++it)
             {
                 LLViewerObject* o = (*it)->getObject();
                 if (!o) continue;
-                if (!o->permModify())
+                if (editing && !o->permModify())
                 {
                     LLSD e; e["code"] = -32000;
                     e["message"] = "The user may not modify " + askObjectName(o) + " -- it is "
-                                   "somebody else's, or no-modify. That is the object's own "
-                                   "permissions, so nothing was changed; say so rather than "
-                                   "trying another way.";
+                                   "somebody else's, or no-modify -- so its size, name, "
+                                   "description and colour cannot be changed. Nothing was "
+                                   "changed."
+                                 + std::string(o->permMove() && !o->isPermanentEnforced()
+                                     ? " Moving and turning it is still allowed: call again "
+                                       "with only position and rotation."
+                                     : " Say so rather than trying another way.");
                     LLSD w; w["__error"] = e; return w;
                 }
                 if (moving && (!o->permMove() || o->isPermanentEnforced()))
