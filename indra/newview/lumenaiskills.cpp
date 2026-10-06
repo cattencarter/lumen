@@ -80,10 +80,10 @@ namespace
     // A # name, as the viewer's own folders have: the assistant's ordinary
     // inventory tools leave every # folder inside #Lumen alone.
     const char* const SKILLS_FOLDER = "#Skills";
-    // What it was called before 2026-10-06 -- only ever on test accounts.
-    const char* const OLD_SKILLS_FOLDER = "Skills";
     const char* const LAST_GOOD_FILE = "lumen_skills_last_good.json";
     const char* const TRUSTED_FILE   = "lumen_skills_trusted.json";
+    // The card versions save_skill wrote, after the user saw and allowed them.
+    const char* const OWN_FILE       = "lumen_skills_own.json";
 
     // A finished run is handed back again for this long, so a caller that
     // asks twice gets the same answer instead of a second run.
@@ -626,17 +626,20 @@ public:
             }
             if (LLViewerInventoryCategory* cat = gInventory.getCategory(id))
             {
-                if (cat->getName() == SKILLS_FOLDER || cat->getName() == OLD_SKILLS_FOLDER) { ours = true; break; }
+                if (cat->getName() == SKILLS_FOLDER) { ours = true; break; }
             }
         }
         // A card moved out leaves no trace in the folder; any skill whose card
-        // is no longer in it is a reason to read again too.
+        // is no longer in it is a reason to read again too. Against what the
+        // card held when it was read, not the version that runs: a refused
+        // card runs its last good version, and compared with that it read
+        // again on every inventory change (the review, 2026-10-06).
         if (!ours)
         {
             for (const LumenAISkills::Skill& s : self.mSkills)
             {
                 LLViewerInventoryItem* item = gInventory.getItem(s.item_id);
-                if (!item || item->getParentUUID() != folder || item->getAssetUUID() != s.asset_id)
+                if (!item || item->getParentUUID() != folder || item->getAssetUUID() != s.card_asset_id)
                 {
                     ours = true;
                     break;
@@ -693,7 +696,8 @@ const LumenAISkills::Skill* LumenAISkills::findAny(const std::string& tool_or_na
 std::vector<std::string> LumenAISkills::toolNames() const
 {
     std::vector<std::string> out;
-    for (const Skill& s : mSkills) out.push_back(s.tool);
+    for (const Skill& s : mSkills)
+        if (!needsTrust(s)) out.push_back(s.tool);   // as toolDescriptors(): looked at first
     return out;
 }
 
@@ -707,6 +711,26 @@ std::string LumenAISkills::toolForTrigger(const std::string& typed) const
 }
 
 // ---- reading a card -----------------------------------------------------------
+
+namespace
+{
+    // Characters, not bytes, for the card's limits and for cutting text that
+    // is shown: a 21-character Japanese name is 63 bytes and was refused as
+    // too long, and a cut by bytes could end inside a letter (the review,
+    // 2026-10-06).
+    size_t charCount(const std::string& s)
+    {
+        return utf8str_to_wstring(s).size();
+    }
+
+    /** At most `count` whole characters, and "..." when anything was cut. */
+    std::string cutChars(const std::string& s, size_t count)
+    {
+        const LLWString w = utf8str_to_wstring(s);
+        if (w.size() <= count) return s;
+        return wstring_to_utf8str(w.substr(0, count)) + "...";
+    }
+}
 
 // static
 bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& error)
@@ -740,12 +764,12 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
     s.summary = trim(card["summary"].asString());
     s.trigger = trim(card["trigger"].asString());
     s.ask_first = !card.has("ask_first") || card["ask_first"].asBoolean();
-    if (s.name.empty() || s.name.size() > 60)
+    if (s.name.empty() || charCount(s.name) > 60)
     {
         error = "it needs a name of 1 to 60 characters";
         return false;
     }
-    if (s.about.empty() || s.about.size() > 600)
+    if (s.about.empty() || charCount(s.about) > 600)
     {
         error = "it needs an `about` saying when to use it, at most 600 characters";
         return false;
@@ -780,6 +804,17 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
             {
                 for (LLSD::array_const_iterator c = (*it)["choices"].beginArray(); c != (*it)["choices"].endArray(); ++c)
                     if (!trim(c->asString()).empty()) in.choices.push_back(trim(c->asString()));
+            }
+            // The choices go to the model as they are, in the skill's tool, so
+            // they are kept short -- a choice cut there would no longer match
+            // (the review, 2026-10-06).
+            if (in.choices.size() > 40
+                || std::any_of(in.choices.begin(), in.choices.end(),
+                               [](const std::string& c) { return charCount(c) > 80; }))
+            {
+                error = "the input \"" + in.name + "\" has more than 40 choices, or a choice longer than "
+                        "80 characters";
+                return false;
             }
             known.insert(in.name);
             s.inputs.push_back(in);
@@ -939,6 +974,203 @@ std::string LumenAISkills::plainSummary(const Skill& skill)
     return trim(out);
 }
 
+// ---- the questions: what the steps do, as the viewer reads them -------------------
+
+namespace
+{
+    // The questions before a skill is trusted, tried or saved are the one
+    // moment the person reviews it: while it runs, no step asks. They showed
+    // the card's own summary and each step's `about` -- words its author
+    // chose, a stranger or a model talked into it by a notecard -- and never
+    // the step itself (the review, 2026-10-06). These read the fields the
+    // runner acts on.
+
+    /** {herb} as [herb], and [herb, from step 2] when an earlier step gives it. */
+    std::string withPlaceholders(const std::string& s, const std::map<std::string, S32>& from_step)
+    {
+        std::string words = s;
+        for (size_t at = words.find('{'); at != std::string::npos; at = words.find('{', at + 1))
+        {
+            const size_t close = words.find('}', at);
+            if (close == std::string::npos) break;
+            const std::string inner = words.substr(at + 1, close - at - 1);
+            if (!isRef(inner)) continue;
+            std::string name = trim(inner);
+            const std::map<std::string, S32>::const_iterator f = from_step.find(name.substr(0, name.find('.')));
+            std::replace(name.begin(), name.end(), '.', ' ');
+            words.replace(at, close - at + 1, "[" + name +
+                          (f != from_step.end() ? llformat(", from step %d", f->second) : std::string()) + "]");
+        }
+        return words;
+    }
+
+    /** A value as a question shows it: text quoted and short; a value filled in at run time as [it]. */
+    std::string valueWords(const LLSD& v, const std::map<std::string, S32>& from_step, size_t count = 80)
+    {
+        if (v.isMap())
+        {
+            if (v.has("name")) return valueWords(v["name"], from_step, count);
+            return v.has("item_id") ? std::string("an item given by its id") : std::string("(several values)");
+        }
+        const std::string s = trim(v.asString());
+        const bool whole = s.size() > 2 && s.front() == '{' && s.back() == '}'
+                        && s.find('{', 1) == std::string::npos && isRef(s.substr(1, s.size() - 2));
+        const std::string words = cutChars(withPlaceholders(s, from_step), count);
+        return whole ? words : "\"" + words + "\"";
+    }
+
+    /** Which object a step means: worn, nearby by name and whose, or an earlier step's. */
+    std::string objectWords(const LLSD& o, const std::map<std::string, S32>& from_step)
+    {
+        if (o.isMap() && o.has("worn"))
+            return valueWords(o["worn"], from_step) + ", which you wear";
+        if (o.isMap() && o.has("near"))
+            return valueWords(o["near"], from_step) + " nearby" +
+                   (lower(o["owner"].asString()) == "me" ? " (one of yours)" : " (anybody's)");
+        if (o.isMap() && (o.has("object_id") || o.has("id")))
+            return "the object " + valueWords(o.has("object_id") ? o["object_id"] : o["id"], from_step);
+        return valueWords(o, from_step);
+    }
+
+    /** One step, from the fields the runner acts on -- never its `about`. */
+    std::string stepForQuestion(const LLSD& step, const std::map<std::string, S32>& from_step)
+    {
+        const std::string what = step["do"].asString();
+        if (what == "lookup")
+            return "Look up " + valueWords(step["key"], from_step) + " in the card's "
+                 + valueWords(step["table"], from_step) + " list.";
+        if (what == "find_item")
+        {
+            std::string out = "Find " + valueWords(step["name"], from_step);
+            if (step.has("folder")) out += " in a folder called " + valueWords(step["folder"], from_step);
+            const LLSD places = step.has("in") ? step["in"] : LLSD("inventory");
+            std::string where;
+            for (S32 i = 0; i < (places.isArray() ? (S32)places.size() : 1); ++i)
+            {
+                const LLSD& p = places.isArray() ? places[i] : places;
+                where += (where.empty() ? "" : " or ")
+                       + ((p.isString() && lower(p.asString()) == "inventory")
+                          ? std::string("your inventory") : "inside " + objectWords(p, from_step));
+            }
+            return out + ", looking in " + where + ".";
+        }
+        if (what == "touch")
+        {
+            const LLSD& o = step["object"];
+            std::string out = (o.isMap() && o.has("worn") ? "Press a button on " : "Click ") + objectWords(o, from_step);
+            if (step.has("link") && step.has("face"))
+                out += llformat(" (part %d, face %d)", step["link"].asInteger(), step["face"].asInteger());
+            else if (step.has("link"))
+                out += llformat(" (part %d)", step["link"].asInteger());
+            return out + ".";
+        }
+        if (what == "dialog")
+            return "When a menu saying " + valueWords(step["text"], from_step) + " comes up, press "
+                 + valueWords(step["press"], from_step) + ".";
+        if (what == "rez")
+            return "Rez " + valueWords(step["item"], from_step) + " from your inventory"
+                 + (step.has("near") ? " next to " + objectWords(step["near"], from_step) : std::string()) + ".";
+        if (what == "wait_for_object")
+            return "Wait for " + valueWords(step["name"], from_step) + " to appear nearby"
+                 + (lower(step["owner"].asString()) == "me" ? " (one of yours)." : ".");
+        if (what == "take")
+            return lower(step["how"].asString()) == "touch"
+                 ? "Click " + objectWords(step["object"], from_step) + " to be given it."
+                 : "Take " + objectWords(step["object"], from_step) + " into your inventory.";
+        if (what == "verify")
+            return "Check that " + valueWords(step["item"], from_step) + " came into your inventory.";
+        if (what == "accept_offer")
+            return "Accept what " + valueWords(step["from"], from_step) + " offers you"
+                 + (step.has("item") ? " (" + valueWords(step["item"], from_step) + ")" : std::string())
+                 + ", pressing Keep.";
+        if (what == "sit")
+            return "Sit on " + objectWords(step["object"], from_step) + ".";
+        if (what == "stand")
+            return "Stand up.";
+        if (what == "web_call")
+        {
+            const std::string host = lower(LLURI(trim(step["url"].asString())).hostName());
+            std::string out = host.empty()
+                ? "Call the web address " + valueWords(step["url"], from_step, 160)
+                : "Call the web site " + cutChars(withPlaceholders(host, from_step), 80) + " at "
+                  + valueWords(step["url"], from_step, 160);
+            if (step["query"].isMap() && step["query"].size() > 0)
+            {
+                out += ", adding";
+                S32 i = 0;
+                for (LLSD::map_const_iterator it = step["query"].beginMap(); it != step["query"].endMap(); ++it, ++i)
+                {
+                    if (i == 4)
+                    {
+                        out += llformat(" and %d more", (S32)step["query"].size() - 4);
+                        break;
+                    }
+                    out += (i ? ", " : " ") + cutChars(it->first, 30) + " = " + valueWords(it->second, from_step, 40);
+                }
+            }
+            if (!trim(step["key"].asString()).empty())
+                out += ", with your key \"" + cutChars(trim(step["key"].asString()), 40) + "\" in the address";
+            return out + ".";
+        }
+        if (what == "say")
+            return "Write in the Assistant window: " + valueWords(step["text"], from_step, 160) + ".";
+        return "Do " + valueWords(step["do"], from_step) + ".";
+    }
+}
+
+// static
+std::string LumenAISkills::questionText(const Skill& skill)
+{
+    // Long enough for a long skill, short enough to read before saying yes;
+    // the window scrolls.
+    const size_t STEPS_LONGEST = 1800, AUTHOR_LONGEST = 900;
+    const S32 count = (S32)skill.steps.size();
+
+    std::string out;
+    size_t chars = 0;
+    std::map<std::string, S32> from_step;
+    for (S32 i = 0; i < count; ++i)
+    {
+        const LLSD& step = skill.steps[i];
+        const std::string line = llformat("%d. ", i + 1) + stepForQuestion(step, from_step);
+        const size_t length = charCount(line);
+        if (i > 0 && chars + length > STEPS_LONGEST)
+        {
+            out += count - i == 1 ? std::string("... and 1 more step\n")
+                                  : llformat("... and %d more steps\n", count - i);
+            break;
+        }
+        out += line + "\n";
+        chars += length;
+        if (step.has("as")) from_step[trim(step["as"].asString())] = i + 1;
+    }
+    if (!skill.ask_first) out += "\nIt runs without asking each time.\n";
+
+    // Below that, and said to be the author's: the card's own summary and
+    // each step's `about`, which nothing checks against what the step does.
+    std::string author;
+    const std::string summary = trim(skill.card["summary"].asString());
+    if (!summary.empty())
+    {
+        const std::string cut = utf8str_truncate(summary, 900);
+        author += cut + (cut.size() < summary.size() ? "...\n" : "\n");
+    }
+    size_t author_chars = charCount(author);
+    S32 left = 0;
+    for (S32 i = 0; i < count; ++i)
+    {
+        const std::string about = trim(skill.steps[i]["about"].asString());
+        if (about.empty()) continue;
+        if (author_chars > AUTHOR_LONGEST) { ++left; continue; }
+        const std::string line = llformat("%d. ", i + 1) + cutChars(about, 160);
+        author += line + "\n";
+        author_chars += charCount(line);
+    }
+    if (left > 0) author += llformat("... and %d more\n", left);
+    if (!author.empty()) out += "\nThe card's own description, in its author's words:\n" + author;
+    return trim(out);
+}
+
 // ---- to the model ---------------------------------------------------------------
 
 LLSD LumenAISkills::toolDescriptors() const
@@ -946,12 +1178,16 @@ LLSD LumenAISkills::toolDescriptors() const
     LLSD tools = LLSD::emptyArray();
     for (const Skill& s : mSkills)
     {
+        // A card the user has not looked at is not put in front of the model
+        // on every turn, in words its author chose, as one of the user's own
+        // (the review, 2026-10-06): skills lists it as waiting instead.
+        if (needsTrust(s)) continue;
         std::string d = s.about;
         if (!s.examples.empty())
         {
             d += "\nSaid like: ";
             for (size_t i = 0; i < s.examples.size(); ++i)
-                d += (i ? "; " : "") + std::string("\"") + s.examples[i] + "\"";
+                d += (i ? "; " : "") + std::string("\"") + cutChars(s.examples[i], 100) + "\"";
             d += ".";
         }
         d += "\nA skill the user taught Lumen (\"" + s.name + "\"): the viewer carries out its "
@@ -964,7 +1200,7 @@ LLSD LumenAISkills::toolDescriptors() const
         {
             LLSD p;
             p["type"] = "string";
-            p["description"] = in.about.empty() ? in.name : in.about;
+            p["description"] = in.about.empty() ? in.name : cutChars(in.about, 200);
             if (!in.choices.empty())
             {
                 LLSD e = LLSD::emptyArray();
@@ -996,12 +1232,20 @@ LLSD LumenAISkills::describe() const
         LLSD one;
         one["tool"] = s.tool;
         one["name"] = s.name;
-        one["card"] = s.card_name;
+        one["notecard"] = s.card_name;
+        if (!s.problem.empty()) one["card_problem"] = s.problem;
+        // Its steps and its author's words only once the user has looked at
+        // it and said yes (the review, 2026-10-06).
+        if (needsTrust(s))
+        {
+            one["waiting_for_user"] = true;
+            list.append(one);
+            continue;
+        }
         one["asks_first"] = s.ask_first;
         if (!s.trigger.empty()) one["trigger"] = s.trigger;
         one["summary"] = s.summary;
         one["card"] = s.card;   // to change it: change this and save it again
-        if (!s.problem.empty()) one["card_problem"] = s.problem;
         list.append(one);
     }
     out["skills"] = list;
@@ -1045,14 +1289,28 @@ std::string LumenAISkills::checkInputs(const Skill& skill, const LLSD& inputs) c
 
 bool LumenAISkills::needsTrust(const Skill& skill) const
 {
-    return skill.creator_id.notNull() && skill.creator_id != gAgent.getID()
-        && !mTrusted.has(skill.asset_id.asString());
+    // Not by who the notecard names as its creator (the review, 2026-10-06):
+    // a card a model wrote in the user's own inventory names the user, and
+    // editing a shared card is widely held to keep its creator. What counts
+    // is this very version: written by save_skill on this computer after the
+    // user saw what it does, or looked at and allowed once. Any other card is
+    // asked about first, whoever made it -- the user's own from before, or
+    // from another computer, once.
+    const std::string asset = skill.asset_id.asString();
+    return skill.asset_id.isNull() || (!mOwn.has(asset) && !mTrusted.has(asset));
 }
 
 void LumenAISkills::trust(const Skill& skill)
 {
     mTrusted[skill.asset_id.asString()] = true;
     writeTrusted();
+}
+
+void LumenAISkills::noteWritten(const LLUUID& asset_id)
+{
+    if (asset_id.isNull()) return;
+    mOwn[asset_id.asString()] = true;
+    writeOwn();
 }
 
 // ---- the folder and the files beside it ---------------------------------------------
@@ -1077,16 +1335,11 @@ LLUUID LumenAISkills::skillsFolder() const
     if (!cats) return LLUUID::null;
     for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
         if (c && c->getName() == SKILLS_FOLDER) return mFolder = c->getUUID();
-    // The old name, renamed once: the folder keeps its id, its cards come along.
-    for (const LLPointer<LLViewerInventoryCategory>& c : *cats)
-    {
-        if (c && c->getName() == OLD_SKILLS_FOLDER)
-        {
-            LL_INFOS("AISkills") << "renaming #Lumen/Skills to #Lumen/#Skills" << LL_ENDL;
-            rename_category(&gInventory, c->getUUID(), SKILLS_FOLDER);
-            return mFolder = c->getUUID();
-        }
-    }
+    // No adopting a folder by its old name, plain "Skills", any more (the
+    // review, 2026-10-06): the inventory rules guard the skills folder by its
+    // # name only, so a model could make "Skills", put a card in it and move
+    // it into #Lumen, and it was renamed #Skills and loaded unasked. It only
+    // ever existed on test accounts.
     return LLUUID::null;
 }
 
@@ -1128,10 +1381,30 @@ void LumenAISkills::writeTrusted() const
     if (out.is_open()) out << toJson(mTrusted);
 }
 
+void LumenAISkills::readOwn()
+{
+    mOwn = LLSD::emptyMap();
+    const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, OWN_FILE);
+    llifstream in(path.c_str());
+    if (!in.is_open()) return;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    LLSD v;
+    std::string error;
+    if (fromJson(text, v, error) && v.isMap()) mOwn = v;
+}
+
+void LumenAISkills::writeOwn() const
+{
+    const std::string path = gDirUtilp->getExpandedFilename(LL_PATH_PER_SL_ACCOUNT, OWN_FILE);
+    llofstream out(path.c_str());
+    if (out.is_open()) out << toJson(mOwn);
+}
+
 void LumenAISkills::startLoading()
 {
     readLastGood();
     readTrusted();
+    readOwn();
     watchFolder();
     scheduleReload();
 }
@@ -1242,6 +1515,11 @@ void LumenAISkills::loadNow()
             }
             s.item_id = item->getUUID();
             s.asset_id = mLastGood[key]["asset"].asUUID();
+            // What the card holds now, for the folder watcher: a card refused
+            // for what it says is not read again on every inventory change
+            // (the review, 2026-10-06) -- one whose text did not arrive is.
+            const bool unread = !why.empty() && item->getAssetUUID().notNull();
+            s.card_asset_id = unread ? s.asset_id : item->getAssetUUID();
             s.creator_id = item->getCreatorUUID();
             s.card_name = item->getName();
             // Two cards for one name: the second gets a number, so both stay reachable.
@@ -2418,6 +2696,7 @@ namespace
         LLSD step = step_in;
         const LLSD as = step_in["as"];
         step.erase("as");
+        step.erase("about");   // as parse() leaves it out of its check (the review, 2026-10-06)
         step = resolve(step, run.vars, missing);
         if (as.isDefined()) step["as"] = as;
         if (!missing.empty())

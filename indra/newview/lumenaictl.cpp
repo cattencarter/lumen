@@ -29106,20 +29106,31 @@ if (method == "camera")
                 LLSD e; e["code"] = -32602; e["message"] = ask;
                 LLSD w; w["__error"] = e; return w;
             }
+            // What the model gave, quoted and short: it is the model's text,
+            // not the user's (the review, 2026-10-06).
             std::string with;
             for (LLSD::map_const_iterator it = inputs.beginMap(); it != inputs.endMap(); ++it)
-                with += (with.empty() ? " for " : ", ") + it->second.asString();
+            {
+                if (with.size() > 300) { with += ", ..."; break; }
+                with += (with.empty() ? " with " : ", ") + it->first + " " + askQuote(it->second.asString(), 60);
+            }
             if (skills.needsTrust(skill))
             {
-                // Somebody else's card: what it will do, in plain words, once
-                // for this version of it. Any skill is the user's to use once
-                // it is in their folder; this is the moment they see it.
+                // A card this viewer did not write itself: what its steps do,
+                // as the viewer reads them, once for this version of it --
+                // whoever the notecard names as its creator (the review,
+                // 2026-10-06). Any skill is the user's to use once it is in
+                // their folder; this is the moment they see it.
                 LLAvatarName av;
                 LLSD subs;
                 subs["NAME"]    = askQuote(skill.name, 80);
-                subs["CREATOR"] = LLAvatarNameCache::get(skill.creator_id, &av)
-                                ? av.getCompleteName() : std::string("somebody else");
-                subs["SUMMARY"] = skill.summary.size() > 900 ? skill.summary.substr(0, 900) + "..." : skill.summary;
+                subs["CREATOR"] = (skill.creator_id.notNull() && skill.creator_id != gAgent.getID())
+                                ? (LLAvatarNameCache::get(skill.creator_id, &av) ? av.getCompleteName()
+                                                                                 : std::string("somebody else"))
+                                  + " made it"
+                                : std::string("it may have been written by hand, by the assistant, or by Lumen "
+                                              "on another computer");
+                subs["SUMMARY"] = LumenAISkills::questionText(skill);
                 LLSD out;
                 if (!askUser("LumenAskSkillNew", subs, "skill_trust:" + skill.asset_id.asString(), out))
                     return out;
@@ -29264,7 +29275,10 @@ if (method == "camera")
         }
         LumenAISkills& skills = LumenAISkills::instance();
         const std::string fingerprint = llformat("%zx", std::hash<std::string>()(text));
-        const std::string summary = skill.summary.size() > 900 ? skill.summary.substr(0, 900) + "..." : skill.summary;
+        // What the steps do as the viewer reads them, then the card's own
+        // words -- not the summary alone, which the card's writer chose (the
+        // review, 2026-10-06).
+        const std::string summary = LumenAISkills::questionText(skill);
 
         if (method == "test_skill")
         {
@@ -29314,6 +29328,54 @@ if (method == "camera")
             LLSD e; e["code"] = -32000; e["message"] = "Not in a region, so nothing can be saved now.";
             LLSD w; w["__error"] = e; return w;
         }
+        // The answer above is "being saved"; when the save then fails, the
+        // user hears it in the Assistant, where they were told it was being
+        // saved (the review, 2026-10-06). Second Life's own upload error is
+        // shown as well; a failure before the upload shows nothing else, so
+        // that one is said in a notice when the Assistant is not open.
+        auto notSaved = [](const std::string& name, const std::string& why, bool viewer_said_it)
+        {
+            LL_WARNS("AISkills") << "a skill card was not saved: " << why << LL_ENDL;
+            const std::string line = "The skill \"" + name + "\" was not saved: " + why +
+                                     ". Ask the assistant to save it again.";
+            if (!LumenAIChatFloater::postFromViewer(std::string(), line) && !viewer_said_it)
+            {
+                LLSD args;
+                args["MESSAGE"] = line;
+                LLNotificationsUtil::add("SystemMessageTip", args);
+            }
+        };
+        // The text into the card. The version it makes is noted as one this
+        // viewer wrote, after the user saw what it does: the only kind of card
+        // that runs as the user's own without being looked at again.
+        auto upload = [notSaved](const LLUUID& card_id, const std::string& card_text, const std::string& name)
+        {
+            LLViewerRegion* here = gAgent.getRegion();
+            const std::string url = here ? here->getCapability("UpdateNotecardAgentInventory") : std::string();
+            if (url.empty())
+            {
+                notSaved(name, "the region could not save notecards", false);
+                return;
+            }
+            LLNotecard notecard(LLNotecard::MAX_SIZE);
+            notecard.setText(card_text);
+            std::stringstream stream;
+            notecard.exportStream(stream);
+            LLResourceUploadInfo::ptr_t info = std::make_shared<LLBufferedAssetUploadInfo>(
+                card_id, LLAssetType::AT_NOTECARD, stream.str(),
+                [](LLUUID item_id, LLUUID new_asset_id, LLUUID new_item_id, LLSD)
+                {
+                    LL_INFOS("AISkills") << "skill card saved: " << item_id << LL_ENDL;
+                    if (LumenAISkills::instanceExists()) LumenAISkills::instance().noteWritten(new_asset_id);
+                    LLPreviewNotecard::finishInventoryUpload(item_id, new_asset_id, new_item_id);
+                },
+                [notSaved, name](LLUUID, LLUUID, LLSD, std::string reason) -> bool
+                {
+                    notSaved(name, reason.empty() ? std::string("Second Life did not take its text") : reason, true);
+                    return false;   // the viewer's own handling goes on as for any upload
+                });
+            LLViewerAssetUpload::EnqueueInventoryUpload(url, info);
+        };
         if (existing.notNull())
         {
             // The same card, new text -- as Save in the notecard window does.
@@ -29323,40 +29385,38 @@ if (method == "camera")
                 LLSD e; e["code"] = -32000; e["message"] = "This region cannot save notecards right now.";
                 LLSD w; w["__error"] = e; return w;
             }
-            LLNotecard notecard(LLNotecard::MAX_SIZE);
-            notecard.setText(text);
-            std::stringstream stream;
-            notecard.exportStream(stream);
-            LLResourceUploadInfo::ptr_t info = std::make_shared<LLBufferedAssetUploadInfo>(
-                existing, LLAssetType::AT_NOTECARD, stream.str(),
-                [](LLUUID item_id, LLUUID new_asset_id, LLUUID new_item_id, LLSD)
-                {
-                    LL_INFOS("AISkills") << "skill card saved: " << item_id << LL_ENDL;
-                    LLPreviewNotecard::finishInventoryUpload(item_id, new_asset_id, new_item_id);
-                },
-                nullptr);
-            LLViewerAssetUpload::EnqueueInventoryUpload(url, info);
+            upload(existing, text, skill.name);
         }
         else
         {
             std::string card_name = skill.name;
             LLInventoryObject::correctInventoryName(card_name);
             // A new card in #Lumen/#Skills, making the folders the first time.
-            auto makeCard = [text, card_name](const LLUUID& folder)
+            auto makeCard = [text, card_name, notSaved, upload](const LLUUID& folder)
             {
                 if (folder.isNull())
                 {
-                    LL_WARNS("AISkills") << "no skills folder came back; the skill was not saved" << LL_ENDL;
+                    notSaved(card_name, "its folder, #Lumen/#Skills, could not be made", false);
                     return;
                 }
                 LumenAIControl::suppressAutoOpen(card_name);
                 LLTransactionID tid;
                 tid.generate();
+                // Made empty first; the text goes in once Second Life gives the card an id.
                 create_inventory_item(gAgent.getID(), gAgent.getSessionID(), folder, tid,
                                       card_name, LLStringUtil::null,
                                       LLAssetType::AT_NOTECARD, LLInventoryType::IT_NOTECARD,
                                       NO_INV_SUBTYPE, PERM_ALL,
-                                      new FSNotecardText(text, std::string()));
+                                      new LLBoostFuncInventoryCallback(
+                                          [text, card_name, notSaved, upload](const LLUUID& card_id)
+                                          {
+                                              if (card_id.isNull())
+                                              {
+                                                  notSaved(card_name, "Second Life did not make its notecard", false);
+                                                  return;
+                                              }
+                                              upload(card_id, text, card_name);
+                                          }));
             };
             auto inLumen = [makeCard](const LLUUID& lumen)
             {
@@ -29386,9 +29446,10 @@ if (method == "camera")
         result["name"] = skill.name;
         result["tool"] = skill.tool;
         result["changed_existing"] = existing.notNull();
-        result["note"] = "Being saved into #Lumen/#Skills, where it follows them to any computer. In a "
-                         "few seconds it is a tool of its own (" + skill.tool + "). Tell them briefly, "
-                         "and how they can ask for it.";
+        result["note"] = "It is being saved into #Lumen/#Skills, where it follows them to any computer -- "
+                         "not saved yet: if Second Life does not take it, the viewer says so in the "
+                         "Assistant window. Once saved, in a few seconds, it is a tool of its own (" +
+                         skill.tool + "). Tell them it is being saved, and how they can ask for it.";
         return result;
     }
     // </Lumen>
@@ -29442,7 +29503,12 @@ if (method == "camera")
         result["note"] = "Each skill is also a tool of its own (`tool`), which runs it. Skills are "
                          "notecards in #Lumen/#Skills. A card listed under cards_refused could not "
                          "be read; say why in plain words -- an older version of it may still be "
-                         "in use (card_problem).";
+                         "in use (card_problem). A skill with waiting_for_user is a card Lumen did "
+                         "not write on this computer -- somebody else's, or the user's own from "
+                         "before or from elsewhere: it is not one of your tools, and its steps are "
+                         "not shown, until the user has looked at it. If they want it, run it by "
+                         "its tool (or viewer / run_skill): the viewer first shows them what its "
+                         "steps do and asks.";
         return result;
     }
     // </Lumen>

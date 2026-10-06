@@ -360,6 +360,16 @@ std::string LumenInventoryRules::notInto(const LLUUID& dest, Rule* rule)
         return refused(rule, NOT_IN_INVENTORY, "that folder is not in their inventory");
     std::string why = offLimits(dest, "that folder", rule);
     if (!why.empty()) return why;
+    // <Lumen> The top of #Lumen itself (the review, 2026-10-06). Only the
+    // viewer's own folders belong there, and they are found by name: a folder
+    // moved in under a plain name was one rename from being taken for one of
+    // them -- a "Skills" folder was once adopted as #Skills that way, a card
+    // the model wrote and all, and ran with no question.
+    {
+        const LLViewerInventoryCategory* c = gInventory.getCategory(dest);
+        if (c && c->getName() == LumenFolders::LUMEN_FOLDER && c->getParentUUID() == gInventory.getRootFolderID())
+            return refused(rule, NAMED_FOLDER, "that is #Lumen itself, which holds only the viewer's own folders");
+    }
     if (inTrash(dest))
         return refused(rule, TRASH, "that is the Trash, and putting something there is deleting it");
     return std::string();
