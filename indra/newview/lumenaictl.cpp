@@ -7162,6 +7162,52 @@ static bool lumenShapeLoaded(LLViewerObject* p)
     return !v->isMesh() || vol->isMeshAssetLoaded();
 }
 
+// <Lumen> rez: the ray to send for "put it here", as the viewer's own placer
+// sends it (LLToolPlacer::raycastForNewObjPos), in the region's coordinates.
+// Second Life takes a ready landing point ("bypass the raycast") only for LAND --
+// its physics cannot raycast onto the height field; for an object's surface it
+// wants a ray through it and the object named, and raycasts that itself. A
+// point half a metre over the spot, with the raycast bypassed, landed on the
+// ground, but in a sky build it answered "Can't rez object: failed to calculate
+// rez position" (2026-10-06, the main grid, a cave high up) and a box rezzed on
+// a platform 500 m up never appeared (the beta grid).
+static void lumenRezRay(LLViewerRegion* region, const LLVector3& target, LLVector3& ray_start,
+                        LLVector3& ray_end, bool& bypass, LLUUID& target_id)
+{
+    F32 feet = gAgent.getPositionAgent().mV[VZ];
+    if (isAgentAvatarValid()) feet -= gAgentAvatarp->getPelvisToFoot();
+    const F32 top = llmax(target.mV[VZ], feet) + 1.f;
+    LLVector3 spot(target.mV[VX], target.mV[VY],
+                   LLWorld::getInstance()->resolveLandHeightAgent(target));
+    LLViewerObject* on = nullptr;
+    {
+        LumenAISight::WithoutAvatars hide;
+        LLVector3 where, n;
+        const LLVector3 from(target.mV[VX], target.mV[VY], top);
+        const LLVector3 to(target.mV[VX], target.mV[VY], llmin(target.mV[VZ], feet) - 6.f);
+        LLViewerObject* o = LumenAISight::firstHit(from, to, 0.f, where, nullptr, &n);
+        if (o && n.mV[VZ] > 0.5f)
+        {
+            spot = where;
+            if (o->getPCode() == LL_PCODE_VOLUME) on = o;
+        }
+    }
+    if (on)
+    {
+        bypass = false;
+        target_id = on->getID();
+        ray_start = region->getPosRegionFromAgent(spot + LLVector3(0.f, 0.f, 2.5f));
+        ray_end   = region->getPosRegionFromAgent(spot - LLVector3(0.f, 0.f, 0.5f));
+    }
+    else
+    {
+        bypass = true;   // the land: its point, as the placer sends it
+        target_id.setNull();
+        ray_start = region->getPosRegionFromAgent(spot + LLVector3(0.f, 0.f, 2.5f));
+        ray_end   = region->getPosRegionFromAgent(spot);
+    }
+}
+
 // <Lumen> place and set: whether `other` lies on the object now -- its own
 // cushions, a book on its shelf -- rather than standing in its way. It used to
 // be enough that the other's ROOT was smaller and its middle inside the box,
@@ -28158,10 +28204,14 @@ if (method == "camera")
             msg->addUUIDFast(_PREHASH_FromTaskID, LLUUID::null);
             // true: use the ray we give rather than raycasting from the camera,
             // which is what frees this path from where the user is looking.
-            msg->addU8Fast(_PREHASH_BypassRaycast, (U8) true);
-            msg->addVector3Fast(_PREHASH_RayStart, target + LLVector3(0.f, 0.f, 2.f));
-            msg->addVector3Fast(_PREHASH_RayEnd,   target);
-            msg->addUUIDFast(_PREHASH_RayTargetID, LLUUID::null);
+            LLVector3 ray_start, ray_end;
+            bool bypass = true;
+            LLUUID ray_target;
+            lumenRezRay(regionp, target, ray_start, ray_end, bypass, ray_target);
+            msg->addU8Fast(_PREHASH_BypassRaycast, (U8) bypass);
+            msg->addVector3Fast(_PREHASH_RayStart, ray_start);
+            msg->addVector3Fast(_PREHASH_RayEnd,   ray_end);
+            msg->addUUIDFast(_PREHASH_RayTargetID, ray_target);
             msg->addBOOLFast(_PREHASH_RayEndIsIntersection, false);
             // <Lumen> Not create-selected. Nothing here uses the selection, and a
             // create-selected object of the user's own was repainted with their
@@ -28398,14 +28448,18 @@ if (method == "camera")
 
         msg->addVector3Fast(_PREHASH_Scale,    scale);
         msg->addQuatFast(_PREHASH_Rotation,    rotation);
-        // Straight down onto the spot, two metres above it, which is what frees
-        // this from where the user happens to be looking.
-        msg->addVector3Fast(_PREHASH_RayStart, target + LLVector3(0.f, 0.f, 2.f));
-        msg->addVector3Fast(_PREHASH_RayEnd,   target);
-        msg->addU8Fast(_PREHASH_BypassRaycast, (U8) true);
+        // Straight down onto the floor under the spot (lumenRezRay), which is
+        // what frees this from where the user happens to be looking.
+        LLVector3 ray_start, ray_end;
+        bool bypass = true;
+        LLUUID ray_target;
+        lumenRezRay(regionp, target, ray_start, ray_end, bypass, ray_target);
+        msg->addVector3Fast(_PREHASH_RayStart, ray_start);
+        msg->addVector3Fast(_PREHASH_RayEnd,   ray_end);
+        msg->addU8Fast(_PREHASH_BypassRaycast, (U8) bypass);
         msg->addU8Fast(_PREHASH_RayEndIsIntersection, (U8) false);
         msg->addU8Fast(_PREHASH_State, 0);
-        msg->addUUIDFast(_PREHASH_RayTargetID, LLUUID::null);
+        msg->addUUIDFast(_PREHASH_RayTargetID, ray_target);
         msg->sendReliable(regionp->getHost());
 
         if (create_selected)
