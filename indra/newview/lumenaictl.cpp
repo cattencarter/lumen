@@ -6529,6 +6529,9 @@ std::string LumenAIControl::handleRequest(const std::string& body)
         return rpcError(id, -32600, "Invalid request: no method");
     }
 
+    // <Lumen> While the user teaches a skill, a touch sent or a menu answered
+    // from here is the assistant's, not the user's (the review, 2026-10-06).
+    LumenAISkills::EndpointActing endpoint_acting;
     LLSD result;
     try
     {
@@ -20788,6 +20791,20 @@ if (method == "camera")
             return result;
         }
 
+        // <Lumen> While the user teaches a skill, a sit or a stand lands a
+        // moment after it is asked for and cannot be told from their own, so
+        // it would be noted as theirs (the review, 2026-10-06).
+        if ((method == "sit" || method == "stand") && LumenAISkills::instanceExists()
+            && LumenAISkills::instance().teaching())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The user is teaching Lumen a skill right now, and what happens in the world "
+                           "is being noted as theirs, so the viewer does not sit or stand for the "
+                           "assistant until that stops. Ask them to do it by hand, or call viewer / "
+                           "teach_stop first if they are done.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
         if (method == "stand")
         {
             if (!gAgent.isSitting())
@@ -27351,6 +27368,19 @@ if (method == "camera")
             LLSD w; w["__error"] = e; return w;
         }
 
+        // <Lumen> While the user teaches a skill, what appears is noted as
+        // theirs, and a thing rezzed from here cannot be told from one they
+        // rezzed (the review, 2026-10-06).
+        if (LumenAISkills::instanceExists() && LumenAISkills::instance().teaching())
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The user is teaching Lumen a skill right now, and what appears in the world "
+                           "is being noted as theirs, so the viewer does not rez for the assistant "
+                           "until that stops. Ask them to do it by hand, or call viewer / teach_stop "
+                           "first if they are done.";
+            LLSD w; w["__error"] = e; return w;
+        }
+
         // The parcel's own rule, asked BEFORE anything is sent. Building where
         // it is not allowed fails somewhere in the simulator and arrives back
         // as silence, which is this project's least useful failure.
@@ -29158,22 +29188,71 @@ if (method == "camera")
         LumenAISkills& skills = LumenAISkills::instance();
         if (method == "teach_start")
         {
-            skills.startTeaching();
+            // <Lumen> Not while a skill runs: its clicks and menus would be
+            // noted as the user's (the review, 2026-10-06).
+            const std::string why = skills.startTeaching();
+            if (!why.empty())
+            {
+                LLSD e; e["code"] = -32000; e["message"] = why;
+                LLSD w; w["__error"] = e; return w;
+            }
             LLSD result;
             result["watching"] = true;
             result["note"] = "Watching now: clicks on HUDs and objects, menus and the button pressed, "
                              "objects that appear, things that come into the inventory. Tell the user "
                              "to do it once by hand, the way they always do, and to say when they are "
-                             "done -- then call teach_stop. Do nothing in the world yourself meanwhile.";
+                             "done -- then call teach_stop. The Assistant window tells them Lumen is "
+                             "watching, and Clear there stops it. Do nothing in the world yourself "
+                             "meanwhile: sitting, standing and rezzing are refused until teach_stop, "
+                             "and a touch or an answer to a menu from you is not counted as theirs.";
             return result;
         }
         LLSD result = skills.stopTeaching();
+        if (result.has("cleared"))
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "The user pressed Clear, which stopped the watching and threw away what was "
+                           "noted. If they still want to teach it, call teach_start and let them do it "
+                           "again.";
+            LLSD w; w["__error"] = e; return w;
+        }
         if (!result["recorded"].asBoolean())
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "Nothing was being watched. Call teach_start first, then let the user do it.";
             LLSD w; w["__error"] = e; return w;
         }
+        // <Lumen> Names and menus' words are other people's text, and a cut or
+        // an old object can make them invalid UTF-8, which fails the whole
+        // reply (the review, 2026-10-06).
+        std::function<void(LLSD&)> clean = [&clean](LLSD& v)
+        {
+            if (v.isString()) v = safeUtf8(v.asString());
+            else if (v.isArray())
+            {
+                for (LLSD::array_iterator it = v.beginArray(); it != v.endArray(); ++it) clean(*it);
+            }
+            else if (v.isMap())
+            {
+                for (LLSD::map_iterator it = v.beginMap(); it != v.endMap(); ++it) clean(it->second);
+            }
+        };
+        clean(result["events"]);
+        if (result.has("stopped_early"))
+        {
+            result["stopped_early_note"] = llformat(
+                "It stopped by itself after %d minutes, before the user said they were done: "
+                "anything they did after that was not seen. Ask them whether the routine was "
+                "finished by then, and if not, teach it again.",
+                (S32)result["stopped_after_minutes"].asInteger());
+        }
+        if (result.has("truncated"))
+        {
+            result["truncated_note"] = "It was a long recording, so the oldest of what came into the "
+                                       "inventory or appeared nearby was left out. Clicks, menus and "
+                                       "sits are left out only past a thousand things noted.";
+        }
+        // </Lumen>
         result["how_to_write_it"] =
             "Turn this into a skill with the user. Ask ONLY what you cannot see: which part changes "
             "each time (that becomes an input, e.g. the sickness), where things should come from "
@@ -29220,7 +29299,18 @@ if (method == "camera")
             "address -- a web call cannot be seen while teaching; "
             "say {text}. Waits are seconds. A step may have \"optional\": true, and \"fail\": "
             "words for when it fails. There is no step that gives, pays or deletes, and a "
-            "script's permission request is always the user's to answer. Write the steps from "
+            "script's permission request is always the user's to answer. "
+            // <Lumen> The review, 2026-10-06.
+            "A touch or sit with \"rezzed_in_this_recording\" clicks a thing that appeared while "
+            "they taught it (event \"appeared_in\"), and its as_step's object is \"{appeared_N}\": "
+            "give the step that brings that thing out -- rez, or wait_for_object for what a script "
+            "brought out -- \"as\": \"appeared_N\" (or rename both), so every run uses the very one "
+            "it just made, never an older one of the same name standing nearer. A menu with "
+            "\"text_box\": true asked them to type something; \"typed\": true says only that they "
+            "did, never what -- a skill cannot type, so that part stays theirs. "
+            "\"answered_by_assistant\" marks a menu you answered, not them. "
+            // </Lumen>
+            "Write the steps from "
             "what happened above, in that order -- the same clicks, menus and buttons.";
         return result;
     }

@@ -49,6 +49,7 @@
 #include "lluri.h"
 #include "llstartup.h"
 #include "lltimer.h"
+#include "lltoolpie.h"   // the click that sat the user down, while teaching
 #include "llviewerinventory.h"
 #include "llviewerobject.h"
 #include "llviewerobjectlist.h"
@@ -597,22 +598,7 @@ public:
         }
 
         // While teaching: what came into the inventory, for the model to see.
-        if ((mask & LLInventoryObserver::ADD) && self.mTeaching)
-        {
-            for (const LLUUID& id : gInventory.getAddedIDs())
-            {
-                if (LLViewerInventoryItem* item = gInventory.getItem(id))
-                {
-                    LLSD e;
-                    e["kind"] = "item_arrived";
-                    e["item_id"] = id;
-                    e["name"] = item->getName();
-                    if (const LLViewerInventoryCategory* c = gInventory.getCategory(item->getParentUUID()))
-                        e["folder"] = c->getName();
-                    self.noteTeachEvent(e);
-                }
-            }
-        }
+        if ((mask & LLInventoryObserver::ADD) && self.mTeaching) self.noteArrivals();
 
         // A card in the skills folder added, changed, renamed or taken away.
         const LLUUID folder = self.skillsFolder();
@@ -1434,6 +1420,7 @@ namespace
         return root ? root->getID() : LLUUID::null;
     }
 
+    // Seated avatars hang off the root too, and are not parts: skipped.
     S32 linkNumber(LLViewerObject* prim)
     {
         LLViewerObject* root = prim ? prim->getRootEdit() : nullptr;
@@ -1446,34 +1433,219 @@ namespace
         }
         return 1;
     }
+
+    // Requests the endpoint is carrying out right now (LumenAISkills::EndpointActing).
+    S32 gEndpointActing = 0;
+
+    // Fifteen minutes is a long routine; a recording forgotten stops by itself.
+    const F64 TEACH_LONGEST = 900.0;
+    // A long recording is cut, oldest first -- but only what the inventory and
+    // the region brought in. Past the ceiling even a click or a menu goes, or a
+    // script opening a menu many times a second would grow it without end.
+    const S32 TEACH_KEPT = 400;
+    const S32 TEACH_CEILING = 1000;
+    // More new items than this at once is a folder loading, not something given.
+    const S32 TEACH_BURST = 8;
+    // An llTextBox arrives as a ScriptDialog whose one button stands for the
+    // box the user types into (TEXTBOX_MAGIC_TOKEN, lllslconstants.h).
+    const char* const TEXT_BOX_BUTTON = "!!llTextBox!!";
+
+    /**
+     * Which part of a linkset, said without the link number: that counts the
+     * parts in the order they reached this viewer, which need not be the same
+     * next time (the review, 2026-10-06). Its name, its size and where it sits
+     * on the root are the same in every session.
+     */
+    LLSD partOf(LLViewerObject* prim)
+    {
+        LLSD part;
+        const std::string name = LumenAIControl::instanceExists()
+            ? LumenAIControl::instance().objectNameFor(prim->getID()) : std::string();
+        if (!name.empty()) part["name"] = name;
+        const LLVector3 at = prim->getPosition();   // a child's place, in its root's frame
+        const LLVector3 size = prim->getScale();
+        LLSD offset, scale;
+        for (S32 i = 0; i < 3; ++i)
+        {
+            offset.append(ll_round(at.mV[i], 0.001f));
+            scale.append(ll_round(size.mV[i], 0.001f));
+        }
+        part["offset_from_root"] = offset;
+        part["scale"] = scale;
+        return part;
+    }
+
+    /** The part the user clicked to sit on this seat, when their last click was on it; else null. */
+    LLViewerObject* sitClick(LLViewerObject* seat_root)
+    {
+        if (!seat_root || !LLToolPie::instanceExists()) return nullptr;
+        const LLPointer<LLViewerObject> picked = LLToolPie::getInstance()->getPick().getObject();
+        LLViewerObject* prim = picked.get();
+        if (!prim || prim->isDead() || prim->isAvatar() || prim == seat_root
+            || prim->getRootEdit() != seat_root)
+            return nullptr;
+        return prim;
+    }
+
+    /**
+     * The number of the event in which this thing of the user's appeared while
+     * teaching, or 0. That event is marked, so a long recording keeps it.
+     */
+    S32 appearedIn(LLSD& events, const LLUUID& id)
+    {
+        for (S32 i = (S32)events.size() - 1; i >= 0; --i)
+        {
+            const LLSD& e = events[i];   // read through const: a missing field is not added
+            if (e["kind"].asString() != "object_appeared" || e["object_id"].asUUID() != id) continue;
+            if (e["owner"].asString() != "you") return 0;
+            const S32 n = e["n"].asInteger();
+            events[i]["used_later"] = true;
+            return n;
+        }
+        return 0;
+    }
+
+    /** Names that had not arrived when the thing happened, and the steps copied from them. */
+    void fillNames(LLSD& events)
+    {
+        for (S32 i = 0; i < (S32)events.size(); ++i)
+        {
+            LLSD& e = events[i];
+            if (!e.has("object_id")) continue;
+            if (!e.has("name"))
+            {
+                LLViewerObject* o = gObjectList.findObject(e["object_id"].asUUID());
+                const std::string name = o ? thingName(o) : std::string();
+                if (!name.empty()) e["name"] = name;
+                if (!o && e["kind"].asString() == "object_appeared") e["gone_since"] = true;
+            }
+            // The step to copy kept the empty name it was made with, and a skill
+            // saved from it failed every run with 'nothing called ""'.
+            const LLSD& ce = e;
+            if (ce.has("name") && ce["as_step"]["object"].isMap() && ce["as_step"]["object"].has("near")
+                && ce["as_step"]["object"]["near"].asString().empty())
+            {
+                const LLSD name = ce["name"];
+                e["as_step"]["object"]["near"] = name;
+            }
+            if (ce.has("prim_id") && ce["part"].isMap() && !ce["part"].has("name")
+                && LumenAIControl::instanceExists())
+            {
+                const std::string part_name = LumenAIControl::instance().objectNameFor(ce["prim_id"].asUUID());
+                if (!part_name.empty()) e["part"]["name"] = part_name;
+            }
+        }
+    }
+}
+
+LumenAISkills::EndpointActing::EndpointActing()
+{
+    ++gEndpointActing;
+}
+
+LumenAISkills::EndpointActing::~EndpointActing()
+{
+    --gEndpointActing;
 }
 
 void LumenAISkills::noteTeachEvent(LLSD event)
 {
+    // A number of its own, which the model, the log and the menus share: a
+    // place in the list moves when the list is cut, and "pressed" was written
+    // onto whatever had moved into the menu's place (the review, 2026-10-06).
+    event["n"] = ++mTeachNext;
     event["t"] = ll_round((F32)(LLTimer::getTotalSeconds() - mTeachStarted), 0.1f);
     mTeachEvents.append(event);
     // A routine is minutes, not hours; a recording left on is cut, not grown.
-    if (mTeachEvents.size() > 400)
+    // What goes first is what the inventory and the region brought in -- never
+    // a click, a menu or a sit, which are the routine itself, and cutting the
+    // first of them lost the steps a skill begins with.
+    while ((S32)mTeachEvents.size() > TEACH_KEPT)
     {
-        LLSD kept = LLSD::emptyArray();
-        for (S32 i = (S32)mTeachEvents.size() - 400; i < (S32)mTeachEvents.size(); ++i) kept.append(mTeachEvents[i]);
-        mTeachEvents = kept;
+        S32 drop = -1;
+        for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
+        {
+            const LLSD& e = mTeachEvents[i];
+            const std::string kind = e["kind"].asString();
+            if (kind == "item_arrived" || kind == "items_loaded"
+                || (kind == "object_appeared" && !e.has("used_later")))
+            {
+                drop = i;
+                break;
+            }
+        }
+        if (drop < 0)
+        {
+            if ((S32)mTeachEvents.size() <= TEACH_CEILING) break;
+            drop = 0;
+        }
+        mTeachEvents.erase(drop);
+        mTeachTruncated = true;
     }
+}
+
+void LumenAISkills::noteArrivals()
+{
+    // Only what really came in. The inventory calls an item "added" whenever
+    // this viewer first hears of it, so every outfit link, a folder opened for
+    // the first time and the fetch after login all counted as arriving, and
+    // pushed the real steps out of the recording (the review, 2026-10-06).
+    const LLUUID cof = LLAppearanceMgr::instance().getCOF();
+    const LLUUID trash = gInventory.findCategoryUUIDForType(LLFolderType::FT_TRASH);
+    const LLUUID library = gInventory.getLibraryRootFolderID();
+    // An item made before teaching began was only loaded now. Its creation
+    // date is when it reached this inventory -- what the item's "Acquired"
+    // and the Recent tab show -- and a server clock a little off is allowed for.
+    const time_t began = time_corrected() - (time_t)(LLTimer::getTotalSeconds() - mTeachStarted) - 120;
+    std::vector<LLSD> fresh;
+    for (const LLUUID& id : gInventory.getAddedIDs())
+    {
+        LLViewerInventoryItem* item = gInventory.getItem(id);
+        if (!item || item->getIsLinkType()) continue;
+        if (cof.notNull() && gInventory.isObjectDescendentOf(id, cof)) continue;
+        if (trash.notNull() && gInventory.isObjectDescendentOf(id, trash)) continue;
+        if (library.notNull() && gInventory.isObjectDescendentOf(id, library)) continue;
+        if (item->getCreationDate() != 0 && item->getCreationDate() < began) continue;
+        LLSD e;
+        e["kind"] = "item_arrived";
+        e["item_id"] = id;
+        e["name"] = item->getName();
+        if (const LLViewerInventoryCategory* c = gInventory.getCategory(item->getParentUUID()))
+            e["folder"] = c->getName();
+        fresh.push_back(e);
+    }
+    if ((S32)fresh.size() > TEACH_BURST)
+    {
+        // Many at once is a folder loading, not something given: one line for all.
+        LLSD e;
+        e["kind"] = "items_loaded";
+        e["count"] = (S32)fresh.size();
+        noteTeachEvent(e);
+        return;
+    }
+    for (const LLSD& e : fresh) noteTeachEvent(e);
 }
 
 // static
 void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const LLVector2& uv, S32 face)
 {
-    if (!object || gStepRunning || !LumenAISkills::instanceExists()) return;
+    // A touch the endpoint sends -- a model's through the touch tool, or a
+    // skill's step -- is the assistant's, not the user's (the review, 2026-10-06).
+    if (!object || gStepRunning || gEndpointActing > 0 || !LumenAISkills::instanceExists()) return;
     LumenAISkills& self = LumenAISkills::instance();
     if (!self.mTeaching) return;
     self.pollTeaching();   // what came before it, noted first (see the menus)
+    if (!self.mTeaching) return;   // that was the end of the fifteenth minute
     LLViewerObject* root = object->getRootEdit();
     LLSD e;
     e["kind"] = "touch";
     e["object_id"] = root->getID();
     e["link"] = linkNumber(object);
-    if (object != root) e["prim_id"] = object->getID();
+    if (object != root)
+    {
+        e["prim_id"] = object->getID();
+        e["part"] = partOf(object);
+    }
     e["face"] = face;
     // Both places on the face: across it (llDetectedTouchST) and on its
     // picture (llDetectedTouchUV). They differ when the picture is a sheet of
@@ -1493,7 +1665,10 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
     LLSD step;
     step["do"] = "touch";
     LLSD ref;
-    if (root->isAttachment())
+    S32 appeared = 0;
+    // Only the user's own: a tip jar worn by somebody else became a step on the
+    // user's outfit, and failed every run with "nothing worn" (the review, 2026-10-06).
+    if (root->isAttachment() && isAgentAvatarValid() && root->getAvatarAncestor() == gAgentAvatarp.get())
     {
         // Worn: by the exact name it has in the inventory, which is what is worn.
         std::string worn_name = name;
@@ -1503,16 +1678,26 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
         e["worn_as"] = worn_name;
         if (root->isHUDAttachment()) e["hud"] = true;
         else e["worn"] = true;
-        if (isAgentAvatarValid())
-            if (LLViewerJointAttachment* at = gAgentAvatarp->getTargetAttachmentPoint(root))
-                e["attached_to"] = at->getName();
+        if (LLViewerJointAttachment* at = gAgentAvatarp->getTargetAttachmentPoint(root))
+            e["attached_to"] = at->getName();
     }
     else
     {
+        if (root->isAttachment()) e["worn_by_someone_else"] = true;
         ref["near"] = name;
         if (root->permYouOwner()) ref["owner"] = "me";
+        // Rezzed while it was being taught: the skill must click the one its
+        // own run brings out, not the nearest of that name -- yesterday's may
+        // still stand closer (the review, 2026-10-06).
+        appeared = appearedIn(self.mTeachEvents, root->getID());
     }
-    step["object"] = ref;
+    if (appeared > 0)
+    {
+        e["rezzed_in_this_recording"] = true;
+        e["appeared_in"] = appeared;
+        step["object"] = llformat("{appeared_%d}", appeared);
+    }
+    else step["object"] = ref;
     step["link"] = e["link"];
     step["face"] = face;
     step["spot"] = spot;
@@ -1522,11 +1707,22 @@ void LumenAISkills::noteTouch(LLViewerObject* object, const LLVector2& st, const
     self.noteTeachEvent(e);
 }
 
-void LumenAISkills::startTeaching()
+std::string LumenAISkills::startTeaching()
 {
+    // A running skill's clicks and menus would be noted as the user's
+    // (the review, 2026-10-06).
+    if (mRun && mRun->state == Run::RUNNING)
+    {
+        return "A skill is running right now, and what it does would be noted as the user's. "
+               "Wait until it has finished (or the user presses Clear), then call teach_start.";
+    }
     mTeaching = true;
     mTeachStarted = LLTimer::getTotalSeconds();
+    mTeachStopped = 0.0;
+    mTeachEnded.clear();
     mTeachEvents = LLSD::emptyArray();
+    mTeachNext = 0;
+    mTeachTruncated = false;
     mTeachMenus.clear();
     mTeachMenuPtrs.clear();
     mTeachRoots.clear();
@@ -1546,29 +1742,46 @@ void LumenAISkills::startTeaching()
         {
             if (!LumenAISkills::instanceExists()) return false;
             LumenAISkills& self = LumenAISkills::instance();
-            if (!self.mTeaching || gStepRunning) return false;
+            if (!self.mTeaching) return false;
             const std::string sig = payload["sigtype"].asString();
             const LLUUID id = payload["id"].asUUID();
             if (sig == "add")
             {
                 LLNotificationPtr n = LLNotifications::instance().find(id);
                 if (!n) return false;
+                // A script's menu (an llTextBox arrives as one too), its request
+                // for permissions, and an item offered -- by somebody's object,
+                // by one of the user's own (OwnObjectGiveItem) or by a person.
+                // ObjectGiveItem used to be compared on 13 of its 14 letters, so
+                // no offer was ever noted (the review, 2026-10-06).
+                const std::string kind = n->getName();
+                const bool menu = kind.compare(0, 12, "ScriptDialog") == 0;
+                const bool permission = kind.compare(0, 14, "ScriptQuestion") == 0;
+                const bool offer = kind == "ObjectGiveItem" || kind == "OwnObjectGiveItem"
+                                || kind.compare(0, 12, "UserGiveItem") == 0;
+                if (!menu && !permission && !offer) return false;
                 // In the order it happened. The seat and new objects are looked
                 // for twice a second, but a seat's script sends its menu the
                 // moment the avatar sits: noted as "menu, then sat on", and a
                 // skill written that way waited for a menu that only sitting
-                // brings (2026-10-06, the beta grid). Catch up first.
+                // brings (2026-10-06, the beta grid). Catch up first -- after
+                // the filter, so an IM or a group notice costs no look round.
                 self.pollTeaching();
-                const std::string kind = n->getName();
-                if (kind.compare(0, 12, "ScriptDialog") != 0 && kind != "ScriptTextBox"
-                    && kind.compare(0, 14, "ScriptQuestion") != 0 && kind.compare(0, 13, "ObjectGiveItem") != 0)
-                    return false;
+                if (!self.mTeaching) return false;   // that was the end of the fifteenth minute
                 LLSD e;
-                e["kind"] = kind.compare(0, 14, "ScriptQuestion") == 0 ? "permission_request"
-                          : kind.compare(0, 13, "ObjectGiveItem") == 0 ? "item_offered" : "menu";
+                e["kind"] = permission ? "permission_request" : offer ? "item_offered" : "menu";
                 e["text"] = n->getMessage();
                 const LLSD subs = n->getSubstitutions();
-                if (subs.has("TITLE")) e["from"] = subs["TITLE"];
+                if (offer)
+                {
+                    // An offer names its giver as OBJECTFROMNAME and NAME; under
+                    // RLV's @shownames, NAME is what the user was shown instead.
+                    if (!n->getPayload()["rlv_shownames"].asBoolean() && subs.has("OBJECTFROMNAME"))
+                        e["from"] = subs["OBJECTFROMNAME"];
+                    else if (subs.has("NAME")) e["from"] = subs["NAME"];
+                    if (subs.has("[OBJECTNAME]")) e["item"] = subs["[OBJECTNAME]"];   // sic, brackets and all
+                }
+                else if (subs.has("TITLE")) e["from"] = subs["TITLE"];
                 else if (subs.has("OBJECTNAME")) e["from"] = subs["OBJECTNAME"];
                 LLSD buttons = LLSD::emptyArray();
                 if (LLNotificationFormPtr form = n->getForm())
@@ -1576,28 +1789,73 @@ void LumenAISkills::startTeaching()
                     for (S32 i = 0; i < form->getNumElements(); ++i)
                     {
                         const LLSD el = form->getElement(i);
-                        if (el["type"].asString() == "button")
-                            buttons.append(el.has("text") ? el["text"] : el["name"]);
+                        if (el["type"].asString() != "button") continue;
+                        if (el["name"].asString() == TEXT_BOX_BUTTON)
+                        {
+                            e["text_box"] = true;   // a box to type into, not a button
+                            continue;
+                        }
+                        buttons.append(el.has("text") ? el["text"] : el["name"]);
                     }
                 }
                 if (buttons.size() > 0) e["buttons"] = buttons;
                 self.noteTeachEvent(e);
-                self.mTeachMenus[id] = (S32)self.mTeachEvents.size() - 1;
+                self.mTeachMenus[id] = self.mTeachNext;   // by its number: cutting moves its place
                 self.mTeachMenuPtrs[id] = n;
             }
-            else if (sig == "delete")
+            else if (sig == "delete" || sig == "change")
             {
                 std::map<LLUUID, S32>::iterator m = self.mTeachMenus.find(id);
                 std::map<LLUUID, LLNotificationPtr>::iterator p = self.mTeachMenuPtrs.find(id);
-                if (m != self.mTeachMenus.end() && p != self.mTeachMenuPtrs.end() && p->second
-                    && m->second < (S32)self.mTeachEvents.size())
+                LLNotificationPtr n = (p != self.mTeachMenuPtrs.end()) ? p->second : LLNotificationPtr();
+                // A change counts once it is the answer; a delete ends it either way.
+                if (sig == "change" && (!n || !n->isRespondedTo())) return false;
+                LLSD* event = nullptr;
+                if (m != self.mTeachMenus.end())
                 {
-                    const std::string pressed = LLNotification::getSelectedOptionName(p->second->getResponse());
-                    if (!pressed.empty()) self.mTeachEvents[m->second]["pressed"] = pressed;
-                    else if (p->second->getResponse().has("message"))
-                        self.mTeachEvents[m->second]["typed"] = p->second->getResponse()["message"];
-                    self.mTeachEvents[m->second]["answered_after"] =
-                        ll_round((F32)(LLTimer::getTotalSeconds() - self.mTeachStarted), 0.1f);
+                    for (S32 i = (S32)self.mTeachEvents.size() - 1; i >= 0; --i)
+                    {
+                        if (self.mTeachEvents[i]["n"].asInteger() == m->second)
+                        {
+                            event = &self.mTeachEvents[i];
+                            break;
+                        }
+                    }
+                }
+                if (event && n && n->isRespondedTo())
+                {
+                    const LLSD response = n->getResponse();
+                    bool given = false;
+                    if (event->has("text_box") && response.has(TEXT_BOX_BUTTON))
+                    {
+                        // Only that they typed: it can be a PIN or a password.
+                        (*event)["typed"] = true;
+                        given = true;
+                    }
+                    else
+                    {
+                        const std::string chosen = LLNotification::getSelectedOptionName(response);
+                        if (!chosen.empty())
+                        {
+                            // The button as the user saw it: "Ignore", not "Client_Side_Ignore".
+                            std::string label = chosen;
+                            if (LLNotificationFormPtr form = n->getForm())
+                            {
+                                const LLSD el = form->getElement(chosen);
+                                if (!el["text"].asString().empty()) label = el["text"].asString();
+                            }
+                            (*event)["pressed"] = label;
+                            given = true;
+                        }
+                    }
+                    // Nothing given -- replaced, timed out -- is not an answer.
+                    if (given)
+                    {
+                        (*event)["answered_after"] =
+                            ll_round((F32)(LLTimer::getTotalSeconds() - self.mTeachStarted), 0.1f);
+                        // Answered by the endpoint (answer_dialogue): the assistant's, not the user's.
+                        if (gEndpointActing > 0) (*event)["answered_by_assistant"] = true;
+                    }
                 }
                 if (m != self.mTeachMenus.end()) self.mTeachMenus.erase(m);
                 if (p != self.mTeachMenuPtrs.end()) self.mTeachMenuPtrs.erase(p);
@@ -1618,6 +1876,13 @@ void LumenAISkills::startTeaching()
         return false;
     });
     LL_INFOS("AISkills") << "teaching: watching what the user does" << LL_ENDL;
+    // On the screen, not only in the model's reply: that it watches, what, and
+    // how to stop it. It began on a model's word alone (the review, 2026-10-06).
+    LumenAIChatFloater::postFromViewer(std::string(),
+        "Lumen is watching what you do, to learn it as a skill: your clicks, the menus and the "
+        "buttons you press, what appears and what comes into your inventory. Say when you are "
+        "done. Clear stops it.");
+    return std::string();
 }
 
 void LumenAISkills::pollTeaching()
@@ -1636,11 +1901,31 @@ void LumenAISkills::pollTeaching()
             LLViewerObject* o = gObjectList.findObject(seat);
             const std::string name = o ? thingName(o) : std::string();
             if (!name.empty()) e["name"] = name;
+            // The part clicked to sit, when the click is known: on a stool
+            // linked to a table the root may seat the avatar somewhere else
+            // (the review, 2026-10-06).
+            if (LLViewerObject* prim = sitClick(o))
+            {
+                e["prim_id"] = prim->getID();
+                e["link"] = linkNumber(prim);
+                e["part"] = partOf(prim);
+            }
             step["do"] = "sit";
-            LLSD ref;
-            ref["near"] = name;
-            if (o && o->permYouOwner()) ref["owner"] = "me";
-            step["object"] = ref;
+            // Rezzed while it was being taught: the one the run brings out, as for a touch.
+            const S32 appeared = appearedIn(mTeachEvents, seat);
+            if (appeared > 0)
+            {
+                e["rezzed_in_this_recording"] = true;
+                e["appeared_in"] = appeared;
+                step["object"] = llformat("{appeared_%d}", appeared);
+            }
+            else
+            {
+                LLSD ref;
+                ref["near"] = name;
+                if (o && o->permYouOwner()) ref["owner"] = "me";
+                step["object"] = ref;
+            }
             e["as_step"] = step;
         }
         else
@@ -1652,21 +1937,20 @@ void LumenAISkills::pollTeaching()
         mTeachSeat = seat;
         noteTeachEvent(e);
     }
-    // Ten minutes is a long routine; a recording forgotten is stopped.
-    if (LLTimer::getTotalSeconds() - mTeachStarted > 900.0)
+    // Fifteen minutes is a long routine; a recording forgotten is stopped. What
+    // was noted is kept, and the next teach_stop says it was cut short.
+    if (LLTimer::getTotalSeconds() - mTeachStarted > TEACH_LONGEST)
     {
-        stopTeaching();
+        endTeaching("time");
         return;
     }
     const LLVector3d me = gAgent.getPositionGlobal();
-    std::set<LLUUID> now;
     const S32 count = gObjectList.getNumObjects();
     for (S32 i = 0; i < count; ++i)
     {
         LLViewerObject* o = gObjectList.getObject(i);
         if (!o || o->isDead() || o->getRootEdit() != o || o->isAvatar() || o->isAttachment()) continue;
         if (o->getPCode() != LL_PCODE_VOLUME) continue;
-        now.insert(o->getID());
         if (mTeachRoots.count(o->getID())) continue;
         mTeachRoots.insert(o->getID());
         const F32 d = (F32)(o->getPositionGlobal() - me).magVec();
@@ -1682,48 +1966,103 @@ void LumenAISkills::pollTeaching()
     }
 }
 
-LLSD LumenAISkills::stopTeaching()
+/** Stops watching; what was noted stays for teach_stop, unless Clear ended it. */
+void LumenAISkills::endTeaching(const std::string& how)
 {
-    LLSD out;
-    if (!mTeaching && mTeachEvents.size() == 0)
-    {
-        out["recorded"] = false;
-        return out;
-    }
+    if (!mTeaching) return;
     mTeaching = false;
+    mTeachStopped = LLTimer::getTotalSeconds();
+    mTeachEnded = how;
     mTeachMenuListener.disconnect();
     LLEventPumps::instance().obtain("mainloop").stopListening("LumenAISkillsTeach");
+    mTeachMenus.clear();
+    mTeachMenuPtrs.clear();
+    // Names, now, while the things are still in view.
+    fillNames(mTeachEvents);
 
-    // Names that had not arrived when the thing happened.
-    for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
-    {
-        LLSD& e = mTeachEvents[i];
-        if (!e.has("object_id") || e.has("name")) continue;
-        LLViewerObject* o = gObjectList.findObject(e["object_id"].asUUID());
-        const std::string name = o ? thingName(o) : std::string();
-        if (!name.empty()) e["name"] = name;
-        if (!o && e["kind"].asString() == "object_appeared") e["gone_since"] = true;
-    }
-    out["recorded"] = true;
-    out["seconds"] = ll_round((F32)(LLTimer::getTotalSeconds() - mTeachStarted), 0.1f);
-    out["events"] = mTeachEvents;
-    LL_INFOS("AISkills") << "teaching: stopped, " << mTeachEvents.size() << " things noted" << LL_ENDL;
-    // What was noted, one line each, for when a skill made from it fails.
-    // Kinds, names and menus' words: no chat, nothing anybody said.
-    for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
+    // What was noted, for when a skill made from it fails: kinds and counts in
+    // the log; the names and menus' words only for LumenAITest, since a menu
+    // can quote what somebody wrote (the review, 2026-10-06).
+    const S32 count = (S32)mTeachEvents.size();
+    std::map<std::string, S32> kinds;
+    for (S32 i = 0; i < count; ++i) ++kinds[mTeachEvents[i]["kind"].asString()];
+    std::string counts;
+    for (const auto& k : kinds) counts += (counts.empty() ? "" : ", ") + llformat("%d ", k.second) + k.first;
+    LL_INFOS("AISkills") << "teaching: stopped" << (how.empty() ? std::string() : " (" + how + ")") << ", "
+                         << count << " things noted" << (count > 0 ? ": " + counts : std::string())
+                         << (mTeachTruncated ? ", some left out" : "") << LL_ENDL;
+    for (S32 i = 0; i < count; ++i)
     {
         const LLSD& e = mTeachEvents[i];
         std::ostringstream line;
-        line << "teaching: " << i + 1 << ". " << e["kind"].asString();
+        line << "teaching: " << e["n"].asInteger() << ". " << e["kind"].asString();
         if (e.has("name")) line << " \"" << e["name"].asString() << "\"";
         if (e["kind"].asString() == "touch")
             line << " link " << e["link"].asInteger() << " face " << e["face"].asInteger();
-        if (e.has("text")) line << " \"" << e["text"].asString().substr(0, 60) << "\"";
+        if (e.has("text")) line << " \"" << utf8str_truncate(e["text"].asString(), 60) << "\"";
         if (e.has("pressed")) line << " pressed \"" << e["pressed"].asString() << "\"";
-        LL_INFOS("AISkills") << line.str() << LL_ENDL;
+        LL_DEBUGS("LumenAITest") << line.str() << LL_ENDL;
     }
-    mTeachMenus.clear();
-    mTeachMenuPtrs.clear();
+
+    if (how == "cleared")
+    {
+        // What was noted goes with the conversation Clear threw away. Clear
+        // empties the window right after this, so the line waits a moment
+        // and goes into the new conversation.
+        mTeachEvents = LLSD::emptyArray();
+        LLCoros::instance().launch("LumenAISkillsTeachCleared", []()
+        {
+            llcoro::suspendUntilTimeout(0.2f);
+            LumenAIChatFloater::postFromViewer(std::string(),
+                "Lumen has stopped watching what you do, and forgotten what it saw.");
+        });
+    }
+    else if (how == "time")
+    {
+        LumenAIChatFloater::postFromViewer(std::string(),
+            llformat("Lumen stopped watching what you do after %d minutes. What it saw until "
+                     "then is kept for the assistant.", (S32)(TEACH_LONGEST / 60.0)));
+    }
+    else
+    {
+        LumenAIChatFloater::postFromViewer(std::string(), "Lumen has stopped watching what you do.");
+    }
+}
+
+LLSD LumenAISkills::stopTeaching()
+{
+    LLSD out;
+    if (mTeaching) endTeaching(std::string());
+    if (mTeachStarted <= 0.0)
+    {
+        out["recorded"] = false;   // nothing watched, or handed back already
+        return out;
+    }
+    if (mTeachEnded == "cleared")
+    {
+        out["recorded"] = false;
+        out["cleared"] = true;
+    }
+    else
+    {
+        fillNames(mTeachEvents);   // any that arrived since it stopped
+        out["recorded"] = true;
+        out["seconds"] = ll_round((F32)(mTeachStopped - mTeachStarted), 0.1f);
+        if (mTeachEnded == "time")
+        {
+            // It stopped by itself, and anything the user did after that was not seen.
+            out["stopped_early"] = true;
+            out["stopped_after_minutes"] = (S32)(TEACH_LONGEST / 60.0);
+        }
+        if (mTeachTruncated) out["truncated"] = true;
+        out["events"] = mTeachEvents;
+    }
+    // Handed back once: a second teach_stop returned the old recording as if
+    // it were new (the review, 2026-10-06).
+    mTeachEvents = LLSD::emptyArray();
+    mTeachStarted = 0.0;
+    mTeachEnded.clear();
+    mTeachTruncated = false;
     return out;
 }
 
@@ -1804,6 +2143,15 @@ bool LumenAISkills::hasRun(const Skill& skill, const LLSD& inputs) const
 void LumenAISkills::stopAll()
 {
     if (mRun && mRun->state == Run::RUNNING) mRun->stop = true;
+    // Teaching too: Clear is the stop people reach for, and what was noted
+    // goes with the conversation it was for (the review, 2026-10-06) -- also
+    // a recording that stopped by itself and was never handed back.
+    if (mTeaching) endTeaching("cleared");
+    else if (mTeachStarted > 0.0)
+    {
+        mTeachEvents = LLSD::emptyArray();
+        mTeachEnded = "cleared";
+    }
 }
 
 namespace
