@@ -665,6 +665,9 @@ struct LumenAISkills::Run
         LLUUID      id;
         std::string name;
         F64         at = 0.0;
+        // Used up by one step of each kind: a second verify waits for a second
+        // potion, but verify after accept_offer still sees the one just kept.
+        bool        verified = false, offered = false;
     };
     std::vector<Arrival> arrived;
     time_t      started_utc = 0;       //< on the server's clock, as an item's creation date is
@@ -1011,6 +1014,18 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
             error = llformat("step %d clicks something worn without its link and face -- a HUD's "
                              "button is a part and a face; copy the step teaching noted (as_step)", n);
             return false;
+        }
+        // An object found by name needs a name: a click noted before the
+        // object's name arrived was copied with "" and failed every run.
+        for (const char* key : { "object", "from" })
+        {
+            const LLSD& ref = step[key];
+            if (ref.isMap() && ref.has("near") && trim(ref["near"].asString()).empty())
+            {
+                error = llformat("step %d (%s) looks for an object with no name -- give the name it "
+                                 "has in the world", n, what.c_str());
+                return false;
+            }
         }
         if (what == "lookup" && !s.tables.has(step["table"].asString()))
         {
@@ -3881,7 +3896,7 @@ namespace
             {
                 for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
                 {
-                    if (nameMatches(a->name, pattern))
+                    if (!a->verified && nameMatches(a->name, pattern))
                     {
                         if (as.isDefined())
                         {
@@ -3890,7 +3905,7 @@ namespace
                         }
                         // Used up: a second verify of the same name waits for a
                         // second one (the review, 2026-10-06).
-                        run.arrived.erase(a);
+                        a->verified = true;
                         return true;
                     }
                 }
@@ -3926,13 +3941,13 @@ namespace
                 {
                     for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
                     {
-                        if (a->at < began || !nameMatches(a->name, item)) continue;
+                        if (a->offered || a->at < began || !nameMatches(a->name, item)) continue;
                         if (as.isDefined())
                         {
                             LLSD v; v["item_id"] = a->id; v["name"] = a->name;
                             run.vars[trim(as.asString())] = v;
                         }
-                        run.arrived.erase(a);   // used up, as verify does
+                        a->offered = true;   // used up by this kind of step, as verify does
                         return true;
                     }
                 }
