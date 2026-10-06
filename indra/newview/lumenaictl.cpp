@@ -10932,6 +10932,12 @@ namespace
     bool sBuildUndoing = false;          // an undo under way is not itself recorded
     std::set<U64> sBuildManyAllowed;     // requests the person let change more than three objects
 
+    // Skills being saved, by name (lowered) and tool, with when: run_skill straight
+    // after save_skill found "no skill called" that, since the card arrives a
+    // second or two later, and a model had to guess that it should try again
+    // (2026-10-06, Claude Code, "save it and run it straight away").
+    std::map<std::string, F64> sSkillsSaving;
+
     void recordBuildChange(const LLUUID& id, const std::string& name)
     {
         if (sBuildUndoing) return;
@@ -29626,6 +29632,20 @@ if (method == "camera")
         const LumenAISkills::Skill* found = LumenAISkills::instance().findAny(asked);
         if (!found)
         {
+            // Being saved this moment: wait for its card, then run it.
+            auto saving = sSkillsSaving.find(utf8str_tolower(asked));
+            if (saving == sSkillsSaving.end()) saving = sSkillsSaving.find(asked);
+            if (saving != sSkillsSaving.end() && LLTimer::getTotalSeconds() - saving->second < 30.0)
+            {
+                mSettle = llmax(mSettle, 15.0);
+                LLSD w;
+                w["settling"] = true;
+                w["skill"] = asked;
+                w["note"] = "It is still being saved -- its card is on its way into #Lumen/#Skills. "
+                            "Call this again in a few seconds with exactly the same arguments; it "
+                            "runs as soon as the card is there.";
+                return w;
+            }
             LLSD e; e["code"] = -32602;
             e["message"] = "There is no skill called \"" + asked + "\". viewer / skills lists the "
                            "user's skills, each with its name and its tool.";
@@ -30070,6 +30090,8 @@ if (method == "camera")
 
         LL_INFOS("AISkills") << (existing.notNull() ? "changing" : "saving") << " the skill \""
                              << skill.name << "\"" << LL_ENDL;
+        sSkillsSaving[utf8str_tolower(skill.name)] = LLTimer::getTotalSeconds();
+        sSkillsSaving[skill.tool] = LLTimer::getTotalSeconds();
         LLSD result;
         result["saving"] = true;
         result["name"] = skill.name;

@@ -958,7 +958,9 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
 
     if (!card["steps"].isArray() || card["steps"].size() == 0)
     {
-        error = "it has no steps";
+        error = "it has no steps -- each is an object whose \"do\" says what it does: say (with "
+                "\"text\", a line in the conversation), touch, dialog, rez, sit, wait_for_object, "
+                "take, verify, find_item, lookup, accept_offer, stand or web_call";
         return false;
     }
     if (card["steps"].size() > 60)
@@ -1013,7 +1015,28 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
         const BlockRule* rule = blockRule(what);
         if (!rule)
         {
-            error = llformat("step %d does \"%s\", which is not something a skill can do", n, what.c_str());
+            // Said with what it CAN do: told only "not something a skill can
+            // do", a model tried "reply", then "tell", then a card with no steps,
+            // and gave up (2026-10-06, Claude Code, "a skill that says hej verden").
+            std::string kinds;
+            for (const BlockRule& r : blockRules())
+            {
+                if (!kinds.empty()) kinds += "; ";
+                kinds += r.name;
+                if (!r.required.empty())
+                {
+                    kinds += " (";
+                    for (size_t i = 0; i < r.required.size(); ++i)
+                    {
+                        if (i) kinds += ", ";
+                        kinds += r.required[i];
+                    }
+                    kinds += ")";
+                }
+            }
+            error = llformat("step %d does \"%s\", which is not something a skill can do. A step's "
+                             "\"do\" is one of: ", n, what.c_str()) + kinds
+                  + " -- \"say\" shows a line in the conversation with the assistant";
             return false;
         }
         for (const char* key : rule->required)
