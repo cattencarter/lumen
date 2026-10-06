@@ -436,7 +436,8 @@ namespace
                          LLSD* structured = nullptr,
                          const std::function<bool()>& still_wanted = nullptr,
                          const std::function<void()>& on_waiting = nullptr,
-                         LLSD* images = nullptr)
+                         LLSD* images = nullptr,
+                         const std::function<void()>& on_answered = nullptr)
     {
         is_error = false;
 
@@ -492,6 +493,11 @@ namespace
                                "viewer's question, so nothing was done.";
                     }
                 }
+                // <Lumen> Answered: the bar says what is being done again. A
+                // skill runs on after its question for up to ten minutes, and
+                // the bar went on asking for an answer already given (the
+                // review, 2026-10-06).
+                if (on_answered && still_wanted()) on_answered();
                 reply = rpc("tools/call", params);
             }
             // <Lumen> A skill says how long it may take (task 022): its steps wait
@@ -908,6 +914,7 @@ namespace
             if (action == "test_skill")    return "Trying the skill";
             if (action == "save_skill")    return "Saving the skill";
             if (action == "forget_skill")  return "Forgetting the skill";
+            if (action == "run_skill")     return "Running a skill";
             if (action == "music")         return "Seeing to the music";   // <Lumen>
         }
 
@@ -925,7 +932,51 @@ namespace
                 ? LumenAISkills::instance().find(name) : nullptr;
             return skill ? "Running \"" + skill->name + "\"" : std::string("Running a skill");
         }
+        // The same skill reached by its name through viewer / run_skill.
+        if (name == "viewer" && action == "run_skill" && LumenAISkills::instanceExists())
+        {
+            const LumenAISkills::Skill* skill = LumenAISkills::instance().findAny(args["skill"].asString());
+            if (skill) return "Running \"" + skill->name + "\"";
+        }
         return humanAction(name, action);
+    }
+
+    /**
+     * <Lumen> Why a skill started by its trigger phrase did not run, for the
+     * person who typed it. The endpoint words its refusals for a model --
+     * "Accept it -- do not try again", "Tell them plainly", a block of JSON
+     * after them -- and with a trigger phrase no model stands in between, so
+     * those words reached the person as they were (the review, 2026-10-06).
+     */
+    std::string skillRefusalForUser(const std::string& skill, const std::string& answer)
+    {
+        const std::string called = "\"" + skill + "\"";
+        if (answer.find("always to answer No") != std::string::npos)
+        {
+            return called + " was not run: the viewer is set to answer No to it without asking. "
+                   "To be asked again, find \"When the assistant wants...\" in Preferences > "
+                   "Notifications > Alerts and tick Show.";
+        }
+        if (answer.find("answered No") != std::string::npos)
+        {
+            return called + " was not run, as you answered No."
+                 + (answer.find("Always choose this option") != std::string::npos
+                    ? std::string(" The viewer will answer No to it from now on without asking; "
+                                  "that is undone in Preferences > Notifications > Alerts.")
+                    : std::string());
+        }
+        if (answer.find("Another skill") != std::string::npos)
+        {
+            return called + " was not run: another skill is still running. Wait for it to "
+                   "finish, or press Clear to stop it.";
+        }
+        if (answer.find("no such skill") != std::string::npos)
+        {
+            return called + " is not there any more: its notecard in #Lumen/#Skills has "
+                   "changed or gone.";
+        }
+        // Anything else as the viewer put it, without what follows for the model.
+        return called + " did not run. " + answer.substr(0, answer.find('\n'));
     }
 
     /**
@@ -2735,28 +2786,49 @@ bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
     const LumenAISkills::Skill* skill = tool.empty() ? nullptr : skills.find(tool);
     if (!skill || !skills.checkInputs(*skill, LLSD::emptyMap()).empty()) return false;
 
-    setBusy(true, "Running \"" + skill->name + "\"");
+    const std::string label = "Running \"" + skill->name + "\"";
+    const std::string skill_name = skill->name;
+    setBusy(true, label);
     LumenAIUndo::instance().beginRequest(text);
     LLHandle<LLFloater> handle = getHandle();
-    LLCoros::instance().launch("LumenAISkillTrigger", [handle, tool]()
+    // <Lumen> Clear stops the run (stopAll) and bumps this. The run can take
+    // 15 s to notice, a web call a minute, and when it did, this coroutine
+    // ended the change set of the turn begun after Clear and turned Send back
+    // on in the middle of it (the review, 2026-10-06). So it touches the
+    // window only while it is still this turn. It still waits for the run to
+    // say how it ended: an ending nobody collects is handed back for five
+    // minutes, and the same phrase would then not start it again.
+    const S32 gen = mTurnGen;
+    LLCoros::instance().launch("LumenAISkillTrigger", [handle, tool, gen, label, skill_name]()
     {
+        auto ours = [handle, gen]() -> LumenAIChatFloater*
+        {
+            LumenAIChatFloater* f = dynamic_cast<LumenAIChatFloater*>(handle.get());
+            return (f && f->mTurnGen == gen) ? f : nullptr;
+        };
         auto wanted = [handle]() { return handle.get() != nullptr; };
         bool is_error = false;
         const std::string answer = callTool(tool, LLSD::emptyMap(), LLUUID::generateNewID().asString(),
                                             is_error, nullptr, wanted,
-                                            [handle]()
+                                            [ours]()
                                             {
-                                                if (LumenAIChatFloater* f = dynamic_cast<LumenAIChatFloater*>(handle.get()))
+                                                if (LumenAIChatFloater* f = ours())
                                                     f->setActivity(ASK_WAITING_LABEL);
+                                            },
+                                            nullptr,
+                                            [ours, label]()
+                                            {
+                                                // The question answered: the run, not the question.
+                                                if (LumenAIChatFloater* f = ours()) f->setActivity(label);
                                             });
-        if (LumenAIChatFloater* self = dynamic_cast<LumenAIChatFloater*>(handle.get()))
+        if (LumenAIChatFloater* self = ours())
         {
             // The steps and how it ended already showed in the conversation;
             // anything else -- "Not now", a missing card -- is said here.
             if (is_error && answer.find("stopped at step") == std::string::npos
                 && answer.find("was stopped at step") == std::string::npos)
             {
-                self->sayNote(answer);
+                self->sayNote(skillRefusalForUser(skill_name, answer));
             }
             self->setBusy(false);
         }
@@ -3839,8 +3911,9 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
                     bool ok = false;
                     args = jsonParse(args.asString(), ok);
                 }
-                const std::string said = humanAction(params["item"]["tool"].asString(),
-                                                     args["action"].asString());
+                // toolLabel, not humanAction: a skill by its own name, not
+                // skill_brew_a_potion (the review, 2026-10-06).
+                const std::string said = toolLabel(params["item"]["tool"].asString(), args);
                 if (!said.empty()) setActivity(said);
             }
         }
@@ -4088,8 +4161,8 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
                 const size_t last = group.rfind("__");
                 if (last != std::string::npos) group = group.substr(last + 2);
 
-                const std::string act = (*it)["input"]["action"].asString();
-                const std::string said = humanAction(group, act);
+                // toolLabel names a skill as the user does (the review, 2026-10-06).
+                const std::string said = toolLabel(group, (*it)["input"]);
                 if (!said.empty()) setActivity(said);
             }
         }
@@ -4237,7 +4310,7 @@ void LumenAIChatFloater::runVibeTurn(const std::string& user_text)
                 std::string group = entry["title"].asString();
                 const std::string prefix = "second_life_";
                 if (group.compare(0, prefix.size(), prefix) == 0) group = group.substr(prefix.size());
-                const std::string said = humanAction(group, entry["detail"]["input"]["action"].asString());
+                const std::string said = toolLabel(group, entry["detail"]["input"]);   // a skill by its name
                 if (!said.empty()) setActivity(said);
                 thinkingAfterStep();
                 if (++tool_calls >= MAX_TOOL_TURNS * 2)
@@ -4566,7 +4639,8 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     LLSD structured;   // <Lumen>
                     const std::string result = ok
                         ? callTool(name, args, call_id, is_error, &structured, stillMine,
-                                   [&]() { setActivity(ASK_WAITING_LABEL); }, &turn_images)
+                                   [&]() { setActivity(ASK_WAITING_LABEL); }, &turn_images,
+                                   [&]() { setActivity(toolLabel(name, args)); })
                         : std::string("Could not read the arguments for this call.");
                     if (!stillMine()) return;   // <Lumen> it may have waited for the user
                     // <Lumen> catch_up is drawn rather than described
@@ -4654,7 +4728,8 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
                     LLSD images = LLSD::emptyArray();   // <Lumen> task 015
                     const std::string result =
                         callTool(name, (*it)["input"], call_id, is_error, &structured,
-                                 stillMine, [&]() { setActivity(ASK_WAITING_LABEL); }, &images);
+                                 stillMine, [&]() { setActivity(ASK_WAITING_LABEL); }, &images,
+                                 [&]() { setActivity(toolLabel(name, (*it)["input"])); });
                     if (!stillMine()) return;   // <Lumen> it may have waited for the user
                     // <Lumen> catch_up is drawn rather than described
                     noteCatchUp(name, (*it)["input"], structured, is_error);

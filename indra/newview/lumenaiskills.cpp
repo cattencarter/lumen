@@ -92,10 +92,75 @@ namespace
     const F64 DEFAULT_WAIT = 30.0;
     const F64 LONGEST_WAIT = 300.0;
 
+    /**
+     * One letter in lower case, by table. utf8str_tolower() ends in towlower(),
+     * which follows the C locale -- and the viewer never sets one, so on a Mac
+     * 'Ä' stayed 'Ä' and no Cyrillic letter changed at all (the review,
+     * 2026-10-06). Latin-1, Latin Extended-A, Greek and Cyrillic; anything
+     * else is left as it is.
+     */
+    llwchar lowerLetter(llwchar c)
+    {
+        if (c < 0x80) return (c >= 'A' && c <= 'Z') ? (llwchar)(c + 0x20) : c;
+        if (c < 0x100)   // Latin-1: U+00C0 to U+00DE, but not the multiplication sign
+            return (c >= 0xC0 && c <= 0xDE && c != 0xD7) ? (llwchar)(c + 0x20) : c;
+        if (c <= 0x17F)  // Latin Extended-A: pairs, the capital first
+        {
+            if (c == 0x130) return (llwchar)'i';      // capital I with a dot, as in Turkish
+            if (c == 0x178) return (llwchar)0xFF;     // capital Y with a diaeresis
+            if (c <= 0x137 || (c >= 0x14A && c <= 0x177))
+                return (c % 2 == 0) ? (llwchar)(c + 1) : c;
+            if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E))
+                return (c % 2 == 1) ? (llwchar)(c + 1) : c;
+            return c;
+        }
+        if (c >= 0x370 && c <= 0x3FF)   // Greek, the accented capitals too
+        {
+            if (c == 0x386) return (llwchar)0x3AC;                    // the accented alpha
+            if (c >= 0x388 && c <= 0x38A) return (llwchar)(c + 0x25); // epsilon, eta, iota
+            if (c == 0x38C) return (llwchar)0x3CC;                    // omicron
+            if (c == 0x38E || c == 0x38F) return (llwchar)(c + 0x3F); // upsilon, omega
+            if (c >= 0x391 && c <= 0x3AB && c != 0x3A2) return (llwchar)(c + 0x20);
+            // Final sigma is sigma: a word in capitals ends in a capital sigma,
+            // which lowers to the middle form, and the same word typed ends in
+            // the final one.
+            if (c == 0x3C2) return (llwchar)0x3C3;
+            return c;
+        }
+        if (c >= 0x400 && c <= 0x4FF)   // Cyrillic
+        {
+            if (c <= 0x40F) return (llwchar)(c + 0x50);   // U+0400 to U+040F
+            if (c <= 0x42F) return (llwchar)(c + 0x20);   // U+0410 to U+042F, the alphabet
+            if ((c >= 0x460 && c <= 0x481) || (c >= 0x48A && c <= 0x4BF) || c >= 0x4D0)
+                return (c % 2 == 0) ? (llwchar)(c + 1) : c;
+            if (c == 0x4C0) return (llwchar)0x4CF;
+            if (c >= 0x4C1 && c <= 0x4CE) return (c % 2 == 1) ? (llwchar)(c + 1) : c;
+            return c;
+        }
+        if (c == 0x1E9E) return (llwchar)0xDF;   // capital sharp s
+        return c;
+    }
+
     /** Lowercase for every alphabet, not only English: "Wähle" and "WÄHLE" match. */
     std::string lower(const std::string& s)
     {
-        return utf8str_tolower(s);
+        bool plain = true;
+        for (unsigned char c : s)
+        {
+            if (c >= 0x80) { plain = false; break; }
+        }
+        if (plain)   // most names, every kind and key: no need to go wide
+        {
+            std::string out(s);
+            for (char& c : out)
+            {
+                if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+            }
+            return out;
+        }
+        LLWString wide = utf8str_to_wstring(s);
+        for (llwchar& c : wide) c = lowerLetter(c);
+        return wstring_to_utf8str(wide);
     }
 
     std::string trim(const std::string& s)
@@ -533,7 +598,12 @@ namespace
     {
         if (!LumenAIChatFloater::postFromViewer(std::string(), note))
         {
-            LL_INFOS("AISkills") << note << LL_ENDL;
+            // Nobody saw it, and the log is no place for it either: a line
+            // names the person's items and objects and the inputs they gave,
+            // and a `say` line can quote a web answer. The runner logs "step
+            // N/M <kind>" for each step; the words only with LumenAITest on
+            // (the review, 2026-10-06).
+            LL_DEBUGS("LumenAITest") << "SKILL " << note << LL_ENDL;
         }
     }
 }
@@ -1913,6 +1983,8 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
         {
             if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; between = true; break; }
             const LLSD& step = r->skill.steps[r->step];
+            // What the log keeps of a step: never its words (see progress()).
+            LL_INFOS("AISkills") << "step " << r->step + 1 << "/" << count << " " << step["do"].asString() << LL_ENDL;
             if (step["do"].asString() != "say")
             {
                 // In the words of this run: "find Mint", not "find {recipe.herbs.0}".
