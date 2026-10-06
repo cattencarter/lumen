@@ -128,15 +128,28 @@ public:
     std::string objectNameFor(const LLUUID& id);
 
     /**
+     * <Lumen> What inTheWay could and could not do, so that "the space it
+     * fills was checked" is only ever said when it was (the review,
+     * 2026-10-06).
+     */
+    struct WayCheck
+    {
+        bool flat = false;          // under 8 cm along its up axis: a rug, a mat
+        bool cut_short = false;     // a line through it was not followed to its end
+        std::vector<std::string> unseen;   // what it could not see, in words
+    };
+
+    /**
      * <Lumen> place and set: the solid things inside the space `obj` would
      * fill with its root at `new_root`, its own frame (`frame`, box
      * [lmin, lmax] from its root, as it stands now) turned to `to_new`.
-     * Deepest first; `words` names the first four for a sentence.
+     * Deepest first; `words` names the first four for a sentence; `how`
+     * says what the check could not do.
      */
     LLSD inTheWay(LLViewerObject* obj, const std::vector<LLViewerObject*>& solid,
                   const LLQuaternion& frame, const LLVector3& lmin, const LLVector3& lmax,
                   const LLVector3& new_root, const LLQuaternion& to_new,
-                  const LLVector3& wall_n, std::string& words) const;
+                  const LLVector3& wall_n, std::string& words, WayCheck& how) const;
 
     // <Lumen> worn_by and creator links.
     //
