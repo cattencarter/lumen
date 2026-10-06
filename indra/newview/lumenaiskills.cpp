@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <functional>
 #include <regex>
 #include <set>
 
@@ -81,10 +82,10 @@ namespace
     const F64 DEFAULT_WAIT = 30.0;
     const F64 LONGEST_WAIT = 300.0;
 
-    std::string lower(std::string s)
+    /** Lowercase for every alphabet, not only English: "Wähle" and "WÄHLE" match. */
+    std::string lower(const std::string& s)
     {
-        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        return s;
+        return utf8str_tolower(s);
     }
 
     std::string trim(const std::string& s)
@@ -387,8 +388,27 @@ namespace
 
     std::string slugFor(const std::string& name)
     {
+        // A tool name may only be plain letters, so a skill named in German or
+        // Danish keeps a readable name: "Trank für Fieber" -> trank_fuer_fieber.
+        static const std::pair<const char*, const char*> letters[] = {
+            { "\xc3\xa4", "ae" }, { "\xc3\xb6", "oe" }, { "\xc3\xbc", "ue" }, { "\xc3\x9f", "ss" },
+            { "\xc3\xa6", "ae" }, { "\xc3\xb8", "oe" }, { "\xc3\xa5", "aa" },
+            { "\xc3\xa9", "e" },  { "\xc3\xa8", "e" },  { "\xc3\xaa", "e" },  { "\xc3\xab", "e" },
+            { "\xc3\xa1", "a" },  { "\xc3\xa0", "a" },  { "\xc3\xa2", "a" },  { "\xc3\xa7", "c" },
+            { "\xc3\xb1", "n" },  { "\xc3\xad", "i" },  { "\xc3\xae", "i" },  { "\xc3\xaf", "i" },
+            { "\xc3\xb3", "o" },  { "\xc3\xb4", "o" },  { "\xc3\xba", "u" },  { "\xc3\xbb", "u" },
+            { "\xc3\xb9", "u" } };
+        std::string plain = lower(name);
+        for (const auto& l : letters)
+        {
+            for (size_t at = plain.find(l.first); at != std::string::npos; at = plain.find(l.first, at))
+            {
+                plain.replace(at, strlen(l.first), l.second);
+                at += strlen(l.second);
+            }
+        }
         std::string s;
-        for (unsigned char c : lower(name))
+        for (unsigned char c : plain)
         {
             if (std::isalnum(c)) s += (char)c;
             else if (!s.empty() && s.back() != '_') s += '_';
@@ -398,7 +418,9 @@ namespace
         // "mcp__second_life__" in front of it.
         if (s.size() > 32) s.resize(32);
         while (!s.empty() && s.back() == '_') s.pop_back();
-        return s.empty() ? std::string("unnamed") : s;
+        // A name with no Latin letters at all still needs a name of its own.
+        if (s.size() < 3) s = llformat("%08x", (U32)std::hash<std::string>()(name));
+        return s;
     }
 
     /** How a step is put to the person: its own words if it has some. */
