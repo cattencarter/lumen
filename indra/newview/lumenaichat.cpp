@@ -4524,6 +4524,42 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
             body["messages"]   = mMessages;
             body["tools"]      = anthropicTools();
 
+            // <Lumen> The conversation cached too, up to its newest message:
+            // only the system block was marked, so every call resent the whole
+            // conversation -- the request and every tool result so far -- at the
+            // full price, about 23,000 tokens per request against 69,000 read
+            // from the cache (task 019, measured 2026-10-06). A second mark on
+            // the newest message lets the next call read all of it back. On a
+            // copy: marks left on older messages would pile past the four the
+            // API allows.
+            if (mMessages.size() > 0)
+            {
+                LLSD msgs = llsd_clone(mMessages);
+                LLSD& last = msgs[msgs.size() - 1];
+                if (last["content"].isString() && !last["content"].asString().empty())
+                {
+                    LLSD text_block;
+                    text_block["type"] = "text";
+                    text_block["text"] = last["content"].asString();
+                    LLSD blocks = LLSD::emptyArray();
+                    blocks.append(text_block);
+                    last["content"] = blocks;
+                }
+                if (last["content"].isArray() && last["content"].size() > 0)
+                {
+                    LLSD& block = last["content"][last["content"].size() - 1];
+                    const std::string kind = block["type"].asString();
+                    if (kind == "text" ? !block["text"].asString().empty()
+                                       : (kind == "tool_result" || kind == "image" || kind == "tool_use"))
+                    {
+                        block["cache_control"] = LLSD::emptyMap();
+                        block["cache_control"]["type"] = "ephemeral";
+                    }
+                }
+                body["messages"] = msgs;
+            }
+            // </Lumen>
+
             // The tools and the system prompt are ~3,600 tokens and are
             // byte-identical on every call. A question needing five tool round
             // trips was therefore paying for them five times -- measured at 39%
