@@ -28793,7 +28793,7 @@ if (method == "camera")
         }
 
         LLSD result = skills.run(skill, inputs);
-        if (result.isMap() && result["settling"].asBoolean())
+        if (result.isMap() && result.has("settling") && result["settling"].asBoolean())
         {
             // A socket caller is held while it runs, up to a little under the
             // minute Codex gives a tool call; then it is told to call again.
@@ -28942,7 +28942,7 @@ if (method == "camera")
                     return out;
             }
             LLSD result = skills.run(skill, inputs);
-            if (result.isMap() && result["settling"].asBoolean()) mSettle = llmax(mSettle, 45.0);
+            if (result.isMap() && result.has("settling") && result["settling"].asBoolean()) mSettle = llmax(mSettle, 45.0);
             return result;
         }
 

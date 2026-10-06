@@ -704,15 +704,18 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
         return false;
     }
     const std::string body = first_end == std::string::npos ? std::string() : text.substr(first_end + 1);
-    LLSD card;
+    LLSD read;
     std::string json_error;
-    if (!fromJson(body, card, json_error) || !card.isMap())
+    if (!fromJson(body, read, json_error) || !read.isMap())
     {
         error = "what follows the first line is not a readable skill (" +
                 (json_error.empty() ? std::string("not a { ... } block") : json_error) +
                 ") -- a hand edit may have broken it";
         return false;
     }
+    // Read through a const copy: asking a writable LLSD for a field it lacks
+    // ADDS it, empty, and the card would be written back with them.
+    const LLSD card = read;
 
     Skill s;
     s.name = trim(card["name"].asString());
@@ -895,7 +898,19 @@ std::string LumenAISkills::plainSummary(const Skill& skill)
     S32 n = 0;
     for (LLSD::array_const_iterator it = skill.steps.beginArray(); it != skill.steps.endArray(); ++it)
     {
-        out += llformat("%d. ", ++n) + stepWords(*it) + "\n";
+        // A value filled in at run time reads as [herb], not {herb}.
+        std::string words = stepWords(*it);
+        for (size_t at = words.find('{'); at != std::string::npos; at = words.find('{', at + 1))
+        {
+            const size_t close = words.find('}', at);
+            if (close == std::string::npos) break;
+            const std::string inner = words.substr(at + 1, close - at - 1);
+            if (!isRef(inner)) continue;
+            std::string shown = trim(inner);
+            std::replace(shown.begin(), shown.end(), '.', ' ');   // [found count], not [found.count]
+            words.replace(at, close - at + 1, "[" + shown + "]");
+        }
+        out += llformat("%d. ", ++n) + words + "\n";
     }
     return trim(out);
 }
@@ -2530,7 +2545,8 @@ namespace
         {
             const std::string text = trim(step["text"].asString());
             run.said.push_back(text);
-            progress(run.skill.name + ": " + text);
+            progress(llformat("%s: %d/%d -- %s", run.skill.name.c_str(), index + 1,
+                              (S32)run.skill.steps.size(), text.c_str()));
             return true;
         }
 
