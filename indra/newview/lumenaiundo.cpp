@@ -29,6 +29,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lumenaiundo.h"
+#include "lumenaiskills.h"   // <Lumen> task 022
 
 #include "aoengine.h"           // <Lumen> the AO folder, for the shared rules
 #include "fsfloaterwearablefavorites.h"   // <Lumen> the wearable favourites folder, likewise
@@ -242,6 +243,13 @@ std::string LumenInventoryRules::offLimits(const LLUUID& id, const char* it, Rul
     if (within(id, FSFloaterWearableFavorites::getFavoritesFolder()))
         return refused(rule, WEARABLE_FAVORITES, s + " is in their wearable favourites, a folder the viewer "
                                                      "keeps for its own window");
+    // <Lumen> Task 022: the skills folder. A skill runs its steps without
+    // asking about each one, so a card put there by a model -- talked into it
+    // by a notecard, say -- would be a way round every question. Skills are
+    // written only by teaching one, which shows the person what it will do.
+    if (LumenAISkills::instanceExists() && within(id, LumenAISkills::instance().folderId()))
+        return refused(rule, NAMED_FOLDER, s + " is in their skills folder, which only teaching Lumen a "
+                                               "skill writes to");
     // <Lumen> The viewer's own folders inside #Lumen and #Firestorm (#AO,
     // #LSL Bridge, #Wearable Favorites ...) are found by NAME, and the ones a
     // feature is not using today -- a leftover #AO under the root that is not

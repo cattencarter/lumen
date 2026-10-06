@@ -2611,7 +2611,8 @@ bool LLFolderBridge::isItemMovable() const
             return false;
 
         // <FS:Ansariel> FIRE-28977: Lock special and locked folders from being DaD'ed
-        if (obj->getName() == ROOT_FIRESTORM_FOLDER || obj->getName() == RLV_ROOT_FOLDER || isLockedFolder())
+        if (obj->getName() == ROOT_FIRESTORM_FOLDER || obj->getName() == RLV_ROOT_FOLDER || isLockedFolder()
+            || obj->getName() == LumenFolders::LUMEN_FOLDER)   // <Lumen> its bridge and its skills
         {
             return false;
         }

@@ -11,6 +11,7 @@
 
 #include "lumenaiclaude.h"
 #include "lumenaiwin.h"   // <Lumen> Windows arguments and program names
+#include "lumenaiskills.h" // <Lumen> task 022
 
 #include "lldir.h"
 #include "llsdjson.h"
@@ -292,9 +293,18 @@ bool LumenAIClaude::start(const std::string& prompt,
     // exist. actions-check.py now fails when a tool the viewer declares is
     // not named on this list.
     add("--allowedTools");
-    add("mcp__second_life__inventory,mcp__second_life__chat,"
-                    "mcp__second_life__movement,mcp__second_life__viewer,"
-                    "mcp__second_life__build");
+    {
+        std::string allowed = "mcp__second_life__inventory,mcp__second_life__chat,"
+                              "mcp__second_life__movement,mcp__second_life__viewer,"
+                              "mcp__second_life__build";
+        // <Lumen> Task 022: every skill the user taught is a tool of its own.
+        if (LumenAISkills::instanceExists())
+        {
+            for (const std::string& tool : LumenAISkills::instance().toolNames())
+                allowed += ",mcp__second_life__" + tool;
+        }
+        add(allowed);
+    }
 
     // The endpoint, as a config string rather than a file, so there is no
     // temporary file to write, leave behind, or have somebody else edit.

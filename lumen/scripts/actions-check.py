@@ -173,7 +173,11 @@ used = set(re.findall(r'params\.has\("([a-z_0-9]+)"\)', s_src)) | \
        set(re.findall(r'params\["([a-z_0-9]+)"\]', s_src))
 # Not tool parameters: MCP's own envelope, which the server reads off the
 # request rather than off the tool call.
-PROTOCOL = {"arguments", "capabilities", "name", "protocolVersion", "clientInfo"}
+PROTOCOL = {"arguments", "capabilities", "name", "protocolVersion", "clientInfo",
+            # A skill's own tool (skill_<name>) is turned into skill_run by the
+            # front door, which builds these two; the model passes the skill's
+            # inputs by their own names, declared in that skill's schema.
+            "skill", "inputs"}
 undeclared = sorted(used - declared - PROTOCOL)
 
 fails = list(counts)

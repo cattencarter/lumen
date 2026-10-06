@@ -41,6 +41,7 @@
 #include "lumenaimemory.h"
 #include "lumenaiundo.h"   // <Lumen> inventory undo
 #include "lumenaisight.h"  // <Lumen> build / picture
+#include "lumenaiskills.h" // <Lumen> task 022: skills
 #include "lllandmarklist.h"      // <Lumen> where landmarks go
 #include "lllandmarkactions.h"
 #include "llagentui.h"
@@ -1093,6 +1094,15 @@ namespace
 bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
                              const std::string& fingerprint, LLSD& out)
 {
+    // <Lumen> Task 022: a skill's own steps are not asked about one by one --
+    // the skill as a whole is what the user started, and it may ask once
+    // before it begins. A script's permission request is never answered by
+    // anything here; answer_dialogue refuses those before any question.
+    if (LumenAISkills::stepRunning())
+    {
+        sApprovedHow = "part of a skill the user started";
+        return true;
+    }
     const F64 now = LLTimer::getTotalSeconds();
     sweepAsks();
 
@@ -3970,6 +3980,7 @@ namespace
             if (action == "forget")        return "forget";
             if (action == "recall")        return "recall";
             if (action == "test_picture")  return "test_picture";   // <Lumen> task 015
+            if (action == "skills")        return "list_skills";    // <Lumen> task 022
             if (action == "music")         return "music";   // <Lumen>
             if (action == "answer_while_away") return "answer_while_away";
             if (action == "read_scripts")     return "read_open_scripts";
@@ -4978,6 +4989,12 @@ namespace
             mface["description"]="touch: which face of that part, for the scripts that care -- a "
                                  "panel of buttons often does. Leave it out otherwise.";
         move_props["link"]=mlink; move_props["face"]=mface;
+        // <Lumen> Task 022
+        LLSD mspot; mspot["type"]="array"; { LLSD n; n["type"]="number"; mspot["items"]=n; }
+            mspot["description"]="touch: where on that face, as two numbers 0 to 1, across and up "
+                                 "-- for a panel with several buttons on one face. Leave it out "
+                                 "otherwise.";
+        move_props["spot"]=mspot;
         // </Lumen>
         // Read by worn_by and pose, and declared on no tool they belong to:
         // worn_by says "call again with the same agent_id" and pose's refusal
@@ -5051,7 +5068,7 @@ namespace
               "set_setting", "show_setting", "open_window", "close_window", "inspect_object",
               "lsl_lookup",
               "open_script", "new_script", "remember", "forget", "recall", "music",
-              "test_picture" };
+              "test_picture", "skills" };
         LLSD view;
         view["name"] = "viewer";
         view["description"] =
@@ -5059,6 +5076,8 @@ namespace
             "  `test_picture`: ONLY when the user asks to test whether you can see pictures. It "
             "returns a small picture the viewer has just drawn: say which shape and which colour "
             "you see in it, or plainly that no picture reached you.\n"
+            "- skills: the routines the user has taught Lumen, each also a tool of its own named "
+            "skill_..., and any skill notecard that could not be read and why.\n"
             "- status: a session_check string the user may ask you to repeat -- give it back "
             "exactly, it is how they verify you are really using these tools -- plus the "
             "version, how far through login it is, and once logged in the avatar, "
@@ -5698,6 +5717,12 @@ namespace
                                    "pairs counted from its top-left -- [320, 400] for one, "
                                    "[100, 200, 500, 210] for two. At most eight.";
             build_props["pixels"]=bpx;
+            // <Lumen> Task 022
+            LLSD bnr; bnr["type"]="string";
+                bnr["description"]="rez, with item or item_id: put it beside this object (its "
+                                   "object_id) on the user's side, instead of in front of the "
+                                   "user. Within 10 m of them.";
+            build_props["near"]=bnr;
             // <Lumen> task 018
             LLSD bwl; bwl["type"]="array"; bwl["items"]=num_list;
                 bwl["description"]="place: one spot on the wall in the last picture, x then y "
@@ -6046,6 +6071,9 @@ void LumenAIControl::watchForLogin()
             // <Lumen> Where every landmark goes, first of anything read in the
             // background: teleporting is what people do the moment they arrive.
             startLandmarkFill();
+
+            // <Lumen> Task 022: the skills the user taught, from #Lumen/Skills.
+            LumenAISkills::instance().startLoading();
 
             restoreAOPausedForPose();   // <Lumen> a pose last session left it off
 
@@ -13320,6 +13348,13 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
     {
         LLSD result;
         result["tools"] = toolDescriptors();
+        // <Lumen> Task 022: every skill the user taught is a tool of its own.
+        if (LumenAISkills::instanceExists())
+        {
+            const LLSD skills = LumenAISkills::instance().toolDescriptors();
+            for (LLSD::array_const_iterator it = skills.beginArray(); it != skills.endArray(); ++it)
+                result["tools"].append(*it);
+        }
         return result;
     }
 
@@ -13332,7 +13367,18 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // which still exists under its own name for curl and for the tests.
         std::string target = name;
         LLSD call_args = args;
-        if (isGroup(name))
+        // <Lumen> Task 022: a skill is a tool of its own, run by one handler.
+        if (LumenAISkills::isSkillTool(name))
+        {
+            target = "skill_run";
+            LLSD inputs = args.isMap() ? args : LLSD::emptyMap();
+            inputs.erase("request_id");
+            call_args = LLSD::emptyMap();
+            call_args["skill"] = name;
+            call_args["inputs"] = inputs;
+            if (args.has("request_id")) call_args["request_id"] = args["request_id"];
+        }
+        else if (isGroup(name))
         {
             const std::string action = args["action"].asString();
             target = groupAction(name, action);
@@ -19355,7 +19401,9 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
             LLSD w; w["__error"] = e; return w;
         }
         LLViewerObject* root = obj->getRootEdit();
-        if (root && root->isHUDAttachment())
+        // <Lumen> A skill presses a HUD's button by its part, face and spot,
+        // as the user did when they taught it; a model guessing at one does not.
+        if (root && root->isHUDAttachment() && !LumenAISkills::stepRunning())
         {
             LLSD e; e["code"] = -32000;
             e["message"] = "That is a HUD, and touch cannot press a HUD's buttons yet: they are "
@@ -19412,6 +19460,16 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
 
         LLPickInfo pick;   // Area Search's: a sane default, no face, no texture spot
         if (params.has("face")) pick.mObjectFace = params["face"].asInteger();
+        // <Lumen> Task 022: where on that face, as a script reads it with
+        // llDetectedTouchST and llDetectedTouchUV -- how one face of a HUD
+        // holds a row of buttons. 0 to 1 across and up.
+        if (params["spot"].isArray() && params["spot"].size() >= 2)
+        {
+            const F32 st_s = llclamp((F32)params["spot"][0].asReal(), 0.f, 1.f);
+            const F32 st_t = llclamp((F32)params["spot"][1].asReal(), 0.f, 1.f);
+            pick.mSTCoords.set(st_s, st_t);
+            pick.mUVCoords.set(st_s, st_t);
+        }
         send_ObjectGrab_message(obj, pick, LLVector3::zero);
         send_ObjectDeGrab_message(obj, pick);
 
@@ -27013,6 +27071,34 @@ if (method == "camera")
         F32 feet = gAgent.getPositionAgent().mV[VZ];
         if (isAgentAvatarValid()) feet -= gAgentAvatarp->getPelvisToFoot();
         target.mV[VZ] = llmax(LLWorld::getInstance()->resolveLandHeightAgent(target), feet) + 0.5f;
+        // <Lumen> Task 022: beside an object instead -- the bowl the herbs go
+        // next to -- on the user's side of it, just clear of its edge.
+        if (params.has("near") && !params["near"].asString().empty())
+        {
+            LLViewerObject* by = gObjectList.findObject(params["near"].asUUID());
+            if (!by || by->isDead() || by->isAvatar())
+            {
+                LLSD e; e["code"] = -32000; e["message"] = STALE_OBJECT_ID;
+                LLSD w; w["__error"] = e; return w;
+            }
+            LLViewerObject* by_root = by->getRootEdit();
+            const LLVector3 c = by_root->getPositionAgent();
+            LLVector3 toward = gAgent.getPositionAgent() - c;
+            toward.mV[VZ] = 0.f;
+            if (toward.magVecSquared() < 0.0001f) toward = -at;
+            toward.normalize();
+            const F32 reach = llmax(0.25f, by_root->getScale().magVec() * 0.5f) + 0.4f;
+            const F32 floor_z = target.mV[VZ];
+            target = c + toward * reach;
+            target.mV[VZ] = llmax(floor_z, c.mV[VZ]);
+            if ((target - gAgent.getPositionAgent()).magVec() > 10.f)
+            {
+                LLSD e; e["code"] = -32000;
+                e["message"] = "That object is more than 10 m away, too far to rez beside it. "
+                               "Move closer first.";
+                LLSD w; w["__error"] = e; return w;
+            }
+        }
 
         // --- from inventory, if an item was named ---------------------------
         //
@@ -28604,6 +28690,96 @@ if (method == "camera")
                          "picture was taken is measured where it is now.";
         if (!want.empty()) result["names_still_coming"] = (S32)want.size();
         LL_INFOS("AICtl") << "point: " << points.size() << " pixel(s) in the last picture" << LL_ENDL;
+        return result;
+    }
+    // </Lumen>
+
+    // <Lumen> Task 022: run a skill the user taught -- see lumenaiskills.h.
+    // Each skill reaches here from its own tool, skill_<name>.
+    if (method == "skill_run")
+    {
+        if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
+        {
+            LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        LumenAISkills& skills = LumenAISkills::instance();
+        const LumenAISkills::Skill* found = skills.find(params["skill"].asString());
+        if (!found)
+        {
+            LLSD e; e["code"] = -32000;
+            e["message"] = "There is no such skill any more. Skills come from the notecards in "
+                           "#Lumen/Skills and change when those do; viewer / skills lists them now.";
+            LLSD w; w["__error"] = e; return w;
+        }
+        const LumenAISkills::Skill skill = *found;   // a copy: the list may be read again while it runs
+
+        // Only the inputs the skill has, as text.
+        const LLSD given = params["inputs"].isMap() ? params["inputs"] : LLSD::emptyMap();
+        LLSD inputs = LLSD::emptyMap();
+        for (const LumenAISkills::Input& in : skill.inputs)
+        {
+            if (given.has(in.name) && !given[in.name].asString().empty())
+                inputs[in.name] = given[in.name].asString();
+        }
+
+        if (!skills.hasRun(skill, inputs))
+        {
+            const std::string ask = skills.checkInputs(skill, inputs);
+            if (!ask.empty())
+            {
+                LLSD e; e["code"] = -32602; e["message"] = ask;
+                LLSD w; w["__error"] = e; return w;
+            }
+            std::string with;
+            for (LLSD::map_const_iterator it = inputs.beginMap(); it != inputs.endMap(); ++it)
+                with += (with.empty() ? " for " : ", ") + it->second.asString();
+            if (skills.needsTrust(skill))
+            {
+                // Somebody else's card: what it will do, in plain words, once
+                // for this version of it. Any skill is the user's to use once
+                // it is in their folder; this is the moment they see it.
+                LLAvatarName av;
+                LLSD subs;
+                subs["NAME"]    = askQuote(skill.name, 80);
+                subs["CREATOR"] = LLAvatarNameCache::get(skill.creator_id, &av)
+                                ? av.getCompleteName() : std::string("somebody else");
+                subs["SUMMARY"] = skill.summary.size() > 900 ? skill.summary.substr(0, 900) + "..." : skill.summary;
+                LLSD out;
+                if (!askUser("LumenAskSkillNew", subs, "skill_trust:" + skill.asset_id.asString(), out))
+                    return out;
+                skills.trust(skill);
+            }
+            else if (skill.ask_first)
+            {
+                LLSD subs;
+                subs["NAME"] = askQuote(skill.name, 80);
+                subs["WITH"] = with;
+                LLSD out;
+                if (!askUser("LumenAskSkill", subs,
+                             "skill:" + skill.tool + "|" + llsdToJsonString(inputs), out))
+                    return out;
+            }
+        }
+
+        LLSD result = skills.run(skill, inputs);
+        if (result.isMap() && result["settling"].asBoolean())
+        {
+            // A socket caller is held while it runs, up to a little under the
+            // minute Codex gives a tool call; then it is told to call again.
+            mSettle = llmax(mSettle, 45.0);
+        }
+        return result;
+    }
+
+    // <Lumen> Task 022: which skills there are, and any card that was refused.
+    if (method == "list_skills")
+    {
+        LLSD result = LumenAISkills::instance().describe();
+        result["note"] = "Each skill is also a tool of its own (`tool`), which runs it. Skills are "
+                         "notecards in #Lumen/Skills. A card listed under cards_refused could not "
+                         "be read; say why in plain words -- an older version of it may still be "
+                         "in use (card_problem).";
         return result;
     }
     // </Lumen>

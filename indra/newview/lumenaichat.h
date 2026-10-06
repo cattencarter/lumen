@@ -360,6 +360,8 @@ private:
 
     void onSend();
     void beginTurn(const std::string& text);
+    /** <Lumen> Task 022: a typed line that is exactly a skill's phrase -- run it, no model. */
+    bool runSkillByTrigger(const std::string& text);
     void startCatchUp();
     void renderCatchUp(const LLSD& result, const LLSD& summaries);  // <Lumen>
     void flushCatchUp();   // <Lumen> end of turn: draw what was never worded

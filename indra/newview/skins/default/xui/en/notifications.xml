@@ -15273,6 +15273,61 @@ The assistant wants to offer [NAME] a teleport to where you are.[TEXT]
 
   <notification
    icon="alert.tga"
+   name="LumenAskSkill"
+   type="alertmodal">
+The assistant wants to run your skill [NAME][WITH].
+
+It carries out the steps you taught it, in order, and stops if one does not work.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to run one of your skills"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Run it"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Not now"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
+   name="LumenAskSkillNew"
+   type="alertmodal">
+The assistant wants to run the skill [NAME] for the first time. [CREATOR] made it, not you.
+
+This is what it will do:
+[SUMMARY]
+
+Run it? You will only be asked this once for this version of it.
+    <tag>confirm</tag>
+    <form name="form">
+      <ignore name="ignore"
+       save_option="true"
+       text="When the assistant wants to run a skill somebody else made, the first time"/>
+      <button
+       ignore="Always allow"
+       index="0"
+       name="Yes"
+       text="Run it"/>
+      <button
+       default="true"
+       ignore="Always refuse"
+       index="1"
+       name="No"
+       text="Not now"/>
+    </form>
+  </notification>
+
+  <notification
+   icon="alert.tga"
    label="Send an instant message?"
    name="LumenAskFriendship"
    type="alertmodal">

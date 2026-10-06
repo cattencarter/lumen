@@ -46,6 +46,7 @@
 #include "llbutton.h"
 #include "llvoiceclient.h"   // <Lumen> voice chat's mic stays shut while the mic button listens
 #include "lumenaispeech.h"   // <Lumen>
+#include "lumenaiskills.h"   // <Lumen> task 022
 #include "llnotificationsutil.h"   // <Lumen> the speech download question
 #include "fsnearbychathub.h"
 #include "llchat.h"
@@ -493,7 +494,12 @@ namespace
                 }
                 reply = rpc("tools/call", params);
             }
-            const F64 give_up = LLTimer::getTotalSeconds() + 15.0;
+            // <Lumen> A skill says how long it may take (task 022): its steps wait
+            // for menus and rezzes, and a turn in a coroutine can wait with it.
+            const LLSD& first_reply = reply;   // read only: no keys added to it
+            const F64 settle_for = llclamp(
+                first_reply["result"]["structuredContent"]["settle_for"].asReal(), 15.0, 600.0);
+            const F64 give_up = LLTimer::getTotalSeconds() + settle_for;
             for (;;)
             {
                 const LLSD sc = reply["result"]["structuredContent"];
@@ -896,6 +902,7 @@ namespace
             if (action == "forget")        return "Forgetting";
             if (action == "recall")        return "Reading what it remembers";
             if (action == "test_picture")  return "Looking at a test picture";   // <Lumen>
+            if (action == "skills")        return "Looking at the skills";   // <Lumen> task 022
             if (action == "music")         return "Seeing to the music";   // <Lumen>
         }
 
@@ -906,6 +913,13 @@ namespace
     {
         const std::string action = (args.isMap() && args.has("action"))
                                  ? args["action"].asString() : std::string();
+        // <Lumen> Task 022: a skill by the name the user gave it.
+        if (LumenAISkills::isSkillTool(name))
+        {
+            const LumenAISkills::Skill* skill = LumenAISkills::instanceExists()
+                ? LumenAISkills::instance().find(name) : nullptr;
+            return skill ? "Running \"" + skill->name + "\"" : std::string("Running a skill");
+        }
         return humanAction(name, action);
     }
 
@@ -2654,6 +2668,8 @@ void LumenAIChatFloater::onClear()
     // says how far it got in the new conversation. What it did stays, one
     // step to undo. An undo or a redo still going stops the same way.
     if (LumenAIUndo::instanceExists()) LumenAIUndo::instance().stopBulk();
+    // A skill too: it stops between steps and says where.
+    if (LumenAISkills::instanceExists()) LumenAISkills::instance().stopAll();
     // </Lumen>
     mMessages = LLSD::emptyArray();
     mHistoryProvider.clear();
@@ -2695,7 +2711,52 @@ void LumenAIChatFloater::onSend()
 
     mInput->setText(LLStringUtil::null);
     sayUser(text);
+    if (runSkillByTrigger(text)) return;   // <Lumen> task 022
     beginTurn(text);
+}
+
+/**
+ * <Lumen> Task 022, the spec's "direct trigger": a fixed phrase starts a skill
+ * with no interpretation at all -- no model is asked, nothing is spent. Only a
+ * skill that needs no inputs; one that does goes to the model, which asks.
+ * The run goes through the same front door as any tool call, so the skill's
+ * own question and every guard still apply.
+ */
+bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
+{
+    if (!LumenAISkills::instanceExists() || mBusy) return false;
+    LumenAISkills& skills = LumenAISkills::instance();
+    const std::string tool = skills.toolForTrigger(text);
+    const LumenAISkills::Skill* skill = tool.empty() ? nullptr : skills.find(tool);
+    if (!skill || !skills.checkInputs(*skill, LLSD::emptyMap()).empty()) return false;
+
+    setBusy(true, "Running \"" + skill->name + "\"");
+    LumenAIUndo::instance().beginRequest(text);
+    LLHandle<LLFloater> handle = getHandle();
+    LLCoros::instance().launch("LumenAISkillTrigger", [handle, tool]()
+    {
+        auto wanted = [handle]() { return handle.get() != nullptr; };
+        bool is_error = false;
+        const std::string answer = callTool(tool, LLSD::emptyMap(), LLUUID::generateNewID().asString(),
+                                            is_error, nullptr, wanted,
+                                            [handle]()
+                                            {
+                                                if (LumenAIChatFloater* f = dynamic_cast<LumenAIChatFloater*>(handle.get()))
+                                                    f->setActivity(ASK_WAITING_LABEL);
+                                            });
+        if (LumenAIChatFloater* self = dynamic_cast<LumenAIChatFloater*>(handle.get()))
+        {
+            // The steps and how it ended already showed in the conversation;
+            // anything else -- "Not now", a missing card -- is said here.
+            if (is_error && answer.find("stopped at step") == std::string::npos
+                && answer.find("was stopped at step") == std::string::npos)
+            {
+                self->sayNote(answer);
+            }
+            self->setBusy(false);
+        }
+    });
+    return true;
 }
 
 /**
