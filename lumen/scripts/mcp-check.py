@@ -103,9 +103,13 @@ def main():
     # operation meant twenty-one prompts before anything worked.
     for expected in ("inventory", "chat", "movement", "viewer"):
         check(f"tools/list includes {expected}", expected in names, str(names))
-    check("the surface stays small enough to approve", len(tools) <= 6, f"{len(tools)} tools")
+    # The user's own skills are tools too, one each (skill_<name>), and come and
+    # go with the cards in #Lumen/#Skills: the fixed groups are what is counted.
+    groups = [t for t in tools if not str(t.get("name", "")).startswith("skill_")]
+    check("the surface stays small enough to approve", len(groups) <= 6,
+          f"{len(groups)} groups, besides {len(tools) - len(groups)} skill(s)")
 
-    for t in tools:
+    for t in groups:
         acts = t.get("inputSchema", {}).get("properties", {}).get("action", {}).get("enum")
         check(f"{t.get('name')} offers an action enum", bool(acts), str(t.get("name")))
 

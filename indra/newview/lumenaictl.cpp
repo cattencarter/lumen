@@ -7464,7 +7464,14 @@ LLSD LumenAIControl::inTheWay(LLViewerObject* obj, const std::vector<LLViewerObj
             LLVector3 half = o->getScale() * 0.5f;
             LLVector3 c = o->getPositionAgent();
             LLQuaternion rot = o->getRotationEdit();
-            if (o->mDrawable.notNull() && !o->mDrawable->isDead())
+            // Only while it stands still: a thing moved a moment ago -- by set,
+            // by place, by anyone -- is drawn as a moving object, its drawn box
+            // kept relative to itself, and read as region coordinates it was
+            // somewhere near the corner of the region. A coffee table moved by
+            // set was not in the way of the sofa moved into it, until the next
+            // login (2026-10-06, the beta grid).
+            if (o->mDrawable.notNull() && !o->mDrawable->isDead() && !o->mDrawable->isActive()
+                && (r->mDrawable.isNull() || !r->mDrawable->isActive()))
             {
                 const LLVector4a* ext = o->mDrawable->getSpatialExtents();
                 const LLVector3 emin(ext[0].getF32ptr()), emax(ext[1].getF32ptr());
@@ -30812,8 +30819,14 @@ if (method == "camera")
             for (S32 i = 0; i < 5; ++i)
             {
                 if (i > 0 && support_obj) break;   // the middle answered
-                LLVector3 where, n;
-                LLViewerObject* o = LumenAISight::firstHit(LLVector3(xs[i], ys[i], from_z),
+                LLVector3 where, n, start(xs[i], ys[i], from_z);
+                // Its middle under the land here -- a thin rug on a slope, a box
+                // half sunk into a hill: Second Life's land test sees nothing from
+                // under the ground, so start just above the land, which is then
+                // what it stands on (Blake Sea, 2026-10-06).
+                const F32 land = LLWorld::getInstance()->resolveLandHeightAgent(start);
+                if (land > start.mV[VZ]) start.mV[VZ] = land + 0.05f;
+                LLViewerObject* o = LumenAISight::firstHit(start,
                                                            LLVector3(xs[i], ys[i], lo.mV[VZ] - 60.f),
                                                            0.f, where, obj, &n);
                 if (o && n.mV[VZ] > 0.5f && where.mV[VZ] > support)
@@ -30884,8 +30897,10 @@ if (method == "camera")
                 LLVector3 in = mid - c;
                 in.mV[VZ] = 0.f;
                 if (in.magVec() > 0.1f) { in.normVec(); c += in * 0.05f; }   // just inside its edge
-                LLVector3 where, n;
-                if (LumenAISight::firstHit(c + LLVector3(0.f, 0.f, 0.3f), c - LLVector3(0.f, 0.f, 5.f),
+                LLVector3 where, n, start = c + LLVector3(0.f, 0.f, 0.3f);
+                const F32 land = LLWorld::getInstance()->resolveLandHeightAgent(start);
+                if (land > start.mV[VZ]) start.mV[VZ] = land + 0.05f;   // under a hill: as above
+                if (LumenAISight::firstHit(start, c - LLVector3(0.f, 0.f, 5.f),
                                            0.f, where, obj, &n))
                 {
                     corners_cm[name(box[i])] = (S32)ll_round((box[i].mV[VZ] - where.mV[VZ]) * 100.f);

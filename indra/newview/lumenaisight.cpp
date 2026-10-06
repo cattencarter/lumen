@@ -30,11 +30,17 @@
 
 #include "lumenaisight.h"
 
+#include "llagent.h"
+#include "lldrawable.h"
+#include "llface.h"
+#include "llframetimer.h"
 #include "llrender.h"
 #include "llviewercamera.h"
 #include "llviewercontrol.h"
 #include "llviewerobject.h"
+#include "llviewerobjectlist.h"
 #include "llviewerwindow.h"
+#include "llvovolume.h"
 #include "pipeline.h"
 
 #include <algorithm>
@@ -43,6 +49,11 @@
 
 namespace LumenAISight
 {
+namespace
+{
+U32 sHiddenFrame = (U32)-1;   // the frame hiddenVolumes() last gathered in; -1 to gather again
+}
+
 
 void aim(View& view, const LLVector3& target, const LLVector3& up_hint)
 {
@@ -139,6 +150,7 @@ bool render(const View& view, LLPointer<LLImageRaw>& out, std::string& why)
     set_current_projection(saved_proj);
     gViewerWindow->setup3DViewport();
     LLPipeline::sUseOcclusion = old_occlusion;
+    sHiddenFrame = (U32)-1;   // what is drawn changed with the picture: gather again
 
     if (!ok)
     {
@@ -166,6 +178,121 @@ bool project(const View& view, const LLVector3& point, F32& px, F32& py)
     py = (1.f - ny) * 0.5f * (F32)view.height;
     return nx >= -1.f && nx <= 1.f && ny >= -1.f && ny <= 1.f;
 }
+
+namespace
+{
+// The viewer's own raycast (LLOctreeIntersect::check) passes over anything the
+// user's view did not draw in the last frame -- out of it, or not drawn yet
+// since login. A coffee table beside the sofa, or the floor under a basket,
+// was simply not there for place and set unless the user had looked at it
+// (2026-10-06, the beta grid: a rug placed under a table said nothing was in
+// the way). Those are met here on their own shapes: the volumes near the user
+// that the last frame did not draw, gathered once a frame.
+struct Hidden
+{
+    LLPointer<LLViewerObject> o;
+    LLVector3 c;
+    F32 r;
+};
+std::vector<Hidden> sHidden;
+
+const std::vector<Hidden>& hiddenVolumes()
+{
+    const U32 frame = LLFrameTimer::getFrameCount();
+    if (frame == sHiddenFrame)
+    {
+        return sHidden;
+    }
+    sHiddenFrame = frame;
+    sHidden.clear();
+    const LLVector3 me = gAgent.getPositionAgent();
+    const S32 count = gObjectList.getNumObjects();
+    for (S32 i = 0; i < count; ++i)
+    {
+        LLViewerObject* o = gObjectList.getObject(i);
+        if (!o || o->isDead() || o->getPCode() != LL_PCODE_VOLUME || o->isAvatar()
+            || o->isAttachment() || !o->getRegion())
+        {
+            continue;
+        }
+        LLDrawable* d = o->mDrawable.get();
+        if (!d || d->isDead() || d->isVisible() || d->isState(LLDrawable::RIGGED)
+            || !gPipeline.hasRenderType(d->getRenderType()))
+        {
+            continue;   // drawn: the viewer's raycast meets it already
+        }
+        const LLVector3 c = o->getPositionAgent();
+        if ((c - me).magVecSquared() > 128.f * 128.f)
+        {
+            continue;
+        }
+        sHidden.push_back({ o, c, o->getScale().magVec() * 0.5f });
+    }
+    return sHidden;
+}
+
+// The nearest face of an undrawn volume along from -> to, as lumenShapeHit
+// meets one: front faces only, nothing fully transparent or see-through.
+LLViewerObject* hiddenHit(const LLVector3& from, const LLVector3& to, const LLViewerObject* ignore,
+                          F32& dist, LLVector3& where, LLVector3& normal, S32& face)
+{
+    LLVector3 d = to - from;
+    const F32 len = d.magVec();
+    if (len < 0.001f)
+    {
+        return nullptr;
+    }
+    d /= len;
+    LLViewerObject* best = nullptr;
+    for (const Hidden& h : hiddenVolumes())
+    {
+        LLViewerObject* o = h.o.get();
+        if (!o || o->isDead() || (ignore && o->getRootEdit() == ignore))
+        {
+            continue;
+        }
+        const LLVector3 pc = h.c - from;
+        const F32 t = llclamp(pc * d, 0.f, len);
+        if ((pc - d * t).magVecSquared() > h.r * h.r)
+        {
+            continue;   // its bounding sphere is nowhere near the line
+        }
+        LLVOVolume* v = dynamic_cast<LLVOVolume*>(o);
+        LLVolume* vol = v ? v->getVolume() : nullptr;
+        if (!vol || vol->getNumVolumeFaces() <= 0 || (v->isMesh() && !vol->isMeshAssetLoaded())
+            || v->mDrawable.isNull() || v->mDrawable->isDead())
+        {
+            continue;
+        }
+        const LLVector3 a = v->agentPositionToVolume(from), b = v->agentPositionToVolume(to);
+        LLVector4a s, e;
+        s.load3(a.mV);
+        e.load3(b.mV);
+        const LLDrawable* dr = v->mDrawable.get();
+        for (S32 i = 0; i < vol->getNumVolumeFaces(); ++i)
+        {
+            const LLTextureEntry* te = v->getTE(i);
+            if (te && te->getColor().mV[VALPHA] < 0.05f) continue;
+            const LLFace* f = (dr && i < dr->getNumFaces()) ? dr->getFace(i) : nullptr;
+            if (f && f->isInAlphaPool()) continue;
+            LLVector4a hit, n;
+            n.clear();
+            if (vol->lineSegmentIntersect(s, e, i, &hit, nullptr, &n) < 0) continue;
+            const LLVector3 w = v->volumePositionToAgent(LLVector3(hit.getF32ptr()));
+            const F32 dd = (w - from).magVec();
+            if (!best || dd < dist)
+            {
+                best = o;
+                dist = dd;
+                where = w;
+                normal = v->volumeDirectionToAgent(LLVector3(n.getF32ptr()));
+                face = i;
+            }
+        }
+    }
+    return best;
+}
+} // namespace
 
 LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond, LLVector3& where,
                          const LLViewerObject* ignore, LLVector3* normal, S32* face, bool* leaving,
@@ -206,6 +333,25 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
     // the space check stopped short of what lay beyond (the review,
     // 2026-10-06). Each step moves on 2 cm, so the cap on those is only a
     // guard; running into either is said through `gave_up`.
+    // What the user's view has not drawn, met on its shape (hiddenHit above).
+    F32 hid_dist = 0.f;
+    LLVector3 hid_where, hid_n;
+    S32 hid_face = -1;
+    LLViewerObject* hid = hiddenHit(from, end, ignore, hid_dist, hid_where, hid_n, hid_face);
+    auto useHidden = [&]() -> LLViewerObject*
+    {
+        where = hid_where;
+        const F32 len_n = hid_n.magVec();
+        if (leaving) *leaving = len_n > 0.001f && (hid_n * dir) > 0.5f * len_n;
+        if (normal)
+        {
+            *normal = hid_n;
+            if (normal->magVec() > 0.001f) normal->normVec();
+            if (*normal * dir > 0.f) *normal = -*normal;
+        }
+        if (face) *face = hid_face;
+        return hid;
+    };
     S32 tags = 0, own = 0;
     while (tags < 8 && own < 1024)
     {
@@ -223,10 +369,14 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
             &f, nullptr, nullptr, &hit, nullptr, &n, nullptr);
         if (!o)
         {
-            return nullptr;
+            return hid ? useHidden() : nullptr;
         }
         where.set(hit.getF32ptr());
         const bool mine = ignore && o->getRootEdit() == ignore;
+        if (hid && hid_dist < (where - from).magVec())
+        {
+            return useHidden();   // an undrawn thing comes first
+        }
         if (!o->isAvatar() && !o->isAttachment() && !mine)
         {
             if (leaving)
@@ -260,7 +410,7 @@ LLViewerObject* firstHit(const LLVector3& from, const LLVector3& to, F32 beyond,
         start = where + dir * 0.02f;
         if ((start - from).magVec() >= (end - from).magVec())
         {
-            return nullptr;
+            return hid ? useHidden() : nullptr;
         }
     }
     if (gave_up) *gave_up = true;
