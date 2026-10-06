@@ -795,10 +795,20 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
                 error = llformat("step %d calls an address that is not https://, which a skill may not", n);
                 return false;
             }
+            // The author: only what the user could do themselves by clicking a
+            // link or pasting the address into a browser -- a GET, with
+            // everything in the address, and nothing sent that they cannot see.
             const std::string method = step.has("method") ? lower(step["method"].asString()) : std::string("get");
-            if (method != "get" && method != "post")
+            if (method != "get" || step.has("json") || step.has("body") || step.has("headers"))
             {
-                error = llformat("step %d: a web call is GET or POST", n);
+                error = llformat("step %d sends more than an address: a skill's web call is only what "
+                                 "a person could paste into a browser -- a GET, everything in the address", n);
+                return false;
+            }
+            const std::string key_as = step.has("key_as") ? lower(step["key_as"].asString()) : std::string("query:key");
+            if (key_as.compare(0, 6, "query:") != 0 || key_as.size() < 7)
+            {
+                error = llformat("step %d: a key can only go in the address, as key_as \"query:<name>\"", n);
                 return false;
             }
             const std::string key = step["key"].asString();
@@ -2146,11 +2156,19 @@ namespace
                 saveSkillKey(key_name, key, host);
             }
         }
-        const std::string key_as = lower(step.has("key_as") ? step["key_as"].asString() : std::string("bearer"));
+        // In the address, where the user could see it -- never in a header.
+        const std::string key_as = step.has("key_as") ? step["key_as"].asString() : std::string("query:key");
+        if (lower(key_as).compare(0, 6, "query:") != 0 || key_as.size() < 7 || step.has("json")
+            || (step.has("method") && lower(step["method"].asString()) != "get"))
+        {
+            error = "a skill's web call is only what a person could paste into a browser -- a GET, "
+                    "everything in the address";
+            return false;
+        }
 
         // The address's own values, and the key if it goes there.
         LLSD query = step["query"].isMap() ? step["query"] : LLSD::emptyMap();
-        if (!key.empty() && key_as.compare(0, 6, "query:") == 0) query[key_as.substr(6)] = key;
+        if (!key.empty()) query[key_as.substr(6)] = key;
         for (LLSD::map_const_iterator it = query.beginMap(); it != query.endMap(); ++it)
         {
             url += (url.find('?') == std::string::npos ? "?" : "&") + LLURI::escape(it->first) + "="
@@ -2160,11 +2178,6 @@ namespace
         LLCore::HttpHeaders::ptr_t headers(new LLCore::HttpHeaders);
         headers->append("User-Agent", "Lumen");
         headers->append("Accept", "application/json, text/plain;q=0.9, */*;q=0.5");
-        if (!key.empty())
-        {
-            if (key_as == "bearer") headers->append("Authorization", "Bearer " + key);
-            else if (key_as.compare(0, 7, "header:") == 0) headers->append(step["key_as"].asString().substr(7), key);
-        }
         LLCore::HttpOptions::ptr_t options(new LLCore::HttpOptions);
         options->setTimeout((S32)llclamp(step.has("wait") ? step["wait"].asReal() : 20.0, 1.0, 60.0));
         options->setFollowRedirects(false);   // never on to an address nobody approved
@@ -2173,20 +2186,7 @@ namespace
         static const LLCore::HttpRequest::policy_t policy = LLCore::HttpRequest::createPolicyClass();
         LLCoreHttpUtil::HttpCoroutineAdapter adapter("LumenAISkillWeb", policy);
         LLCore::HttpRequest::ptr_t request(new LLCore::HttpRequest);
-        const bool post = lower(step["method"].asString()) == "post";
-        LLSD raw;
-        if (post)
-        {
-            const std::string body = step.has("json") ? toJson(step["json"]) : std::string("{}");
-            LLCore::BufferArray::ptr_t buffer(new LLCore::BufferArray);
-            buffer->append(body.data(), body.size());
-            headers->append("Content-Type", "application/json");
-            raw = adapter.postRawAndSuspend(request, url, buffer, options, headers);
-        }
-        else
-        {
-            raw = adapter.getRawAndSuspend(request, url, options, headers);
-        }
+        const LLSD raw = adapter.getRawAndSuspend(request, url, options, headers);
         if (run.stopped())
         {
             error = "stopped";
@@ -2207,12 +2207,12 @@ namespace
         const S32 code = http[LLCoreHttpUtil::HttpCoroutineAdapter::HTTP_RESULTS_TYPE].asInteger();
         const bool ok = LLCoreHttpUtil::HttpCoroutineAdapter::getStatusFromLLSD(http);
         // The host only: an address can carry a key in its query.
-        LL_INFOS("AISkills") << "web call to " << host << (post ? " (POST)" : " (GET)") << " answered "
+        LL_INFOS("AISkills") << "web call to " << host << " answered "
                              << code << ", " << text.size() << " bytes" << LL_ENDL;
         if (!ok)
         {
             error = code >= 100 ? llformat("%s answered %d", host.c_str(), code) : host + " did not answer";
-            may_retry = !post && (code < 100 || code >= 500);   // a POST might have been done once already
+            may_retry = code < 100 || code >= 500;
             return false;
         }
         LLSD v;
