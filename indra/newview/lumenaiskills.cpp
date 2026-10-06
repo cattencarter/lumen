@@ -2627,6 +2627,25 @@ namespace
         return out;
     }
 
+    /** Whether something worn outside the inventory still has no name -- asked for now. */
+    bool wornNamesComing()
+    {
+        if (!isAgentAvatarValid()) return false;
+        bool coming = false;
+        for (const auto& point : gAgentAvatarp->mAttachmentPoints)
+        {
+            const LLViewerJointAttachment* at = point.second;
+            if (!at) continue;
+            for (const LLPointer<LLViewerObject>& worn : at->mAttachedObjects)
+            {
+                LLViewerObject* o = worn.get();
+                if (!o || o->isDead() || gInventory.getItem(o->getAttachmentItemID())) continue;
+                if (thingName(o).empty()) coming = true;   // thingName asks for it
+            }
+        }
+        return coming;
+    }
+
     /** Something worn, by the name of its item -- a HUD, most often. */
     LLViewerObject* wornByName(const std::string& pattern, std::string& error)
     {
@@ -2635,6 +2654,9 @@ namespace
         LLInventoryModel::item_array_t items;
         gInventory.collectDescendents(LLAppearanceMgr::instance().getCOF(), cats, items, LLInventoryModel::EXCLUDE_TRASH);
         std::vector<std::pair<std::string, LLViewerObject*>> fits;
+        const std::string trimmed = trim(pattern);
+        const bool wordy = std::any_of(trimmed.begin(), trimmed.end(),
+                                       [](unsigned char c) { return std::isalnum(c) || c >= 0x80; });
         for (const LLPointer<LLViewerInventoryItem>& link : items)
         {
             if (!link) continue;
@@ -2643,7 +2665,9 @@ namespace
             LLViewerObject* o = gAgentAvatarp->getWornAttachment(item->getUUID());
             if (!o) continue;
             if (lower(item->getName()) == lower(trim(pattern))) return o;   // its exact name
-            if (nameMatches(item->getName(), pattern)) fits.push_back(std::make_pair(item->getName(), o));
+            // A name with no letter or digit in it -- "." -- is found inside
+            // nearly every name: only an exact one counts.
+            if (wordy && nameMatches(item->getName(), pattern)) fits.push_back(std::make_pair(item->getName(), o));
         }
         // Worn without being in the inventory at all -- a HUD a script or an
         // experience put on for a while -- is known only by its own name, which
@@ -3049,8 +3073,25 @@ namespace
         if (ref.isMap() && ref.has("id")) return byId(ref["id"].asString());
         if (ref.isMap() && ref.has("worn"))
         {
-            if (LLViewerObject* o = wornByName(ref["worn"].asString(), error)) return o->getID();
-            return LLUUID::null;
+            // A HUD worn without an inventory item is known only by its own
+            // name, which the region sends when it is asked for: wait a moment
+            // for those names rather than answer from the inventory's names
+            // alone. The potion HUD "." was looked for straight after a login,
+            // before its name had come, and "." fitted five other worn things
+            // by their names instead (2026-10-06, the main grid).
+            const std::string want = ref["worn"].asString();
+            const F64 until = LLTimer::getTotalSeconds() + 6.0;
+            while (true)
+            {
+                std::string err;
+                if (LLViewerObject* o = wornByName(want, err)) return o->getID();
+                if (!wornNamesComing() || LLTimer::getTotalSeconds() > until)
+                {
+                    error = err;
+                    return LLUUID::null;
+                }
+                if (!run.pause(0.25)) { error = "stopped"; return LLUUID::null; }
+            }
         }
         if (ref.isMap() && ref.has("near"))
         {
