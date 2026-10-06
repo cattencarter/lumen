@@ -1778,9 +1778,10 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
         r->dialogues_before = dialoguesNow();
         progress(r->skill.name + ": starting.");
         const S32 count = (S32)r->skill.steps.size();
+        bool between = false;   //< stopped before a step began, not during one
         for (r->step = 0; r->step < count; ++r->step)
         {
-            if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; break; }
+            if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; between = true; break; }
             const LLSD& step = r->skill.steps[r->step];
             if (step["do"].asString() != "say")
             {
@@ -1822,7 +1823,24 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
         if (r->state == LumenAISkills::Run::DONE)
             progress(r->skill.name + ": done.");
         else if (r->state == LumenAISkills::Run::STOPPED)
-            progress(r->skill.name + ": stopped.");
+        {
+            // Clear empties the conversation, progress lines and all, so this
+            // line alone has to say how far it got.
+            if (between && r->step == 0)
+                progress(r->skill.name + ": stopped before it began.");
+            else if (between)
+                progress(llformat("%s: stopped after step %d of %d; nothing after it was done.",
+                                  r->skill.name.c_str(), r->step, count));
+            else
+            {
+                const LLSD& step = r->skill.steps[r->step];
+                std::string unknown;
+                const LLSD shown = resolve(step, r->vars, unknown);
+                progress(llformat("%s: stopped during step %d of %d (%s); nothing after it was done.",
+                                  r->skill.name.c_str(), r->step + 1, count,
+                                  stepWords(unknown.empty() ? shown : step).c_str()));
+            }
+        }
         else
             progress(r->skill.name + ": stopped at step " + llformat("%d", r->step + 1) + " -- " + r->failure + ".");
         LL_INFOS("AISkills") << "\"" << r->skill.name << "\" ended "
