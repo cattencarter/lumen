@@ -128,6 +128,20 @@ public:
     std::string objectNameFor(const LLUUID& id);
 
     /**
+     * <Lumen> A held call made again by the viewer itself while it waits for
+     * the region -- not by the model. The test log writes it as AGAIN, not
+     * CALL: counted as calls, a search held for eight seconds read as the model
+     * "spamming" it 67 times (2026-10-07).
+     */
+    struct RepeatScope
+    {
+        RepeatScope();
+        ~RepeatScope();
+    private:
+        bool mWas;
+    };
+
+    /**
      * <Lumen> What inTheWay could and could not do, so that "the space it
      * fills was checked" is only ever said when it was (the review,
      * 2026-10-06).

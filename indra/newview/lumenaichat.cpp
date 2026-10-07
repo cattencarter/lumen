@@ -518,6 +518,7 @@ namespace
                     return "The conversation was stopped while the viewer was waiting on the "
                            "region, so the answer was not collected.";
                 }
+                LumenAIControl::RepeatScope repeat;   // the viewer's own try (the test log's AGAIN)
                 reply = rpc("tools/call", params);
             }
             const LLSD sc = reply["result"]["structuredContent"];

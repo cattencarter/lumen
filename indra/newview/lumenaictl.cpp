@@ -669,6 +669,7 @@ namespace
         FromSocketScope()  { sRequestFromSocket = true; }
         ~FromSocketScope() { sRequestFromSocket = false; }
     };
+    bool sRepeatingCall = false;   // see LumenAIControl::RepeatScope
     // </Lumen>
 
     bool fromBrowser(const LLSD& context)
@@ -1350,6 +1351,9 @@ void LumenAIControl::holdForAnswer(LLHTTPNode::ResponsePtr response, const std::
     mHeld.push_back(held);
 }
 
+LumenAIControl::RepeatScope::RepeatScope() : mWas(sRepeatingCall) { sRepeatingCall = true; }
+LumenAIControl::RepeatScope::~RepeatScope() { sRepeatingCall = mWas; }
+
 F64 LumenAIControl::takeSettle()
 {
     const F64 seconds = mSettle;
@@ -1411,6 +1415,7 @@ void LumenAIControl::serviceHeldReplies()
             F64 settle = 0.0;
             {
                 FromSocketScope from_socket;
+                RepeatScope repeat;   // the viewer's own try, not the caller's
                 again = handleRequest(h.body);
                 asking = takeWaitingAsk();
                 settle = takeSettle();
@@ -14289,7 +14294,8 @@ LLSD LumenAIControl::dispatch(const std::string& method, const LLSD& params)
         // it, and what it answered. Off unless LumenAITest is switched on in
         // user_settings/logcontrol-dev.xml, because a result can carry other
         // people's chat and IM text.
-        LL_DEBUGS("LumenAITest") << "CALL " << name << " " << llsdToJsonString(args)
+        LL_DEBUGS("LumenAITest") << (sRepeatingCall ? "AGAIN " : "CALL ") << name << " "
+                                 << llsdToJsonString(args)
                                  << "\nRESULT " << llsdToJsonString(inner).substr(0, 8000)
                                  << LL_ENDL;
         // </Lumen>
