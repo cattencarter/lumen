@@ -217,6 +217,14 @@ public:
      * first time and it notice there is nothing set up").
      */
     static void offerSetupAtFirstLogin();
+    /**
+     * <Lumen> One of the viewer's own questions was answered. A Yes to one that
+     * a finished turn left on the screen carries on by itself: Codex and Claude
+     * Code wait about fifty seconds for an answer, three times, then end the
+     * turn saying "click Yes" -- and a Yes clicked after that did nothing until
+     * the person wrote again (2026-10-07, the beta grid; the author: "yes").
+     */
+    static void askAnswered(const LLUUID& ask_id, bool yes, const std::string& question);
     static void summariseNow();   //< the offer was accepted
 
     /**
@@ -354,6 +362,8 @@ private:
     /// said once and withdrawn once rather than repeated or left standing.
     bool mSaidNoKey = false;
     bool mSaidNoProvider = false;   //< <Lumen> the offer of the three subscriptions, once while none is chosen
+    std::set<LLUUID> mAsksLeftOpen; //< <Lumen> the viewer's questions still up when a turn ended
+    std::string mGoOnText;          //< <Lumen> a Yes that came while another turn ran: said when it ends
     /// Provider and model as last announced, so a change can be noticed.
     std::string mAnnounced;
 

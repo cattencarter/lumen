@@ -194,6 +194,8 @@ public:
 
     /** Whether this question is still waiting for the user. */
     bool askPending(const LLUUID& ask_id);
+    /** <Lumen> The viewer's questions still on the screen, unanswered. */
+    std::vector<LLUUID> pendingAskIds() const;
     /**
      * <Lumen> The person is starting this skill themselves -- its phrase typed,
      * or Run in the Skills window -- so its question says "You are about to

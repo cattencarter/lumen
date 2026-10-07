@@ -1265,6 +1265,19 @@ void LumenAIControl::onAskAnswered(const LLSD& notification, const LLSD& respons
                       << (it->second.remembered ? " (remembered)" : "")
                       << (it->second.saved && !it->second.remembered ? ", and to be remembered" : "")
                       << LL_ENDL;
+
+    // <Lumen> A question a finished turn left on the screen: the Assistant
+    // carries on after a Yes (see LumenAIChatFloater::askAnswered).
+    if (!it->second.remembered)
+        LumenAIChatFloater::askAnswered(it->second.id, option == 0, it->second.question);
+}
+
+std::vector<LLUUID> LumenAIControl::pendingAskIds() const
+{
+    std::vector<LLUUID> out;
+    for (const auto& a : mAsks)
+        if (a.second.state == 0 && a.second.id.notNull()) out.push_back(a.second.id);
+    return out;
 }
 
 void LumenAIControl::sweepAsks()

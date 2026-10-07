@@ -74,6 +74,7 @@
 #include "llcorehttputil.h"
 #include "lllineeditor.h"
 #include "llcombobox.h"        // <Lumen> the Skills window
+#include "llcallbacklist.h"     // <Lumen> doOnIdleOneTime: a late Yes said once the window is free
 #include "llscrolllistctrl.h"  // <Lumen> the Skills window
 #include "llsdjson.h"
 #include "llsdutil.h"
@@ -2760,6 +2761,24 @@ void LumenAIChatFloater::setBusy(bool busy, const std::string& note)
 {
     // <Lumen> A turn ending ends its inventory change set.
     if (mBusy && !busy && LumenAIUndo::instanceExists()) LumenAIUndo::instance().endRequest();
+    // <Lumen> A turn ending with the viewer's question still up: a Yes to it
+    // later carries on (askAnswered). And a Yes that came while this turn
+    // ran is said now, once the window is free -- after this returns.
+    if (mBusy && !busy && LumenAIControl::instanceExists())
+    {
+        for (const LLUUID& id : LumenAIControl::instance().pendingAskIds()) mAsksLeftOpen.insert(id);
+        if (!mGoOnText.empty())
+        {
+            const std::string text = mGoOnText;
+            mGoOnText.clear();
+            LLHandle<LLFloater> handle = getHandle();
+            doOnIdleOneTime([handle, text]()
+            {
+                LumenAIChatFloater* f = dynamic_cast<LumenAIChatFloater*>(handle.get());
+                if (f && !f->mBusy) f->beginTurn(text);
+            });
+        }
+    }
     mBusy = busy;
 
     if (mSendBtn) mSendBtn->setEnabled(!busy);
@@ -2778,6 +2797,10 @@ void LumenAIChatFloater::onClear()
     // again -- ran alongside the next one on the same history, socket or
     // process. So a running turn is stopped first, for real.
     const bool was_busy = mBusy;
+    // <Lumen> Clear is "stop": a Yes clicked later to a question the old
+    // conversation left up does not start it again.
+    mAsksLeftOpen.clear();
+    mGoOnText.clear();
     if (was_busy) abandonTurn();
     if (mListening || mKeepListening) stopMic(std::string());
     // A bulk inventory change outlasts the turn that asked for it, and Clear
@@ -3395,6 +3418,29 @@ namespace
         }
     };
     LumenSetupHandler gLumenSetupHandler;
+}
+
+// static
+void LumenAIChatFloater::askAnswered(const LLUUID& ask_id, bool yes, const std::string& question)
+{
+    LumenAIChatFloater* self = LLFloaterReg::findTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self || !self->mAsksLeftOpen.erase(ask_id) || !yes) return;
+    // What was asked, in the question's own first line: the model makes the
+    // same call again, and the viewer -- holding the Yes for two minutes --
+    // lets it through without asking twice.
+    std::string what = question.substr(0, question.find('\n'));
+    LLStringUtil::trim(what);
+    if (what.size() > 160) what = utf8str_truncate(what, 160) + "...";
+    const std::string text = "I answered Yes in the viewer's window" +
+                             (what.empty() ? std::string() : ": \"" + what + "\"") + ". Go on with it.";
+    if (self->mBusy)
+    {
+        self->mGoOnText = text;
+        self->sayNote("You answered Yes. The assistant goes on with it when it has finished what it is doing.");
+        return;
+    }
+    self->sayNote("You answered Yes after the assistant had stopped waiting, so it goes on with it now.");
+    self->beginTurn(text);
 }
 
 // static
