@@ -147,6 +147,28 @@ namespace
     const std::string MISTRAL_URL_DEFAULT   = "https://api.mistral.ai/v1/chat/completions";
 
     /**
+     * <Lumen> The words of an OpenAI-dialect message's `content`: a string, or
+     * -- as Mistral Large 4 answers -- a list of pieces, "thinking" ones among
+     * them. Read as a string, a list was nothing, and every answer of Large 4's
+     * vanished from the Assistant though the model had written it (2026-10-07).
+     * Only the "text" pieces; the thinking is the model's own.
+     */
+    std::string contentText(const LLSD& content)
+    {
+        if (content.isString()) return content.asString();
+        std::string out;
+        if (content.isArray())
+        {
+            for (LLSD::array_const_iterator it = content.beginArray(); it != content.endArray(); ++it)
+            {
+                if ((*it)["type"].asString() == "text" && (*it)["text"].isString())
+                    out += (*it)["text"].asString();
+            }
+        }
+        return out;
+    }
+
+    /**
      * Which setting holds the model for this provider.
      *
      * Six places picked this by hand, in three different spellings of the same
@@ -4638,7 +4660,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
         if (is_openai)
         {
             const LLSD message = reply["choices"][0]["message"];
-            assistant_text = message["content"].asString();
+            assistant_text = contentText(message["content"]);
 
             // Echo the assistant's own turn back into the history verbatim;
             // OpenAI needs its tool_calls exactly as it sent them.
@@ -5878,7 +5900,7 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
         {
             if (is_openai)
             {
-                text = reply["choices"][0]["message"]["content"].asString();
+                text = contentText(reply["choices"][0]["message"]["content"]);
             }
             else
             {

@@ -214,6 +214,7 @@
             <combo_box.item label="mistral-medium-latest (recommended)" name="mm" value="mistral-medium-latest" />
             <combo_box.item label="mistral-small-2603 (Small 4: faster, cheaper)" name="ms" value="mistral-small-2603" />
             <combo_box.item label="mistral-large-latest"  name="ml" value="mistral-large-latest" />
+            <combo_box.item label="mistral-large-4 (preview)" name="ml4" value="mistral-large-4" />
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
