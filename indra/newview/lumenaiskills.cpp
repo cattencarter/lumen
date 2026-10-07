@@ -699,16 +699,31 @@ struct LumenAISkills::Run
         return stop || !LumenAIControl::instanceExists()
             || LLStartUp::getStartupState() < STATE_STARTED || LLApp::isExiting();
     }
-    /** Wait for `seconds`, or less if asked to stop. False when stopped. */
+    bool moved = false;      //< a teleport or a crossing happened in the middle of a step
+    bool not_started = false;  //< refused before its first step (the land)
+    /** Somewhere else than where it began: a teleport, a crossing, a region restart. */
+    bool elsewhere() const
+    {
+        LLViewerRegion* now = gAgent.getRegion();
+        return !now || (region && now->getHandle() != region)
+            || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE;
+    }
+    /**
+     * Wait for `seconds`, or less if asked to stop. False when stopped -- or
+     * moved: checked only between steps, a teleport during a minute's wait
+     * left the step waiting on in the new region, where a thing of the same
+     * name could have answered it (the beta grid, 2026-10-07).
+     */
     bool pause(F64 seconds)
     {
         const F64 until = LLTimer::getTotalSeconds() + seconds;
         while (LLTimer::getTotalSeconds() < until)
         {
             if (stopped()) return false;
+            if (region && elsewhere()) { moved = true; return false; }
             llcoro::suspendUntilTimeout((F32)llmin(0.25, until - (F64)LLTimer::getTotalSeconds() + 0.01));
         }
-        return !stopped();
+        return !stopped() && !moved;
     }
 };
 
@@ -2533,6 +2548,19 @@ void LumenAISkills::pollTeaching()
         if (!name.empty()) e["name"] = name;
         noteTeachEvent(e);
     }
+    // A name asked for when the thing appeared comes a moment later: filled in
+    // while the thing is still here. Filled in only when teaching stopped, a
+    // test cube picked up before that was gone by then, nameless -- and its
+    // pick-up could not be matched to it by name (the beta grid, 2026-10-07).
+    for (S32 i = 0; i < (S32)mTeachEvents.size(); ++i)
+    {
+        const LLSD& ce = mTeachEvents[i];   // read through const: a missing field is not added
+        if (ce["kind"].asString() != "object_appeared" || ce.has("name")) continue;
+        LLViewerObject* o = gObjectList.findObject(ce["object_id"].asUUID());
+        if (!o || o->isDead()) continue;
+        const std::string name = thingName(o);
+        if (!name.empty()) mTeachEvents[i]["name"] = name;
+    }
 }
 
 /** Stops watching; what was noted stays for teach_stop, unless Clear ended it. */
@@ -2896,7 +2924,10 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
         }
         LLSD e;
         e["code"] = -32000;
-        e["message"] = r.state == Run::STOPPED
+        e["message"] = r.not_started
+            ? llformat("The skill \"%s\" was not started: %s. Nothing was done. Tell the user "
+                       "plainly why.", skill.name.c_str(), r.failure.c_str())
+            : r.state == Run::STOPPED
             ? llformat("The skill \"%s\" was stopped at step %d of %d. Nothing after that was done.",
                        skill.name.c_str(), r.step + 1, (S32)r.skill.steps.size())
             : llformat("The skill \"%s\" stopped at step %d of %d (%s): %s. The steps before it "
@@ -2970,6 +3001,7 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             {
                 r->step = 0;
                 r->failure = not_here;
+                r->not_started = true;
                 r->state = LumenAISkills::Run::FAILED;
                 r->finished = LLTimer::getTotalSeconds();
                 progress(r->skill.name + ": not started -- " + not_here + ".");
@@ -2985,16 +3017,12 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; between = true; break; }
             // Somewhere else now -- a teleport, a crossing, a region restart:
             // the rest would rez and click in the wrong place (task 024).
+            if (r->moved || r->elsewhere())
             {
-                LLViewerRegion* region = gAgent.getRegion();
-                if (!region || (r->region && region->getHandle() != r->region)
-                    || gAgent.getTeleportState() != LLAgent::TELEPORT_NONE)
-                {
-                    r->failure = "the avatar is no longer in the region it began in -- a teleport or a "
-                                 "crossing -- and the rest would happen in the wrong place";
-                    r->state = LumenAISkills::Run::FAILED;
-                    break;
-                }
+                r->failure = "the avatar is no longer in the region it began in -- a teleport or a "
+                             "crossing -- and the rest would happen in the wrong place";
+                r->state = LumenAISkills::Run::FAILED;
+                break;
             }
             const LLSD& step = r->skill.steps[r->step];
             // What the log keeps of a step: never its words (see progress()).
@@ -3007,7 +3035,7 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             std::string error;
             bool may_retry = false;
             bool ok = runStep(*r, step, r->step, error, may_retry);
-            if (!ok && may_retry && !r->stopped())
+            if (!ok && may_retry && !r->stopped() && !r->moved)
             {
                 // Once, and only for a wait that ran out -- lag, not a wrong guess.
                 // The reason can quote names, inputs and a menu's words: in the
@@ -3019,6 +3047,13 @@ LLSD LumenAISkills::run(const Skill& skill, const LLSD& inputs)
             }
             if (!ok)
             {
+                if (r->moved)
+                {
+                    r->failure = "the avatar left the region it began in during this step -- a teleport "
+                                 "or a crossing -- and the rest would happen in the wrong place";
+                    r->state = LumenAISkills::Run::FAILED;
+                    break;
+                }
                 if (r->stopped()) { r->state = LumenAISkills::Run::STOPPED; break; }
                 if (step["optional"].asBoolean())
                 {
