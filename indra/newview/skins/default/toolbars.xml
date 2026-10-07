@@ -9,6 +9,7 @@
      button_display_mode="icons_only"
      button_layout_style="fill">
      <command name="assistant"/>
+     <command name="skills"/>
      <command name="chat"/>
      <command name="speak"/>
      <command name="facebook"/>

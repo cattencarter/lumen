@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- <Lumen> The Skills window: the routines the person taught the assistant,
+     run with a click. Opened from the Skills toolbar button and the Comm menu. -->
+<floater
+ legacy_header_height="18"
+ can_minimize="true"
+ can_close="true"
+ can_resize="true"
+ height="390"
+ min_height="330"
+ min_width="380"
+ layout="topleft"
+ name="floater_lumen_skills"
+ help_topic="floater_lumen_skills"
+ save_rect="true"
+ single_instance="true"
+ title="Skills"
+ width="440">
+
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="12" top="24" width="416" height="32" word_wrap="true">
+        Routines you taught the assistant. Choose one and press Run; it runs in the Assistant window.
+    </text>
+
+    <scroll_list follows="all" layout="topleft"
+     left="12" top="60" width="416" height="170"
+     name="skills" column_padding="4" draw_heading="true" multi_select="false">
+        <scroll_list.columns label="Skill" name="name" width="150" />
+        <scroll_list.columns label="What it is for" name="about" dynamic_width="true" />
+    </scroll_list>
+
+    <text type="string" follows="left|top|right" layout="topleft"
+     left="20" top="90" width="400" height="60" word_wrap="true"
+     name="empty" visible="false">
+        No skills yet. To teach one, open the Assistant, say "I want to teach you something", and do it once.
+    </text>
+
+    <text type="string" follows="left|bottom" layout="topleft"
+     left="12" top="242" width="150" height="16" name="input_label_0" visible="false" />
+    <combo_box follows="left|right|bottom" layout="topleft"
+     left="166" top="238" width="262" height="22" name="input_choice_0" visible="false" />
+    <line_editor follows="left|right|bottom" layout="topleft"
+     left="166" top="238" width="262" height="22" name="input_text_0" visible="false" max_length_chars="200" />
+
+    <text type="string" follows="left|bottom" layout="topleft"
+     left="12" top="270" width="150" height="16" name="input_label_1" visible="false" />
+    <combo_box follows="left|right|bottom" layout="topleft"
+     left="166" top="266" width="262" height="22" name="input_choice_1" visible="false" />
+    <line_editor follows="left|right|bottom" layout="topleft"
+     left="166" top="266" width="262" height="22" name="input_text_1" visible="false" max_length_chars="200" />
+
+    <text type="string" follows="left|bottom" layout="topleft"
+     left="12" top="298" width="150" height="16" name="input_label_2" visible="false" />
+    <combo_box follows="left|right|bottom" layout="topleft"
+     left="166" top="294" width="262" height="22" name="input_choice_2" visible="false" />
+    <line_editor follows="left|right|bottom" layout="topleft"
+     left="166" top="294" width="262" height="22" name="input_text_2" visible="false" max_length_chars="200" />
+
+    <text type="string" follows="left|right|bottom" layout="topleft"
+     left="12" top="324" width="416" height="30" word_wrap="true" name="status" />
+
+    <button follows="right|bottom" layout="topleft"
+     left="348" top="358" width="80" height="22"
+     label="Run" name="run_btn" enabled="false" />
+
+</floater>

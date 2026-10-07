@@ -950,6 +950,17 @@
              function="Floater.Toggle"
              parameter="ai_chat" />
         </menu_item_check>
+        <!-- <Lumen> The routines the person taught the assistant. -->
+        <menu_item_check
+         name="Skills"
+         label="Skills...">
+            <menu_item_check.on_check
+             function="Floater.Visible"
+             parameter="lumen_skills" />
+            <menu_item_check.on_click
+             function="Floater.Toggle"
+             parameter="lumen_skills" />
+        </menu_item_check>
         <!-- What the assistant knows about this avatar: the note and the things
              it was asked to remember. It only had a button deep in Preferences,
              so neither a person nor the assistant could find it by name. -->

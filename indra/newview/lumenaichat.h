@@ -231,6 +231,13 @@ public:
      */
     static void showPicture(const LLImageRaw* raw, const std::vector<U8>& jpeg,
                             const std::string& caption);
+    /**
+     * <Lumen> Run a skill from the Skills window, with the inputs chosen there:
+     * in the Assistant, which it opens, as the skill's trigger phrase runs it --
+     * the same front door, so the skill's own question and every guard apply.
+     * False, with the reason in `why_not`, when it cannot start now.
+     */
+    static bool runSkillFromList(const std::string& tool, const LLSD& inputs, std::string& why_not);
 
     LumenAIChatFloater(const LLSD& key);
     ~LumenAIChatFloater() override;
@@ -362,6 +369,9 @@ private:
     void beginTurn(const std::string& text);
     /** <Lumen> Task 022: a typed line that is exactly a skill's phrase -- run it, no model. */
     bool runSkillByTrigger(const std::string& text);
+    /** <Lumen> A skill's run in this window: the progress line, Clear, and how it ended. */
+    void startSkill(const std::string& tool, const std::string& skill_name, const LLSD& inputs,
+                    const std::string& said);
     void startCatchUp();
     void renderCatchUp(const LLSD& result, const LLSD& summaries);  // <Lumen>
     void flushCatchUp();   // <Lumen> end of turn: draw what was never worded
@@ -448,6 +458,36 @@ private:
     void sayUsage(S32 in, S32 out, S32 cached, S32 created, S32 calls,
                   bool caching_expected);
     void setBusy(bool busy, const std::string& note = std::string());
+};
+
+/**
+ * <Lumen> The Skills window: the routines the person taught the assistant,
+ * from the Skills toolbar button. Choose one, fill in what it needs -- a
+ * choice from the card's own list, or a few words -- and Run hands it to the
+ * Assistant. One button for any number of skills, rather than one each (the
+ * author, 2026-10-07).
+ */
+class LLScrollListCtrl;
+class LumenAISkillsFloater : public LLFloater
+{
+public:
+    LumenAISkillsFloater(const LLSD& key);
+
+    bool postBuild() override;
+    void onOpen(const LLSD& key) override;
+    void draw() override;
+
+private:
+    static const S32 INPUT_ROWS = 3;
+    LLScrollListCtrl* mList = nullptr;
+    std::string mShown;         //< the skills the list shows, to notice a change
+    LLFrameTimer mCheck;        //< how often draw() looks for one
+
+    std::string listSignature() const;
+    void refreshList();
+    void onSelect();
+    void onRun();
+    void setStatus(const std::string& text);
 };
 
 #endif // LUMEN_AICHAT_H

@@ -551,6 +551,7 @@ void LLViewerFloaterReg::registerFloaters()
     // <Lumen> the in-viewer assistant
     LLFloaterReg::add("ai_chat", "floater_ai_chat.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAIChatFloater>);
     LLFloaterReg::add("ai_memory", "floater_ai_memory.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAIMemoryFloater>);
+    LLFloaterReg::add("lumen_skills", "floater_lumen_skills.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAISkillsFloater>);   // <Lumen>
     LLFloaterReg::add("ai_setup", "floater_ai_setup.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LumenAISetupFloater>);
     // </Lumen>
     // LLFloaterReg::add("prefs_graphics_advanced", "floater_preferences_graphics_advanced.xml", (LLFloaterBuildFunc)&LLFloaterReg::build<LLFloaterPreferenceGraphicsAdvanced>);

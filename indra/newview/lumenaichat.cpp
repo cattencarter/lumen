@@ -73,6 +73,8 @@
 #include "lltabcontainer.h"
 #include "llcorehttputil.h"
 #include "lllineeditor.h"
+#include "llcombobox.h"        // <Lumen> the Skills window
+#include "llscrolllistctrl.h"  // <Lumen> the Skills window
 #include "llsdjson.h"
 #include "llsdutil.h"
 #include "lltextbox.h"
@@ -2815,11 +2817,54 @@ bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
     const std::string tool = skills.toolForTrigger(text);
     const LumenAISkills::Skill* skill = tool.empty() ? nullptr : skills.find(tool);
     if (!skill || !skills.checkInputs(*skill, LLSD::emptyMap()).empty()) return false;
+    startSkill(tool, skill->name, LLSD::emptyMap(), text);
+    return true;
+}
 
-    const std::string label = "Running \"" + skill->name + "\"";
-    const std::string skill_name = skill->name;
+// static
+bool LumenAIChatFloater::runSkillFromList(const std::string& tool, const LLSD& inputs, std::string& why_not)
+{
+    const LumenAISkills::Skill* skill = LumenAISkills::instanceExists()
+                                      ? LumenAISkills::instance().find(tool) : nullptr;
+    if (!skill)
+    {
+        why_not = "That skill is not there any more -- its notecard may have changed.";
+        return false;
+    }
+    if (LLStartUp::getStartupState() < STATE_STARTED)
+    {
+        why_not = "Skills run once you are logged in.";
+        return false;
+    }
+    LumenAIChatFloater* self = LLFloaterReg::showTypedInstance<LumenAIChatFloater>("ai_chat");
+    if (!self)
+    {
+        why_not = "The Assistant window could not be opened.";
+        return false;
+    }
+    if (self->mBusy)
+    {
+        why_not = "The Assistant is busy with something else. Try again when it has finished, "
+                  "or press Clear there to stop it.";
+        return false;
+    }
+    // Said in the conversation, as a typed phrase would be: what was started, and with what.
+    std::string with;
+    for (LLSD::map_const_iterator it = inputs.beginMap(); it != inputs.endMap(); ++it)
+        with += (with.empty() ? " -- " : ", ") + it->second.asString();
+    const std::string said = "Run \"" + skill->name + "\"" + with;
+    self->sayNote("You started \"" + skill->name + "\" from the Skills window" +
+                  (with.empty() ? std::string(".") : with + "."));
+    self->startSkill(tool, skill->name, inputs, said);
+    return true;
+}
+
+void LumenAIChatFloater::startSkill(const std::string& tool, const std::string& skill_name,
+                                    const LLSD& inputs, const std::string& said)
+{
+    const std::string label = "Running \"" + skill_name + "\"";
     setBusy(true, label);
-    LumenAIUndo::instance().beginRequest(text);
+    LumenAIUndo::instance().beginRequest(said);
     LLHandle<LLFloater> handle = getHandle();
     // <Lumen> Clear stops the run (stopAll) and bumps this. The run can take
     // 15 s to notice, a web call a minute, and when it did, this coroutine
@@ -2829,7 +2874,7 @@ bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
     // say how it ended: an ending nobody collects is handed back for five
     // minutes, and the same phrase would then not start it again.
     const S32 gen = mTurnGen;
-    LLCoros::instance().launch("LumenAISkillTrigger", [handle, tool, gen, label, skill_name]()
+    LLCoros::instance().launch("LumenAISkillTrigger", [handle, tool, gen, label, skill_name, inputs]()
     {
         auto ours = [handle, gen]() -> LumenAIChatFloater*
         {
@@ -2838,7 +2883,7 @@ bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
         };
         auto wanted = [handle]() { return handle.get() != nullptr; };
         bool is_error = false;
-        const std::string answer = callTool(tool, LLSD::emptyMap(), LLUUID::generateNewID().asString(),
+        const std::string answer = callTool(tool, inputs, LLUUID::generateNewID().asString(),
                                             is_error, nullptr, wanted,
                                             [ours]()
                                             {
@@ -2863,7 +2908,6 @@ bool LumenAIChatFloater::runSkillByTrigger(const std::string& text)
             self->setBusy(false);
         }
     });
-    return true;
 }
 
 /**
@@ -5982,3 +6026,156 @@ void LumenAIAutoResponder::replyTo(const LLUUID& from_id, const std::string& fro
         // mInFlight is cleared by clear_in_flight above, on every path out.
     });
 }
+
+// ---- <Lumen> the Skills window ---------------------------------------------
+
+LumenAISkillsFloater::LumenAISkillsFloater(const LLSD& key)
+:   LLFloater(key)
+{
+}
+
+bool LumenAISkillsFloater::postBuild()
+{
+    mList = getChild<LLScrollListCtrl>("skills");
+    mList->setCommitCallback([this](LLUICtrl*, const LLSD&) { onSelect(); });
+    mList->setDoubleClickCallback([this]() { onRun(); });
+    getChild<LLButton>("run_btn")->setCommitCallback([this](LLUICtrl*, const LLSD&) { onRun(); });
+    return true;
+}
+
+void LumenAISkillsFloater::onOpen(const LLSD& key)
+{
+    setStatus(std::string());
+    refreshList();
+}
+
+void LumenAISkillsFloater::draw()
+{
+    // Cards come and go with the folder -- one saved by the assistant while
+    // this is open, one deleted by hand -- so look once a second.
+    if (mCheck.getElapsedTimeF32() > 1.f)
+    {
+        mCheck.reset();
+        if (listSignature() != mShown) refreshList();
+    }
+    LLFloater::draw();
+}
+
+std::string LumenAISkillsFloater::listSignature() const
+{
+    if (!LumenAISkills::instanceExists()) return std::string();
+    const LumenAISkills& skills = LumenAISkills::instance();
+    std::string sig;
+    for (const LumenAISkills::Skill& s : skills.all())
+        sig += s.tool + "|" + s.name + "|" + s.about + "|" + s.asset_id.asString()
+             + (skills.needsTrust(s) ? "|new" : "") + "\n";
+    return sig;
+}
+
+void LumenAISkillsFloater::refreshList()
+{
+    mShown = listSignature();
+    const std::string selected = mList->getSelectedValue().asString();
+    mList->deleteAllItems();
+    // Every card, the ones not yet looked at on this computer too -- the
+    // assistant is not given those, but the person may run them: the viewer
+    // shows what such a one does and asks first, once for each version.
+    std::vector<const LumenAISkills::Skill*> all;
+    if (LumenAISkills::instanceExists())
+        for (const LumenAISkills::Skill& s : LumenAISkills::instance().all()) all.push_back(&s);
+    std::sort(all.begin(), all.end(), [](const LumenAISkills::Skill* a, const LumenAISkills::Skill* b)
+              { return LLStringUtil::compareDict(a->name, b->name) < 0; });
+    for (const LumenAISkills::Skill* s : all)
+    {
+        LLSD row;
+        row["value"] = s->tool;
+        row["columns"][0]["column"] = "name";
+        row["columns"][0]["value"] = s->name;
+        row["columns"][1]["column"] = "about";
+        row["columns"][1]["value"] = (LumenAISkills::instance().needsTrust(*s) ? std::string("(asks first) ")
+                                                                               : std::string()) + s->about;
+        mList->addElement(row);
+    }
+    getChild<LLUICtrl>("empty")->setVisible(all.empty());
+    if (!selected.empty()) mList->selectByValue(selected);
+    onSelect();
+}
+
+void LumenAISkillsFloater::onSelect()
+{
+    const std::string tool = mList->getSelectedValue().asString();
+    const LumenAISkills::Skill* skill = (!tool.empty() && LumenAISkills::instanceExists())
+                                      ? LumenAISkills::instance().find(tool) : nullptr;
+    const size_t count = skill ? skill->inputs.size() : 0;
+    for (S32 i = 0; i < INPUT_ROWS; ++i)
+    {
+        const bool used = skill && (size_t)i < count && count <= (size_t)INPUT_ROWS;
+        const LumenAISkills::Input* in = used ? &skill->inputs[i] : nullptr;
+        const bool choose = in && !in->choices.empty();
+        LLTextBox* label = getChild<LLTextBox>(llformat("input_label_%d", i));
+        LLComboBox* combo = getChild<LLComboBox>(llformat("input_choice_%d", i));
+        LLLineEditor* text = getChild<LLLineEditor>(llformat("input_text_%d", i));
+        label->setVisible(used);
+        combo->setVisible(choose);
+        text->setVisible(used && !choose);
+        if (!in) continue;
+        // What the card says it is, as the person wrote it: "what needs treating".
+        std::string words = in->about.empty() ? in->name : in->about;
+        if (!words.empty() && (unsigned char)words[0] < 0x80) words[0] = (char)toupper((unsigned char)words[0]);
+        label->setText(words + (in->required ? std::string() : std::string(" (optional)")));
+        if (choose)
+        {
+            combo->removeall();
+            for (const std::string& c : in->choices) combo->add(c);
+            combo->clear();
+            combo->setLabel(LLStringExplicit("Choose..."));
+        }
+        else
+        {
+            text->clear();
+        }
+    }
+    getChild<LLUICtrl>("run_btn")->setEnabled(skill != nullptr && count <= (size_t)INPUT_ROWS);
+    if (skill && count > (size_t)INPUT_ROWS)
+        setStatus("This skill needs more than three things filled in. Ask for it in the Assistant instead.");
+    else
+        setStatus(std::string());
+}
+
+void LumenAISkillsFloater::onRun()
+{
+    const std::string tool = mList->getSelectedValue().asString();
+    const LumenAISkills::Skill* skill = (!tool.empty() && LumenAISkills::instanceExists())
+                                      ? LumenAISkills::instance().find(tool) : nullptr;
+    if (!skill || skill->inputs.size() > (size_t)INPUT_ROWS) return;
+    LLSD inputs = LLSD::emptyMap();
+    for (size_t i = 0; i < skill->inputs.size(); ++i)
+    {
+        const LumenAISkills::Input& in = skill->inputs[i];
+        std::string v = !in.choices.empty()
+            ? getChild<LLComboBox>(llformat("input_choice_%d", (S32)i))->getValue().asString()
+            : getChild<LLLineEditor>(llformat("input_text_%d", (S32)i))->getText();
+        LLStringUtil::trim(v);
+        if (v.empty())
+        {
+            if (!in.required) continue;
+            setStatus(std::string(in.choices.empty() ? "Fill in" : "Choose") + " \""
+                      + (in.about.empty() ? in.name : in.about) + "\" first.");
+            return;
+        }
+        inputs[in.name] = v;
+    }
+    std::string why_not;
+    if (!LumenAIChatFloater::runSkillFromList(tool, inputs, why_not))
+    {
+        setStatus(why_not);
+        return;
+    }
+    closeFloater();   // it runs in the Assistant, which is in front now
+}
+
+void LumenAISkillsFloater::setStatus(const std::string& text)
+{
+    getChild<LLUICtrl>("status")->setValue(text);
+}
+
