@@ -932,6 +932,7 @@ namespace
             if (action == "recall")        return "Reading what it remembers";
             if (action == "test_picture")  return "Looking at a test picture";   // <Lumen>
             if (action == "skills")        return "Looking at the skills";   // <Lumen> task 022
+            if (action == "help")          return "Reading the instructions";   // <Lumen> task 019
             if (action == "teach_start")   return "Watching what you do";
             if (action == "teach_stop")    return "Looking at what you did";
             if (action == "test_skill")    return "Trying the skill";
