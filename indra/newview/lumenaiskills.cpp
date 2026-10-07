@@ -1313,7 +1313,9 @@ namespace
             const LLSD& from = step["from"].isMap() && !step["from"].has("name") ? step["from"]["near"]
                                                                                  : step["from"];
             const std::string giver = !from.isMap() && matchesAnything(from.asString())
-                ? (owned ? "one of " + ownerWords(owner) : std::string("any object or person"))
+                ? (!owned ? std::string("any object or person")
+                   : lower(owner) == "me" ? std::string("one of your own objects")
+                                          : "an object owned by " + cutChars(owner, 60))
                 : valueWords(from, from_step)
                   + (!owned ? std::string() : lower(owner) == "me" ? std::string(" (one of yours)")
                                                                   : " (owned by " + cutChars(owner, 60) + ")");
@@ -1508,16 +1510,20 @@ std::string LumenAISkills::questionText(const Skill& skill)
                              : llformat("Accepts %d items offered by ", a.second) + a.first + "."));
     if (!clicked.empty() || menus)
     {
-        std::string l = clicked.empty() ? std::string("Answers menus") : "Clicks " + join(clicked);
-        if (menus)
+        if (presses.size() > 6)
         {
-            if (presses.size() > 6)
-            {
-                presses.resize(6);
-                presses.push_back("more");
-            }
-            l += (clicked.empty() ? ", pressing " : ", and presses ") + join(presses)
-               + (menus == 1 ? " on its menu" : " on their menus");
+            presses.resize(6);
+            presses.push_back("more");
+        }
+        std::string l;
+        if (clicked.empty())
+            l = (menus == 1 ? std::string("Answers a menu") : llformat("Answers %d menus", menus))
+              + ", pressing " + join(presses);
+        else
+        {
+            l = "Clicks " + join(clicked);
+            if (menus)
+                l += ", and presses " + join(presses) + (menus == 1 ? " on its menu" : " on their menus");
         }
         lines.push_back(l + ".");
     }
@@ -4362,11 +4368,16 @@ namespace
                 }
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
+            // Blaming the click before only when there was one: a menu step
+            // after a say read "the click before it probably did not press
+            // what it should" (2026-10-07, the beta grid).
+            const bool after_click = index > 0 && run.skill.steps[index - 1]["do"].asString() == "touch";
             error = "no menu saying \"" + step["text"].asString() + llformat("\" came up within %.0f seconds", waitFor(step))
-                  + (came_up.empty() ? std::string(" -- no menu came up at all")
-                                       + (clicked_again ? ", though it was clicked twice," : ",")
-                                       + " so the click before it probably did not press what it should"
-                                     : " -- what came up was " + came_up);
+                  + (!came_up.empty() ? " -- what came up was " + came_up
+                     : !after_click   ? std::string(" -- no menu came up at all")
+                     : std::string(" -- no menu came up at all")
+                       + (clicked_again ? ", though it was clicked twice," : ",")
+                       + " so the click before it probably did not press what it should");
             may_retry = false;   // pressing the HUD again is the step before, not this one
             return false;
         }
