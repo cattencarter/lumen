@@ -31,6 +31,7 @@
 #include "lumenaiskills.h"
 
 #include "llagent.h"
+#include "llappviewer.h"   // gLoggedInTime
 #include "llavatarnamecache.h"
 #include "llapp.h"
 #include "llappearancemgr.h"
@@ -3399,7 +3400,21 @@ namespace
                 if (ping > 0.3) f *= 1.0 + (ping - 0.3);
             }
         }
+        // The first minutes after a login: the viewer is still being shown
+        // everything around it, and something new can reach it late. Whisper's
+        // barrel, a minute after her first login on a new computer, stood in
+        // front of her -- the author saw it -- while her viewer had not been
+        // shown it within the 46 s the step waited; the run a minute later saw
+        // its barrel at once (2026-10-07, her log).
+        if (LLStartUp::getStartupState() >= STATE_STARTED && gLoggedInTime.getElapsedTimeF32() < 180.f)
+            f = llmax(f, 3.0);
         return llclamp(f, 1.0, 3.0);
+    }
+
+    /** Seconds since login, or -1 before it. */
+    F64 sinceLogin()
+    {
+        return LLStartUp::getStartupState() >= STATE_STARTED ? (F64)gLoggedInTime.getElapsedTimeF32() : -1.0;
     }
 
     F64 waitFor(const LLSD& step, F64 fallback = DEFAULT_WAIT)
@@ -4514,7 +4529,19 @@ namespace
                 }
                 if (!run.pause(0.25)) { error = "stopped"; return false; }
             }
-            error = "nothing appeared after rezzing it -- the land may not allow it, or the region is slow";
+            {
+                // It may well be there: the region rezzed it, and this viewer
+                // has not been shown it yet. Said so, so nobody runs it again
+                // into a second barrel (2026-10-07).
+                const F64 since = sinceLogin();
+                error = "this viewer was not shown anything new after rezzing it"
+                      + (since >= 0.0 && since < 300.0
+                         ? llformat(" -- it logged in %.0f seconds ago and is still being shown what is "
+                                    "around it, so Second Life may well have rezzed it", since)
+                         : std::string(" -- the land may not allow it, or the region is slow, or Second Life "
+                                       "rezzed it and has not shown it yet"))
+                      + ". Look before running it again, so there are not two";
+            }
             may_retry = false;   // a second rez could leave two
             return false;
         }
