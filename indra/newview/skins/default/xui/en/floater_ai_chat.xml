@@ -23,7 +23,7 @@
      width="16"
      layout="topleft"
      left="4"
-     top="1"
+     top="0"
      name="skills_btn"
      image_unselected="Lumen_Skills_List"
      image_selected="Lumen_Skills_List"

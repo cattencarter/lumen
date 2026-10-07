@@ -1651,7 +1651,9 @@ bool LumenAIChatFloater::postBuild()
         skills_btn->setCommitCallback([](LLUICtrl*, const LLSD&) { LLFloaterReg::toggleInstanceOrBringToFront("lumen_skills"); });
         sendChildToFront(skills_btn);
         if (LLDragHandleTop* handle = dynamic_cast<LLDragHandleTop*>(getDragHandle()))
-            handle->setTitleLeftExtra(skills_btn->getRect().getWidth() + 4);
+            // The title normally starts 14 in (LLDragHandle's LEFT_PAD); now
+            // 6 after the button, a word's space.
+            handle->setTitleLeftExtra(llmax(0, skills_btn->getRect().mRight + 6 - 14));
     }
     mInput      = getChild<LLLineEditor>("input");
     mStatus     = getChild<LLTextBox>("status");
