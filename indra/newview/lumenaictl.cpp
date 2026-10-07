@@ -7308,7 +7308,7 @@ static bool lumenShapeLoaded(LLViewerObject* p)
 // ground, but in a sky build it answered "Can't rez object: failed to calculate
 // rez position" (2026-10-06, the main grid, a cave high up) and a box rezzed on
 // a platform 500 m up never appeared (the beta grid).
-static void lumenRezRay(LLViewerRegion* region, const LLVector3& target, LLVector3& ray_start,
+static bool lumenRezRay(LLViewerRegion* region, const LLVector3& target, LLVector3& ray_start,
                         LLVector3& ray_end, bool& bypass, LLUUID& target_id)
 {
     F32 feet = gAgent.getPositionAgent().mV[VZ];
@@ -7335,14 +7335,62 @@ static void lumenRezRay(LLViewerRegion* region, const LLVector3& target, LLVecto
         target_id = on->getID();
         ray_start = region->getPosRegionFromAgent(spot + LLVector3(0.f, 0.f, 2.5f));
         ray_end   = region->getPosRegionFromAgent(spot - LLVector3(0.f, 0.f, 0.5f));
+        return true;
     }
-    else
+    if (spot.mV[VZ] >= feet - 6.f)
     {
-        bypass = true;   // the land: its point, as the placer sends it
+        bypass = true;   // the land, just below: its point, as the placer sends it
         target_id.setNull();
         ray_start = region->getPosRegionFromAgent(spot + LLVector3(0.f, 0.f, 2.5f));
         ray_end   = region->getPosRegionFromAgent(spot);
+        return true;
     }
+    // Nothing found under the spot, and the land far below: a floor this viewer
+    // has not loaded yet -- a sky build's mesh straight after a first login on a
+    // new computer -- or open air. Taking the land there sent a barrel to the
+    // ground hundreds of metres down while the skill looked for it beside the
+    // user (2026-10-07, Whisper's first run on her own Mac). The simulator will
+    // not look for a floor by itself either: with no object named and the raycast
+    // left to it, it rezzed nothing at all (the beta grid, a platform 500 m up).
+    // So nothing is sent; the caller waits for the floor to load (lumenRezFloor).
+    return false;
+}
+
+// <Lumen> rez: wait for the floor in front of the user, then give the ray. A
+// floor still loading is waited for, the call held and asked again, up to 12 s
+// per request; then the reason, and nothing rezzed. False with `reply` to hand
+// back while waiting, or with the error.
+static bool lumenRezFloor(LLViewerRegion* region, const LLVector3& target, const std::string& fingerprint,
+                          LLVector3& ray_start, LLVector3& ray_end, bool& bypass, LLUUID& target_id,
+                          LLSD& reply)
+{
+    static std::map<std::string, F64> waiting;   // a rez's fingerprint -> when it began waiting
+    const F64 now = LLTimer::getTotalSeconds();
+    if (lumenRezRay(region, target, ray_start, ray_end, bypass, target_id))
+    {
+        waiting.erase(fingerprint);
+        return true;
+    }
+    auto first = waiting.emplace(fingerprint, now).first;
+    // 12 s: a skill's step asks again for 15 (callTool) and must hear the reason, not the wait.
+    if (now - first->second < 12.0)
+    {
+        reply = LLSD::emptyMap();
+        reply["settling"] = true;
+        reply["note"] = "No floor in front of the user has loaded in the viewer yet, and the land is far "
+                        "below -- a sky build's floor is often still loading just after a login. Waiting "
+                        "for it; call again with exactly the same arguments.";
+        return false;
+    }
+    waiting.erase(first);
+    LLSD e; e["code"] = -32000;
+    e["message"] = "No floor was found in front of the user, and the land is far below -- in a sky build "
+                   "its floor may not have loaded yet, or there is nothing there to stand a thing on. "
+                   "Nothing was rezzed. Tell them; once they face open floor, or in a moment, it can "
+                   "be tried again.";
+    reply = LLSD::emptyMap();
+    reply["__error"] = e;
+    return false;
 }
 
 // <Lumen> place and set: whether `other` lies on the object now -- its own
@@ -28364,6 +28412,20 @@ if (method == "camera")
                 LLSD w; w["__error"] = e; return w;
             }
 
+            // Where it goes, before the message begins: a floor still loading is waited for.
+            LLVector3 ray_start, ray_end;
+            bool bypass = true;
+            LLUUID ray_target;
+            {
+                LLSD wait_reply;
+                if (!lumenRezFloor(regionp, target, fingerprintOf("rez_object", params),
+                                   ray_start, ray_end, bypass, ray_target, wait_reply))
+                {
+                    if (wait_reply.has("settling")) mSettle = llmax(mSettle, 15.0);
+                    return wait_reply;
+                }
+            }
+
             LLMessageSystem* msg = gMessageSystem;
             msg->newMessageFast(_PREHASH_RezObject);
             msg->nextBlockFast(_PREHASH_AgentData);
@@ -28375,10 +28437,6 @@ if (method == "camera")
             msg->addUUIDFast(_PREHASH_FromTaskID, LLUUID::null);
             // true: use the ray we give rather than raycasting from the camera,
             // which is what frees this path from where the user is looking.
-            LLVector3 ray_start, ray_end;
-            bool bypass = true;
-            LLUUID ray_target;
-            lumenRezRay(regionp, target, ray_start, ray_end, bypass, ray_target);
             msg->addU8Fast(_PREHASH_BypassRaycast, (U8) bypass);
             msg->addVector3Fast(_PREHASH_RayStart, ray_start);
             msg->addVector3Fast(_PREHASH_RayEnd,   ray_end);
@@ -28541,6 +28599,20 @@ if (method == "camera")
 
         // Deliberately not LLUIUsage::logCommand("Build.ObjectAdd"): that counter
         // is for things the user clicked, and nobody clicked this.
+        // Where it goes, before the message begins: a floor still loading is waited for.
+        LLVector3 ray_start, ray_end;
+        bool bypass = true;
+        LLUUID ray_target;
+        {
+            LLSD wait_reply;
+            if (!lumenRezFloor(regionp, target, fingerprintOf("rez_object", params),
+                               ray_start, ray_end, bypass, ray_target, wait_reply))
+            {
+                if (wait_reply.has("settling")) mSettle = llmax(mSettle, 15.0);
+                return wait_reply;
+            }
+        }
+
         LLMessageSystem* msg = gMessageSystem;
         msg->newMessageFast(_PREHASH_ObjectAdd);
         msg->nextBlockFast(_PREHASH_AgentData);
@@ -28621,10 +28693,6 @@ if (method == "camera")
         msg->addQuatFast(_PREHASH_Rotation,    rotation);
         // Straight down onto the floor under the spot (lumenRezRay), which is
         // what frees this from where the user happens to be looking.
-        LLVector3 ray_start, ray_end;
-        bool bypass = true;
-        LLUUID ray_target;
-        lumenRezRay(regionp, target, ray_start, ray_end, bypass, ray_target);
         msg->addVector3Fast(_PREHASH_RayStart, ray_start);
         msg->addVector3Fast(_PREHASH_RayEnd,   ray_end);
         msg->addU8Fast(_PREHASH_BypassRaycast, (U8) bypass);
