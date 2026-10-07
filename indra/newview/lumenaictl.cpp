@@ -11474,13 +11474,28 @@ namespace
     {
         if (gSavedSettings.getString("LumenAIProvider") == LumenAIKeys::VIBE)
         {
+            // Said by the viewer too, in the Assistant: the model is told the
+            // words to use, but Medium 3.5 shortened them to "can't see
+            // pictures yet" and left out what to use instead (2026-10-07).
+            // Once in five minutes, however many pictures it asks for.
+            static F64 s_said = -1000.0;
+            const F64 now = LLTimer::getTotalSeconds();
+            if (now - s_said > 300.0)
+            {
+                s_said = now;
+                LumenAIChatFloater::postFromViewer(std::string(),
+                    "Mistral Vibe can't see pictures yet. For help that looks around -- building and "
+                    "placing things -- choose Claude, ChatGPT or a Mistral API key in Preferences > AI.");
+            }
             // The author's wording, 2026-10-05: short, and pointing at what
-            // they were trying to do rather than at the machinery.
+            // they were trying to do rather than at the machinery. A Mistral
+            // API key sees pictures (Large 4 and Medium, 2026-10-07), so it is
+            // named too -- for someone who would rather stay with Mistral.
             return "You cannot see this: no picture reaches Mistral Vibe. Tell the user, in "
                    "about these words, with what they asked for filled in: \"Mistral Vibe can't "
                    "see what you see yet -- that's a limit in Mistral Vibe. To <what they asked "
-                   "for>, use Claude or ChatGPT instead; you choose them in Preferences > AI.\" "
-                   "Nothing more, and do not try to do it without the picture.";
+                   "for>, use Claude, ChatGPT or a Mistral API key instead; you choose them in "
+                   "Preferences > AI.\" Nothing more, and do not try to do it without the picture.";
         }
         return nullptr;
     }

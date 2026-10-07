@@ -308,7 +308,7 @@
 
         <text type="string" follows="left|top" layout="topleft"
          left="20" top="242" width="480" height="54" word_wrap="true" name="vibe_models_note">
-            Vibe&apos;s own names for the models. Changing the model starts a new conversation.
+            Vibe&apos;s own names for the models. Changing the model starts a new conversation. Vibe cannot see pictures yet, so the building help that looks around needs Claude, ChatGPT or a Mistral API key.
         </text>
       </panel>
 
