@@ -252,11 +252,11 @@ void LLDragHandleTop::reshapeTitleBox()
     }
     const LLFontGL* font = LLFontGL::getFontSansSerif();
     S32 title_width = getRect().getWidth();
-    title_width -= LEFT_PAD + 2 * BORDER_PAD + getButtonsRect().getWidth();
+    title_width -= LEFT_PAD + mTitleLeftExtra + 2 * BORDER_PAD + getButtonsRect().getWidth();   // <Lumen> + extra
     S32 title_height = font->getLineHeight();
     LLRect title_rect;
     title_rect.setLeftTopAndSize(
-        LEFT_PAD,
+        LEFT_PAD + mTitleLeftExtra,   // <Lumen> + extra
         getRect().getHeight() - title_vpad,
         title_width,
         title_height);

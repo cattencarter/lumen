@@ -117,9 +117,12 @@ public:
     virtual std::string getTitle() const;
     virtual void    draw();
     virtual void    reshape(S32 width, S32 height, bool called_from_parent = true);
+    // <Lumen> Room before the title for a small button of the floater's own.
+    void    setTitleLeftExtra(S32 pixels) { mTitleLeftExtra = pixels; reshapeTitleBox(); }
 
 private:
     void    reshapeTitleBox();
+    S32     mTitleLeftExtra = 0;   // <Lumen>
 };
 
 

@@ -78,6 +78,7 @@
 #include "llscrolllistctrl.h"  // <Lumen> the Skills window
 #include "llsdjson.h"
 #include "llsdutil.h"
+#include "lldraghandle.h"
 #include "lltextbox.h"
 #include "llpanel.h"            // <Lumen> catch-up cards
 #include "llavatariconctrl.h"    // <Lumen>
@@ -1642,6 +1643,16 @@ bool LumenAIChatFloater::postBuild()
     refreshTitle();
 
     mTranscript = getChild<LLTextEditor>("transcript");
+    // <Lumen> Skills, from the title bar: the button sits before the title,
+    // which moves right to make room, and above the drag handle so a click
+    // reaches it (the author, 2026-10-07).
+    if (LLButton* skills_btn = findChild<LLButton>("skills_btn"))
+    {
+        skills_btn->setCommitCallback([](LLUICtrl*, const LLSD&) { LLFloaterReg::toggleInstanceOrBringToFront("lumen_skills"); });
+        sendChildToFront(skills_btn);
+        if (LLDragHandleTop* handle = dynamic_cast<LLDragHandleTop*>(getDragHandle()))
+            handle->setTitleLeftExtra(skills_btn->getRect().getWidth() + 4);
+    }
     mInput      = getChild<LLLineEditor>("input");
     mStatus     = getChild<LLTextBox>("status");
     mSendBtn    = getChild<LLButton>("send_btn");
@@ -6188,6 +6199,8 @@ std::string LumenAISkillsFloater::listSignature() const
     for (const LumenAISkills::Skill& s : skills.all())
         sig += s.tool + "|" + s.name + "|" + s.about + "|" + s.asset_id.asString()
              + (skills.needsTrust(s) ? "|new" : "") + "\n";
+    for (LLSD::map_const_iterator it = skills.problems().beginMap(); it != skills.problems().endMap(); ++it)
+        sig += "refused|" + it->first + "|" + it->second.asString() + "\n";
     return sig;
 }
 
@@ -6215,7 +6228,28 @@ void LumenAISkillsFloater::refreshList()
                                                                                : std::string()) + s->about;
         mList->addElement(row);
     }
-    getChild<LLUICtrl>("empty")->setVisible(all.empty());
+    // A card that could not be read is listed too, with why: one made by hand
+    // without its first line simply did not appear, and nothing said so (the
+    // author, 2026-10-07). Its row runs nothing.
+    S32 refused = 0;
+    if (LumenAISkills::instanceExists())
+    {
+        const LLSD& problems = LumenAISkills::instance().problems();
+        for (LLSD::map_const_iterator it = problems.beginMap(); it != problems.endMap(); ++it)
+        {
+            LLSD row;
+            row["value"] = "refused:" + it->first;
+            row["columns"][0]["column"] = "name";
+            row["columns"][0]["value"] = it->first;
+            row["columns"][0]["color"] = LLColor4::grey.getValue();
+            row["columns"][1]["column"] = "about";
+            row["columns"][1]["value"] = "(can't be used) " + it->second.asString();
+            row["columns"][1]["color"] = LLColor4::grey.getValue();
+            mList->addElement(row);
+            ++refused;
+        }
+    }
+    getChild<LLUICtrl>("empty")->setVisible(all.empty() && refused == 0);
     if (!selected.empty()) mList->selectByValue(selected);
     onSelect();
 }
@@ -6264,6 +6298,14 @@ void LumenAISkillsFloater::onSelect()
 void LumenAISkillsFloater::onRun()
 {
     const std::string tool = mList->getSelectedValue().asString();
+    if (tool.compare(0, 8, "refused:") == 0)
+    {
+        const std::string name = tool.substr(8);
+        const LLSD& problems = LumenAISkills::instance().problems();
+        setStatus("\"" + name + "\" cannot be used: " + problems[name].asString()
+                  + ". Ask the assistant to save it again, or fix the notecard in #Lumen/#Skills.");
+        return;
+    }
     const LumenAISkills::Skill* skill = (!tool.empty() && LumenAISkills::instanceExists())
                                       ? LumenAISkills::instance().find(tool) : nullptr;
     if (!skill || skill->inputs.size() > (size_t)INPUT_ROWS) return;

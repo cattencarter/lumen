@@ -505,6 +505,7 @@ namespace
             { "stand",           { },                      "stand up" },
             { "web_call",        { "url" },                "call {url}" },
             { "say",             { "text" },               "say: {text}" },
+            { "clear_away",      { },                      "put what it rezzed in the Trash" },
         };
         return rules;
     }
@@ -1018,7 +1019,7 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
     {
         error = "it has no steps -- each is an object whose \"do\" says what it does: say (with "
                 "\"text\", a line in the conversation), touch, dialog, rez, sit, wait_for_object, "
-                "take, verify, find_item, lookup, accept_offer, stand or web_call";
+                "take, verify, find_item, lookup, accept_offer, stand, web_call or clear_away";
         return false;
     }
     if (card["steps"].size() > 60)
@@ -1067,8 +1068,34 @@ bool LumenAISkills::parse(const std::string& text_in, Skill& out, std::string& e
         }
         if (what == "give" || what == "pay" || what == "delete" || what == "remove")
         {
-            error = llformat("step %d would %s, and a skill may never give, pay or delete", n, what.c_str());
+            error = llformat("step %d would %s, and a skill may never give, pay or delete -- clear_away "
+                             "puts what the skill rezzed itself in the Trash", n, what.c_str());
             return false;
+        }
+        // The one removal there is (the author, 2026-10-07: the herbs barrel
+        // left out after a potion): only what a rez step of this same card made,
+        // named by that step's "as", or everything the run rezzed when no object
+        // is given -- never anything found, worn or somebody else's.
+        if (what == "clear_away" && step.has("object"))
+        {
+            const std::string ref = trim(step["object"].asString());
+            const std::string inner = ref.size() > 2 && ref.front() == '{' && ref.back() == '}'
+                                    ? trim(ref.substr(1, ref.size() - 2)) : std::string();
+            bool rezzed_here = false;
+            S32 m = 0;
+            for (LLSD::array_const_iterator jt = card["steps"].beginArray(); jt != it && jt != card["steps"].endArray(); ++jt)
+            {
+                ++m;
+                if ((*jt)["do"].asString() == "rez" && !inner.empty() && trim((*jt)["as"].asString()) == inner)
+                    rezzed_here = true;
+            }
+            if (!rezzed_here)
+            {
+                error = llformat("step %d clears away \"%s\", which no rez step before it made -- clear_away "
+                                 "removes only what the skill rezzed itself, named by that rez's \"as\"",
+                                 n, ref.c_str());
+                return false;
+            }
         }
         const BlockRule* rule = blockRule(what);
         if (!rule)
@@ -1327,6 +1354,10 @@ namespace
             return "Sit on " + objectWords(step["object"], from_step) + ".";
         if (what == "stand")
             return "Stand up.";
+        if (what == "clear_away")
+            return step.has("object")
+                 ? "Put " + objectWords(step["object"], from_step) + " -- which it rezzed -- in the Trash, if it is still out."
+                 : std::string("Put everything it rezzed, and is still out, in the Trash.");
         if (what == "web_call")
         {
             const std::string host = lower(LLURI(trim(step["url"].asString())).hostName());
@@ -1439,7 +1470,8 @@ std::string LumenAISkills::questionText(const Skill& skill)
         return objectWords(o, none);
     };
 
-    std::vector<std::string> rezzed, clicked, presses, sits, taken, webs, lines;
+    std::vector<std::string> rezzed, clicked, presses, sits, taken, webs, lines, cleared;
+    bool clears_all = false;
     std::map<std::string, S32> accepts;   // from whom -> how many
     S32 rezzed_accepted = 0, menus = 0;
     for (LLSD::array_const_iterator it = skill.steps.beginArray(); it != skill.steps.endArray(); ++it)
@@ -1481,6 +1513,11 @@ std::string LumenAISkills::questionText(const Skill& skill)
             add(presses, shown(step["press"]));
         }
         else if (what == "sit") add(sits, thing(step["object"]));
+        else if (what == "clear_away")
+        {
+            if (step.has("object")) add(cleared, thing(step["object"]));
+            else clears_all = true;
+        }
         else if (what == "take")
         {
             if (lower(step["how"].asString()) == "touch") add(clicked, thing(step["object"]));
@@ -1530,7 +1567,14 @@ std::string LumenAISkills::questionText(const Skill& skill)
     if (!sits.empty()) lines.push_back("Sits on " + join(sits) + ".");
     if (!taken.empty()) lines.push_back("Takes " + join(taken) + " into your inventory.");
     if (!webs.empty()) lines.push_back("Calls the web: " + join(webs) + ".");
-    lines.push_back("Gives, pays and deletes nothing.");
+    if (clears_all)
+        lines.push_back("Gives and pays nothing. At the end it puts what it rezzed, if still out, in the "
+                        "Trash -- nothing else.");
+    else if (!cleared.empty())
+        lines.push_back("Gives and pays nothing. It puts " + join(cleared) + ", which it rezzed, in the "
+                        "Trash -- nothing else.");
+    else
+        lines.push_back("Gives, pays and deletes nothing.");
     if (!skill.ask_first) lines.push_back("Runs without asking each time.");
 
     std::string out = skill.steps.size() == 1 ? std::string("What it does, as the viewer reads its one step:\n")
@@ -4555,6 +4599,46 @@ namespace
             LLSD args; args["action"] = "take"; args["object_id"] = obj;
             callTool("build", args, stepRequestId(run, index, "take"), error);
             return error.empty();
+        }
+
+        if (what == "clear_away")
+        {
+            // Only what this run rezzed (run.rezzed), each to the Trash through
+            // build / remove -- the viewer's own delete question with its
+            // remember box. Already gone is fine: a barrel often clears itself.
+            std::vector<LLUUID> targets;
+            if (step.has("object"))
+            {
+                std::string missing;
+                const LLSD ref = resolve(step_in["object"], run.vars, missing);
+                LLUUID id;
+                if (ref.isMap() && ref.has("object_id")) id = ref["object_id"].asUUID();
+                else if (ref.isString()) id.set(ref.asString());
+                if (id.isNull() || !run.rezzed.count(id))
+                {
+                    error = "that is not something this run rezzed, and a skill clears away only what it rezzed itself";
+                    return false;
+                }
+                targets.push_back(id);
+            }
+            else
+            {
+                for (const auto& rz : run.rezzed) targets.push_back(rz.first);
+            }
+            S32 cleared = 0, k = 0;
+            for (const LLUUID& id : targets)
+            {
+                ++k;
+                LLViewerObject* o = gObjectList.findObject(id);
+                if (!o || o->isDead()) continue;   // gone already
+                LLSD args; args["action"] = "remove"; args["object_id"] = id;
+                callTool("build", args, stepRequestId(run, index, llformat("clear-%d", k).c_str()), error);
+                if (!error.empty()) return false;
+                ++cleared;
+            }
+            LL_INFOS("AISkills") << "step " << index + 1 << ": cleared away " << cleared << " of "
+                                 << targets.size() << " thing(s) this run rezzed" << LL_ENDL;
+            return true;
         }
 
         if (what == "verify")

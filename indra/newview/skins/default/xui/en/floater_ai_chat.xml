@@ -15,6 +15,27 @@
  title="Assistant"
  width="440">
 
+    <!-- Skills, in the title bar before the title: no room taken from the
+         transcript or the chat bar (the author, 2026-10-07). -->
+    <button
+     follows="left|top"
+     height="16"
+     width="16"
+     layout="topleft"
+     left="4"
+     top="1"
+     name="skills_btn"
+     image_unselected="Lumen_Skills_List"
+     image_selected="Lumen_Skills_List"
+     image_pressed="Lumen_Skills_List"
+     image_hover_unselected="Lumen_Skills_List"
+     image_hover_selected="Lumen_Skills_List"
+     image_disabled="Lumen_Skills_List"
+     image_disabled_selected="Lumen_Skills_List"
+     label=""
+     tab_stop="false"
+     tool_tip="Skills: the routines you have taught, to run with a click" />
+
     <text_editor
      follows="all"
      height="352"

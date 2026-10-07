@@ -458,6 +458,7 @@ with the same filename but different name
 
   <texture name="List_View_Disabled" file_name="icons/List_View_Disabled.png" preload="false" />
   <texture name="List_View_On" file_name="icons/List_View_On.png" preload="false" />
+  <texture name="Lumen_Skills_List" file_name="icons/Lumen_Skills_List.png" preload="false" /> <!-- Lumen: the Assistant's Skills button -->
 
   <texture name="Lock" file_name="icons/Lock.png" preload="false" />
   <texture name="Lock2" file_name="navbar/Lock.png" preload="false" />

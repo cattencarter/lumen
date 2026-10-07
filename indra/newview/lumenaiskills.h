@@ -117,6 +117,7 @@ public:
     std::vector<std::string> toolNames() const;
     /** Every card read, the ones not yet looked at on this computer too: for the Skills window. */
     const std::vector<Skill>& all() const { return mSkills; }
+    const LLSD& problems() const { return mProblems; }   //< card name -> why it was refused
     /** What is there and what is wrong with any card, for the model and the person. */
     LLSD describe() const;
     /** A line typed into the Assistant that is exactly a skill's trigger: its tool, else empty. */
