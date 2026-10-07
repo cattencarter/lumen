@@ -6262,6 +6262,8 @@ void LumenAIControl::watchForLogin()
 
             // <Lumen> and offer the summary -- counting is free, writing is not.
             LumenAIChatFloater::offerAtLogin();
+            // <Lumen> or, with nothing set up, what could be: once per computer.
+            LumenAIChatFloater::offerSetupAtFirstLogin();
 
             // <Lumen> Where every landmark goes, first of anything read in the
             // background: teleporting is what people do the moment they arrive.

@@ -455,6 +455,19 @@ namespace
     // <Lumen> What the status bar says while the viewer's own question is up.
     const char* const ASK_WAITING_LABEL = "Waiting for your answer to the viewer's question...";
 
+    // <Lumen> With no AI chosen: what somebody may already pay for first, each
+    // a click from its own guided window, and the API key after them.
+    std::string setupOffer()
+    {
+        return "No AI is set up yet, so the assistant cannot answer. Already pay for ChatGPT, "
+               "Claude or Mistral? Use that one -- no API key needed:\n"
+               "  ChatGPT: [secondlife:///app/lumen_setup/codex set it up for me]\n"
+               "  Claude: [secondlife:///app/lumen_setup/claudecode set it up for me]\n"
+               "  Mistral: [secondlife:///app/lumen_setup/vibe set it up for me]\n"
+               "No subscription? An API key from Anthropic, OpenAI or Mistral works too, paid as "
+               "you use it: [secondlife:///app/lumen_setup/keys Preferences > AI].";
+    }
+
     std::string callTool(const std::string& name, const LLSD& args,
                          const std::string& request_id, bool& is_error,
                          LLSD* structured = nullptr,
@@ -1722,6 +1735,22 @@ void LumenAIChatFloater::refreshKeyNotice()
     // yet. Put one in Preferences > AI", which sends somebody looking for a
     // thing that does not exist. The author, immediately: *"den naevner codex
     // key? men det er der vel ikke noget der hedder"*. There is not.
+    // <Lumen> Nothing chosen: say so, and offer first what somebody may
+    // already pay for -- a subscription needs no API key, the biggest hurdle
+    // there is (the author, 2026-09-30) -- each one click from its own "Set it
+    // up for me..." window, and the API key after them. Once while none is
+    // chosen; choosing one and coming back to none says it again.
+    const bool none = provider.empty() || provider == LumenAIKeys::NONE;
+    if (none && !mSaidNoProvider)
+    {
+        sayNote(setupOffer());
+        mSaidNoProvider = true;
+    }
+    else if (!none)
+    {
+        mSaidNoProvider = false;
+    }
+
     const bool needs_key = (provider == LumenAIKeys::ANTHROPIC || provider == LumenAIKeys::OPENAI
                             || provider == LumenAIKeys::MISTRAL);
     if (!needs_key)
@@ -3333,6 +3362,49 @@ namespace
         }
     };
     LumenCodexModelHandler gLumenCodexModelHandler;
+
+    /// secondlife:///app/lumen_setup/<codex|claudecode|vibe|keys> -- the offer
+    /// made when no AI is chosen. A subscription is chosen at the click and its
+    /// guided window opened: the click says "this is the one I use", and the
+    /// window was one more place to find "Use" in Preferences afterwards. Only
+    /// the viewer's own window may change what the person uses: UNTRUSTED_BLOCK.
+    class LumenSetupHandler : public LLCommandHandler
+    {
+    public:
+        LumenSetupHandler() : LLCommandHandler("lumen_setup", UNTRUSTED_BLOCK) {}
+
+        bool handle(const LLSD& params, const LLSD&, const std::string&, LLMediaCtrl*) override
+        {
+            const std::string which = params.size() > 0 ? params[0].asString() : std::string();
+            if (which == LumenAIKeys::CODEX || which == LumenAIKeys::CLAUDECODE || which == LumenAIKeys::VIBE)
+            {
+                gSavedSettings.setString("LumenAIProvider", which);
+                LLFloaterReg::showInstance("ai_setup", LLSD().with("provider", which));
+                LumenAIChatFloater::postFromViewer(std::string(),
+                    "Chose " + LumenAIKeys::displayName(which) + ". The window that opened walks "
+                    "you through it; when it says it is done, ask the assistant anything here. "
+                    "Preferences > AI changes it later.");
+                return true;
+            }
+            // An API key: Preferences, on the AI page, where the keys are typed.
+            LLFloaterReg::showInstance("preferences");
+            if (LLFloater* prefs = LLFloaterReg::findInstance("preferences"))
+                if (LLTabContainer* tc = prefs->findChild<LLTabContainer>("pref core", true))
+                    tc->selectTabByName("ai");
+            return true;
+        }
+    };
+    LumenSetupHandler gLumenSetupHandler;
+}
+
+// static
+void LumenAIChatFloater::offerSetupAtFirstLogin()
+{
+    const std::string provider = gSavedSettings.getString("LumenAIProvider");
+    if (!(provider.empty() || provider == LumenAIKeys::NONE)) return;
+    if (gSavedSettings.getBOOL("LumenAISetupOfferShown")) return;
+    gSavedSettings.setBOOL("LumenAISetupOfferShown", true);
+    LLFloaterReg::showInstance("ai_chat");   // its note offers the subscriptions
 }
 // </Lumen>
 
@@ -4461,7 +4533,7 @@ void LumenAIChatFloater::runTurn(const std::string& user_text)
     // falling through to a missing-key message about a provider nobody picked.
     if (provider.empty() || provider == LumenAIKeys::NONE)
     {
-        sayNote("No assistant is chosen. Preferences > AI, and pick one under Use.");
+        sayNote(setupOffer());   // the same offer, where they are looking now
         setBusy(false);
         return;
     }

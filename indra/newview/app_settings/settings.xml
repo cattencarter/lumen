@@ -14836,6 +14836,17 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
+    <key>LumenAISetupOfferShown</key>
+    <map>
+      <key>Comment</key>
+      <string>The Assistant has opened by itself once, at a login with no AI chosen, to offer the subscriptions somebody may already pay for. Not opened that way again.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+    </map>
     <key>LumenAICodexModelNoteShown</key>
     <map>
       <key>Comment</key>

@@ -210,6 +210,13 @@ public:
      * is spent unless the user asks.
      */
     static void offerAtLogin();
+    /**
+     * <Lumen> The first login on this computer with no AI chosen: open the
+     * Assistant once, where it says so and offers the subscriptions somebody
+     * may already pay for (the author, 2026-10-01: "once you start up the
+     * first time and it notice there is nothing set up").
+     */
+    static void offerSetupAtFirstLogin();
     static void summariseNow();   //< the offer was accepted
 
     /**
@@ -346,6 +353,7 @@ private:
     /// Whether the transcript currently carries a "no key" notice, so it is
     /// said once and withdrawn once rather than repeated or left standing.
     bool mSaidNoKey = false;
+    bool mSaidNoProvider = false;   //< <Lumen> the offer of the three subscriptions, once while none is chosen
     /// Provider and model as last announced, so a change can be noticed.
     std::string mAnnounced;
 
