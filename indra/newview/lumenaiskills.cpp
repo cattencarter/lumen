@@ -31,6 +31,7 @@
 #include "lumenaiskills.h"
 
 #include "llagent.h"
+#include "llavatarnamecache.h"
 #include "llapp.h"
 #include "llappearancemgr.h"
 #include "llcoros.h"
@@ -225,6 +226,34 @@ namespace
             at = end + 1;
         }
         return true;
+    }
+    /**
+     * Whether an offer's owner is the one a step names: "me", or a person by
+     * account name ("Catten Carter", "catten.carter", "bob123 Resident") --
+     * never by display name, which anybody can set to anything. False while
+     * the name is not known yet; asking puts it on the way, so the next look
+     * round has it. A herbs barrel's storage belongs to the one who set it up,
+     * not to everyone it hands herbs to (the author, 2026-10-07).
+     */
+    bool ownerIs(const LLUUID& id, const std::string& owner)
+    {
+        const std::string want = lower(trim(owner));
+        if (id.isNull() || want.empty()) return false;
+        if (want == "me") return id == gAgentID;
+        LLAvatarName av;
+        if (!LLAvatarNameCache::get(id, &av)) return false;
+        std::string legacy = lower(trim(av.getUserName()));
+        const std::string resident = " resident";
+        if (legacy.size() > resident.size() && legacy.compare(legacy.size() - resident.size(), resident.size(), resident) == 0
+            && want.find(' ') == std::string::npos)
+            legacy.erase(legacy.size() - resident.size());
+        return want == legacy || want == lower(trim(av.getAccountName()));
+    }
+    /** How a question names whose objects a step accepts from: "me", or a person. */
+    std::string ownerWords(const std::string& owner)
+    {
+        const std::string o = trim(owner);
+        return lower(o) == "me" ? std::string("your own objects") : "objects owned by " + utf8str_truncate(o, 60);
     }
     /** "*": a pattern every name fits, which a question words as "anything". */
     bool matchesAnything(const std::string& pattern)
@@ -1279,12 +1308,15 @@ namespace
             // Whose offer, in words: a giver named "*,*" read as gibberish in
             // "Make a cure", whose herb boxes are named after their herbs, four
             // different ones for each cure (2026-10-07).
-            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            const std::string owner = trim(step["owner"].asString());
+            const bool owned = !owner.empty() && lower(owner) != "anyone";
             const LLSD& from = step["from"].isMap() && !step["from"].has("name") ? step["from"]["near"]
                                                                                  : step["from"];
             const std::string giver = !from.isMap() && matchesAnything(from.asString())
-                ? (mine ? std::string("one of your own objects") : std::string("any object or person"))
-                : valueWords(from, from_step) + (mine ? " (one of yours)" : "");
+                ? (owned ? "one of " + ownerWords(owner) : std::string("any object or person"))
+                : valueWords(from, from_step)
+                  + (!owned ? std::string() : lower(owner) == "me" ? std::string(" (one of yours)")
+                                                                  : " (owned by " + cutChars(owner, 60) + ")");
             return "Accept what " + giver + " offers you"
                  + (step.has("item") ? " (" + valueWords(step["item"], from_step) + ")" : std::string())
                  + ", pressing Keep.";
@@ -1432,10 +1464,11 @@ std::string LumenAISkills::questionText(const Skill& skill)
         else if (what == "accept_offer")
         {
             const LLSD from = step["from"].isMap() && !step["from"].has("name") ? step["from"]["near"] : step["from"];
-            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            const std::string owner = trim(step["owner"].asString());
+            const bool owned = !owner.empty() && lower(owner) != "anyone";
             const std::string whom = !from.isMap() && matchesAnything(from.asString())
-                ? (mine ? std::string("your own objects") : std::string("anyone"))
-                : shown(from) + (mine ? " (yours)" : "");
+                ? (owned ? ownerWords(owner) : std::string("anyone"))
+                : shown(from) + (owned ? " (" + ownerWords(owner) + ")" : std::string());
             ++accepts[whom];
             if (!as.empty()) label[as] = ACCEPTED;
         }
@@ -2497,7 +2530,13 @@ std::string LumenAISkills::startTeaching()
                     // offer's from_id is the object's owner. A giver whose name
                     // changes run to run is then "*" with owner "me" (2026-10-07).
                     if (kind.compare(0, 12, "UserGiveItem") != 0)
-                        e["owner"] = n->getPayload()["from_id"].asUUID() == gAgentID ? "you" : "someone else";
+                    {
+                        const LLUUID owner_id = n->getPayload()["from_id"].asUUID();
+                        LLAvatarName av;
+                        e["owner"] = owner_id == gAgentID ? std::string("you")
+                                   : LLAvatarNameCache::get(owner_id, &av) ? av.getUserName()
+                                                                           : std::string("someone else");
+                    }
                 }
                 else if (subs.has("TITLE")) e["from"] = subs["TITLE"];
                 else if (subs.has("OBJECTNAME")) e["from"] = subs["OBJECTNAME"];
@@ -3403,16 +3442,17 @@ namespace
             const LLSD from = field("from");
             if (!(from.isMap() ? (words(from["name"]) || words(from["near"])) : words(from)))
                 return wrong("from", "the name of who offers it");
-            // Any other word would be taken as "anyone" without a word said.
-            const std::string owner = lower(trim(field("owner").asString()));
-            if (!owner.empty() && owner != "me" && owner != "anyone")
-                return wrong("owner", "\"me\" or \"anyone\"");
+            // "me", "anyone", or whose: a person's account name.
+            const LLSD owner_v = field("owner");
+            if (owner_v.isDefined() && !words(owner_v))
+                return wrong("owner", "\"me\", \"anyone\" or a person's name");
+            const std::string owner = lower(trim(owner_v.asString()));
             // Anything from anyone, and what is kept is rezzed or worn a few steps on.
             const LLSD item = field("item");
-            if (owner != "me" && !from.isMap() && matchesAnything(from.asString())
+            if ((owner.empty() || owner == "anyone") && !from.isMap() && matchesAnything(from.asString())
                 && (item.isUndefined() || (!item.isMap() && matchesAnything(item.asString()))))
-                return "it would keep anything anybody offers -- give it owner \"me\" for the user's own "
-                       "objects, or name who offers it or what";
+                return "it would keep anything anybody offers -- give it an owner (\"me\" for the "
+                       "user's own objects, or the owner's name), or name who offers it or what";
         }
         else if (what == "verify")
         {
@@ -4558,7 +4598,10 @@ namespace
             // barrel's herbs come from boxes named after four herbs, different
             // for every cure, so their name says nothing a card can hold to
             // (2026-10-07).
-            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            // Or owner "Catten Carter": the storage that hands out the herbs is
+            // his, and Whisper is the one using it (the author, the same day).
+            const std::string owner = trim(step["owner"].asString());
+            const bool owned = !owner.empty() && lower(owner) != "anyone";
             // "Anything" -- an item nobody named. It is rezzed or worn a few steps
             // on, so it is only ever an item whose offer this step saw and checked.
             const bool any_item = matchesAnything(item);
@@ -4647,9 +4690,10 @@ namespace
                             while (!offered.empty() && offered.front() == '\'') offered.erase(0, 1);
                             while (!offered.empty() && offered.back() == '\'') offered.pop_back();
                             offered = trim(offered);
-                            if (mine && n->getPayload()["from_id"].asUUID() != gAgentID) continue;
+                            // Not known yet: left on the screen for the next look round.
+                            if (owned && !ownerIs(n->getPayload()["from_id"].asUUID(), owner)) continue;
                         }
-                        else if (mine) continue;   // gone already: whose it was cannot be told
+                        else if (owned) continue;   // gone already: whose it was cannot be told
                         if (giver.empty() || !nameMatches(giver, from)) continue;
                         const std::string text = (*it)["text"].asString();
                         if (!item.empty() && !nameMatches(offered.empty() ? text : offered, item)) continue;
@@ -4671,8 +4715,8 @@ namespace
                 if (LLTimer::getTotalSeconds() > until) break;
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
-            const std::string whose = matchesAnything(from) ? (mine ? "your own objects" : "anyone")
-                                    : "\"" + from + "\"" + (mine ? " (one of yours)" : "");
+            const std::string whose = matchesAnything(from) ? (owned ? ownerWords(owner) : std::string("anyone"))
+                                    : "\"" + from + "\"" + (owned ? " (" + ownerWords(owner) + ")" : std::string());
             error = kept ? "\"" + (kept_name.empty() ? item : kept_name) + "\" was kept but has not come into the inventory"
                   : unseen ? "no offer from " + whose + " came. Something arrived that the viewer took by "
                              "itself, with no offer to read, so who sent it cannot be told -- and a step that "
