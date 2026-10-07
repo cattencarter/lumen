@@ -1296,6 +1296,18 @@ void LumenAIControl::sweepAsks()
     }
 }
 
+namespace
+{
+    // <Lumen> Skills the person started themselves, and when: see personStartsSkill.
+    std::map<std::string, F64> sPersonStarted;
+}
+
+// static
+void LumenAIControl::personStartsSkill(const std::string& tool)
+{
+    sPersonStarted[tool] = LLTimer::getTotalSeconds();
+}
+
 bool LumenAIControl::askPending(const LLUUID& ask_id)
 {
     for (auto& kv : mAsks)
@@ -29860,6 +29872,16 @@ if (method == "camera")
     // Each skill reaches here from its own tool, skill_<name>.
     if (method == "skill_run")
     {
+        // Who started it, for the question's first words only -- taken once.
+        bool by_person = false;
+        {
+            auto started = sPersonStarted.find(params["skill"].asString());
+            if (started != sPersonStarted.end())
+            {
+                by_person = LLTimer::getTotalSeconds() - started->second < 10.0;
+                sPersonStarted.erase(started);
+            }
+        }
         if (!LLStartUp::getStartupState() || LLStartUp::getStartupState() < STATE_STARTED)
         {
             LLSD e; e["code"] = -32000; e["message"] = "Not logged in yet.";
@@ -29910,6 +29932,7 @@ if (method == "camera")
                 // their folder; this is the moment they see it.
                 LLAvatarName av;
                 LLSD subs;
+                subs["WHO"]     = by_person ? "You are about to run" : "The assistant wants to run";
                 subs["NAME"]    = askQuote(skill.name, 80);
                 subs["CREATOR"] = (skill.creator_id.notNull() && skill.creator_id != gAgent.getID())
                                 ? (LLAvatarNameCache::get(skill.creator_id, &av) ? av.getCompleteName()
@@ -29927,6 +29950,7 @@ if (method == "camera")
             else if (skill.ask_first)
             {
                 LLSD subs;
+                subs["WHO"]  = by_person ? "You are about to run" : "The assistant wants to run";
                 subs["NAME"] = askQuote(skill.name, 80);
                 subs["WITH"] = with;
                 LLSD out;

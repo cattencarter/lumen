@@ -2864,6 +2864,7 @@ void LumenAIChatFloater::startSkill(const std::string& tool, const std::string& 
 {
     const std::string label = "Running \"" + skill_name + "\"";
     setBusy(true, label);
+    LumenAIControl::personStartsSkill(tool);   // its question begins "You are about to run"
     LumenAIUndo::instance().beginRequest(said);
     LLHandle<LLFloater> handle = getHandle();
     // <Lumen> Clear stops the run (stopAll) and bumps this. The run can take

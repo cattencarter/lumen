@@ -194,6 +194,13 @@ public:
 
     /** Whether this question is still waiting for the user. */
     bool askPending(const LLUUID& ask_id);
+    /**
+     * <Lumen> The person is starting this skill themselves -- its phrase typed,
+     * or Run in the Skills window -- so its question says "You are about to
+     * run", not "The assistant wants to". Only the wording: every question is
+     * still asked. Taken by the next run of that skill within a few seconds.
+     */
+    static void personStartsSkill(const std::string& tool);
     /** Take a question off the screen because nobody is waiting for it any more. */
     void withdrawAsk(const LLUUID& ask_id);
     /**
