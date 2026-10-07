@@ -118,7 +118,7 @@ namespace
         gone["text"] = "(A picture shown earlier. It is no longer attached, to keep the "
                        "conversation small -- ask the tool again for a new one.)";
         LLSD::Integer seen = 0;
-        for (LLSD::Integer i = messages.size() - 1; i >= 0; --i)
+        for (LLSD::Integer i = static_cast<LLSD::Integer>(messages.size()) - 1; i >= 0; --i)
         {
             if (!messages[i].isMap() || !messages[i].has("content")
                 || !messages[i]["content"].isArray())
@@ -126,7 +126,7 @@ namespace
                 continue;   // asked before touching, so nothing gains an empty key
             }
             LLSD& content = messages[i]["content"];
-            for (LLSD::Integer j = content.size() - 1; j >= 0; --j)
+            for (LLSD::Integer j = static_cast<LLSD::Integer>(content.size()) - 1; j >= 0; --j)
             {
                 LLSD& part = content[j];
                 const std::string type = part["type"].asString();
@@ -137,7 +137,7 @@ namespace
                 else if (type == "tool_result" && part.has("content") && part["content"].isArray())
                 {
                     LLSD& inner = part["content"];
-                    for (LLSD::Integer k = inner.size() - 1; k >= 0; --k)
+                    for (LLSD::Integer k = static_cast<LLSD::Integer>(inner.size()) - 1; k >= 0; --k)
                     {
                         if (inner[k]["type"].asString() == "image" && ++seen > keep) inner[k] = gone;
                     }
