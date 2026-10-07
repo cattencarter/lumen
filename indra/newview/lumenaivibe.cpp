@@ -274,6 +274,15 @@ bool LumenAIVibe::start(const std::string& prompt,
         "display_name = \"Mistral Small 4\"\n"
         "temperature = 0.3\n"
         "\n"
+        // Mistral Large 4, a public preview since 2026-10-06; Vibe's own list
+        // does not have it yet, but a Vibe sign-in reaches it (tried 10-07).
+        "[[models]]\n"
+        "name = \"mistral-large-4\"\n"
+        "provider = \"mistral\"\n"
+        "alias = \"mistral-large-4\"\n"
+        "display_name = \"Mistral Large 4\"\n"
+        "temperature = 0.3\n"
+        "\n"
         "[[mcp_servers]]\n"
         "name = \"second_life\"\n"
         "transport = \"streamable-http\"\n"

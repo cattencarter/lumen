@@ -302,6 +302,7 @@
          name="model_vibe" allow_text_entry="true" max_chars="80">
             <combo_box.item label="mistral-medium-3.5 (recommended)" name="vm35" value="mistral-medium-3.5" />
             <combo_box.item label="mistral-small-4 (faster, cheaper)" name="vs4" value="mistral-small-4" />
+            <combo_box.item label="mistral-large-4 (preview)" name="vl4" value="mistral-large-4" />
         </combo_box>
 
         <text type="string" follows="left|top" layout="topleft"
