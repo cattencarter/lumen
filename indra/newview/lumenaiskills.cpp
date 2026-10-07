@@ -3644,7 +3644,7 @@ namespace
                     for (const LLUUID& id : ids)
                     {
                         LLViewerObject* o = gObjectList.findObject(id);
-                        if (!o || (mine && !o->permYouOwner())) continue;
+                        if (!o || (mine && !LumenAIControl::isOwnedByMe(o))) continue;
                         if (skip && skip->count(id)) continue;
                         const F32 d = (F32)(o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec();
                         if (d < best_d) { best_d = d; best = id; }
@@ -4507,8 +4507,11 @@ namespace
                 {
                     LLViewerObject* o = gObjectList.getObject(i);
                     if (!o || o->isDead() || o->getRootEdit() != o || before.count(o->getID())) continue;
-                    if (!o->permYouOwner() || o->isAttachment()) continue;
+                    if (o->isAttachment() || o->isAvatar()) continue;
                     if ((o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec() > 15.0) continue;
+                    // The flag, or the region's word (isOwnedByMe asks): a barrel
+                    // stood in front of Whisper, and her viewer never had the flag.
+                    if (!LumenAIControl::isOwnedByMe(o)) continue;
                     run.roots_before.insert(o->getID());   // ours now, never "new" again
                     run.rezzed[o->getID()] = name;          // ...but what a later step waits for
                     run.rezzed_at[o->getID()] = LLTimer::getTotalSeconds();
@@ -4530,16 +4533,35 @@ namespace
                 if (!run.pause(0.25)) { error = "stopped"; return false; }
             }
             {
+                // What was new near the user and why none was taken -- counts
+                // only, no names -- so a miss is never guessed at again.
+                S32 fresh = 0, flagged = 0, attached = 0;
+                const S32 count = gObjectList.getNumObjects();
+                for (S32 i = 0; i < count; ++i)
+                {
+                    LLViewerObject* o = gObjectList.getObject(i);
+                    if (!o || o->isDead() || o->getRootEdit() != o || before.count(o->getID()) || o->isAvatar()) continue;
+                    if ((o->getPositionGlobal() - gAgent.getPositionGlobal()).magVec() > 15.0) continue;
+                    ++fresh;
+                    if (o->permYouOwner()) ++flagged;
+                    if (o->isAttachment()) ++attached;
+                }
+                LL_INFOS("AISkills") << "step " << index + 1 << ": rez not seen -- " << fresh
+                                     << " new thing(s) within 15 m, " << flagged << " with the owner flag, "
+                                     << attached << " worn; " << llformat("%.0f", sinceLogin()) << " s since login"
+                                     << LL_ENDL;
+            }
+            {
                 // It may well be there: the region rezzed it, and this viewer
                 // has not been shown it yet. Said so, so nobody runs it again
                 // into a second barrel (2026-10-07).
                 const F64 since = sinceLogin();
-                error = "this viewer was not shown anything new after rezzing it"
+                error = "nothing new of yours could be seen near after rezzing it"
                       + (since >= 0.0 && since < 300.0
-                         ? llformat(" -- it logged in %.0f seconds ago and is still being shown what is "
-                                    "around it, so Second Life may well have rezzed it", since)
+                         ? llformat(" -- this viewer logged in %.0f seconds ago and is still catching up on "
+                                    "what is around it, so Second Life may well have rezzed it", since)
                          : std::string(" -- the land may not allow it, or the region is slow, or Second Life "
-                                       "rezzed it and has not shown it yet"))
+                                       "rezzed it and has not told this viewer yet"))
                       + ". Look before running it again, so there are not two";
             }
             may_retry = false;   // a second rez could leave two

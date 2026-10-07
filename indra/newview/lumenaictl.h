@@ -477,6 +477,7 @@ private:
     {
         std::string name;
         std::string desc;
+        LLUUID owner;   // <Lumen> from the same reply; null when not told
     };
     std::unordered_map<LLUUID, ObjectLabel> mObjectLabels;
     /** Asked and not yet answered, with when -- the in-flight count per region. */
@@ -608,7 +609,17 @@ public:
      * the same courtesy it already extends to Area Search.
      */
     static bool noteObjectName(const LLUUID& object_id, const std::string& name,
-                               const std::string& desc);
+                               const std::string& desc, const LLUUID& owner = LLUUID::null);
+
+    /**
+     * <Lumen> Whether the user owns this thing (its root): the "you own it" flag
+     * the region sends with the object, or -- when that has not come -- the
+     * owner the region gives with the object's name, asked for here if not
+     * known yet. A barrel rezzed in front of Whisper, a minute after her first
+     * login on a new computer, never had the flag in her viewer, and neither the
+     * skill nor the rez tracker took it for hers (2026-10-07).
+     */
+    static bool isOwnedByMe(LLViewerObject* object);
 
 
     /**

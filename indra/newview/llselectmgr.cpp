@@ -6228,7 +6228,7 @@ void LLSelectMgr::processObjectProperties(LLMessageSystem* msg, void** user_data
         // whoever asked -- our bulk requests, Area Search's, the user's own
         // selections. True means look_nearby asked, so the warning below that
         // the object is not selected is ours to skip, as it is Area Search's.
-        const bool lumen_asked = LumenAIControl::noteObjectName(id, name, desc);
+        const bool lumen_asked = LumenAIControl::noteObjectName(id, name, desc, owner_id);
         // </Lumen>
 
         std::string touch_name;
@@ -6447,7 +6447,7 @@ void LLSelectMgr::processObjectPropertiesFamily(LLMessageSystem* msg, void** use
     // <Lumen> Remember the name for the assistant endpoint's look_nearby.
     // These replies are the only place an object's name is ever given to the
     // viewer, and every existing consumer hands it straight to a floater.
-    LumenAIControl::noteObjectName(id, name, desc);
+    LumenAIControl::noteObjectName(id, name, desc, owner_id);
     // </Lumen>
 
     // the reporter widget askes the server for info about picked objects

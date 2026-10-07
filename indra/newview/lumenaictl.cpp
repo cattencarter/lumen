@@ -7093,8 +7093,22 @@ namespace
 }
 // </Lumen>
 
+bool LumenAIControl::isOwnedByMe(LLViewerObject* object)
+{
+    if (!object || object->isDead()) return false;
+    LLViewerObject* root = object->getRootEdit();
+    if (!root) return false;
+    if (root->permYouOwner()) return true;
+    if (!LumenAIControl::instanceExists()) return false;
+    LumenAIControl& self = LumenAIControl::instance();
+    const ObjectLabel* label = self.objectLabel(root->getID());
+    if (label && label->owner.notNull()) return label->owner == gAgent.getID();
+    if (!label) self.objectNameFor(root->getID());   // the owner comes with the name
+    return false;
+}
+
 bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& name,
-                                    const std::string& desc)
+                                    const std::string& desc, const LLUUID& owner)
 {
     // Called from the message path for every object anything asks about, so it
     // must be cheap and must not care whether we are running.
@@ -7132,6 +7146,7 @@ bool LumenAIControl::noteObjectName(const LLUUID& object_id, const std::string& 
     ObjectLabel& label = self.mObjectLabels[object_id];
     label.name = heard;   // <Lumen/>
     label.desc = desc;
+    if (owner.notNull()) label.owner = owner;   // <Lumen> isOwnedByMe
     self.mNameGaveUp.erase(object_id);
     return self.mNameAsked.erase(object_id) > 0;
 }
@@ -10974,13 +10989,22 @@ namespace
         for (S32 i = 0; i < count && !sPendingRez.empty(); ++i)
         {
             LLViewerObject* o = gObjectList.getObject(i);
-            if (!o || o->isDead() || o->isAvatar() || o->isAttachment()
-                || o->getRootEdit() != o || !o->permYouOwner())
+            if (!o || o->isDead() || o->isAvatar() || o->isAttachment() || o->getRootEdit() != o)
             {
                 continue;
             }
             const LLUUID& id = o->getID();
             const LLVector3d pos = o->getPositionGlobal();
+            // Ours by the flag, or by the region's word when the flag has not
+            // come (isOwnedByMe asks) -- only for something near a rez just sent.
+            {
+                bool near_one = false;
+                for (const auto& p : sPendingRez)
+                {
+                    if ((pos - p.where).magVec() < 12.0 && !p.there_before.count(id)) { near_one = true; break; }
+                }
+                if (!near_one || !LumenAIControl::isOwnedByMe(o)) continue;
+            }
             auto best = sPendingRez.end();
             F64 best_d = 1.0e9;
             for (auto p = sPendingRez.begin(); p != sPendingRez.end(); ++p)
