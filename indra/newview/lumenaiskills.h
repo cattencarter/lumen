@@ -132,11 +132,13 @@ public:
     /** A card's new version, just written by save_skill after the user said yes. */
     void noteWritten(const LLUUID& asset_id);
     /**
-     * What the steps do, read by the viewer from their own fields -- what is
-     * clicked, pressed, rezzed, called -- for the questions that guard a
-     * skill; then the card's own words, marked as its author's.
+     * What the skill touches, a line for each kind -- what it rezzes, accepts,
+     * clicks and presses, sits on, takes, calls -- read by the viewer from the
+     * steps' own fields, for the questions that guard a skill.
      */
     static std::string questionText(const Skill& skill);
+    /** Every step, as the viewer reads it, numbered: for the Assistant, beside the question. */
+    static std::string stepsText(const Skill& skill);
 
     /**
      * Start a run, or say how the one already running for these same inputs is

@@ -226,6 +226,12 @@ namespace
         }
         return true;
     }
+    /** "*": a pattern every name fits, which a question words as "anything". */
+    bool matchesAnything(const std::string& pattern)
+    {
+        const std::string p = trim(pattern);
+        return !p.empty() && p.find_first_not_of('*') == std::string::npos;
+    }
     /** The words a fuzzy search is given for a pattern: its letters without the wildcards. */
     std::string patternWords(const std::string& pattern)
     {
@@ -1201,6 +1207,7 @@ namespace
             return v.has("item_id") ? std::string("an item given by its id") : std::string("(several values)");
         }
         const std::string s = trim(v.asString());
+        if (matchesAnything(s)) return "anything";   // not a bare "*" to puzzle over
         const bool whole = s.size() > 2 && s.front() == '{' && s.back() == '}'
                         && s.find('{', 1) == std::string::npos && isRef(s.substr(1, s.size() - 2));
         const std::string words = cutChars(withPlaceholders(s, from_step), count);
@@ -1268,9 +1275,20 @@ namespace
         if (what == "verify")
             return "Check that " + valueWords(step["item"], from_step) + " came into your inventory.";
         if (what == "accept_offer")
-            return "Accept what " + valueWords(step["from"], from_step) + " offers you"
+        {
+            // Whose offer, in words: a giver named "*,*" read as gibberish in
+            // "Make a cure", whose herb boxes are named after their herbs, four
+            // different ones for each cure (2026-10-07).
+            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            const LLSD& from = step["from"].isMap() && !step["from"].has("name") ? step["from"]["near"]
+                                                                                 : step["from"];
+            const std::string giver = !from.isMap() && matchesAnything(from.asString())
+                ? (mine ? std::string("one of your own objects") : std::string("any object or person"))
+                : valueWords(from, from_step) + (mine ? " (one of yours)" : "");
+            return "Accept what " + giver + " offers you"
                  + (step.has("item") ? " (" + valueWords(step["item"], from_step) + ")" : std::string())
                  + ", pressing Keep.";
+        }
         if (what == "sit")
             return "Sit on " + objectWords(step["object"], from_step) + ".";
         if (what == "stand")
@@ -1307,13 +1325,14 @@ namespace
 }
 
 // static
-std::string LumenAISkills::questionText(const Skill& skill)
+std::string LumenAISkills::stepsText(const Skill& skill)
 {
-    // Long enough for a long skill, short enough to read before saying yes;
-    // the window scrolls.
-    const size_t STEPS_LONGEST = 1800, AUTHOR_LONGEST = 900;
+    // Every step, as the viewer reads it. It goes into the Assistant, beside
+    // the question, where there is room; the question itself says what the
+    // skill touches (the author, 2026-10-07, at 17 steps shown twice: "this
+    // gets too long").
+    const size_t STEPS_LONGEST = 6000;
     const S32 count = (S32)skill.steps.size();
-
     std::string out;
     size_t chars = 0;
     std::map<std::string, S32> from_step;
@@ -1332,30 +1351,152 @@ std::string LumenAISkills::questionText(const Skill& skill)
         chars += length;
         if (step.has("as")) from_step[trim(step["as"].asString())] = i + 1;
     }
-    if (!skill.ask_first) out += "\nIt runs without asking each time.\n";
+    return trim(out);
+}
 
-    // Below that, and said to be the author's: the card's own summary and
-    // each step's `about`, which nothing checks against what the step does.
-    std::string author;
-    const std::string summary = trim(skill.card["summary"].asString());
-    if (!summary.empty())
+std::string LumenAISkills::questionText(const Skill& skill)
+{
+    // What the skill touches, a line for each kind of thing, read from the
+    // fields the runner acts on -- never a step's `about` or the card's own
+    // summary, words its writer chose (the review, 2026-10-06). Finding,
+    // looking up, waiting and checking change nothing, so they are not listed;
+    // the full reading of every step is stepsText.
+    static const std::map<std::string, S32> none;   // [herb], not [herb, from step 7]
+    static const std::string ACCEPTED = "\x01";     // an item an accept_offer step kept
+    auto shown = [](const LLSD& v)
     {
-        const std::string cut = utf8str_truncate(summary, 900);
-        author += cut + (cut.size() < summary.size() ? "...\n" : "\n");
-    }
-    size_t author_chars = charCount(author);
-    S32 left = 0;
-    for (S32 i = 0; i < count; ++i)
+        // "[cure potion]*" reads as "[cure potion]": the pattern is in the steps.
+        std::string w = valueWords(v, none);
+        const bool quoted = w.size() > 2 && w.front() == '"' && w.back() == '"';
+        if (quoted) w = w.substr(1, w.size() - 2);
+        while (w.size() > 1 && w.back() == '*') w.pop_back();
+        const bool placeholder = w.size() > 2 && w.front() == '[' && w.back() == ']'
+                              && w.find('[', 1) == std::string::npos;
+        return quoted && !placeholder ? "\"" + w + "\"" : w;
+    };
+    auto join = [](const std::vector<std::string>& parts)
     {
-        const std::string about = trim(skill.steps[i]["about"].asString());
-        if (about.empty()) continue;
-        if (author_chars > AUTHOR_LONGEST) { ++left; continue; }
-        const std::string line = llformat("%d. ", i + 1) + cutChars(about, 160);
-        author += line + "\n";
-        author_chars += charCount(line);
+        std::string out;
+        for (size_t i = 0; i < parts.size(); ++i)
+            out += (i == 0 ? "" : i + 1 == parts.size() ? " and " : ", ") + parts[i];
+        return out;
+    };
+    auto add = [](std::vector<std::string>& to, const std::string& w)
+    {
+        if (std::find(to.begin(), to.end(), w) == to.end()) to.push_back(w);
+    };
+
+    std::map<std::string, std::string> label;   // what a step's "as" names, in words
+    auto thing = [&](const LLSD& o)
+    {
+        if (!o.isMap())
+        {
+            const std::string s = trim(o.asString());
+            if (s.size() > 2 && s.front() == '{' && s.back() == '}')
+            {
+                const std::map<std::string, std::string>::const_iterator l = label.find(trim(s.substr(1, s.size() - 2)));
+                if (l != label.end() && l->second != ACCEPTED) return l->second;
+                if (l != label.end()) return std::string("an item it accepted");
+            }
+            return shown(o);
+        }
+        if (o.has("worn")) return shown(o["worn"]) + ", which you wear";
+        if (o.has("near")) return shown(o["near"]);
+        return objectWords(o, none);
+    };
+
+    std::vector<std::string> rezzed, clicked, presses, sits, taken, webs, lines;
+    std::map<std::string, S32> accepts;   // from whom -> how many
+    S32 rezzed_accepted = 0, menus = 0;
+    for (LLSD::array_const_iterator it = skill.steps.beginArray(); it != skill.steps.endArray(); ++it)
+    {
+        const LLSD& step = *it;
+        const std::string what = step["do"].asString();
+        const std::string as = trim(step["as"].asString());
+        if (what == "find_item" || what == "wait_for_object")
+        {
+            if (!as.empty()) label[as] = shown(step["name"]);
+        }
+        else if (what == "rez")
+        {
+            const std::string w = thing(step["item"]);
+            if (w == "an item it accepted") ++rezzed_accepted;
+            else add(rezzed, w);
+            if (!as.empty())
+            {
+                const std::string ref = trim(step["item"].asString());
+                const std::string inner = ref.size() > 2 && ref.front() == '{' ? trim(ref.substr(1, ref.size() - 2)) : std::string();
+                label[as] = label.count(inner) ? label[inner] : w;
+            }
+        }
+        else if (what == "accept_offer")
+        {
+            const LLSD from = step["from"].isMap() && !step["from"].has("name") ? step["from"]["near"] : step["from"];
+            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            const std::string whom = !from.isMap() && matchesAnything(from.asString())
+                ? (mine ? std::string("your own objects") : std::string("anyone"))
+                : shown(from) + (mine ? " (yours)" : "");
+            ++accepts[whom];
+            if (!as.empty()) label[as] = ACCEPTED;
+        }
+        else if (what == "touch") add(clicked, thing(step["object"]));
+        else if (what == "dialog")
+        {
+            ++menus;
+            add(presses, shown(step["press"]));
+        }
+        else if (what == "sit") add(sits, thing(step["object"]));
+        else if (what == "take")
+        {
+            if (lower(step["how"].asString()) == "touch") add(clicked, thing(step["object"]));
+            else add(taken, thing(step["object"]));
+        }
+        else if (what == "web_call")
+        {
+            const std::string host = lower(LLURI(trim(step["url"].asString())).hostName());
+            add(webs, (host.empty() ? shown(step["url"]) : cutChars(withPlaceholders(host, none), 80))
+                    + (trim(step["key"].asString()).empty() ? std::string()
+                       : " (with your key \"" + cutChars(trim(step["key"].asString()), 40) + "\")"));
+        }
     }
-    if (left > 0) author += llformat("... and %d more\n", left);
-    if (!author.empty()) out += "\nThe card's own description, in its author's words:\n" + author;
+
+    if (!rezzed.empty() || rezzed_accepted)
+    {
+        std::vector<std::string> all = rezzed;
+        if (rezzed_accepted == 1) all.push_back("an item it accepts");
+        else if (rezzed_accepted > 1) all.push_back(llformat("%d items it accepts", rezzed_accepted));
+        lines.push_back("Rezzes from your inventory: " + join(all) + ".");
+    }
+    for (const auto& a : accepts)
+        lines.push_back(a.first == "anyone"
+            ? (a.second == 1 ? std::string("Accepts anything anybody offers.")
+                             : llformat("Accepts %d things anybody offers.", a.second))
+            : (a.second == 1 ? "Accepts an item offered by " + a.first + "."
+                             : llformat("Accepts %d items offered by ", a.second) + a.first + "."));
+    if (!clicked.empty() || menus)
+    {
+        std::string l = clicked.empty() ? std::string("Answers menus") : "Clicks " + join(clicked);
+        if (menus)
+        {
+            if (presses.size() > 6)
+            {
+                presses.resize(6);
+                presses.push_back("more");
+            }
+            l += (clicked.empty() ? ", pressing " : ", and presses ") + join(presses)
+               + (menus == 1 ? " on its menu" : " on their menus");
+        }
+        lines.push_back(l + ".");
+    }
+    if (!sits.empty()) lines.push_back("Sits on " + join(sits) + ".");
+    if (!taken.empty()) lines.push_back("Takes " + join(taken) + " into your inventory.");
+    if (!webs.empty()) lines.push_back("Calls the web: " + join(webs) + ".");
+    lines.push_back("Gives, pays and deletes nothing.");
+    if (!skill.ask_first) lines.push_back("Runs without asking each time.");
+
+    std::string out = skill.steps.size() == 1 ? std::string("What it does, as the viewer reads its one step:\n")
+                    : llformat("What it does, as the viewer reads its %d steps:\n", (S32)skill.steps.size());
+    for (const std::string& l : lines) out += "- " + cutChars(l, 300) + "\n";
     return trim(out);
 }
 
@@ -2352,6 +2493,11 @@ std::string LumenAISkills::startTeaching()
                         e["from"] = subs["OBJECTFROMNAME"];
                     else if (subs.has("NAME")) e["from"] = subs["NAME"];
                     if (subs.has("[OBJECTNAME]")) e["item"] = subs["[OBJECTNAME]"];   // sic, brackets and all
+                    // Whose object gave it, as object_appeared says it: the
+                    // offer's from_id is the object's owner. A giver whose name
+                    // changes run to run is then "*" with owner "me" (2026-10-07).
+                    if (kind.compare(0, 12, "UserGiveItem") != 0)
+                        e["owner"] = n->getPayload()["from_id"].asUUID() == gAgentID ? "you" : "someone else";
                 }
                 else if (subs.has("TITLE")) e["from"] = subs["TITLE"];
                 else if (subs.has("OBJECTNAME")) e["from"] = subs["OBJECTNAME"];
@@ -3257,6 +3403,16 @@ namespace
             const LLSD from = field("from");
             if (!(from.isMap() ? (words(from["name"]) || words(from["near"])) : words(from)))
                 return wrong("from", "the name of who offers it");
+            // Any other word would be taken as "anyone" without a word said.
+            const std::string owner = lower(trim(field("owner").asString()));
+            if (!owner.empty() && owner != "me" && owner != "anyone")
+                return wrong("owner", "\"me\" or \"anyone\"");
+            // Anything from anyone, and what is kept is rezzed or worn a few steps on.
+            const LLSD item = field("item");
+            if (owner != "me" && !from.isMap() && matchesAnything(from.asString())
+                && (item.isUndefined() || (!item.isMap() && matchesAnything(item.asString()))))
+                return "it would keep anything anybody offers -- give it owner \"me\" for the user's own "
+                       "objects, or name who offers it or what";
         }
         else if (what == "verify")
         {
@@ -4397,9 +4553,20 @@ namespace
                                           : from_v.has("name") ? from_v["name"].asString()
                                                                : from_v["near"].asString());
             const std::string item = step["item"].isMap() ? step["item"]["name"].asString() : step["item"].asString();
+            // Owner "me": only an offer from one of the user's own objects, as the
+            // offer itself says (its from_id is the object's owner). A herbs
+            // barrel's herbs come from boxes named after four herbs, different
+            // for every cure, so their name says nothing a card can hold to
+            // (2026-10-07).
+            const bool mine = lower(trim(step["owner"].asString())) == "me";
+            // "Anything" -- an item nobody named. It is rezzed or worn a few steps
+            // on, so it is only ever an item whose offer this step saw and checked.
+            const bool any_item = matchesAnything(item);
             const F64 began = LLTimer::getTotalSeconds();
             const F64 until = began + waitFor(step, 60.0);
             bool kept = false;
+            std::string kept_name;   //< the very item kept, for an item nobody named
+            bool unseen = false;     //< something arrived with no offer to read
             // What arrived: after Keep, only from then on; with no offer on the
             // screen, anything not yet used since the run began -- with the
             // viewer accepting by itself (auto-accept, a person's offer taken
@@ -4410,7 +4577,16 @@ namespace
                 if (item.empty()) return false;
                 for (auto a = run.arrived.begin(); a != run.arrived.end(); ++a)
                 {
-                    if (a->offered || a->at < since || !nameMatches(a->name, item)) continue;
+                    if (a->offered || a->at < since) continue;
+                    // The one kept: by its whole name, or every word of it.
+                    if (!kept_name.empty() ? lower(trim(a->name)) != lower(kept_name) && !nameMatches(a->name, kept_name)
+                                           : !nameMatches(a->name, item))
+                        continue;
+                    if (any_item && !kept)
+                    {
+                        unseen = true;   // who sent it cannot be told
+                        continue;
+                    }
                     if (as.isDefined())
                     {
                         LLSD v; v["item_id"] = a->id; v["name"] = a->name;
@@ -4471,7 +4647,9 @@ namespace
                             while (!offered.empty() && offered.front() == '\'') offered.erase(0, 1);
                             while (!offered.empty() && offered.back() == '\'') offered.pop_back();
                             offered = trim(offered);
+                            if (mine && n->getPayload()["from_id"].asUUID() != gAgentID) continue;
                         }
+                        else if (mine) continue;   // gone already: whose it was cannot be told
                         if (giver.empty() || !nameMatches(giver, from)) continue;
                         const std::string text = (*it)["text"].asString();
                         if (!item.empty() && !nameMatches(offered.empty() ? text : offered, item)) continue;
@@ -4483,6 +4661,7 @@ namespace
                         run.answered.insert(id);
                         if (!error.empty()) return false;
                         kept = true;
+                        if (any_item) kept_name = offered;   // that one, not the next to arrive
                         if (item.empty()) return true;   // nothing named to wait for
                         break;
                     }
@@ -4492,8 +4671,14 @@ namespace
                 if (LLTimer::getTotalSeconds() > until) break;
                 if (!run.pause(0.5)) { error = "stopped"; return false; }
             }
-            error = kept ? "\"" + item + "\" was kept but has not come into the inventory"
-                         : "no offer from \"" + from + "\" came";
+            const std::string whose = matchesAnything(from) ? (mine ? "your own objects" : "anyone")
+                                    : "\"" + from + "\"" + (mine ? " (one of yours)" : "");
+            error = kept ? "\"" + (kept_name.empty() ? item : kept_name) + "\" was kept but has not come into the inventory"
+                  : unseen ? "no offer from " + whose + " came. Something arrived that the viewer took by "
+                             "itself, with no offer to read, so who sent it cannot be told -- and a step that "
+                             "keeps any item keeps only what it saw offered. Is accepting items automatically "
+                             "turned on?"
+                           : "no offer from " + whose + " came";
             may_retry = !kept;
             return false;
         }

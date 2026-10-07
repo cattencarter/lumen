@@ -1223,6 +1223,25 @@ bool LumenAIControl::askUser(const std::string& notification, const LLSD& subs,
     return false;
 }
 
+// <Lumen> A skill's question says what it touches, in a few lines; every step,
+// as the viewer reads it, goes into the Assistant beside it, once, when the
+// question first comes up -- seventeen steps shown twice made a box taller
+// than the screen (the author, 2026-10-07: "this gets too long"). With the
+// Assistant not on the screen, the steps go into the question after all.
+bool LumenAIControl::askWithSteps(const std::string& notification, LLSD subs, const std::string& fingerprint,
+                                  const std::string& name, const std::string& steps, LLSD& out)
+{
+    if (!mAsks.count(fingerprint) && askComesUp(notification) && !steps.empty())
+    {
+        const bool shown = LumenAIChatFloater::postFromViewer(std::string(),
+            "The skill " + name + ", step by step, as the viewer reads it:\n" + steps);
+        subs["SUMMARY"] = subs["SUMMARY"].asString()
+            + (shown ? std::string("\n\nEvery step, as the viewer reads it, is in the Assistant window.")
+                     : "\n\nStep by step:\n" + steps);
+    }
+    return askUser(notification, subs, fingerprint, out);
+}
+
 void LumenAIControl::onAskAnswered(const LLSD& notification, const LLSD& response)
 {
     if (!LumenAIControl::instanceExists()) return;
@@ -5112,7 +5131,9 @@ namespace
             "teach you how to make a potion\"). teach_start, then they do it once by hand and say "
             "when done; teach_stop gives what they did and how to write it up as a skill.\n"
             "- test_skill: run a skill from `card` (with `inputs`) before it is saved; the viewer "
-            "shows the user its steps and asks first.\n"
+            "shows the user what it does and asks first. It is a real run: the WHOLE routine "
+            "again, using up what it uses (a barrel hands out its herbs again). Before trying a "
+            "changed card, tell the user that, and what it will use.\n"
             "- save_skill: save `card` as one of their skills; the viewer shows the steps and asks. "
             "The same name changes that skill -- to change one (\"use the herbs from the barrel "
             "first\"), take its `card` from `skills`, change it, test it and save it.\n"
@@ -29796,7 +29817,8 @@ if (method == "camera")
                                               "on another computer");
                 subs["SUMMARY"] = LumenAISkills::questionText(skill);
                 LLSD out;
-                if (!askUser("LumenAskSkillNew", subs, "skill_trust:" + skill.asset_id.asString(), out))
+                if (!askWithSteps("LumenAskSkillNew", subs, "skill_trust:" + skill.asset_id.asString(),
+                                  subs["NAME"].asString(), LumenAISkills::stepsText(skill), out))
                     return out;
                 skills.trust(skill);
             }
@@ -29938,8 +29960,11 @@ if (method == "camera")
             "dialog step); for a thing an earlier step rezzed, object is that step's result; "
             "stand {}; "
             "verify {item: a name, wait} -- checks it came into the inventory; "
-            "accept_offer {from: part of the giver's name, item: what it is, wait, as} -- presses "
-            "Keep on an inventory offer, or finds it already arrived; "
+            "accept_offer {from: part of the giver's name, owner: \"me\" when the offer came from "
+            "one of the user's own objects (its `owner` is \"you\"), item: what it is, wait, as} -- "
+            "presses Keep on an inventory offer, or finds it already arrived. When the giver's or "
+            "the item's name changes from run to run, from and item may be \"*\" -- with owner "
+            "\"me\", never \"*\" from anyone; "
             "web_call {url: an https address, query: {name: value} added to it, key: the NAME of "
             "a key the user gives the viewer (never the key itself), key_as: \"query:apikey\" -- "
             "the key goes in the address under that name, as}. Only what a person could paste "
@@ -30004,9 +30029,8 @@ if (method == "camera")
         }
         LumenAISkills& skills = LumenAISkills::instance();
         const std::string fingerprint = llformat("%zx", std::hash<std::string>()(text));
-        // What the steps do as the viewer reads them, then the card's own
-        // words -- not the summary alone, which the card's writer chose (the
-        // review, 2026-10-06).
+        // What the skill touches, as the viewer reads its steps -- not the
+        // card's own summary, which its writer chose (the review, 2026-10-06).
         const std::string summary = LumenAISkills::questionText(skill);
 
         if (method == "test_skill")
@@ -30031,8 +30055,9 @@ if (method == "camera")
                 subs["NAME"] = askQuote(skill.name, 80);
                 subs["SUMMARY"] = summary;
                 LLSD out;
-                if (!askUser("LumenAskSkillTest", subs,
-                             "skill_test:" + fingerprint + "|" + llsdToJsonString(inputs), out))
+                if (!askWithSteps("LumenAskSkillTest", subs,
+                                  "skill_test:" + fingerprint + "|" + llsdToJsonString(inputs),
+                                  subs["NAME"].asString(), LumenAISkills::stepsText(skill), out))
                     return out;
             }
             LLSD result = skills.run(skill, inputs);
@@ -30048,7 +30073,8 @@ if (method == "camera")
             subs["SUMMARY"] = summary;
             subs["WHAT"] = existing.notNull() ? std::string("change your skill") : std::string("save a new skill");
             LLSD out;
-            if (!askUser("LumenAskSkillSave", subs, "skill_save:" + fingerprint, out)) return out;
+            if (!askWithSteps("LumenAskSkillSave", subs, "skill_save:" + fingerprint,
+                              subs["NAME"].asString(), LumenAISkills::stepsText(skill), out)) return out;
         }
 
         LLViewerRegion* region = gAgent.getRegion();

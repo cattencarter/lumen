@@ -15312,7 +15312,6 @@ It carries out the steps you taught it, in order, and stops if one does not work
    type="alertmodal">
 The assistant wants to run the skill [NAME]. Its notecard was not written by Lumen on this computer: [CREATOR].
 
-What its steps do, as the viewer reads them:
 [SUMMARY]
 
 While it runs, the viewer does not ask about each step. Run it? You are asked once for each version of it.
@@ -15335,10 +15334,11 @@ While it runs, the viewer does not ask about each step. Run it? You are asked on
    label="Try out a skill?"
    name="LumenAskSkillTest"
    type="alertmodal">
-The assistant wants to try out the skill [NAME] before it is saved. What its steps do, as the viewer reads them:
+The assistant wants to try out the skill [NAME] before it is saved.
+
 [SUMMARY]
 
-While it runs, the viewer does not ask about each step.
+Trying it does the whole routine for real: all of the above happens again, including what it accepts, rezzes and takes. While it runs, the viewer does not ask about each step.
     <tag>confirm</tag>
     <form name="form">
       <button
@@ -15358,7 +15358,8 @@ While it runs, the viewer does not ask about each step.
    label="Save a skill?"
    name="LumenAskSkillSave"
    type="alertmodal">
-The assistant wants to [WHAT] [NAME]. What its steps do, as the viewer reads them:
+The assistant wants to [WHAT] [NAME].
+
 [SUMMARY]
 
 It is kept as a notecard in #Lumen/#Skills, so it goes with you to any computer. When it runs, the viewer does not ask about each step.

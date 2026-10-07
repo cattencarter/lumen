@@ -399,6 +399,9 @@ private:
     // question is on screen and not answered yet.
     bool askUser(const std::string& notification, const LLSD& subs,
                  const std::string& fingerprint, LLSD& out);
+    /** askUser for a skill: `steps`, every step as the viewer reads it, go into the Assistant. */
+    bool askWithSteps(const std::string& notification, LLSD subs, const std::string& fingerprint,
+                      const std::string& name, const std::string& steps, LLSD& out);
     static void onAskAnswered(const LLSD& notification, const LLSD& response);
     /** An object as the question names it: its own name, quoted, if known. */
     std::string askObjectName(LLViewerObject* object) const;
