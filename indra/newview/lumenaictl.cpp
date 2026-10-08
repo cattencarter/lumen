@@ -3955,7 +3955,8 @@ namespace
         "(a kind, as search takes it), `creator` (an avatar id, or a name that is one maker's "
         "name in full), and `in` (a folder and everything inside "
         "it, by id or by path as search gives it in `folder`) -- at least one of name, "
-        "creator or in; with `folders`, only name and in. Anything in a folder the user "
+        "type, creator or in, so \"all my landmarks\" is `type` alone; with `folders`, only "
+        "name and in. Anything in a folder the user "
         "protected is left alone, and the plan says so. `do` is one of: `move`, with `to` (a "
         "folder by id or path, "
         "or one a new_folder step earlier in the list makes); `rename`, with `replace` and "
@@ -4620,7 +4621,7 @@ namespace
             "tell them it is off and where they turn it on. **Before your first batch, read viewer / "
             "help with `about`: \"batch\"** -- it gives the step format. In brief: a product is "
             "usually a FOLDER, moved or deleted WHOLE (`folders`: true), never emptied item by item into "
-            "one pile. **Plan first, then run the plan:** a call with `steps` changes nothing and answers "
+            "one pile; everything of one kind -- \"all my landmarks\" -- is `type` alone. **Plan first, then run the plan:** a call with `steps` changes nothing and answers "
             "with a plan and a `plan_id`; tell the user briefly what it will do, then call batch again "
             "with only that `plan_id`. The viewer asks the user itself -- do not ask them in the "
             "conversation as well. A long run belongs to the viewer, which writes in the Assistant "
@@ -4698,7 +4699,8 @@ namespace
             LLSD str; str["type"] = "string";
             LLSD bfind; bfind["type"] = "object";
             bfind["description"] = "move, rename, delete: which items -- or, with `folders`: true, "
-                                   "which folders. At least one of name, creator or in.";
+                                   "which folders. At least one of name, type, creator or in -- "
+                                   "\"all my landmarks\" is type alone.";
             LLSD bfind_props;
             LLSD bf_name = str; bf_name["description"] = "Words, each a whole word of the item's own "
                                                          "name -- or the folder's, with `folders` -- (a "
@@ -13259,10 +13261,17 @@ namespace
                                            "gesture, texture, sound, script, settings, material.");
                     }
                 }
+                // <Lumen> A kind on its own is a selection: "move all my landmarks
+                // into one folder", "delete my landmarks" were refused as
+                // "everything of a kind across the whole inventory" -- a caution
+                // nobody had asked for, and a person said Lumen could not help
+                // (the author, 2026-10-08). The plan shows how many, the viewer
+                // asks before any delete, all of it goes to the Trash and one
+                // undo puts it back. Only a selection naming nothing is refused.
                 if (lowered(words).find_first_not_of(" \t") == std::string::npos
-                    && creator.empty() && in_given.empty())
-                    return fail(n, "a selection must say which: `name` words, a `creator`, or a folder "
-                                   "`in` -- never everything of a kind across the whole inventory.");
+                    && creator.empty() && in_given.empty() && kind == LLAssetType::AT_NONE)
+                    return fail(n, "a selection must say which: `name` words, a `type`, a `creator`, or "
+                                   "a folder `in` -- never the whole inventory.");
                 // <Lumen> How `name` matches. Each word a whole word of the item's
                 // OWN name, unless the step asks for search's looser way -- the
                 // folder too, inside longer words, a repaired spelling -- which
@@ -13284,11 +13293,12 @@ namespace
                     // all: with nothing else to go on it is everything of a kind.
                     if (scope == root)
                     {
-                        if (lowered(words).find_first_not_of(" \t") == std::string::npos && creator.empty())
+                        if (lowered(words).find_first_not_of(" \t") == std::string::npos && creator.empty()
+                            && kind == LLAssetType::AT_NONE)
                             return fail(n, "`in` is the top of the inventory, which is all of it -- a "
-                                           "selection must say which: `name` words, a `creator`, or a "
-                                           "folder below the top.");
-                        scope.setNull();   // with words or a maker: the same as no `in`
+                                           "selection must say which: `name` words, a `type`, a "
+                                           "`creator`, or a folder below the top.");
+                        scope.setNull();   // with words, a kind or a maker: the same as no `in`
                     }
                     shown["in"] = safeUtf8(pathOf(scope.notNull() ? scope : root));
                 }
