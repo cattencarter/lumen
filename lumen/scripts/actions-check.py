@@ -339,7 +339,11 @@ else:
         print("  NOT CHECKED: git would not list tags, so LUMEN_VERSION (%s) "
               "was not compared against any release" % lumen_version)
     else:
-        releases = [t for t in tags if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+        # A fourth number is a fix to a release already downloaded: 0.1.7.1
+        # (the author, 2026-10-08) -- newer than 0.1.7 to the update check too.
+        # Short, so Firestorm's own tags with a build number as the fourth
+        # part (v6.6.13.5623403350) are not taken for ours.
+        releases = [t for t in tags if re.fullmatch(r"v\d+\.\d+\.\d+(\.\d{1,3})?", t)]
         if not releases:
             print("  NOT CHECKED: no vN.N.N release tag in this clone, so "
                   "LUMEN_VERSION (%s) was not compared" % lumen_version)
