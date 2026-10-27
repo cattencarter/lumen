@@ -470,6 +470,33 @@ namespace
                "you use it: [secondlife:///app/lumen_setup/keys Preferences > AI].";
     }
 
+    // <Lumen> A subscription's sign-in runs out now and then, and Claude Code
+    // said so as "Failed to authenticate: OAuth session expired and could not
+    // be refreshed" -- true, and no help to somebody who has never heard of
+    // OAuth (the author, 2026-10-27). Their words go to the log; the person
+    // gets what happened and a link to the window that signs in. Empty when
+    // `said` is not about signing in.
+    std::string signedOutNote(const std::string& provider, const std::string& said)
+    {
+        std::string s = said;
+        LLStringUtil::toLower(s);
+        static const char* const SIGNED_OUT[] = {
+            "failed to authenticate", "oauth", "not logged in", "/login", "log in again",
+            "sign in again", "login again", "token has expired", "token expired",
+            "token_expired", "refresh token", "authentication_error", "unauthorized" };
+        bool out = false;
+        for (const char* w : SIGNED_OUT) if (s.find(w) != std::string::npos) { out = true; break; }
+        if (!out) return std::string();
+
+        LL_INFOS("LumenAIChat") << LumenAIKeys::displayName(provider) << " is signed out; it said: "
+                           << said << LL_ENDL;
+        const std::string account = (provider == LumenAIKeys::CODEX) ? "ChatGPT" : "Claude";
+        return LumenAIKeys::displayName(provider) + " has been signed out of your " + account
+             + " account. That happens now and then. [secondlife:///app/lumen_setup/" + provider
+             + " Sign in again] -- a window walks you through it -- then ask again here.";
+    }
+    // </Lumen>
+
     std::string callTool(const std::string& name, const LLSD& args,
                          const std::string& request_id, bool& is_error,
                          LLSD* structured = nullptr,
@@ -3414,12 +3441,15 @@ namespace
             const std::string which = params.size() > 0 ? params[0].asString() : std::string();
             if (which == LumenAIKeys::CODEX || which == LumenAIKeys::CLAUDECODE || which == LumenAIKeys::VIBE)
             {
+                const bool again = gSavedSettings.getString("LumenAIProvider") == which;   // <Lumen>
                 gSavedSettings.setString("LumenAIProvider", which);
                 LLFloaterReg::showInstance("ai_setup", LLSD().with("provider", which));
-                LumenAIChatFloater::postFromViewer(std::string(),
-                    "Chose " + LumenAIKeys::displayName(which) + ". The window that opened walks "
-                    "you through it; when it says it is done, ask the assistant anything here. "
-                    "Preferences > AI changes it later.");
+                LumenAIChatFloater::postFromViewer(std::string(), again
+                    ? "The window that opened signs " + LumenAIKeys::displayName(which) + " in "
+                      "again; when it says it is done, ask again here."
+                    : "Chose " + LumenAIKeys::displayName(which) + ". The window that opened walks "
+                      "you through it; when it says it is done, ask the assistant anything here. "
+                      "Preferences > AI changes it later.");
                 return true;
             }
             // An API key: Preferences, on the AI page, where the keys are typed.
@@ -3722,7 +3752,9 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
         // </Lumen>
         if (!ok && !already)
         {
-            sayNote(failed_because.empty()
+            const std::string signed_out = signedOutNote(LumenAIKeys::CODEX, failed_because);   // <Lumen>
+            sayNote(!signed_out.empty() ? signed_out
+                    : failed_because.empty()
                     ? "Codex did not answer. Is its background service running?"
                     : "Codex: " + failed_because);
             setBusy(false);
@@ -4147,7 +4179,9 @@ void LumenAIChatFloater::runCodexTurn(const std::string& user_text)
             // </Lumen>
             std::string why = params["error"]["message"].asString();
             if (why.size() > 300) why = why.substr(0, 300);
-            sayNote(why.empty() ? "Codex reported an error." : "Codex: " + why);
+            const std::string signed_out = signedOutNote(LumenAIKeys::CODEX, why);   // <Lumen>
+            sayNote(!signed_out.empty() ? signed_out
+                    : why.empty() ? "Codex reported an error." : "Codex: " + why);
             timed_out = false;
             break;
         }
@@ -4406,7 +4440,10 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
 
     mClaude->stop();
 
-    if (!failed.empty())      sayNote("Claude Code: " + failed);
+    // <Lumen> Signed out: say so plainly, with the way back in.
+    const std::string signed_out = signedOutNote(LumenAIKeys::CLAUDECODE, failed);
+    if (!signed_out.empty())  sayNote(signed_out);
+    else if (!failed.empty()) sayNote("Claude Code: " + failed);
     else if (!answer.empty()) sayAssistant(answer);
     else                      sayNote("Claude Code finished without saying anything.");
     // <Lumen> Cut off at five minutes, or the process ended without its final
