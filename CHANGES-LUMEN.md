@@ -5,14 +5,14 @@ GNU Lesser General Public License version 2.1 — the same licence as the work i
 is based on. The LGPL requires a derivative to state what it changed. This is
 that statement.
 
-Upstream baseline: **`Firestorm_Release_7.2.4.80712`** (commit `10bd3c9f93`).
+Upstream baseline: **`Firestorm_Release_7.2.5.81788`** (commit `4ac201fdc5`).
 All Lumen changes live on the branch `ai-control`, and every edit to a Firestorm
 or Linden Lab file is bracketed by `<Lumen>` comments.
 
 To see the changes exactly:
 
 ```sh
-git diff Firestorm_Release_7.2.4.80712
+git diff Firestorm_Release_7.2.5.81788
 ```
 
 ## What was added

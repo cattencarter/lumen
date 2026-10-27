@@ -38,8 +38,8 @@ small edits to upstream files — each one bracketed by `<Lumen>` comments.
 To see the difference exactly, rather than taking this file's word for it:
 
 ```sh
-git fetch --no-tags upstream tag Firestorm_Release_7.2.4.80712
-git diff Firestorm_Release_7.2.4.80712
+git fetch --no-tags upstream tag Firestorm_Release_7.2.5.81788
+git diff Firestorm_Release_7.2.5.81788
 ```
 
 ## Download
