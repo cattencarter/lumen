@@ -18,6 +18,7 @@
 			<text name="plugin_fail_text">
 Veb brauzer plugin-i açılmaq üçün daha çox vaxt tələb edir kimi görünür.
 Əgər plugin heç vaxt yüklənmirsə, zəhmət olmasa, bununla bağlı mümkün addımlar üçün aşağıdakı keçidləri səyahət edin:
+
 			</text>
 		</layout_panel>
 	</layout_stack>
