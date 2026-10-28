@@ -74,6 +74,19 @@ public:
     static std::string updateCommand(bool forPerson);
 
     /**
+     * <Lumen> Claude Code said on stderr that it does not know the model it
+     * was asked for by name -- `[claude-code:unrecognized_model]` -- because
+     * the copy is older than the model. It passes the name on anyway and the
+     * model answers, but its own list is out of date (2.1.278 took "sonnet"
+     * to mean Sonnet 5 when 5.5 was out). Worth an update, not a refusal.
+     * Only meaningful when the turn succeeded: a name no copy knows fails
+     * with the same line on stderr.
+     */
+    static bool        unknownModel(const std::string& stderr_text);
+    /** What to tell somebody whose copy does not know `model`. */
+    static std::string unknownModelText(const std::string& model);
+
+    /**
      * Why this provider cannot work on this platform at all, or empty when it
      * can. On Windows the CLI is looked for under Unix names and the setup
      * runs /bin/sh, so "not installed" would be the wrong reason to give.

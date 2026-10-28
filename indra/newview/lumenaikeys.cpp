@@ -708,6 +708,9 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                         dynamic_cast<LumenPanelPreferenceAIKeys*>(h.get());
                     if (!p) return;
                     if (said.size() > 220) said = said.substr(0, 220);
+                    // <Lumen> Older than the model: it works, and still wants an update.
+                    const std::string old_note = LumenAIClaude::unknownModel(cc.errorText())
+                        ? "\n\n" + LumenAIClaude::unknownModelText(model) : std::string();
 
                     const bool reached = ran && !expect.empty()
                         && lowercased(said).find(lowercased(expect)) != std::string::npos;
@@ -715,17 +718,17 @@ bool LumenPanelPreferenceAIKeys::postBuild()
                     {
                         p->say(true, "Claude Code ran, is signed in, and reached the viewer's own "
                                      "tools: it answered with this session's check value, "
-                                     + expect + ".");
+                                     + expect + "." + old_note);
                     }
                     else if (ran)
                     {
-                        p->say(false, expect.empty()
+                        p->say(false, (expect.empty()
                             ? "Claude Code ran and is signed in, but the viewer could not read "
                               "its own check value, so whether it reached the tools is not "
                               "known. It said: " + said
                             : "Claude Code ran and is signed in, but did not reach the viewer's "
                               "own tools: its answer is not this session's check value. It "
-                              "said: " + said);
+                              "said: " + said) + old_note);
                     }
                     else
                     {

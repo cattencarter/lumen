@@ -226,6 +226,21 @@ std::string LumenAIClaude::tooOldText(const std::string& version, bool inPanel)
 }
 // </Lumen>
 
+// <Lumen>
+bool LumenAIClaude::unknownModel(const std::string& stderr_text)
+{
+    return stderr_text.find("unrecognized_model") != std::string::npos;
+}
+
+std::string LumenAIClaude::unknownModelText(const std::string& model)
+{
+    return "Your copy of Claude Code is older than the model Lumen asks it for"
+         + (model.empty() ? std::string() : ", " + model)
+         + ", and does not know it by name. It still answers, but please update Claude Code: "
+           "open Terminal, type  " + updateCommand(true) + "  and press Return.";
+}
+// </Lumen>
+
 std::string LumenAIClaude::unavailableHere()
 {
     // <Lumen> Works on Windows too since 2026-09-30: the same flags, read

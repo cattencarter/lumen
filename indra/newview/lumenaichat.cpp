@@ -4453,6 +4453,16 @@ void LumenAIChatFloater::runClaudeCodeTurn(const std::string& user_text)
         sayNote("Claude Code stopped before it finished, so that answer may be incomplete.");
     }
     // </Lumen>
+    // <Lumen> A copy older than the model: it answered, so say so once a session
+    // per model, after the answer, rather than every turn.
+    static std::string told_old_for;
+    if (failed.empty() && !answer.empty()
+        && LumenAIClaude::unknownModel(mClaude->errorText()) && told_old_for != model)
+    {
+        told_old_for = model;
+        sayNote(LumenAIClaude::unknownModelText(model));
+    }
+    // </Lumen>
     setBusy(false);
 }
 
