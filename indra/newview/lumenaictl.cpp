@@ -127,6 +127,7 @@ bool confirm_take(const LLSD& notification, const LLSD& response,
 // </Lumen>
 #include "lltextbox.h"       // <Lumen> a script window's compile result, for read_scripts
 #include "lltrans.h"         // <Lumen> save_script: the window's own "Compile successful!"
+#include "tea.h"             // <Lumen> labels as drawn: the currency LLUIString swaps in
 #include "llcheckboxctrl.h"  // <Lumen> save_script: the script window's Running box
 #include "llvoavatarself.h"   // <Lumen> the user's own feet, for where a prim lands
 #include "llvolumemessage.h"  // <Lumen> packing ObjectAdd ourselves
@@ -10015,6 +10016,23 @@ namespace
         }
     }
 
+    /**
+     * A label as the person SEES it, not as the XUI file spells it.
+     *
+     * menu_viewer.xml says "About [APP_NAME]" and the screen says "About
+     * Lumen": LLUIString fills in the viewer's default arguments when it draws.
+     * Read straight from the file, the index kept the brackets -- "open About
+     * Lumen" was told nothing in the viewer carries those words, and the
+     * nearest match offered back was "About [APP_NAME]". The same two steps
+     * LLUIString::updateResult takes, so the words cannot drift from it.
+     */
+    std::string onScreen(std::string s)
+    {
+        LLStringUtil::format(s, LLTrans::getDefaultArgs());
+        Tea::wrapCurrency(s);
+        return s;
+    }
+
     /** How to say where this is, to a person. */
     std::string whereOf(const std::string& kind, const std::string& path, const std::string& label)
     {
@@ -10047,7 +10065,7 @@ namespace
             if (n->getAttributeString("filename", file) && n->getAttributeString("name", name))
             {
                 n->getAttributeString("label", label);
-                sTabs[file] = std::make_pair(name, label.empty() ? name : label);
+                sTabs[file] = std::make_pair(name, label.empty() ? name : onScreen(label));
             }
             for (LLXMLNodePtr c = n->getFirstChild(); c.notNull(); c = c->getNextSibling())
                 stack.push_back(c);
@@ -10115,7 +10133,7 @@ namespace
         {
             std::string title;
             root->getAttributeString("title", title);
-            if (!title.empty()) home.path = "the " + title + " window";
+            if (!title.empty()) home.path = "the " + onScreen(title) + " window";
         }
 
         // Each node travels with the caption printed just before it, if any.
@@ -10176,6 +10194,7 @@ namespace
             std::string ctrl, label;
             node->getAttributeString("label", label);
             if (label.empty() && is_preferences) label = caption;   // measured there only
+            label = onScreen(label);
             if (node->getAttributeString("control_name", ctrl)
                 && !ctrl.empty() && !label.empty())
             {
@@ -10303,6 +10322,7 @@ namespace
 
             std::string label;
             node->getAttributeString("label", label);
+            label = onScreen(label);   // the path below is built from it too
 
             // **A menu item the viewer hides while running is not a place to send
             // anybody.** The XUI is the truth about what CAN be there, not about
