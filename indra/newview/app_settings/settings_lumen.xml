@@ -70,10 +70,10 @@
     <integer>0</integer>
   </map>
 
-  <!-- <Lumen> The login-mode presets are loaded AFTER settings.xml and
-       override it, so setting SkinCurrent there alone has no effect: this file
-       decides what the default mode actually uses. The other modes (phoenix,
-       v3, hybrid, text) keep their own skins. -->
+  <!-- <Lumen> This session file is loaded AFTER settings.xml and overrides
+       it, so setting SkinCurrent there alone has no effect: this file decides
+       the skin. It is the only one now; the other login modes, and the Mode
+       picker that chose between them, are gone. -->
   <key>SkinCurrent</key>
   <map>
     <key>Comment</key>

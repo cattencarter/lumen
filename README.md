@@ -67,15 +67,18 @@ resources for Firestorm's viewer — they are not a support route for this one.
 
 ## What is ours, and where
 
-Everything Lumen adds lives under **`lumen/`** — the scripts, the icon, the
-licence covering them. Everything else in this tree is Firestorm's and Linden
-Lab's, and is left as it was found.
+Lumen's own tooling lives under **`lumen/`** — the scripts, the icon, the
+licence covering them. What Lumen adds to the viewer sits in Firestorm's tree
+beside the files it works with, in files named `lumen*`, and every edit to a
+Firestorm or Linden Lab file is bracketed by `<Lumen>` comments.
 
 | | |
 |---|---|
 | `lumen/scripts/` | build, release and live-check scripts |
 | `lumen/assets/` | the icon and its iconset |
-| `indra/newview/fsai*`, `lumenfolders.*`, `lumen_bridge.lsltxt` | the assistant itself |
+| `indra/newview/lumenai*`, `lumenfolders.*`, `fs_resources/lumen_bridge.lsltxt` | the assistant itself, its folder and its LSL bridge |
+| `indra/newview/lumenupdate.*` | the update message |
+| `indra/newview/skins/lumen/` | the skin |
 
 ## Contributions
 

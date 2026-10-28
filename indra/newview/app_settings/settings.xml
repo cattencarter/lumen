@@ -14683,8 +14683,10 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <integer>0</integer>
   </map>
-  <!-- <Lumen> Local control endpoint. Off by default: this is a listening
-       socket inside the program holding the user's credentials. -->
+  <!-- <Lumen> Lumen's own settings: the start page, the Assistant and its
+       providers, the mic, the update message. The Assistant is off until a
+       provider is chosen (LumenAIProvider is "none"), and the local endpoint
+       listens only for the providers that need it. -->
   <key>LumenUseStockLoginPage</key>
     <map>
       <key>Comment</key>
@@ -15663,7 +15665,8 @@ Change of this parameter will affect the layout of buttons in notification toast
       <!-- <Lumen> Lumen's own skin by default. It is a copy of the Firestorm
            skin with the orange accent rotated to the teal of the application
            icon, at matched perceived luminance so the interface keeps its
-           visual weight. The Firestorm skin is untouched and still selectable. -->
+           visual weight. It is the only skin shipped: Firestorm's own and the
+           community skins made for it are not. -->
       <key>Value</key>
       <string>lumen</string>
     </map>
