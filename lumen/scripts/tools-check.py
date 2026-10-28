@@ -9,6 +9,14 @@ It deliberately does NOT print inventory item names. The point of the endpoint
 is that an assistant can read someone's inventory; that is not a reason for the
 contents to end up in a terminal transcript. Counts, kinds and ids only.
 
+The viewer asks the person before every IM, give and delete, and a question
+answered with "Always allow" is answered Yes at once from then on -- for every
+account on that Mac. So no real no-copy item is ever handed to a call the
+viewer could carry out: the one call made on one is refused before anyone is
+asked, and the run ends by checking that every no-copy item it saw is still in
+inventory. A question nobody answers comes back "waiting" after the viewer's
+50 s hold, and the check says so rather than failing on it.
+
     scripts/tools-check.py [--port 8787]
 """
 
@@ -51,8 +59,11 @@ def call(method, params=None, _id=[0]):
         payload["params"] = params
     req = urllib.request.Request(URL, data=json.dumps(payload).encode(), method="POST")
     req.add_header("Content-Type", "application/json")
+    # A call the viewer puts to the person is held up to 50 s for their answer
+    # (55 with the region), and only then comes back "waiting". At 30 the
+    # script died on the first question nobody was there to answer.
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=75) as r:
             raw = r.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
@@ -60,6 +71,8 @@ def call(method, params=None, _id=[0]):
             return json.loads(e.read())
         except Exception:
             return {}
+    except (TimeoutError, urllib.error.URLError) as e:
+        return {"error": {"message": f"no answer from the endpoint: {e}"}}
 
 
 def result(method, params=None):
@@ -68,6 +81,45 @@ def result(method, params=None):
 
 def err(method, params=None):
     return call(method, params).get("error", {})
+
+
+def asked(method, params):
+    """A call the viewer asks the person about before acting. It comes back one
+    of three ways: done, with `approved` saying how they allowed it ("clicked
+    Yes", "always allowed"); their No, as an error; or "waiting", nothing done,
+    when the question is on the screen and nobody answered within the hold.
+    Returns (result, error, seconds)."""
+    t0 = time.time()
+    r = call(method, params)
+    return r.get("result") or {}, r.get("error") or {}, time.time() - t0
+
+
+def check_asked(what, res, e, secs):
+    """The three outcomes of `asked`, each checked for saying what happened.
+    True only when the call went ahead."""
+    if res.get("waiting_for_user"):
+        print(f"        {what}: the viewer is asking, and nobody answered in {secs:.0f} s")
+        check(f"{what}: an unanswered question comes back waiting, with nothing done",
+              "NOTHING has been done" in res.get("note", "") and bool(res.get("question")),
+              str(res)[:200])
+        check(f"{what}: only after the viewer held the call for an answer",
+              secs > 40, f"{secs:.0f} s")
+        return False
+    if e:
+        check(f"{what}: refused as the person's own No",
+              (e.get("data") or {}).get("user_said") == "no", str(e)[:200])
+        return False
+    check(f"{what}: says how the person allowed it",
+          res.get("approved") in ("clicked Yes", "always allowed"), str(res)[:200])
+    return True
+
+
+def still_here(item):
+    """Whether an item is still in inventory and not in the Trash, looked up by
+    its own name and kind -- a sample of the first hundred may not reach it."""
+    found = result("search_inventory", {"kind": item["kind"], "query": item["name"], "limit": 100})
+    return any(i["id"] == item["id"] and not i.get("folder", "").startswith("Trash")
+               for i in found.get("items", []))
 
 
 def worn_state(item_id, want, timeout=25):
@@ -259,10 +311,14 @@ def main():
         recipient = people[0]["agent_id"]
         print(f"        sending to {people[0]['name']}")
 
+    im_sends = 0   # how many of this run's IMs the person let go, for read_actions
     if recipient:
         text = f"Lumen tools-check {int(time.time()) % 100000} -- automated test, please ignore"
-        im = result("send_im", {"name": "catten", "message": text,
-                                "request_id": rid("im")})
+        im, e, secs = asked("send_im", {"name": "catten", "message": text,
+                                        "request_id": rid("im")})
+        if check_asked("send_im", im, e, secs):
+            im_sends += 1
+    if im_sends:
         check("send_im accepts a name, not just a UUID", im.get("sent_to") == recipient, str(im)[:200])
         # The thing the earlier version of this test got wrong: our own copy of
         # the message appears locally whether or not it was delivered, so it
@@ -280,10 +336,15 @@ def main():
         check("an identical message with a NEW id is caught by the 60s window",
               im3.get("replayed") is True, str(im3)[:200])
 
-        im4 = result("send_im", {"name": "catten", "message": text + " (second)",
-                                 "request_id": rid("im-4")})
-        check("different wording is NOT suppressed", im4.get("replayed") is None, str(im4)[:200])
+        # A new message, so the viewer asks about it afresh.
+        im4, e, secs = asked("send_im", {"name": "catten", "message": text + " (second)",
+                                         "request_id": rid("im-4")})
+        check("different wording is NOT suppressed",
+              im4.get("replayed") is None and not e, str(im4 or e)[:200])
+        if im4.get("sent_to"):
+            im_sends += 1
 
+    if recipient:
         e = err("send_im", {"name": "catten", "message": ""})
         check("an empty message is refused", e.get("code") == -32602, str(e)[:160])
 
@@ -352,33 +413,38 @@ def main():
     e = err("give_item", {"name": "zzzqqq-nobody", "item": "x"})
     check("an unknown recipient is a clean error", e.get("code") == -32000, str(e)[:160])
 
-    # A real no-copy item of the user's. Found here rather than borrowed from
-    # the delete section below, which runs later.
-    nocopy = None
-    for kind in ("object", "clothing", "bodypart", "animation", "texture", "landmark", "notecard"):
+    # Real no-copy items of the user's: every one the sample turns up, so the
+    # end of the run can show that none of them went anywhere.
+    #
+    # Nothing here may hand one to a call the viewer could carry out. This used
+    # to rest on give_item and delete_item refusing a no-copy item until a
+    # `confirm` naming it came back. Since 2026-09-28 the viewer asks the
+    # person instead and `confirm` is not read at all, so on a Mac where giving
+    # away a no-copy item was remembered as "Always allow", "a NO-COPY item
+    # needs the user's word first" simply gave it away to the test recipient
+    # (2026-10-28). An item_id also wins over any name beside it, so no
+    # mismatching argument stops a call either. What IS refused before any
+    # question is the user as the recipient: give_item turns that down before
+    # it has looked at the item. That is the one call made with one.
+    nocopy_kinds = ("object", "clothing", "bodypart", "animation", "texture", "landmark",
+                    "notecard")
+    nocopy_seen = []
+    for kind in nocopy_kinds:
         for i in result("search_inventory", {"kind": kind, "limit": 100}).get("items", []):
             if not i.get("copyable") and not i.get("worn"):
-                nocopy = i
-                break
-        if nocopy:
-            break
+                nocopy_seen.append(i)
+    nocopy = nocopy_seen[0] if nocopy_seen else None
+    print(f"        {len(nocopy_seen)} no-copy items in the sample, none of them to be given")
 
     if nocopy:
-        e = err("give_item", {"agent_id": recipient or me, "item_id": nocopy["id"]})
-        check("a NO-COPY item needs the user's word first",
-              e.get("code") == -32000, str(e)[:200])
-        check("and it says so in the conversation, not in the viewer",
-              "ask" in e.get("message", "").lower() and "confirm" in e.get("message", "").lower(),
-              e.get("message", "")[:140])
-        check("the refusal carries the item name so the user can be asked about it",
-              (e.get("data") or {}).get("needs_confirmation") is True, str(e.get("data"))[:120])
-        e = err("give_item", {"agent_id": recipient or me, "item_id": nocopy["id"],
-                              "confirm": "not the right name"})
-        check("a confirm that does not match the item is refused",
-              e.get("code") == -32000, str(e)[:160])
-        still = result("search_inventory", {"kind": nocopy["kind"], "limit": 100}).get("items", [])
-        check("and the no-copy item did not move",
-              any(i["id"] == nocopy["id"] for i in still), "it left inventory")
+        r = call("give_item", {"agent_id": me, "item_id": nocopy["id"]})
+        e = r.get("error") or {}
+        check("a no-copy item offered to the user themselves is refused before anyone is asked",
+              e.get("code") == -32000 and "yourself" in e.get("message", "") and not r.get("result"),
+              str(r)[:200])
+        check("and the no-copy item did not move", still_here(nocopy), "it left inventory")
+    else:
+        print("  skip  no no-copy item in the sample")
 
     wornc = [i for i in result("search_inventory", {"worn": True}).get("items", [])
              if i.get("copyable")]
@@ -663,11 +729,19 @@ def main():
           bad is None, bad or "")
 
     # ---------- delete and undelete ----------
-    # Exercised on a notecard this script made, and the no-copy refusal on a
-    # real item of the user's, which must come back untouched.
+    # Exercised on a notecard this script made, and on nothing else. Every
+    # delete is put to the person first, a no-copy item's with the same
+    # question as this one's -- one line in it differs -- so this is where that
+    # question is checked: the delete goes ahead only after a Yes, clicked or
+    # remembered, and the reply says which; otherwise nothing moves.
     print("\ndelete / undelete")
+    deleted = False
     if made:
-        d = result("delete_item", {"item_id": made["id"], "request_id": rid("del")})
+        d, e, secs = asked("delete_item", {"item_id": made["id"], "request_id": rid("del")})
+        deleted = check_asked("delete_item", d, e, secs)
+        if not deleted:
+            check("and the notecard did not move", still_here(made), "it moved all the same")
+    if deleted:
         check("delete_item reports it went to the Trash", d.get("moved_to_trash") is True, str(d)[:200])
         check("delete_item says it is recoverable rather than deleted",
               d.get("recoverable") is True and "Trash" in d.get("confirm_with", ""), str(d)[:200])
@@ -690,18 +764,9 @@ def main():
     check("search_inventory reports copyability",
           all("copyable" in i for i in result("search_inventory", {"limit": 10}).get("items", [])))
 
-    # The guard the whole tool rests on. Same item the give_item section found.
-    if nocopy:
-        e = err("delete_item", {"item_id": nocopy["id"]})
-        check("deleting a no-copy item needs the user's word first",
-              e.get("code") == -32000, str(e)[:200])
-        check("the refusal is machine-readable, not only prose",
-              (e.get("data") or {}).get("reason") == "no-copy", str(e.get("data"))[:120])
-        e = err("delete_item", {"item_id": nocopy["id"], "confirm": "wrong"})
-        check("a confirm that does not match is refused", e.get("code") == -32000, str(e)[:160])
-        still = result("search_inventory", {"kind": nocopy["kind"], "limit": 100}).get("items", [])
-        check("and the no-copy item is untouched",
-              any(i["id"] == nocopy["id"] for i in still), "it moved")
+    # No delete_item on a real no-copy item, ever: nothing refuses one before
+    # the question, and a remembered Yes puts it in the Trash at once. Whether
+    # every no-copy item is still where it was is checked at the end.
 
     # The bug the confirmation work uncovered: error data was dropped on every
     # path, so "ask which one" never came with anything to ask about.
@@ -711,9 +776,13 @@ def main():
         check("an ambiguous name returns the candidates, not just advice to ask",
               isinstance(e.get("data"), list) and len(e["data"]) > 1, str(e.get("data"))[:140])
     else:
-        print("  skip  no no-copy item in the sample to refuse")
+        print("  skip  no ambiguous name in the sample")
 
-    if worn:
+    # Only while it is on. Left off by a wear that failed above, it would go
+    # to the question like any delete, and a remembered Yes would put the
+    # user's own garment in the Trash.
+    if target and target["id"] in {i["id"] for i in result("search_inventory", {"worn": True})
+                                   .get("items", [])}:
         e = err("delete_item", {"item_id": target["id"]})
         check("a worn item is refused until it is detached", e.get("code") == -32000, str(e)[:160])
 
@@ -767,21 +836,23 @@ def main():
     log = result("read_actions", {"limit": 50})
     entries = log.get("entries", [])
     tools_seen = {e_["tool"] for e_ in entries}
-    expected = ({"teleport", "create_notecard", "sit", "stand", "walk_to", "delete_item",
-                 "turn", "fly"}
-                | ({"send_im"} if recipient else set()))
+    # Only what the person let happen: a question left waiting did nothing.
+    expected = ({"teleport", "create_notecard", "sit", "stand", "walk_to", "turn", "fly"}
+                | ({"delete_item"} if deleted else set())
+                | ({"send_im"} if im_sends else set()))
     check("every write reached the log", expected <= tools_seen, str(sorted(tools_seen)))
     # The log is session-wide and outlives a single run of this script, so
     # count only what this run put there. Every request_id carries RUN.
     mine = [e_ for e_ in entries
             if e_["tool"] == "send_im" and e_.get("request_id", "").endswith(RUN)]
     check("replays were not logged as extra actions",
-          len(mine) == (2 if recipient else 0),
-          f"{len(mine)} send_im entries from this run for 2 real sends")
+          len(mine) == im_sends,
+          f"{len(mine)} send_im entries from this run for {im_sends} real sends")
     logblob = json.dumps(log)
     if recipient:
         check("the log does NOT contain the message text", text not in logblob,
               "message text leaked into read_actions")
+    if im_sends:
         check("the log DOES record who was messaged", recipient in logblob, str(log)[:200])
 
     # ---------- put everything back ----------
@@ -806,6 +877,20 @@ def main():
                 if target["id"] in back:
                     break
         check("the detached item is back on", target["id"] in back, "left off the avatar")
+
+    # ---------- no no-copy item went anywhere ----------
+    # The whole sample, not only the one item used above: whatever any section
+    # does, a no-copy item given away or put in the Trash shows up here. The
+    # same searches again first, then by name for any the sample no longer
+    # reaches -- this run's own notecard can push one out of the first hundred.
+    print("\nno-copy items")
+    present = set()
+    for kind in nocopy_kinds:
+        present |= {i["id"] for i in result("search_inventory", {"kind": kind, "limit": 100})
+                    .get("items", []) if not i.get("folder", "").startswith("Trash")}
+    gone = [i["id"] for i in nocopy_seen if i["id"] not in present and not still_here(i)]
+    check(f"all {len(nocopy_seen)} no-copy items seen are still in inventory, none in the Trash",
+          not gone, f"missing: {gone}")
 
     # ---------- and it is still alive ----------
     print()
