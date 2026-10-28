@@ -11,6 +11,24 @@ if (NOT DEFINED VIEWER_SHORT_VERSION) # will be true in indra/, false in indra/n
         string(REGEX REPLACE "^([0-9]+)\\.[0-9]+\\.[0-9]+" "\\1" VIEWER_VERSION_MAJOR ${VIEWER_SHORT_VERSION})
         string(REGEX REPLACE "^[0-9]+\\.([0-9]+)\\.[0-9]+" "\\1" VIEWER_VERSION_MINOR ${VIEWER_SHORT_VERSION})
         string(REGEX REPLACE "^[0-9]+\\.[0-9]+\\.([0-9]+)" "\\1" VIEWER_VERSION_PATCH ${VIEWER_SHORT_VERSION})
+        # <Lumen> The viewer's version is Lumen's own, LUMEN_VERSION in
+        # indra_constants.h: what it shows and what it tells Second Life, so
+        # nothing of ours is counted as Firestorm's (the author, 2026-10-28, as
+        # Luminous does). Firestorm's number is kept as VIEWER_VERSION_FS, for
+        # About and the "V7 style" windows' name.
+        set(VIEWER_VERSION_FS ${VIEWER_SHORT_VERSION})
+        set(LUMEN_CONSTANTS "${CMAKE_CURRENT_SOURCE_DIR}/llcommon/indra_constants.h")
+        file(STRINGS "${LUMEN_CONSTANTS}" lumen_version_line REGEX "LUMEN_VERSION = \"")
+        if (NOT lumen_version_line MATCHES "LUMEN_VERSION = \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+            message(FATAL_ERROR "LUMEN_VERSION in indra_constants.h must be three numbers, like 0.1.8: ${lumen_version_line}")
+        endif ()
+        string(REGEX REPLACE ".*\"([0-9]+\\.[0-9]+\\.[0-9]+)\".*" "\\1" VIEWER_SHORT_VERSION "${lumen_version_line}")
+        string(REGEX REPLACE "^([0-9]+)\\.[0-9]+\\.[0-9]+" "\\1" VIEWER_VERSION_MAJOR ${VIEWER_SHORT_VERSION})
+        string(REGEX REPLACE "^[0-9]+\\.([0-9]+)\\.[0-9]+" "\\1" VIEWER_VERSION_MINOR ${VIEWER_SHORT_VERSION})
+        string(REGEX REPLACE "^[0-9]+\\.[0-9]+\\.([0-9]+)" "\\1" VIEWER_VERSION_PATCH ${VIEWER_SHORT_VERSION})
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${LUMEN_CONSTANTS}")
+        message(STATUS "Lumen ${VIEWER_SHORT_VERSION} (Firestorm ${VIEWER_VERSION_FS})")
+        # </Lumen>
         if (DEFINED ENV{revision})
            set(VIEWER_VERSION_REVISION $ENV{revision})
            message(STATUS "Revision (from environment): ${VIEWER_VERSION_REVISION}")

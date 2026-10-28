@@ -138,6 +138,14 @@ std::string LLVersionInfo::getLLViewerVersion() const
 }
 // </FS:PP>
 
+// <Lumen> The version is Lumen's own (BuildVersion.cmake); this is the
+// Firestorm under it, shown in brackets in About.
+std::string LLVersionInfo::getFirestormVersion() const
+{
+    return LL_VIEWER_VERSION_FS;
+}
+// </Lumen>
+
 std::string LLVersionInfo::getChannelAndVersion()
 {
     if (mVersionChannel.empty())

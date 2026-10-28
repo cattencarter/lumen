@@ -14853,13 +14853,46 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>LumenUpdateCheck</key>
     <map>
       <key>Comment</key>
-      <string>Ask GitHub once per session whether a newer Lumen has been released. It only ever tells you; it never downloads or installs anything. Turn it off and the viewer contacts nobody.</string>
+      <string>Once a session, as the login screen shows, ask needfulsl.com (LumenUpdateURL) for the newest Lumen and say when there is a newer one. It only ever tells you; it never downloads or installs anything. Off: no request at all.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>Boolean</string>
       <key>Value</key>
       <integer>1</integer>
+    </map>
+  <key>LumenUpdateURL</key>
+    <map>
+      <key>Comment</key>
+      <string>Where the update message asks for the newest Lumen: a JSON file with version, url and notes. https only.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>https://needfulsl.com/lumen/version.json</string>
+    </map>
+  <key>LumenUpdateSeen</key>
+    <map>
+      <key>Comment</key>
+      <string>The newest version the update message has told of (on LumenUpdateToldDay).</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
+    </map>
+  <key>LumenUpdateToldDay</key>
+    <map>
+      <key>Comment</key>
+      <string>The day (YYYY-MM-DD, the computer's calendar) the update message last told of LumenUpdateSeen: it tells again on another day while this viewer is older.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string />
     </map>
     <key>LumenAISpeechLanguage</key>
     <map>

@@ -128,6 +128,7 @@
 #include "llinventorymodelbackgroundfetch.h"
 #include "lumenfolders.h"
 #include "lumenaictl.h"   // <Lumen> the directory-reply hooks   // <Lumen>
+#include "lumenupdate.h"  // <Lumen> the update message at the login screen
 #include "llkeyboard.h"
 #include "llloginhandler.h"         // gLoginHandler, SLURL support
 #include "lllogininstance.h" // Host the login module.
@@ -1316,6 +1317,13 @@ bool idle_startup()
             init_menus();
         }
         show_release_notes_if_required();
+        // <Lumen> Whether a newer Lumen is out, told at the login screen so it
+        // is there before anybody logs in: one request, once a session.
+        // Independent of the assistant on purpose -- somebody who never
+        // touches the AI still wants to know a build with a bad fault in it
+        // has been replaced. It only tells; `LumenUpdateCheck` turns it off.
+        LumenUpdate::check();
+        // </Lumen>
 
         OmnifilterEngine::getInstance()->init();    // <FS:Zi> Omnifilter support
 

@@ -40,7 +40,7 @@
 	</string>
 	<!-- about dialog/support string-->
 	<string name="AboutHeader">
-[APP_NAME] [VIEWER_VERSION_0].[VIEWER_VERSION_1].[VIEWER_VERSION_2] ([VIEWER_VERSION_3]) [BUILD_DATE] [BUILD_TIME] ([ADDRESS_SIZE]bit / [SIMD]) ([CHANNEL]) [BUILD_TYPE]
+[APP_NAME] [LUMEN_VERSION] (Firestorm [FIRESTORM_VERSION]) [BUILD_DATE] [BUILD_TIME] ([ADDRESS_SIZE]bit / [SIMD]) ([CHANNEL]) [BUILD_TYPE]
 [[VIEWER_RELEASE_NOTES_URL] [ReleaseNotes]]
 与 Second Life Viewer 保持一致: [VIEWER_VERSION_LL]
 	</string>
@@ -828,7 +828,7 @@ support@secondlife.com.
 		發行說明
 	</string>
 	<string name="RELEASE_NOTES_BASE_URL" translate="false">
-		https://github.com/cattencarter/lumen/releases#
+		https://github.com/cattencarter/lumen/releases/tag/v
 	</string>
 	<string name="LoadingData">
 		載入中...

@@ -2931,9 +2931,11 @@ if (DARWIN)
   set(MACOSX_BUNDLE_INFO_STRING "Lumen Viewer")
   set(MACOSX_BUNDLE_ICON_FILE "lumen_icon.icns")   # <Lumen> our own mark, not Firestorm's phoenix
   set(MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.cattencarter.lumen")   # <Lumen>
-  set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
+  # <Lumen> Lumen's own number, without the build (BuildVersion.cmake)
+  set(MACOSX_BUNDLE_LONG_VERSION_STRING "Lumen ${VIEWER_SHORT_VERSION} (Firestorm ${VIEWER_VERSION_FS})")
   set(MACOSX_BUNDLE_BUNDLE_NAME "Lumen")
-  set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
+  set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}")
+  # </Lumen>
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
   # <Lumen> This is the line the macOS About panel shows, NOT
   # CFBundleGetInfoString, which is legacy and shows nothing. Decisions 57's

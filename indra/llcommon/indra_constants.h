@@ -39,13 +39,21 @@ class LLUUID;
 //const std::string APP_NAME = "Firestorm";
 const std::string APP_NAME = "Lumen";
 
-// Lumen's own release number, shown BESIDE the Firestorm version rather than
-// instead of it. The author's call, and the right one: the 7.2.4 tells you
-// which base you are on, which is useful, while this tells you which Lumen.
+// Lumen's own release number -- and, since 0.1.8, the viewer's version too
+// (the author, 2026-10-28: Lumen's number first, Firestorm's in brackets, as
+// Luminous does). BuildVersion.cmake reads it from here, so it is what the
+// window title, About, Finder and Second Life see, with the build number
+// after it. Firestorm's number stays in VIEWER_VERSION_FS.txt and is shown in
+// brackets in About (getFirestormVersion).
 //
-// It is deliberately NOT the viewer version. That string is reported to
-// Linden Lab's servers and compared against LastRunVersion, so it is
-// machinery rather than decoration and is left exactly as it was.
+// It used to be shown BESIDE the Firestorm version and deliberately not be
+// the viewer version, which is reported to Linden Lab's servers. Reporting
+// Firestorm's number is what counted Lumen as Firestorm, which is why it
+// changed. LastRunVersion is only ever compared for equality, so going from
+// 7.2.5 to 0.1.8 is one "new version" and nothing more.
+//
+// THREE parts (0.1.8, never 0.1.8.1): BuildVersion.cmake stops the build on
+// anything else, because the viewer's version is three numbers and a build.
 //
 // BUMP THIS BEFORE TAGGING A RELEASE, not after. v0.1.1 shipped on both
 // platforms while this still read "0.1.0", and the two defects hid each
@@ -54,7 +62,7 @@ const std::string APP_NAME = "Lumen";
 // every 0.1.1 install was then told at each login that 0.1.1 was available.
 // lumen/scripts/actions-check.py now fails when this is behind the newest
 // release tag, because a note here would not have survived.
-const std::string LUMEN_VERSION = "0.1.7.1";
+const std::string LUMEN_VERSION = "0.1.8";
 // </Lumen>
 
 static constexpr F32 REGION_WIDTH_METERS = 256.f;

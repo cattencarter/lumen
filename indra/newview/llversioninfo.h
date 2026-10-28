@@ -75,6 +75,7 @@ public:
     std::string getShortVersion() const;
 
     std::string getLLViewerVersion() const; // <FS:PP>
+    std::string getFirestormVersion() const; // <Lumen> the Firestorm it is built on, e.g. 7.2.5
 
     /// return the viewer version and channel as a string
     /// like "Second Life Release 2.0.0.200030"

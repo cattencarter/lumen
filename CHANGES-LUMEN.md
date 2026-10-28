@@ -43,7 +43,9 @@ user's behalf.
 | `indra/newview/viewer_manifest.py` | package as `Lumen.app`; ship images alongside local HTML |
 | `indra/newview/fspanellogin.cpp` | show a local start page instead of Firestorm's |
 | `indra/newview/app_settings/settings.xml` | three settings: enable, port, optional token |
-| `indra/llcommon/indra_constants.h` | the application name |
+| `indra/llcommon/indra_constants.h`, `indra/cmake/BuildVersion.cmake` | the application name, and Lumen's own version number (`LUMEN_VERSION`), which is the viewer's version: what Second Life, the window title, About and Finder see. The upstream number is kept in `VIEWER_VERSION_FS.txt` |
+| `indra/newview/llversioninfo.{h,cpp}`, `fsversionvalues.h.in`, `skins/default/xui/*/strings.xml` | the upstream version kept beside Lumen's, shown in brackets in About; the release notes link Lumen's release |
+| `indra/newview/lumenupdate.{h,cpp}`, `llstartup.cpp`, `app_settings/settings.xml` | the update message: once a session, at the login screen, one request for needfulsl.com's `version.json`; a newer version is told once a day, with Download and Later. `LumenUpdateCheck` off: no request |
 | `indra/llfilesystem/lldir_mac.cpp` | the macOS data directory |
 | `indra/cmake/Variables.cmake` | macOS builds arm64 by default; override with `-DLUMEN_OSX_ARCH` |
 | `indra/newview/CMakeLists.txt` | the new files, and the product name, bundle identifier and icon |

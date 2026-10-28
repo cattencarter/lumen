@@ -302,7 +302,6 @@ using namespace LL;
 #include "fsradar.h"
 // <Lumen>
 #include "lumenaictl.h"
-#include "lumenupdate.h"
 // </Lumen>
 #include "fsassetblacklist.h"
 #include "bugsplatattributes.h"
@@ -1458,11 +1457,6 @@ bool LLAppViewer::init()
     // call cannot prevent the viewer from starting.
     LumenAIControl::instance().start();
 
-    // <Lumen> Independent of the assistant on purpose: somebody who never
-    // touches the AI still wants to be told when a build with a bad fault in
-    // it has been replaced. It only tells, and `LumenUpdateCheck` turns it off.
-    LumenUpdate::checkWhenLoggedIn();
-    // </Lumen>
     // </Lumen>
 
     // Note: this is where gLocalSpeakerMgr and gActiveSpeakerMgr used to be instantiated.
@@ -3624,9 +3618,8 @@ bool LLAppViewer::initConfiguration()
     // convention for marking self-compiled builds so their support volunteers
     // can spot one, and we have no volunteers to protect.
     //gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
-    gWindowTitle = std::string("Lumen Viewer ")
-                 + LLVersionInfo::getInstance()->getShortVersion()
-                 + " (" + LUMEN_VERSION + ")";
+    // Lumen's own number only (the author, 2026-10-28); Firestorm's is in About.
+    gWindowTitle = std::string("Lumen ") + LUMEN_VERSION;
     // </Lumen>
 #if LL_DEBUG
     gWindowTitle += std::string(" [DEBUG]");
@@ -3787,7 +3780,10 @@ void LLAppViewer::initStrings()
 
     // <FS:Ansariel> Set version number in VIEWER_GENERATION default substitute automatically
     LLStringUtil:: format_map_t gen_args;
-    gen_args["[VERSION]"] = llformat("%d", LLVersionInfo::getInstance()->getMajor());
+    // <Lumen> Firestorm's generation ("V7 style" windows), not our version's major
+    //gen_args["[VERSION]"] = llformat("%d", LLVersionInfo::getInstance()->getMajor());
+    gen_args["[VERSION]"] = llformat("%d", atoi(LLVersionInfo::getInstance()->getFirestormVersion().c_str()));
+    // </Lumen>
     LLTrans::setDefaultArg("[VIEWER_GENERATION]", LLTrans::getString("VIEWER_GENERATION", gen_args));
     LLTrans::setDefaultArg("[SHORT_VIEWER_GENERATION]", LLTrans::getString("SHORT_VIEWER_GENERATION", gen_args));
     // </FS:Ansariel>
@@ -4032,9 +4028,10 @@ LLSD LLAppViewer::getViewerInfo() const
     // and LLSD doesn't deal with integers wider than int. Use string.
     info["VIEWER_VERSION"] = llsd::array(versionInfo.getMajor(), versionInfo.getMinor(),
                                          versionInfo.getPatch(), stringize(versionInfo.getBuild()));
-    // <Lumen> Our own release number, beside the Firestorm one rather than
-    // instead of it: 7.2.4.262631043 tells you which base, (0.1.0) which Lumen.
+    // <Lumen> Our own release number, which is also VIEWER_VERSION since 0.1.8,
+    // and the Firestorm under it, shown in brackets: 0.1.8 (Firestorm 7.2.5).
     info["LUMEN_VERSION"] = LUMEN_VERSION;
+    info["FIRESTORM_VERSION"] = versionInfo.getFirestormVersion();
     // </Lumen>
     info["VIEWER_VERSION_STR"] = versionInfo.getVersion();
     info["VIEWER_VERSION_LL"] = versionInfo.getLLViewerVersion(); // <FS:PP>
@@ -4118,7 +4115,7 @@ LLSD LLAppViewer::getViewerInfo() const
     //    url += LLURI::escape(versionInfo.getVersion()) + ".html";
     //}
     //info["VIEWER_RELEASE_NOTES_URL"] = url;
-    std::string url = LLTrans::getString("RELEASE_NOTES_BASE_URL") + LLURI::escape(versionInfo.getVersion());
+    std::string url = LLTrans::getString("RELEASE_NOTES_BASE_URL") + LLURI::escape(LUMEN_VERSION); // <Lumen> our release
     info["VIEWER_RELEASE_NOTES_URL"] = url;
     // </FS:Ansariel>
 
