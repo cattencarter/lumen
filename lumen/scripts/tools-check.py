@@ -404,7 +404,8 @@ def main():
 
     # ---------- giving something to a person ----------
     # Guards only by default. An offer puts a dialogue in front of a real
-    # person, which a test suite does not get to do on every run; --give opts in.
+    # person, which a test suite does not get to do on every run; --give opts
+    # in, after the notecards, since this script's own card is what it offers.
     print("\ngive_item")
     e = err("give_item", {"agent_id": me, "item": "anything"})
     check("giving to yourself is refused", e.get("code") == -32000, str(e)[:160])
@@ -451,18 +452,6 @@ def main():
     if wornc and recipient:
         e = err("give_item", {"agent_id": recipient, "item_id": wornc[0]["id"]})
         check("a worn item is refused until detached", e.get("code") == -32000, str(e)[:160])
-
-    if args.give and recipient and made:
-        g = result("give_item", {"agent_id": recipient, "item_id": made["id"],
-                                 "request_id": rid("give")})
-        check("give_item reports who it went to", g.get("offered_to") == recipient, str(g)[:200])
-        check("it says offered, not delivered", g.get("delivery_confirmed") is False, str(g)[:200])
-        check("the same request_id does not offer twice",
-              result("give_item", {"agent_id": recipient, "item_id": made["id"],
-                                   "request_id": rid("give")}).get("replayed") is True)
-        check("the same item to the same person again is caught by the 60s window",
-              result("give_item", {"agent_id": recipient, "item_id": made["id"],
-                                   "request_id": rid("give-2")}).get("replayed") is True)
 
     # ---------- teleport ----------
     # Within the region already occupied: the full named-region lookup and
@@ -676,6 +665,24 @@ def main():
         e = err("read_notecard", {"item_id": non_nc[0]["id"]})
         check("reading a non-notecard is a clean error", e.get("code") == -32602, str(e)[:160])
 
+    # ---------- giving the notecard to a person (--give) ----------
+    # Here and not with the give_item guards: the card this script made is the
+    # only thing it offers, and it does not exist until the section above. The
+    # viewer asks before the offer like any give.
+    if args.give and recipient and made:
+        print("\ngive_item, for real")
+        g, e, secs = asked("give_item", {"agent_id": recipient, "item_id": made["id"],
+                                         "request_id": rid("give")})
+        if check_asked("give_item", g, e, secs):
+            check("give_item reports who it went to", g.get("offered_to") == recipient, str(g)[:200])
+            check("it says offered, not delivered", g.get("delivery_confirmed") is False, str(g)[:200])
+            check("the same request_id does not offer twice",
+                  result("give_item", {"agent_id": recipient, "item_id": made["id"],
+                                       "request_id": rid("give")}).get("replayed") is True)
+            check("the same item to the same person again is caught by the 60s window",
+                  result("give_item", {"agent_id": recipient, "item_id": made["id"],
+                                       "request_id": rid("give-2")}).get("replayed") is True)
+
     # ---------- searching inside notecards ----------
     # Narrowed with a query so this finishes quickly; an exhaustive search of
     # this inventory reads 3,691 cards and takes over a minute.
@@ -818,13 +825,18 @@ def main():
     e = err("wear_outfit", {"name": "zzzqqq-no-such-outfit"})
     check("an outfit that does not exist is a clean error", e.get("code") == -32000, str(e)[:160])
 
-    e = err("teleport", {"landmark": "zzzqqq-no-such-landmark"})
+    # Neither of these may name a landmark that exists: one that matched would
+    # be a real teleport, to wherever it leads. Words are matched one by one
+    # against names, descriptions, regions and folders -- the notecard's NAME
+    # went to a landmark called the same on 2026-10-28 -- so one nonsense word,
+    # and the notecard by id, which is refused if it is not a landmark.
+    e = err("teleport", {"landmark": "zzzqqqxyzzy"})
     check("teleporting to a landmark that does not exist is a clean error",
           e.get("code") == -32000, str(e)[:160])
     nc = result("search_inventory", {"kind": "notecard", "limit": 1}).get("items", [])
     if nc:
-        e = err("teleport", {"landmark": nc[0]["name"]})
-        check("and a non-landmark is refused as one", e.get("code") in (-32000, -32602), str(e)[:160])
+        e = err("teleport", {"landmark": nc[0]["id"]})
+        check("and a non-landmark is refused as one", e.get("code") == -32602, str(e)[:160])
 
     e = err("send_group_message", {"group": "zzzqqq-no-such-group", "message": "x"})
     check("group chat to an unknown group is a clean error", e.get("code") == -32000, str(e)[:160])
