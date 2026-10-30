@@ -461,12 +461,40 @@ namespace
     // a click from its own guided window, and the API key after them.
     std::string setupOffer()
     {
+        // <Lumen> What is already on this computer comes first, one click from
+        // being used. Uninstalling Lumen and saying yes to deleting its settings
+        // forgets which AI was chosen, but leaves Codex, Claude Code and Vibe
+        // installed and signed in -- and this said "No AI is set up yet" while
+        // every "set it up for me" window then showed all done (the author,
+        // Windows, 2026-10-30). Installed is checked here, quickly; a sign-in
+        // that has run out says so with its own link when the AI is first used.
+        struct Sub { const char* label; std::string provider; bool here; };
+        const Sub subs[] = {
+            { "ChatGPT", LumenAIKeys::CODEX,
+              LumenAICodex::unavailableHere().empty() && LumenAICodex::cliInstalled() },
+            { "Claude", LumenAIKeys::CLAUDECODE,
+              LumenAIClaude::unavailableHere().empty() && LumenAIClaude::installed() },
+            { "Mistral", LumenAIKeys::VIBE,
+              LumenAIVibe::unavailableHere().empty() && LumenAIVibe::installed() && LumenAIVibe::signedIn() },
+        };
+        std::string ready, others;
+        for (const Sub& sub : subs)
+        {
+            if (sub.here)
+                ready += std::string("  ") + sub.label + ": [secondlife:///app/lumen_setup/use/"
+                       + sub.provider + " use it]\n";
+            else
+                others += std::string("  ") + sub.label + ": [secondlife:///app/lumen_setup/"
+                        + sub.provider + " set it up for me]\n";
+        }
+        if (!ready.empty())
+            return "No AI is chosen in Lumen yet, so the assistant cannot answer. Already set up on "
+                   "this computer:\n" + ready
+                 + (others.empty() ? std::string() : "Or set up another:\n" + others)
+                 + "An API key works too: [secondlife:///app/lumen_setup/keys Preferences > AI].";
         return "No AI is set up yet, so the assistant cannot answer. Already pay for ChatGPT, "
-               "Claude or Mistral? Use that one -- no API key needed:\n"
-               "  ChatGPT: [secondlife:///app/lumen_setup/codex set it up for me]\n"
-               "  Claude: [secondlife:///app/lumen_setup/claudecode set it up for me]\n"
-               "  Mistral: [secondlife:///app/lumen_setup/vibe set it up for me]\n"
-               "No subscription? An API key from Anthropic, OpenAI or Mistral works too, paid as "
+               "Claude or Mistral? Use that one -- no API key needed:\n" + others
+             + "No subscription? An API key from Anthropic, OpenAI or Mistral works too, paid as "
                "you use it: [secondlife:///app/lumen_setup/keys Preferences > AI].";
     }
 
@@ -3439,6 +3467,20 @@ namespace
         bool handle(const LLSD& params, const LLSD&, const std::string&, LLMediaCtrl*) override
         {
             const std::string which = params.size() > 0 ? params[0].asString() : std::string();
+            // <Lumen> "use it": one already set up on this computer -- chosen,
+            // and no window, since there is nothing left to set up.
+            if (which == "use" && params.size() > 1)
+            {
+                const std::string use = params[1].asString();
+                if (use == LumenAIKeys::CODEX || use == LumenAIKeys::CLAUDECODE || use == LumenAIKeys::VIBE)
+                {
+                    gSavedSettings.setString("LumenAIProvider", use);
+                    LumenAIChatFloater::postFromViewer(std::string(),
+                        "Chose " + LumenAIKeys::displayName(use) + ", already set up on this computer. "
+                        "Ask the assistant anything here. Preferences > AI changes it later.");
+                }
+                return true;
+            }
             if (which == LumenAIKeys::CODEX || which == LumenAIKeys::CLAUDECODE || which == LumenAIKeys::VIBE)
             {
                 const bool again = gSavedSettings.getString("LumenAIProvider") == which;   // <Lumen>
